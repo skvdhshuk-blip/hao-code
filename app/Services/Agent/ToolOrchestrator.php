@@ -12,8 +12,14 @@ use App\Tools\ToolResult;
 
 class ToolOrchestrator
 {
+    /** Appended to a successful Read's output once the same file has been read
+     *  this many times without an intervening Write/Edit on the same path. */
+    private const REPEATED_READ_HINT_THRESHOLD = 4;
+
     private $permissionPromptHandler = null;
     private ?ToolResultStorage $toolResultStorage = null;
+    /** @var array<string, int> raw file_path → successful Read count (this session) */
+    private array $readCountsByFile = [];
 
     public function __construct(
         private readonly ToolRegistry $toolRegistry,
@@ -378,6 +384,14 @@ class ToolOrchestrator
             }
         }
 
+        // Repeated-Read nudge: when an agent reads the same file many times
+        // without editing it, it's almost always "I forgot what I just saw"
+        // rather than a legitimate use case. Append a short hint into the
+        // tool_result so the agent is reminded to reuse the content it already
+        // has. A Write/Edit on the same path resets the counter because after
+        // a mutation re-reading is expected.
+        $result = $this->annotateRepeatedReads($toolName, $input, $result);
+
         // Persist large results to disk (or truncate as fallback)
         $maxChars = $tool->maxResultSizeChars();
         if ($maxChars < PHP_INT_MAX && mb_strlen($result->output) > $maxChars) {
@@ -409,5 +423,48 @@ class ToolOrchestrator
         }
 
         return $result->toApiFormat($toolUseId);
+    }
+
+    /**
+     * Track per-file Read counts and, above the threshold, append a short
+     * hint to the Read result. Write/Edit on the same path resets the count.
+     */
+    private function annotateRepeatedReads(string $toolName, array $input, ToolResult $result): ToolResult
+    {
+        if ($result->isError) {
+            return $result;
+        }
+
+        $path = $input['file_path'] ?? null;
+        if (! is_string($path) || $path === '') {
+            return $result;
+        }
+
+        if ($toolName === 'Write' || $toolName === 'Edit' || $toolName === 'NotebookEdit') {
+            unset($this->readCountsByFile[$path]);
+
+            return $result;
+        }
+
+        if ($toolName !== 'Read') {
+            return $result;
+        }
+
+        $count = ($this->readCountsByFile[$path] ?? 0) + 1;
+        $this->readCountsByFile[$path] = $count;
+
+        if ($count < self::REPEATED_READ_HINT_THRESHOLD) {
+            return $result;
+        }
+
+        $hint = "\n\n[hint] You have now read {$path} {$count} times this session without modifying it. "
+              . 'If you are paginating a large file that is fine, but otherwise prefer reusing the content '
+              . 'you already have in memory rather than re-reading.';
+
+        return new ToolResult(
+            output: $result->output . $hint,
+            isError: false,
+            metadata: $result->metadata,
+        );
     }
 }

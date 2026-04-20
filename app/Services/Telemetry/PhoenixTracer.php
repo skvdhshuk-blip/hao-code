@@ -262,7 +262,13 @@ class PhoenixTracer
         );
 
         $exporter = new SpanExporter($transport);
-        $processor = new BatchSpanProcessor($exporter, \OpenTelemetry\SDK\Common\Time\ClockFactory::getDefault());
+        // BatchSpanProcessor can throw out of Span::end() when the OTLP
+        // endpoint rejects a flush (4xx, WAF 405, stream timeout, etc).
+        // Wrap it so export failures never leak into the agent's tool /
+        // query / turn `finally` blocks.
+        $processor = new SafeSpanProcessor(
+            new BatchSpanProcessor($exporter, \OpenTelemetry\SDK\Common\Time\ClockFactory::getDefault()),
+        );
 
         $resource = ResourceInfoFactory::emptyResource()->merge(ResourceInfo::create(Attributes::create([
             'service.name' => 'hao-code',
