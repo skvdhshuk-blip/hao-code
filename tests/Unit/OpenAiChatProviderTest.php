@@ -2,9 +2,9 @@
 
 namespace Tests\Unit;
 
-use App\Services\Api\ApiErrorException;
-use App\Services\Api\OpenAiChatProvider;
-use App\Services\Api\StreamEvent;
+use HaoCode\Services\Api\ApiErrorException;
+use HaoCode\Services\Api\OpenAiChatProvider;
+use HaoCode\Services\Api\StreamEvent;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\HttpClient\MockHttpClient;
 use Symfony\Component\HttpClient\Response\MockResponse;

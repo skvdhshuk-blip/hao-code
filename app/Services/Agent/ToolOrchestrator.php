@@ -1,14 +1,14 @@
 <?php
 
-namespace App\Services\Agent;
+namespace HaoCode\Services\Agent;
 
-use App\Services\Hooks\HookExecutor;
-use App\Services\Permissions\PermissionChecker;
-use App\Services\Telemetry\PhoenixTracer;
-use App\Services\ToolResult\ToolResultStorage;
-use App\Tools\ToolRegistry;
-use App\Tools\ToolUseContext;
-use App\Tools\ToolResult;
+use HaoCode\Services\Hooks\HookExecutor;
+use HaoCode\Services\Permissions\PermissionChecker;
+use HaoCode\Services\Telemetry\PhoenixTracer;
+use HaoCode\Services\ToolResult\ToolResultStorage;
+use HaoCode\Tools\ToolRegistry;
+use HaoCode\Tools\ToolUseContext;
+use HaoCode\Tools\ToolResult;
 
 class ToolOrchestrator
 {

@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Services\Task\Task;
+use HaoCode\Services\Task\Task;
 use PHPUnit\Framework\TestCase;
 
 class TaskTest extends TestCase

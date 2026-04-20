@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Support\Terminal\MarkdownRenderer;
+use HaoCode\Support\Terminal\MarkdownRenderer;
 use PHPUnit\Framework\TestCase;
 
 class MarkdownRendererTest extends TestCase

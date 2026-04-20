@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services\Hooks;
+namespace HaoCode\Services\Hooks;
 
 class HookDefinition
 {

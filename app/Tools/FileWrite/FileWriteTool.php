@@ -1,13 +1,13 @@
 <?php
 
-namespace App\Tools\FileWrite;
+namespace HaoCode\Tools\FileWrite;
 
-use App\Services\Security\SecretScanner;
-use App\Tools\BaseTool;
-use App\Tools\FileEdit\DiffGenerator;
-use App\Tools\ToolInputSchema;
-use App\Tools\ToolResult;
-use App\Tools\ToolUseContext;
+use HaoCode\Services\Security\SecretScanner;
+use HaoCode\Tools\BaseTool;
+use HaoCode\Tools\FileEdit\DiffGenerator;
+use HaoCode\Tools\ToolInputSchema;
+use HaoCode\Tools\ToolResult;
+use HaoCode\Tools\ToolUseContext;
 
 class FileWriteTool extends BaseTool
 {
@@ -70,7 +70,7 @@ DESC;
         if (file_exists($filePath)) {
             $originalContent = file_get_contents($filePath);
             try {
-                app(\App\Services\FileHistory\FileHistoryManager::class)
+                app(\HaoCode\Services\FileHistory\FileHistoryManager::class)
                     ->recordBefore($filePath);
             } catch (\Throwable) {}
         }

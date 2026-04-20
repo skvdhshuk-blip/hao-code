@@ -2,12 +2,12 @@
 
 namespace Tests\Feature;
 
-use App\Tools\BaseTool;
-use App\Tools\ToolInputSchema;
-use App\Tools\ToolRegistry;
-use App\Tools\ToolResult;
-use App\Tools\ToolSearch\ToolSearchTool;
-use App\Tools\ToolUseContext;
+use HaoCode\Tools\BaseTool;
+use HaoCode\Tools\ToolInputSchema;
+use HaoCode\Tools\ToolRegistry;
+use HaoCode\Tools\ToolResult;
+use HaoCode\Tools\ToolSearch\ToolSearchTool;
+use HaoCode\Tools\ToolUseContext;
 use Tests\TestCase;
 
 class ToolSearchToolTest extends TestCase
@@ -47,7 +47,7 @@ class ToolSearchToolTest extends TestCase
             {
                 return ToolInputSchema::make(['type' => 'object', 'properties' => []], []);
             }
-            public function call(array $input, \App\Tools\ToolUseContext $context): ToolResult
+            public function call(array $input, \HaoCode\Tools\ToolUseContext $context): ToolResult
             {
                 return ToolResult::success('ok');
             }

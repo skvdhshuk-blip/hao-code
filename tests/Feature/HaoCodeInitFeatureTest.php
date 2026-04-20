@@ -2,7 +2,7 @@
 
 namespace Tests\Feature;
 
-use App\Console\Commands\HaoCodeCommand;
+use HaoCode\Console\Commands\HaoCodeCommand;
 use Illuminate\Console\OutputStyle;
 use Symfony\Component\Console\Input\ArrayInput;
 use Symfony\Component\Console\Output\BufferedOutput;

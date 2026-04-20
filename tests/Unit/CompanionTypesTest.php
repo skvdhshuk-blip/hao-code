@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Services\Buddy\CompanionTypes;
+use HaoCode\Services\Buddy\CompanionTypes;
 use PHPUnit\Framework\TestCase;
 
 class CompanionTypesTest extends TestCase

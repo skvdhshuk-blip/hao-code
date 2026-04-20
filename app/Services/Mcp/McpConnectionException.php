@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services\Mcp;
+namespace HaoCode\Services\Mcp;
 
 class McpConnectionException extends \RuntimeException
 {

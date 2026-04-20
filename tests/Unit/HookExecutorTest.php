@@ -2,9 +2,9 @@
 
 namespace Tests\Unit;
 
-use App\Services\Hooks\HookDefinition;
-use App\Services\Hooks\HookExecutor;
-use App\Services\Hooks\HookResult;
+use HaoCode\Services\Hooks\HookDefinition;
+use HaoCode\Services\Hooks\HookExecutor;
+use HaoCode\Services\Hooks\HookResult;
 use PHPUnit\Framework\TestCase;
 
 class HookExecutorTest extends TestCase

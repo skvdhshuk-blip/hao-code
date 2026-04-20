@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Sdk;
+namespace HaoCode\Sdk;
 
 /**
  * Wrapper for structured (JSON) responses from the agent.

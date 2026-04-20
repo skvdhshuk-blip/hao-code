@@ -1,12 +1,12 @@
 <?php
 
-namespace App\Tools\Task;
+namespace HaoCode\Tools\Task;
 
-use App\Services\Task\TaskManager;
-use App\Tools\BaseTool;
-use App\Tools\ToolInputSchema;
-use App\Tools\ToolResult;
-use App\Tools\ToolUseContext;
+use HaoCode\Services\Task\TaskManager;
+use HaoCode\Tools\BaseTool;
+use HaoCode\Tools\ToolInputSchema;
+use HaoCode\Tools\ToolResult;
+use HaoCode\Tools\ToolUseContext;
 
 class TaskCreateTool extends BaseTool
 {

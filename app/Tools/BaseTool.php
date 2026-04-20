@@ -1,10 +1,10 @@
 <?php
 
-namespace App\Tools;
+namespace HaoCode\Tools;
 
-use App\Services\Permissions\PermissionDecision;
+use HaoCode\Services\Permissions\PermissionDecision;
 
-abstract class BaseTool implements \App\Contracts\ToolInterface
+abstract class BaseTool implements \HaoCode\Contracts\ToolInterface
 {
     public function isConcurrencySafe(array $input): bool
     {

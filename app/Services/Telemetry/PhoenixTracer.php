@@ -1,8 +1,8 @@
 <?php
 
-namespace App\Services\Telemetry;
+namespace HaoCode\Services\Telemetry;
 
-use App\Services\Settings\SettingsManager;
+use HaoCode\Services\Settings\SettingsManager;
 use OpenTelemetry\API\Trace\SpanInterface;
 use OpenTelemetry\API\Trace\StatusCode;
 use OpenTelemetry\API\Trace\TracerInterface;

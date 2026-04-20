@@ -2,8 +2,8 @@
 
 namespace Tests\Unit;
 
-use App\Services\Buddy\CompanionSprites;
-use App\Services\Buddy\CompanionTypes;
+use HaoCode\Services\Buddy\CompanionSprites;
+use HaoCode\Services\Buddy\CompanionTypes;
 use PHPUnit\Framework\TestCase;
 
 class CompanionSpritesTest extends TestCase

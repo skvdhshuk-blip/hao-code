@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Services\Telemetry\PhoenixTracer;
+use HaoCode\Services\Telemetry\PhoenixTracer;
 use PHPUnit\Framework\TestCase;
 
 class PhoenixTracerTest extends TestCase

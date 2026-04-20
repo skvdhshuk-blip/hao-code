@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace App\Services\Memory;
+namespace HaoCode\Services\Memory;
 
 /**
  * Manual memory consolidation (/dream command).

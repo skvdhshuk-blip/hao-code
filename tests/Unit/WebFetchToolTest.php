@@ -2,8 +2,8 @@
 
 namespace Tests\Unit;
 
-use App\Tools\WebFetch\WebFetchTool;
-use App\Tools\ToolUseContext;
+use HaoCode\Tools\WebFetch\WebFetchTool;
+use HaoCode\Tools\ToolUseContext;
 use PHPUnit\Framework\TestCase;
 
 class WebFetchToolTest extends TestCase

@@ -1,8 +1,8 @@
 <?php
 
-namespace App\Services\Notification;
+namespace HaoCode\Services\Notification;
 
-use App\Services\Hooks\HookExecutor;
+use HaoCode\Services\Hooks\HookExecutor;
 
 /**
  * Sends desktop notifications via terminal escape sequences.

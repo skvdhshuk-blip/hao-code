@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace App\Support\Terminal;
+namespace HaoCode\Support\Terminal;
 
 class DraftInputBuffer
 {

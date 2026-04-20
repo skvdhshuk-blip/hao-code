@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services\Lsp;
+namespace HaoCode\Services\Lsp;
 
 /**
  * Represents an LSP server process communicating via stdio.

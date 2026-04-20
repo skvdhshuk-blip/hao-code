@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Tools\Cron;
+namespace HaoCode\Tools\Cron;
 
 /**
  * In-memory cron job store with optional disk persistence.

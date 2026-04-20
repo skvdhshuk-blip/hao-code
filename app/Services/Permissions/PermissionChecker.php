@@ -1,10 +1,10 @@
 <?php
 
-namespace App\Services\Permissions;
+namespace HaoCode\Services\Permissions;
 
-use App\Contracts\ToolInterface;
-use App\Tools\ToolUseContext;
-use App\Services\Settings\SettingsManager;
+use HaoCode\Contracts\ToolInterface;
+use HaoCode\Tools\ToolUseContext;
+use HaoCode\Services\Settings\SettingsManager;
 
 class PermissionChecker
 {

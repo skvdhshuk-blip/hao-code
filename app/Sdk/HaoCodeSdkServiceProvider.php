@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Sdk;
+namespace HaoCode\Sdk;
 
 use Illuminate\Support\ServiceProvider;
 
@@ -14,7 +14,7 @@ use Illuminate\Support\ServiceProvider;
  *   // config/haocode.php is auto-published
  *   // .env: ANTHROPIC_API_KEY=your-api-key
  *
- *   use App\Sdk\HaoCode;
+ *   use HaoCode\Sdk\HaoCode;
  *   $result = HaoCode::query('Explain this codebase');
  */
 class HaoCodeSdkServiceProvider extends ServiceProvider

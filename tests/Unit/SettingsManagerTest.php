@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Services\Settings\SettingsManager;
+use HaoCode\Services\Settings\SettingsManager;
 use Tests\TestCase;
 
 class SettingsManagerTest extends TestCase
@@ -106,7 +106,7 @@ class SettingsManagerTest extends TestCase
 
         $settings = new SettingsManager;
 
-        $this->assertSame(\App\Services\Permissions\PermissionMode::Default, $settings->getPermissionMode());
+        $this->assertSame(\HaoCode\Services\Permissions\PermissionMode::Default, $settings->getPermissionMode());
     }
 
     public function test_modern_approval_policy_maps_to_accept_edits_permission_mode(): void
@@ -114,7 +114,7 @@ class SettingsManagerTest extends TestCase
         $settings = new SettingsManager;
         $settings->set('approval_policy', 'on-failure');
 
-        $this->assertSame(\App\Services\Permissions\PermissionMode::AcceptEdits, $settings->getPermissionMode());
+        $this->assertSame(\HaoCode\Services\Permissions\PermissionMode::AcceptEdits, $settings->getPermissionMode());
         $this->assertSame('on-failure', $settings->getApprovalPolicy());
         $this->assertSame('workspace-write', $settings->getSandboxMode());
     }
@@ -124,7 +124,7 @@ class SettingsManagerTest extends TestCase
         $settings = new SettingsManager;
         $settings->set('sandbox_mode', 'read-only');
 
-        $this->assertSame(\App\Services\Permissions\PermissionMode::Plan, $settings->getPermissionMode());
+        $this->assertSame(\HaoCode\Services\Permissions\PermissionMode::Plan, $settings->getPermissionMode());
         $this->assertSame('read-only', $settings->getSandboxMode());
         $this->assertSame('on-request', $settings->getApprovalPolicy());
     }
@@ -458,7 +458,7 @@ class SettingsManagerTest extends TestCase
             $this->assertSame('https://global.api.example', $settings->getBaseUrl());
             $this->assertSame(8192, $settings->getMaxTokens());
             $this->assertSame('claude-opus-4-20250514', $settings->getModel());
-            $this->assertSame(\App\Services\Permissions\PermissionMode::Plan, $settings->getPermissionMode());
+            $this->assertSame(\HaoCode\Services\Permissions\PermissionMode::Plan, $settings->getPermissionMode());
         } finally {
             chdir($origDir);
 

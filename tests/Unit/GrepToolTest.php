@@ -2,8 +2,8 @@
 
 namespace Tests\Unit;
 
-use App\Tools\Grep\GrepTool;
-use App\Tools\ToolUseContext;
+use HaoCode\Tools\Grep\GrepTool;
+use HaoCode\Tools\ToolUseContext;
 use PHPUnit\Framework\TestCase;
 
 class GrepToolTest extends TestCase
@@ -50,7 +50,7 @@ class GrepToolTest extends TestCase
         int $afterLines = 0,
         int $beforeLines = 0,
         int $headLimit = 250,
-    ): \App\Tools\ToolResult {
+    ): \HaoCode\Tools\ToolResult {
         $ref = new \ReflectionClass(GrepTool::class);
         $method = $ref->getMethod('grepWithPhp');
         $method->setAccessible(true);

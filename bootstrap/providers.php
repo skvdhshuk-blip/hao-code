@@ -1,6 +1,6 @@
 <?php
 
 return [
-    App\Providers\AgentServiceProvider::class,
-    App\Providers\ToolServiceProvider::class,
+    HaoCode\Providers\AgentServiceProvider::class,
+    HaoCode\Providers\ToolServiceProvider::class,
 ];

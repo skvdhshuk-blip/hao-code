@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Services\Agent\BackgroundAgentManager;
+use HaoCode\Services\Agent\BackgroundAgentManager;
 use PHPUnit\Framework\TestCase;
 
 class BackgroundAgentManagerTest extends TestCase

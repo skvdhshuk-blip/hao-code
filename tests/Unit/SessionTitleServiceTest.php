@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Services\Session\SessionTitleService;
+use HaoCode\Services\Session\SessionTitleService;
 use PHPUnit\Framework\TestCase;
 
 class SessionTitleServiceTest extends TestCase

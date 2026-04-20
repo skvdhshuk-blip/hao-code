@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Sdk;
+namespace HaoCode\Sdk;
 
 /**
  * Cancellation handle for long-running SDK operations.

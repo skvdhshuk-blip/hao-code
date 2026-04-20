@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Tools\FileEdit;
+namespace HaoCode\Tools\FileEdit;
 
 /**
  * Generates unified diffs and structured patches for file edits,

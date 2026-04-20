@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services\Mcp;
+namespace HaoCode\Services\Mcp;
 
 /**
  * Transport layer for communicating with an MCP server via JSON-RPC 2.0.

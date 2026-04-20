@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Services\Security\SecretScanner;
+use HaoCode\Services\Security\SecretScanner;
 use PHPUnit\Framework\TestCase;
 
 class SecretScannerTest extends TestCase

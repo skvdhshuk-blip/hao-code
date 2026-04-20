@@ -2,8 +2,8 @@
 
 namespace Tests\Unit;
 
-use App\Services\Api\OpenAiProvider;
-use App\Services\Api\StreamEvent;
+use HaoCode\Services\Api\OpenAiProvider;
+use HaoCode\Services\Api\StreamEvent;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\HttpClient\MockHttpClient;
 use Symfony\Component\HttpClient\Response\MockResponse;
@@ -286,7 +286,7 @@ class OpenAiProviderTest extends TestCase
             ]],
         ]);
 
-        $this->expectException(\App\Services\Api\ApiErrorException::class);
+        $this->expectException(\HaoCode\Services\Api\ApiErrorException::class);
         $this->expectExceptionMessage('model overloaded');
 
         $this->collectEvents($sse);

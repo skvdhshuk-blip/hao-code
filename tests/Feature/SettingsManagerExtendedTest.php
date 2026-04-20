@@ -2,8 +2,8 @@
 
 namespace Tests\Feature;
 
-use App\Services\Permissions\PermissionMode;
-use App\Services\Settings\SettingsManager;
+use HaoCode\Services\Permissions\PermissionMode;
+use HaoCode\Services\Settings\SettingsManager;
 use Tests\TestCase;
 
 class SettingsManagerExtendedTest extends TestCase

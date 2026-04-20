@@ -1,8 +1,8 @@
 <?php
 
-namespace App\Services\Agent;
+namespace HaoCode\Services\Agent;
 
-use App\Services\Api\StreamEvent;
+use HaoCode\Services\Api\StreamEvent;
 
 class StreamProcessor
 {

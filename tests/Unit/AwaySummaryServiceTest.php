@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Services\Session\AwaySummaryService;
+use HaoCode\Services\Session\AwaySummaryService;
 use PHPUnit\Framework\TestCase;
 
 class AwaySummaryServiceTest extends TestCase

@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Support\Terminal\PromptHudState;
+use HaoCode\Support\Terminal\PromptHudState;
 use PHPUnit\Framework\TestCase;
 
 class PromptHudStateTest extends TestCase

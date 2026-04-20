@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services\Mcp;
+namespace HaoCode\Services\Mcp;
 
 /**
  * Manages the lifecycle of MCP server connections.

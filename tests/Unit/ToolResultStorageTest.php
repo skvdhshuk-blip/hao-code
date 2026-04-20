@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Services\ToolResult\ToolResultStorage;
+use HaoCode\Services\ToolResult\ToolResultStorage;
 use PHPUnit\Framework\TestCase;
 
 class ToolResultStorageTest extends TestCase

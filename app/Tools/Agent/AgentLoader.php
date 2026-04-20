@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Tools\Agent;
+namespace HaoCode\Tools\Agent;
 
 /**
  * Loads user-defined agent definitions from .claude/agents/ directories.

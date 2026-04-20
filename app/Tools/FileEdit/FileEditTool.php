@@ -1,11 +1,11 @@
 <?php
 
-namespace App\Tools\FileEdit;
+namespace HaoCode\Tools\FileEdit;
 
-use App\Tools\BaseTool;
-use App\Tools\ToolInputSchema;
-use App\Tools\ToolResult;
-use App\Tools\ToolUseContext;
+use HaoCode\Tools\BaseTool;
+use HaoCode\Tools\ToolInputSchema;
+use HaoCode\Tools\ToolResult;
+use HaoCode\Tools\ToolUseContext;
 
 class FileEditTool extends BaseTool
 {
@@ -84,7 +84,7 @@ DESC;
 
         // Record file history before editing
         try {
-            app(\App\Services\FileHistory\FileHistoryManager::class)
+            app(\HaoCode\Services\FileHistory\FileHistoryManager::class)
                 ->recordBefore($filePath);
         } catch (\Throwable) {}
 

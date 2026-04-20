@@ -2,11 +2,11 @@
 
 namespace Tests\Unit;
 
-use App\Tools\Cron\CronCreateTool;
-use App\Tools\Cron\CronDeleteTool;
-use App\Tools\Cron\CronListTool;
-use App\Tools\Cron\CronScheduler;
-use App\Tools\ToolUseContext;
+use HaoCode\Tools\Cron\CronCreateTool;
+use HaoCode\Tools\Cron\CronDeleteTool;
+use HaoCode\Tools\Cron\CronListTool;
+use HaoCode\Tools\Cron\CronScheduler;
+use HaoCode\Tools\ToolUseContext;
 use PHPUnit\Framework\TestCase;
 
 class CronToolsTest extends TestCase

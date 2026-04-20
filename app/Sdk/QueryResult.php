@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Sdk;
+namespace HaoCode\Sdk;
 
 /**
  * Result of an SDK query — carries the response text plus usage metadata.

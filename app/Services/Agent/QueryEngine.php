@@ -1,11 +1,11 @@
 <?php
 
-namespace App\Services\Agent;
+namespace HaoCode\Services\Agent;
 
-use App\Services\Api\StreamingClient;
-use App\Services\Settings\SettingsManager;
-use App\Services\Telemetry\PhoenixTracer;
-use App\Tools\ToolRegistry;
+use HaoCode\Services\Api\StreamingClient;
+use HaoCode\Services\Settings\SettingsManager;
+use HaoCode\Services\Telemetry\PhoenixTracer;
+use HaoCode\Tools\ToolRegistry;
 
 class QueryEngine
 {

@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Services\Mcp\McpServerConfigManager;
+use HaoCode\Services\Mcp\McpServerConfigManager;
 use Tests\TestCase;
 
 class McpServerConfigManagerTest extends TestCase

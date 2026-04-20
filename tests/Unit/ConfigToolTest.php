@@ -2,9 +2,9 @@
 
 namespace Tests\Unit;
 
-use App\Services\Settings\SettingsManager;
-use App\Tools\Config\ConfigTool;
-use App\Tools\ToolUseContext;
+use HaoCode\Services\Settings\SettingsManager;
+use HaoCode\Tools\Config\ConfigTool;
+use HaoCode\Tools\ToolUseContext;
 use PHPUnit\Framework\TestCase;
 
 class ConfigToolTest extends TestCase

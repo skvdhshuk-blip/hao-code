@@ -2,9 +2,9 @@
 
 namespace Tests\Unit;
 
-use App\Console\Commands\HaoCodeCommand;
-use App\Support\Terminal\DraftInputBuffer;
-use App\Support\Terminal\DockedPromptScreen;
+use HaoCode\Console\Commands\HaoCodeCommand;
+use HaoCode\Support\Terminal\DraftInputBuffer;
+use HaoCode\Support\Terminal\DockedPromptScreen;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Console\Output\BufferedOutput;
 use Symfony\Component\Console\Output\OutputInterface;

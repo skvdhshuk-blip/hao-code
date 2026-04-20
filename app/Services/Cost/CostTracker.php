@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services\Cost;
+namespace HaoCode\Services\Cost;
 
 /**
  * Tracks spending per session with configurable thresholds and warnings.

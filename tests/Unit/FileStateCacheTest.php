@@ -2,8 +2,8 @@
 
 namespace Tests\Unit;
 
-use App\Services\Cache\FileState;
-use App\Services\Cache\FileStateCache;
+use HaoCode\Services\Cache\FileState;
+use HaoCode\Services\Cache\FileStateCache;
 use PHPUnit\Framework\TestCase;
 
 class FileStateCacheTest extends TestCase

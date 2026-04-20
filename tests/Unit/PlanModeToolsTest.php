@@ -2,9 +2,9 @@
 
 namespace Tests\Unit;
 
-use App\Tools\PlanMode\EnterPlanModeTool;
-use App\Tools\PlanMode\ExitPlanModeTool;
-use App\Tools\ToolUseContext;
+use HaoCode\Tools\PlanMode\EnterPlanModeTool;
+use HaoCode\Tools\PlanMode\ExitPlanModeTool;
+use HaoCode\Tools\ToolUseContext;
 use PHPUnit\Framework\TestCase;
 
 class PlanModeToolsTest extends TestCase

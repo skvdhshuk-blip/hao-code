@@ -1,13 +1,13 @@
 <?php
 
-namespace App\Sdk;
+namespace HaoCode\Sdk;
 
-use App\Services\Agent\AgentLoop;
-use App\Services\Agent\AgentLoopFactory;
-use App\Services\Api\StreamingClient;
-use App\Services\Session\SessionManager;
-use App\Services\Settings\SettingsManager;
-use App\Tools\Skill\SkillLoader;
+use HaoCode\Services\Agent\AgentLoop;
+use HaoCode\Services\Agent\AgentLoopFactory;
+use HaoCode\Services\Api\StreamingClient;
+use HaoCode\Services\Session\SessionManager;
+use HaoCode\Services\Settings\SettingsManager;
+use HaoCode\Tools\Skill\SkillLoader;
 
 /**
  * HaoCode SDK — programmatic access to the agent's capabilities.

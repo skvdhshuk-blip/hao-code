@@ -2,14 +2,14 @@
 
 namespace Tests\Feature;
 
-use App\Services\Agent\BackgroundAgentManager;
-use App\Services\Task\TaskManager;
-use App\Tools\Task\TaskCreateTool;
-use App\Tools\Task\TaskGetTool;
-use App\Tools\Task\TaskListTool;
-use App\Tools\Task\TaskStopTool;
-use App\Tools\Task\TaskUpdateTool;
-use App\Tools\ToolUseContext;
+use HaoCode\Services\Agent\BackgroundAgentManager;
+use HaoCode\Services\Task\TaskManager;
+use HaoCode\Tools\Task\TaskCreateTool;
+use HaoCode\Tools\Task\TaskGetTool;
+use HaoCode\Tools\Task\TaskListTool;
+use HaoCode\Tools\Task\TaskStopTool;
+use HaoCode\Tools\Task\TaskUpdateTool;
+use HaoCode\Tools\ToolUseContext;
 use Tests\TestCase;
 
 class TaskToolsTest extends TestCase

@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services\Security;
+namespace HaoCode\Services\Security;
 
 /**
  * Regex-based secret scanner using high-confidence patterns (inspired by gitleaks).

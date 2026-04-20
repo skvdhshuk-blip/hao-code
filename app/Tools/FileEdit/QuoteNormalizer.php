@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Tools\FileEdit;
+namespace HaoCode\Tools\FileEdit;
 
 /**
  * Handles curly quote normalization and preservation, matching claude-code's

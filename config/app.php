@@ -6,8 +6,8 @@ return [
     'env' => env('APP_ENV', 'production'),
 
     'providers' => [
-        App\Providers\AgentServiceProvider::class,
-        App\Providers\ToolServiceProvider::class,
-        App\Sdk\HaoCodeSdkServiceProvider::class,
+        HaoCode\Providers\AgentServiceProvider::class,
+        HaoCode\Providers\ToolServiceProvider::class,
+        HaoCode\Sdk\HaoCodeSdkServiceProvider::class,
     ],
 ];

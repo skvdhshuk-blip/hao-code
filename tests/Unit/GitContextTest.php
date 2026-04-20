@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Services\Git\GitContext;
+use HaoCode\Services\Git\GitContext;
 use PHPUnit\Framework\TestCase;
 
 class GitContextTest extends TestCase

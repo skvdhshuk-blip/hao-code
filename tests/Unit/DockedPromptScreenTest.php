@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Support\Terminal\DockedPromptScreen;
+use HaoCode\Support\Terminal\DockedPromptScreen;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Console\Output\BufferedOutput;
 use Symfony\Component\Console\Output\OutputInterface;

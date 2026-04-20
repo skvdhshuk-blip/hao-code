@@ -1,14 +1,14 @@
 <?php
 
-namespace App\Services\Agent;
+namespace HaoCode\Services\Agent;
 
-use App\Services\Buddy\BuddyManager;
-use App\Services\Git\GitContext;
-use App\Services\Memory\SessionMemory;
-use App\Services\OutputStyle\OutputStyleLoader;
-use App\Services\Settings\SettingsManager;
-use App\Tools\Skill\SkillLoader;
-use App\Tools\ToolRegistry;
+use HaoCode\Services\Buddy\BuddyManager;
+use HaoCode\Services\Git\GitContext;
+use HaoCode\Services\Memory\SessionMemory;
+use HaoCode\Services\OutputStyle\OutputStyleLoader;
+use HaoCode\Services\Settings\SettingsManager;
+use HaoCode\Tools\Skill\SkillLoader;
+use HaoCode\Tools\ToolRegistry;
 
 class ContextBuilder
 {

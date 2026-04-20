@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services\Git;
+namespace HaoCode\Services\Git;
 
 /**
  * Provides git context for the agent loop — current diff, branch info, etc.

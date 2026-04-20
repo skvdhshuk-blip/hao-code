@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Tools\Agent;
+namespace HaoCode\Tools\Agent;
 
 /**
  * Definition for a built-in or user-defined agent type.

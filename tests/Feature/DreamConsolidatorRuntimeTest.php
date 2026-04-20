@@ -2,9 +2,9 @@
 
 namespace Tests\Feature;
 
-use App\Services\Memory\ConsolidationLock;
-use App\Services\Memory\DreamConsolidator;
-use App\Services\Memory\SessionMemory;
+use HaoCode\Services\Memory\ConsolidationLock;
+use HaoCode\Services\Memory\DreamConsolidator;
+use HaoCode\Services\Memory\SessionMemory;
 use Tests\TestCase;
 
 class DreamConsolidatorRuntimeTest extends TestCase

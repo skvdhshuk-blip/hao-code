@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Support\Terminal\InputSanitizer;
+use HaoCode\Support\Terminal\InputSanitizer;
 use PHPUnit\Framework\TestCase;
 
 class InputSanitizerTest extends TestCase

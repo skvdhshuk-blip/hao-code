@@ -2,8 +2,8 @@
 
 namespace Tests\Unit;
 
-use App\Tools\Lsp\LspTool;
-use App\Tools\ToolUseContext;
+use HaoCode\Tools\Lsp\LspTool;
+use HaoCode\Tools\ToolUseContext;
 use PHPUnit\Framework\TestCase;
 
 /**

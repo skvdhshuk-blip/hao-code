@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Services\Permissions\DenialTracker;
+use HaoCode\Services\Permissions\DenialTracker;
 use PHPUnit\Framework\TestCase;
 
 class DenialTrackerTest extends TestCase

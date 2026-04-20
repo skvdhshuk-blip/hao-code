@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Services\OutputStyle\OutputStyleLoader;
+use HaoCode\Services\OutputStyle\OutputStyleLoader;
 use PHPUnit\Framework\TestCase;
 
 class OutputStyleLoaderTest extends TestCase

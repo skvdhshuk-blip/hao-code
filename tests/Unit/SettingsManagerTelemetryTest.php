@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Services\Settings\SettingsManager;
+use HaoCode\Services\Settings\SettingsManager;
 use Tests\TestCase;
 
 class SettingsManagerTelemetryTest extends TestCase

@@ -1,7 +1,7 @@
 {
     "$schema": "https://getcomposer.org/schema.json",
     "name": "sk-wang/hao-code",
-    "version": "v0.3.2",
+    "version": "v0.4.0",
     "type": "library",
     "description": "Terminal-first AI coding agent and PHP SDK for Anthropic, OpenAI Responses, and OpenAI Chat Completions APIs.",
     "keywords": ["ai", "agent", "cli", "coding-agent", "sdk", "anthropic", "openai"],
@@ -9,28 +9,28 @@
     "license": "MIT",
     "bin": ["bin/hao-code"],
     "require": {
-        "php": "^8.2",
-        "illuminate/translation": "^12.56",
-        "illuminate/validation": "^12.56",
-        "laravel-zero/framework": "^12.0",
-        "league/commonmark": "^2.8",
-        "open-telemetry/exporter-otlp": "^1.4",
-        "open-telemetry/sdk": "^1.14",
-        "open-telemetry/sem-conv": "^1.38",
-        "symfony/clock": "^7.0",
-        "symfony/http-client": "^7.0",
-        "symfony/string": "^7.2",
-        "symfony/translation": "^7.0"
+        "php": "^8.1",
+        "illuminate/translation": "^10.48 || ^11.0 || ^12.0",
+        "illuminate/validation": "^10.48 || ^11.0 || ^12.0",
+        "laravel-zero/framework": "^10.0 || ^11.0 || ^12.0",
+        "league/commonmark": "^2.4",
+        "open-telemetry/exporter-otlp": "^1.0",
+        "open-telemetry/sdk": "^1.0",
+        "open-telemetry/sem-conv": "^1.0",
+        "symfony/clock": "^6.4 || ^7.0",
+        "symfony/http-client": "^6.4 || ^7.0",
+        "symfony/string": "^6.4 || ^7.0",
+        "symfony/translation": "^6.4 || ^7.0"
     },
     "require-dev": {
-        "illuminate/database": "^12.56",
+        "illuminate/database": "^10.48 || ^11.0 || ^12.0",
         "laravel/pint": "^1.24",
         "mockery/mockery": "^1.6",
-        "phpunit/phpunit": "^11.5.50"
+        "phpunit/phpunit": "^10.5 || ^11.5"
     },
     "autoload": {
         "psr-4": {
-            "App\\": "app/"
+            "HaoCode\\": "app/"
         }
     },
     "autoload-dev": {
@@ -47,7 +47,7 @@
         "laravel": {
             "dont-discover": [],
             "providers": [
-                "App\\Sdk\\HaoCodeSdkServiceProvider"
+                "HaoCode\\Sdk\\HaoCodeSdkServiceProvider"
             ]
         }
     },

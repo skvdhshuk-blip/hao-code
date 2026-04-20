@@ -1,8 +1,8 @@
 <?php
 
-namespace App\Services\Settings;
+namespace HaoCode\Services\Settings;
 
-use App\Services\Permissions\PermissionMode;
+use HaoCode\Services\Permissions\PermissionMode;
 
 class SettingsManager
 {

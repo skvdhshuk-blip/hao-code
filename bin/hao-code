@@ -54,7 +54,7 @@ $_SERVER['COMPOSER_VENDOR_DIR'] = $composerVendorDir;
 
 require $autoloadPath;
 
-$pathResolver = new \App\Support\Runtime\StoragePathResolver;
+$pathResolver = new \HaoCode\Support\Runtime\StoragePathResolver;
 
 $cacheDirectory = $pathResolver->resolveCacheDirectory(
     packageRoot: $packageRoot,

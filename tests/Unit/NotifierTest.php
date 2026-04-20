@@ -2,8 +2,8 @@
 
 namespace Tests\Unit;
 
-use App\Services\Hooks\HookExecutor;
-use App\Services\Notification\Notifier;
+use HaoCode\Services\Hooks\HookExecutor;
+use HaoCode\Services\Notification\Notifier;
 use PHPUnit\Framework\TestCase;
 
 class NotifierTest extends TestCase

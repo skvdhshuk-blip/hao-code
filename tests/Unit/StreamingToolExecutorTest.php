@@ -2,13 +2,13 @@
 
 namespace Tests\Unit;
 
-use App\Services\Agent\StreamingToolExecutor;
-use App\Services\Agent\ToolOrchestrator;
-use App\Tools\BaseTool;
-use App\Tools\ToolInputSchema;
-use App\Tools\ToolRegistry;
-use App\Tools\ToolResult;
-use App\Tools\ToolUseContext;
+use HaoCode\Services\Agent\StreamingToolExecutor;
+use HaoCode\Services\Agent\ToolOrchestrator;
+use HaoCode\Tools\BaseTool;
+use HaoCode\Tools\ToolInputSchema;
+use HaoCode\Tools\ToolRegistry;
+use HaoCode\Tools\ToolResult;
+use HaoCode\Tools\ToolUseContext;
 use PHPUnit\Framework\TestCase;
 
 class StreamingToolExecutorTest extends TestCase
@@ -185,9 +185,9 @@ class StreamingToolExecutorTest extends TestCase
                 ]);
             }
 
-            public function call(array $input, ToolUseContext $context): \App\Tools\ToolResult
+            public function call(array $input, ToolUseContext $context): \HaoCode\Tools\ToolResult
             {
-                return \App\Tools\ToolResult::success('ok');
+                return \HaoCode\Tools\ToolResult::success('ok');
             }
         });
 

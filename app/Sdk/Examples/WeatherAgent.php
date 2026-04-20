@@ -2,14 +2,14 @@
 
 declare(strict_types=1);
 
-namespace App\Sdk\Examples;
+namespace HaoCode\Sdk\Examples;
 
-use App\Sdk\HaoCode;
-use App\Sdk\HaoCodeConfig;
-use App\Sdk\QueryResult;
-use App\Sdk\SdkTool;
-use App\Sdk\StructuredResult;
-use App\Tools\ToolResult;
+use HaoCode\Sdk\HaoCode;
+use HaoCode\Sdk\HaoCodeConfig;
+use HaoCode\Sdk\QueryResult;
+use HaoCode\Sdk\SdkTool;
+use HaoCode\Sdk\StructuredResult;
+use HaoCode\Tools\ToolResult;
 use Symfony\Component\HttpClient\HttpClient;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 

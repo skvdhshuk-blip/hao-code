@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Tools\Skill;
+namespace HaoCode\Tools\Skill;
 
 /**
  * Loads skill definitions from markdown files with YAML frontmatter.

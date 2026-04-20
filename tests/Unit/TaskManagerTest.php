@@ -2,8 +2,8 @@
 
 namespace Tests\Unit;
 
-use App\Services\Task\Task;
-use App\Services\Task\TaskManager;
+use HaoCode\Services\Task\Task;
+use HaoCode\Services\Task\TaskManager;
 use PHPUnit\Framework\TestCase;
 
 class TaskManagerTest extends TestCase

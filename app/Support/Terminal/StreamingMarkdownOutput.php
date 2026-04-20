@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Support\Terminal;
+namespace HaoCode\Support\Terminal;
 
 use Symfony\Component\Console\Output\OutputInterface;
 use Symfony\Component\Console\Terminal;

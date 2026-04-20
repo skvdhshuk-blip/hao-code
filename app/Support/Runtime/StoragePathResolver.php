@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Support\Runtime;
+namespace HaoCode\Support\Runtime;
 
 class StoragePathResolver
 {

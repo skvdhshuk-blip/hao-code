@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Support\Terminal;
+namespace HaoCode\Support\Terminal;
 
 /**
  * Handles clipboard image detection and reading for the REPL.

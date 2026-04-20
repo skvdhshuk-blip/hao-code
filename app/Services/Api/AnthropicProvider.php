@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services\Api;
+namespace HaoCode\Services\Api;
 
 use JsonException;
 use Symfony\Component\HttpClient\HttpClient;
@@ -33,7 +33,7 @@ class AnthropicProvider implements LlmProvider
         private readonly bool $thinkingEnabled = false,
         private readonly int $thinkingBudget = 10000,
         ?HttpClientInterface $httpClient = null,
-        private ?\App\Services\Settings\SettingsManager $settingsManager = null,
+        private ?\HaoCode\Services\Settings\SettingsManager $settingsManager = null,
         private readonly int $idleTimeoutSeconds = 60,
         private readonly float $streamPollTimeoutSeconds = 1.0,
         ?callable $timeProvider = null,

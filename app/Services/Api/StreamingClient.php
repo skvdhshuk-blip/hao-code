@@ -1,8 +1,8 @@
 <?php
 
-namespace App\Services\Api;
+namespace HaoCode\Services\Api;
 
-use App\Services\Settings\SettingsManager;
+use HaoCode\Services\Settings\SettingsManager;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
 /**

@@ -2,15 +2,15 @@
 
 namespace Tests\Unit;
 
-use App\Services\Mcp\McpConnectionManager;
-use App\Tools\Mcp\McpDynamicTool;
-use App\Tools\ToolUseContext;
+use HaoCode\Services\Mcp\McpConnectionManager;
+use HaoCode\Tools\Mcp\McpDynamicTool;
+use HaoCode\Tools\ToolUseContext;
 use PHPUnit\Framework\TestCase;
 
 /**
  * Minimal stub that replaces the final McpServerConfigManager for testing.
  */
-class StubConfigManager extends \App\Services\Mcp\McpServerConfigManager
+class StubConfigManager extends \HaoCode\Services\Mcp\McpServerConfigManager
 {
     public function paths(): array { return ['global' => '/tmp/g.json', 'project' => '/tmp/p.json']; }
     public function listServers(): array { return []; }

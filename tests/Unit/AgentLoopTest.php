@@ -2,23 +2,23 @@
 
 namespace Tests\Unit;
 
-use App\Services\Agent\AgentLoop;
-use App\Services\Agent\ContextBuilder;
-use App\Services\Agent\MessageHistory;
-use App\Services\Agent\QueryEngine;
-use App\Services\Agent\StreamProcessor;
-use App\Services\Agent\ToolOrchestrator;
-use App\Services\Compact\ContextCompactor;
-use App\Services\Cost\CostTracker;
-use App\Services\Hooks\HookExecutor;
-use App\Services\Hooks\HookResult;
-use App\Services\Permissions\PermissionChecker;
-use App\Services\Session\SessionManager;
-use App\Tools\BaseTool;
-use App\Tools\ToolInputSchema;
-use App\Tools\ToolResult;
-use App\Tools\ToolUseContext;
-use App\Tools\ToolRegistry;
+use HaoCode\Services\Agent\AgentLoop;
+use HaoCode\Services\Agent\ContextBuilder;
+use HaoCode\Services\Agent\MessageHistory;
+use HaoCode\Services\Agent\QueryEngine;
+use HaoCode\Services\Agent\StreamProcessor;
+use HaoCode\Services\Agent\ToolOrchestrator;
+use HaoCode\Services\Compact\ContextCompactor;
+use HaoCode\Services\Cost\CostTracker;
+use HaoCode\Services\Hooks\HookExecutor;
+use HaoCode\Services\Hooks\HookResult;
+use HaoCode\Services\Permissions\PermissionChecker;
+use HaoCode\Services\Session\SessionManager;
+use HaoCode\Tools\BaseTool;
+use HaoCode\Tools\ToolInputSchema;
+use HaoCode\Tools\ToolResult;
+use HaoCode\Tools\ToolUseContext;
+use HaoCode\Tools\ToolRegistry;
 use PHPUnit\Framework\TestCase;
 
 class AgentLoopTest extends TestCase
@@ -268,10 +268,10 @@ class AgentLoopTest extends TestCase
     public function test_input_tokens_accumulated_from_processor(): void
     {
         $processor = new StreamProcessor;
-        $processor->processEvent(new \App\Services\Api\StreamEvent('message_start', [
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('message_start', [
             'message' => ['id' => 'msg_1', 'usage' => ['input_tokens' => 42, 'output_tokens' => 7]],
         ]));
-        $processor->processEvent(new \App\Services\Api\StreamEvent('message_delta', [
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('message_delta', [
             'delta' => ['stop_reason' => 'end_turn'],
         ]));
 
@@ -302,15 +302,15 @@ class AgentLoopTest extends TestCase
     public function test_cost_limit_stops_loop_and_returns_message(): void
     {
         // Use a CostTracker with an extremely low stop threshold (0.0 = always stop)
-        $costTracker = new \App\Services\Cost\CostTracker(0.0, 0.0);
+        $costTracker = new \HaoCode\Services\Cost\CostTracker(0.0, 0.0);
 
         $qe = $this->createMock(QueryEngine::class);
         $qe->method('query')->willReturnCallback(function () {
             $p = new StreamProcessor;
-            $p->processEvent(new \App\Services\Api\StreamEvent('message_start', [
+            $p->processEvent(new \HaoCode\Services\Api\StreamEvent('message_start', [
                 'message' => ['id' => 'msg_1', 'usage' => ['input_tokens' => 1, 'output_tokens' => 1]],
             ]));
-            $p->processEvent(new \App\Services\Api\StreamEvent('message_delta', [
+            $p->processEvent(new \HaoCode\Services\Api\StreamEvent('message_delta', [
                 'delta' => ['stop_reason' => 'end_turn'],
             ]));
             return $p;
@@ -318,13 +318,13 @@ class AgentLoopTest extends TestCase
 
         $contextBuilder = $this->createMock(ContextBuilder::class);
         $contextBuilder->method('buildSystemPrompt')->willReturn([]);
-        $sessionManager = $this->createMock(\App\Services\Session\SessionManager::class);
+        $sessionManager = $this->createMock(\HaoCode\Services\Session\SessionManager::class);
         $sessionManager->method('getSessionId')->willReturn('s');
-        $compactor = $this->createMock(\App\Services\Compact\ContextCompactor::class);
+        $compactor = $this->createMock(\HaoCode\Services\Compact\ContextCompactor::class);
         $compactor->method('shouldAutoCompact')->willReturn(false);
-        $permissionChecker = $this->createMock(\App\Services\Permissions\PermissionChecker::class);
-        $hookExecutor = $this->createMock(\App\Services\Hooks\HookExecutor::class);
-        $hookExecutor->method('execute')->willReturn(new \App\Services\Hooks\HookResult(true));
+        $permissionChecker = $this->createMock(\HaoCode\Services\Permissions\PermissionChecker::class);
+        $hookExecutor = $this->createMock(\HaoCode\Services\Hooks\HookExecutor::class);
+        $hookExecutor->method('execute')->willReturn(new \HaoCode\Services\Hooks\HookResult(true));
         $toolOrchestrator = $this->createMock(ToolOrchestrator::class);
 
         $loop = new AgentLoop(
@@ -336,7 +336,7 @@ class AgentLoopTest extends TestCase
             sessionManager: $sessionManager,
             contextCompactor: $compactor,
             costTracker: $costTracker,
-            toolRegistry: new \App\Tools\ToolRegistry,
+            toolRegistry: new \HaoCode\Tools\ToolRegistry,
             hookExecutor: $hookExecutor,
         );
 
@@ -817,29 +817,29 @@ class AgentLoopTest extends TestCase
 
                 if ($queryCount === 1) {
                     $processor = new StreamProcessor;
-                    $processor->processEvent(new \App\Services\Api\StreamEvent('message_start', [
+                    $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('message_start', [
                         'message' => ['id' => 'msg_bad_json_with_text', 'usage' => []],
                     ]));
-                    $processor->processEvent(new \App\Services\Api\StreamEvent('content_block_start', [
+                    $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('content_block_start', [
                         'index' => 0,
                         'content_block' => ['type' => 'text', 'text' => ''],
                     ]));
-                    $processor->processEvent(new \App\Services\Api\StreamEvent('content_block_delta', [
+                    $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('content_block_delta', [
                         'index' => 0,
                         'delta' => ['type' => 'text_delta', 'text' => '我使用Bash来创建文件，避免JSON编码问题。'],
                     ]));
-                    $processor->processEvent(new \App\Services\Api\StreamEvent('content_block_stop', [
+                    $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('content_block_stop', [
                         'index' => 0,
                     ]));
-                    $processor->processEvent(new \App\Services\Api\StreamEvent('content_block_start', [
+                    $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('content_block_start', [
                         'index' => 1,
                         'content_block' => ['type' => 'tool_use', 'id' => 'toolu_bad_bash_text', 'name' => 'Bash'],
                     ]));
-                    $processor->processEvent(new \App\Services\Api\StreamEvent('content_block_delta', [
+                    $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('content_block_delta', [
                         'index' => 1,
                         'delta' => ['type' => 'input_json_delta', 'partial_json' => '{"command":"cat <<EOF'],
                     ]));
-                    $processor->processEvent(new \App\Services\Api\StreamEvent('message_delta', [
+                    $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('message_delta', [
                         'delta' => ['stop_reason' => 'tool_use'],
                     ]));
 
@@ -1362,7 +1362,7 @@ class AgentLoopTest extends TestCase
         });
 
         $permissionChecker = $this->createMock(PermissionChecker::class);
-        $permissionChecker->method('check')->willReturn(\App\Services\Permissions\PermissionDecision::allow());
+        $permissionChecker->method('check')->willReturn(\HaoCode\Services\Permissions\PermissionDecision::allow());
 
         $hookExecutor = $this->createMock(HookExecutor::class);
         $hookExecutor->method('execute')->willReturn(new HookResult(true));
@@ -1426,12 +1426,12 @@ class AgentLoopTest extends TestCase
         $registry->register($this->makeTool('Echo', fn() => ToolResult::success('echoed')));
 
         $permissionChecker = $this->createMock(PermissionChecker::class);
-        $permissionChecker->method('check')->willReturn(\App\Services\Permissions\PermissionDecision::allow());
+        $permissionChecker->method('check')->willReturn(\HaoCode\Services\Permissions\PermissionDecision::allow());
 
         $hookExecutor = $this->createMock(HookExecutor::class);
         $hookExecutor->method('execute')->willReturn(new HookResult(true));
 
-        $orchestrator = new \App\Services\Agent\ToolOrchestrator($registry, $permissionChecker, $hookExecutor);
+        $orchestrator = new \HaoCode\Services\Agent\ToolOrchestrator($registry, $permissionChecker, $hookExecutor);
 
         $contextBuilder = $this->createMock(ContextBuilder::class);
         $contextBuilder->method('buildSystemPrompt')->willReturn([]);
@@ -1439,7 +1439,7 @@ class AgentLoopTest extends TestCase
         $sessionManager = $this->createMock(SessionManager::class);
         $sessionManager->method('getSessionId')->willReturn('test-session');
 
-        $compactor = $this->createMock(\App\Services\Compact\ContextCompactor::class);
+        $compactor = $this->createMock(\HaoCode\Services\Compact\ContextCompactor::class);
         $compactor->method('shouldAutoCompact')->willReturn(false);
 
         $history = new MessageHistory;
@@ -1452,7 +1452,7 @@ class AgentLoopTest extends TestCase
             permissionChecker: $permissionChecker,
             sessionManager: $sessionManager,
             contextCompactor: $compactor,
-            costTracker: new \App\Services\Cost\CostTracker,
+            costTracker: new \HaoCode\Services\Cost\CostTracker,
             toolRegistry: $registry,
             hookExecutor: $hookExecutor,
         );
@@ -1475,10 +1475,10 @@ class AgentLoopTest extends TestCase
     {
         $processor = new StreamProcessor;
 
-        $processor->processEvent(new \App\Services\Api\StreamEvent('message_start', [
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('message_start', [
             'message' => ['id' => 'msg_tool', 'usage' => []],
         ]));
-        $processor->processEvent(new \App\Services\Api\StreamEvent('content_block_start', [
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('content_block_start', [
             'index' => 0,
             'content_block' => [
                 'type' => 'tool_use',
@@ -1486,17 +1486,17 @@ class AgentLoopTest extends TestCase
                 'name' => $toolName,
             ],
         ]));
-        $processor->processEvent(new \App\Services\Api\StreamEvent('content_block_delta', [
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('content_block_delta', [
             'index' => 0,
             'delta' => [
                 'type' => 'input_json_delta',
                 'partial_json' => json_encode($input),
             ],
         ]));
-        $processor->processEvent(new \App\Services\Api\StreamEvent('content_block_stop', [
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('content_block_stop', [
             'index' => 0,
         ]));
-        $processor->processEvent(new \App\Services\Api\StreamEvent('message_delta', [
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('message_delta', [
             'delta' => ['stop_reason' => 'tool_use'],
         ]));
 
@@ -1510,12 +1510,12 @@ class AgentLoopTest extends TestCase
     {
         $processor = new StreamProcessor;
 
-        $processor->processEvent(new \App\Services\Api\StreamEvent('message_start', [
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('message_start', [
             'message' => ['id' => 'msg_multi_tool', 'usage' => []],
         ]));
 
         foreach ($blocks as $index => $block) {
-            $processor->processEvent(new \App\Services\Api\StreamEvent('content_block_start', [
+            $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('content_block_start', [
                 'index' => $index,
                 'content_block' => [
                     'type' => 'tool_use',
@@ -1523,19 +1523,19 @@ class AgentLoopTest extends TestCase
                     'name' => $block['name'],
                 ],
             ]));
-            $processor->processEvent(new \App\Services\Api\StreamEvent('content_block_delta', [
+            $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('content_block_delta', [
                 'index' => $index,
                 'delta' => [
                     'type' => 'input_json_delta',
                     'partial_json' => json_encode($block['input']),
                 ],
             ]));
-            $processor->processEvent(new \App\Services\Api\StreamEvent('content_block_stop', [
+            $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('content_block_stop', [
                 'index' => $index,
             ]));
         }
 
-        $processor->processEvent(new \App\Services\Api\StreamEvent('message_delta', [
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('message_delta', [
             'delta' => ['stop_reason' => 'tool_use'],
         ]));
 
@@ -1546,10 +1546,10 @@ class AgentLoopTest extends TestCase
     {
         $processor = new StreamProcessor;
 
-        $processor->processEvent(new \App\Services\Api\StreamEvent('message_start', [
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('message_start', [
             'message' => ['id' => 'msg_1', 'usage' => []],
         ]));
-        $processor->processEvent(new \App\Services\Api\StreamEvent('content_block_start', [
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('content_block_start', [
             'index' => 0,
             'content_block' => [
                 'type' => 'tool_use',
@@ -1557,14 +1557,14 @@ class AgentLoopTest extends TestCase
                 'name' => 'Read',
             ],
         ]));
-        $processor->processEvent(new \App\Services\Api\StreamEvent('content_block_delta', [
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('content_block_delta', [
             'index' => 0,
             'delta' => [
                 'type' => 'input_json_delta',
                 'partial_json' => '[]',
             ],
         ]));
-        $processor->processEvent(new \App\Services\Api\StreamEvent('message_delta', [
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('message_delta', [
             'delta' => ['stop_reason' => 'tool_use'],
         ]));
 
@@ -1575,10 +1575,10 @@ class AgentLoopTest extends TestCase
     {
         $processor = new StreamProcessor;
 
-        $processor->processEvent(new \App\Services\Api\StreamEvent('message_start', [
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('message_start', [
             'message' => ['id' => 'msg_bad_json', 'usage' => []],
         ]));
-        $processor->processEvent(new \App\Services\Api\StreamEvent('content_block_start', [
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('content_block_start', [
             'index' => 0,
             'content_block' => [
                 'type' => 'tool_use',
@@ -1586,14 +1586,14 @@ class AgentLoopTest extends TestCase
                 'name' => $toolName,
             ],
         ]));
-        $processor->processEvent(new \App\Services\Api\StreamEvent('content_block_delta', [
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('content_block_delta', [
             'index' => 0,
             'delta' => [
                 'type' => 'input_json_delta',
                 'partial_json' => $rawInput,
             ],
         ]));
-        $processor->processEvent(new \App\Services\Api\StreamEvent('message_delta', [
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('message_delta', [
             'delta' => ['stop_reason' => 'tool_use'],
         ]));
 
@@ -1603,19 +1603,19 @@ class AgentLoopTest extends TestCase
     private function makeProcessorWithTokens(int $inputTokens, string $text): StreamProcessor
     {
         $processor = new StreamProcessor;
-        $processor->processEvent(new \App\Services\Api\StreamEvent('message_start', [
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('message_start', [
             'message' => ['id' => 'msg_x', 'usage' => ['input_tokens' => $inputTokens, 'output_tokens' => 1]],
         ]));
-        $processor->processEvent(new \App\Services\Api\StreamEvent('content_block_start', [
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('content_block_start', [
             'index' => 0,
             'content_block' => ['type' => 'text', 'text' => ''],
         ]));
-        $processor->processEvent(new \App\Services\Api\StreamEvent('content_block_delta', [
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('content_block_delta', [
             'index' => 0,
             'delta' => ['type' => 'text_delta', 'text' => $text],
         ]));
-        $processor->processEvent(new \App\Services\Api\StreamEvent('content_block_stop', ['index' => 0]));
-        $processor->processEvent(new \App\Services\Api\StreamEvent('message_delta', [
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('content_block_stop', ['index' => 0]));
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('message_delta', [
             'delta' => ['stop_reason' => 'end_turn'],
         ]));
         return $processor;
@@ -1681,7 +1681,7 @@ class AgentLoopTest extends TestCase
     public function test_cache_tokens_tracked_from_processor_usage(): void
     {
         $processor = new StreamProcessor;
-        $processor->processEvent(new \App\Services\Api\StreamEvent('message_start', [
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('message_start', [
             'message' => [
                 'id' => 'msg_1',
                 'usage' => [
@@ -1692,7 +1692,7 @@ class AgentLoopTest extends TestCase
                 ],
             ],
         ]));
-        $processor->processEvent(new \App\Services\Api\StreamEvent('message_delta', [
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('message_delta', [
             'delta' => ['stop_reason' => 'end_turn'],
         ]));
 
@@ -1738,12 +1738,12 @@ class AgentLoopTest extends TestCase
         $registry->register($this->makeTool('Echo', fn() => ToolResult::success('echoed')));
 
         $permissionChecker = $this->createMock(PermissionChecker::class);
-        $permissionChecker->method('check')->willReturn(\App\Services\Permissions\PermissionDecision::allow());
+        $permissionChecker->method('check')->willReturn(\HaoCode\Services\Permissions\PermissionDecision::allow());
 
         $hookExecutor = $this->createMock(HookExecutor::class);
         $hookExecutor->method('execute')->willReturn(new HookResult(true));
 
-        $orchestrator = new \App\Services\Agent\ToolOrchestrator($registry, $permissionChecker, $hookExecutor);
+        $orchestrator = new \HaoCode\Services\Agent\ToolOrchestrator($registry, $permissionChecker, $hookExecutor);
 
         $contextBuilder = $this->createMock(ContextBuilder::class);
         $contextBuilder->method('buildSystemPrompt')->willReturn([]);
@@ -1751,7 +1751,7 @@ class AgentLoopTest extends TestCase
         $sessionManager = $this->createMock(SessionManager::class);
         $sessionManager->method('getSessionId')->willReturn('test-session');
 
-        $compactor = $this->createMock(\App\Services\Compact\ContextCompactor::class);
+        $compactor = $this->createMock(\HaoCode\Services\Compact\ContextCompactor::class);
         $compactor->method('shouldAutoCompact')->willReturn(false);
 
         $loop = new AgentLoop(
@@ -1762,7 +1762,7 @@ class AgentLoopTest extends TestCase
             permissionChecker: $permissionChecker,
             sessionManager: $sessionManager,
             contextCompactor: $compactor,
-            costTracker: new \App\Services\Cost\CostTracker,
+            costTracker: new \HaoCode\Services\Cost\CostTracker,
             toolRegistry: $registry,
             hookExecutor: $hookExecutor,
         );
@@ -1777,27 +1777,27 @@ class AgentLoopTest extends TestCase
     {
         $processor = new StreamProcessor;
 
-        $processor->processEvent(new \App\Services\Api\StreamEvent('message_start', [
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('message_start', [
             'message' => ['id' => 'msg_2', 'usage' => []],
         ]));
-        $processor->processEvent(new \App\Services\Api\StreamEvent('content_block_start', [
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('content_block_start', [
             'index' => 0,
             'content_block' => [
                 'type' => 'text',
                 'text' => '',
             ],
         ]));
-        $processor->processEvent(new \App\Services\Api\StreamEvent('content_block_delta', [
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('content_block_delta', [
             'index' => 0,
             'delta' => [
                 'type' => 'text_delta',
                 'text' => $text,
             ],
         ]));
-        $processor->processEvent(new \App\Services\Api\StreamEvent('content_block_stop', [
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('content_block_stop', [
             'index' => 0,
         ]));
-        $processor->processEvent(new \App\Services\Api\StreamEvent('message_delta', [
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('message_delta', [
             'delta' => ['stop_reason' => 'end_turn'],
         ]));
 
@@ -1808,17 +1808,17 @@ class AgentLoopTest extends TestCase
     {
         $processor = new StreamProcessor;
 
-        $processor->processEvent(new \App\Services\Api\StreamEvent('message_start', [
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('message_start', [
             'message' => ['id' => 'msg_incomplete', 'usage' => []],
         ]));
-        $processor->processEvent(new \App\Services\Api\StreamEvent('content_block_start', [
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('content_block_start', [
             'index' => 0,
             'content_block' => [
                 'type' => 'text',
                 'text' => '',
             ],
         ]));
-        $processor->processEvent(new \App\Services\Api\StreamEvent('content_block_delta', [
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('content_block_delta', [
             'index' => 0,
             'delta' => [
                 'type' => 'text_delta',

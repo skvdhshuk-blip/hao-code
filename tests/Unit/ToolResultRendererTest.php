@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Support\Terminal\ToolResultRenderer;
+use HaoCode\Support\Terminal\ToolResultRenderer;
 use PHPUnit\Framework\TestCase;
 
 class ToolResultRendererTest extends TestCase

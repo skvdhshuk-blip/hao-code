@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Tools\FileEdit\QuoteNormalizer;
+use HaoCode\Tools\FileEdit\QuoteNormalizer;
 use PHPUnit\Framework\TestCase;
 
 class QuoteNormalizerTest extends TestCase

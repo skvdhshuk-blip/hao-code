@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Tools\Bash\CommandClassifier;
+use HaoCode\Tools\Bash\CommandClassifier;
 use PHPUnit\Framework\TestCase;
 
 class CommandClassifierTest extends TestCase

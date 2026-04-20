@@ -4,7 +4,7 @@ declare(strict_types=1);
 
 namespace Tests\Unit;
 
-use App\Services\Agent\TeamManager;
+use HaoCode\Services\Agent\TeamManager;
 use Tests\TestCase;
 
 class TeamManagerTest extends TestCase

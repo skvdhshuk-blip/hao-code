@@ -1,14 +1,14 @@
 <?php
 
-namespace App\Tools\Agent;
+namespace HaoCode\Tools\Agent;
 
-use App\Services\Agent\BackgroundAgentManager;
-use App\Services\Agent\AgentLoopFactory;
-use App\Services\Task\TaskManager;
-use App\Tools\BaseTool;
-use App\Tools\ToolInputSchema;
-use App\Tools\ToolResult;
-use App\Tools\ToolUseContext;
+use HaoCode\Services\Agent\BackgroundAgentManager;
+use HaoCode\Services\Agent\AgentLoopFactory;
+use HaoCode\Services\Task\TaskManager;
+use HaoCode\Tools\BaseTool;
+use HaoCode\Tools\ToolInputSchema;
+use HaoCode\Tools\ToolResult;
+use HaoCode\Tools\ToolUseContext;
 
 class AgentTool extends BaseTool
 {

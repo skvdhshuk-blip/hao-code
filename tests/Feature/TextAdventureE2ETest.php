@@ -4,8 +4,8 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
-use App\Services\Api\StreamingClient;
-use App\Services\Settings\SettingsManager;
+use HaoCode\Services\Api\StreamingClient;
+use HaoCode\Services\Settings\SettingsManager;
 use Illuminate\Contracts\Console\Kernel;
 use Symfony\Component\HttpClient\Response\MockResponse;
 use Tests\Support\MockAnthropicSse;

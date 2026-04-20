@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services\Task;
+namespace HaoCode\Services\Task;
 
 /**
  * Manages background task lifecycle with persistent state.
