@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Support\Terminal\DraftInputBuffer;
+use HaoCode\Support\Terminal\DraftInputBuffer;
 use PHPUnit\Framework\TestCase;
 
 class DraftInputBufferTest extends TestCase

@@ -2,8 +2,8 @@
 
 namespace Tests\Unit;
 
-use App\Tools\FileEdit\FileEditTool;
-use App\Tools\ToolUseContext;
+use HaoCode\Tools\FileEdit\FileEditTool;
+use HaoCode\Tools\ToolUseContext;
 use PHPUnit\Framework\TestCase;
 
 class FileEditToolTest extends TestCase

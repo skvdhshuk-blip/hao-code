@@ -2,8 +2,8 @@
 
 namespace Tests\Unit;
 
-use App\Tools\Bash\BashTool;
-use App\Tools\ToolUseContext;
+use HaoCode\Tools\Bash\BashTool;
+use HaoCode\Tools\ToolUseContext;
 use PHPUnit\Framework\TestCase;
 
 class BashToolTest extends TestCase

@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Services\Permissions\PermissionDecision;
+use HaoCode\Services\Permissions\PermissionDecision;
 use PHPUnit\Framework\TestCase;
 
 class PermissionDecisionTest extends TestCase

@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Sdk;
+namespace HaoCode\Sdk;
 
 /**
  * Configuration for HaoCode SDK queries.

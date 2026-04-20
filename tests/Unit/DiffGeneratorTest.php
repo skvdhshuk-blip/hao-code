@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Tools\FileEdit\DiffGenerator;
+use HaoCode\Tools\FileEdit\DiffGenerator;
 use PHPUnit\Framework\TestCase;
 
 class DiffGeneratorTest extends TestCase

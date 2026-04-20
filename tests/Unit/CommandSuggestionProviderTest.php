@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Support\Terminal\Autocomplete\CommandSuggestionProvider;
+use HaoCode\Support\Terminal\Autocomplete\CommandSuggestionProvider;
 use PHPUnit\Framework\TestCase;
 
 class CommandSuggestionProviderTest extends TestCase

@@ -1,36 +1,36 @@
 <?php
 
-namespace App\Providers;
+namespace HaoCode\Providers;
 
-use App\Services\Api\StreamingClient;
-use App\Services\Agent\StreamProcessor;
-use App\Services\Agent\BackgroundAgentManager;
-use App\Services\Git\GitContext;
-use App\Services\Agent\AgentLoop;
-use App\Services\Agent\AgentLoopFactory;
-use App\Services\Agent\QueryEngine;
-use App\Services\Agent\ToolOrchestrator;
-use App\Services\Agent\ContextBuilder;
-use App\Services\Agent\MessageHistory;
-use App\Services\Compact\ContextCompactor;
-use App\Services\Cost\CostTracker;
-use App\Services\Hooks\HookExecutor;
-use App\Services\Mcp\McpConnectionManager;
-use App\Services\Mcp\McpServerConfigManager;
-use App\Services\Notification\Notifier;
-use App\Services\OutputStyle\OutputStyleLoader;
-use App\Services\Session\AwaySummaryService;
-use App\Services\Session\SessionTitleService;
-use App\Services\Memory\SessionMemory;
-use App\Services\Permissions\DenialTracker;
-use App\Services\FileHistory\FileHistoryManager;
-use App\Services\Settings\SettingsManager;
-use App\Services\Session\SessionManager;
-use App\Services\Telemetry\PhoenixTracer;
-use App\Services\Permissions\PermissionChecker;
-use App\Support\Terminal\PromptHudState;
-use App\Tools\Skill\SkillLoader;
-use App\Tools\ToolRegistry;
+use HaoCode\Services\Api\StreamingClient;
+use HaoCode\Services\Agent\StreamProcessor;
+use HaoCode\Services\Agent\BackgroundAgentManager;
+use HaoCode\Services\Git\GitContext;
+use HaoCode\Services\Agent\AgentLoop;
+use HaoCode\Services\Agent\AgentLoopFactory;
+use HaoCode\Services\Agent\QueryEngine;
+use HaoCode\Services\Agent\ToolOrchestrator;
+use HaoCode\Services\Agent\ContextBuilder;
+use HaoCode\Services\Agent\MessageHistory;
+use HaoCode\Services\Compact\ContextCompactor;
+use HaoCode\Services\Cost\CostTracker;
+use HaoCode\Services\Hooks\HookExecutor;
+use HaoCode\Services\Mcp\McpConnectionManager;
+use HaoCode\Services\Mcp\McpServerConfigManager;
+use HaoCode\Services\Notification\Notifier;
+use HaoCode\Services\OutputStyle\OutputStyleLoader;
+use HaoCode\Services\Session\AwaySummaryService;
+use HaoCode\Services\Session\SessionTitleService;
+use HaoCode\Services\Memory\SessionMemory;
+use HaoCode\Services\Permissions\DenialTracker;
+use HaoCode\Services\FileHistory\FileHistoryManager;
+use HaoCode\Services\Settings\SettingsManager;
+use HaoCode\Services\Session\SessionManager;
+use HaoCode\Services\Telemetry\PhoenixTracer;
+use HaoCode\Services\Permissions\PermissionChecker;
+use HaoCode\Support\Terminal\PromptHudState;
+use HaoCode\Tools\Skill\SkillLoader;
+use HaoCode\Tools\ToolRegistry;
 use Illuminate\Support\ServiceProvider;
 
 class AgentServiceProvider extends ServiceProvider
@@ -84,8 +84,8 @@ class AgentServiceProvider extends ServiceProvider
         });
         $this->app->singleton(SkillLoader::class);
         $this->app->singleton(CostTracker::class);
-        $this->app->singleton(\App\Services\FileHistory\FileHistoryManager::class);
-        $this->app->singleton(\App\Services\Task\TaskManager::class);
+        $this->app->singleton(\HaoCode\Services\FileHistory\FileHistoryManager::class);
+        $this->app->singleton(\HaoCode\Services\Task\TaskManager::class);
         $this->app->singleton(BackgroundAgentManager::class);
         $this->app->singleton(GitContext::class);
         $this->app->singleton(McpServerConfigManager::class);

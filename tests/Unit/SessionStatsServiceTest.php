@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Services\Session\SessionStatsService;
+use HaoCode\Services\Session\SessionStatsService;
 use Tests\TestCase;
 
 class SessionStatsServiceTest extends TestCase

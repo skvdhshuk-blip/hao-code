@@ -1,9 +1,9 @@
 <?php
 
-namespace App\Tools;
+namespace HaoCode\Tools;
 
-use App\Services\Cache\FileState;
-use App\Services\Cache\FileStateCache;
+use HaoCode\Services\Cache\FileState;
+use HaoCode\Services\Cache\FileStateCache;
 
 class ToolUseContext
 {

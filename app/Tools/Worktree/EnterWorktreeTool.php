@@ -1,11 +1,11 @@
 <?php
 
-namespace App\Tools\Worktree;
+namespace HaoCode\Tools\Worktree;
 
-use App\Tools\BaseTool;
-use App\Tools\ToolInputSchema;
-use App\Tools\ToolResult;
-use App\Tools\ToolUseContext;
+use HaoCode\Tools\BaseTool;
+use HaoCode\Tools\ToolInputSchema;
+use HaoCode\Tools\ToolResult;
+use HaoCode\Tools\ToolUseContext;
 
 class EnterWorktreeTool extends BaseTool
 {

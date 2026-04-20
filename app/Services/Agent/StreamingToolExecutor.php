@@ -1,10 +1,10 @@
 <?php
 
-namespace App\Services\Agent;
+namespace HaoCode\Services\Agent;
 
-use App\Tools\ToolRegistry;
-use App\Tools\ToolUseContext;
-use App\Tools\ToolResult;
+use HaoCode\Tools\ToolRegistry;
+use HaoCode\Tools\ToolUseContext;
+use HaoCode\Tools\ToolResult;
 
 /**
  * Executes tools as they stream in from the API, not after the full response completes.

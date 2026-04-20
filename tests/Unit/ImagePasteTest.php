@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Support\Terminal\ImagePaste;
+use HaoCode\Support\Terminal\ImagePaste;
 use PHPUnit\Framework\TestCase;
 
 class ImagePasteTest extends TestCase

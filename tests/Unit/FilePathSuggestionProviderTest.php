@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Support\Terminal\Autocomplete\FilePathSuggestionProvider;
+use HaoCode\Support\Terminal\Autocomplete\FilePathSuggestionProvider;
 use PHPUnit\Framework\TestCase;
 
 class FilePathSuggestionProviderTest extends TestCase

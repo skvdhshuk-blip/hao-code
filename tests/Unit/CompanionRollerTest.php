@@ -2,8 +2,8 @@
 
 namespace Tests\Unit;
 
-use App\Services\Buddy\CompanionRoller;
-use App\Services\Buddy\CompanionTypes;
+use HaoCode\Services\Buddy\CompanionRoller;
+use HaoCode\Services\Buddy\CompanionTypes;
 use PHPUnit\Framework\TestCase;
 
 class CompanionRollerTest extends TestCase

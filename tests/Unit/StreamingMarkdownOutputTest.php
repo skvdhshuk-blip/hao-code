@@ -2,8 +2,8 @@
 
 namespace Tests\Unit;
 
-use App\Support\Terminal\MarkdownRenderer;
-use App\Support\Terminal\StreamingMarkdownOutput;
+use HaoCode\Support\Terminal\MarkdownRenderer;
+use HaoCode\Support\Terminal\StreamingMarkdownOutput;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Console\Output\BufferedOutput;
 use Symfony\Component\Console\Output\OutputInterface;

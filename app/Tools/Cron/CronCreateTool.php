@@ -1,12 +1,12 @@
 <?php
 
-namespace App\Tools\Cron;
+namespace HaoCode\Tools\Cron;
 
-use App\Tools\BaseTool;
-use App\Tools\ToolInputSchema;
-use App\Tools\ToolResult;
-use App\Tools\ToolUseContext;
-use App\Tools\Cron\CronScheduler;
+use HaoCode\Tools\BaseTool;
+use HaoCode\Tools\ToolInputSchema;
+use HaoCode\Tools\ToolResult;
+use HaoCode\Tools\ToolUseContext;
+use HaoCode\Tools\Cron\CronScheduler;
 
 class CronCreateTool extends BaseTool
 {

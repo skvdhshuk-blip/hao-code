@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services\FileHistory;
+namespace HaoCode\Services\FileHistory;
 
 /**
  * Tracks file changes across the session with snapshots.

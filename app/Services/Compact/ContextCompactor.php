@@ -1,11 +1,11 @@
 <?php
 
-namespace App\Services\Compact;
+namespace HaoCode\Services\Compact;
 
-use App\Services\Agent\MessageHistory;
-use App\Services\Agent\QueryEngine;
-use App\Services\Cache\FileStateCache;
-use App\Services\Hooks\HookExecutor;
+use HaoCode\Services\Agent\MessageHistory;
+use HaoCode\Services\Agent\QueryEngine;
+use HaoCode\Services\Cache\FileStateCache;
+use HaoCode\Services\Hooks\HookExecutor;
 
 class ContextCompactor
 {

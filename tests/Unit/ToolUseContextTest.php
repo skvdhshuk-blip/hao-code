@@ -1,7 +1,7 @@
 <?php
 namespace Tests\Unit;
 
-use App\Tools\ToolUseContext;
+use HaoCode\Tools\ToolUseContext;
 use PHPUnit\Framework\TestCase;
 
 class ToolUseContextTest extends TestCase

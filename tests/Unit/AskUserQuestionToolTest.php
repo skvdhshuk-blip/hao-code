@@ -2,8 +2,8 @@
 
 namespace Tests\Unit;
 
-use App\Tools\AskUserQuestion\AskUserQuestionTool;
-use App\Tools\ToolUseContext;
+use HaoCode\Tools\AskUserQuestion\AskUserQuestionTool;
+use HaoCode\Tools\ToolUseContext;
 use PHPUnit\Framework\TestCase;
 
 class AskUserQuestionToolTest extends TestCase

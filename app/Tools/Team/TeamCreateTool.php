@@ -1,18 +1,18 @@
 <?php
 
-namespace App\Tools\Team;
+namespace HaoCode\Tools\Team;
 
-use App\Services\Agent\AgentLoopFactory;
-use App\Services\Agent\BackgroundAgentManager;
-use App\Services\Agent\TeamManager;
-use App\Services\Task\TaskManager;
-use App\Tools\Agent\AgentDefinition;
-use App\Tools\Agent\AgentLoader;
-use App\Tools\Agent\BuiltInAgents;
-use App\Tools\BaseTool;
-use App\Tools\ToolInputSchema;
-use App\Tools\ToolResult;
-use App\Tools\ToolUseContext;
+use HaoCode\Services\Agent\AgentLoopFactory;
+use HaoCode\Services\Agent\BackgroundAgentManager;
+use HaoCode\Services\Agent\TeamManager;
+use HaoCode\Services\Task\TaskManager;
+use HaoCode\Tools\Agent\AgentDefinition;
+use HaoCode\Tools\Agent\AgentLoader;
+use HaoCode\Tools\Agent\BuiltInAgents;
+use HaoCode\Tools\BaseTool;
+use HaoCode\Tools\ToolInputSchema;
+use HaoCode\Tools\ToolResult;
+use HaoCode\Tools\ToolUseContext;
 
 class TeamCreateTool extends BaseTool
 {

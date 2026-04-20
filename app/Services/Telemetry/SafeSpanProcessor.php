@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services\Telemetry;
+namespace HaoCode\Services\Telemetry;
 
 use OpenTelemetry\Context\ContextInterface;
 use OpenTelemetry\SDK\Common\Future\CancellationInterface;
@@ -30,7 +30,6 @@ final class SafeSpanProcessor implements SpanProcessorInterface
 {
     public function __construct(private readonly SpanProcessorInterface $inner) {}
 
-    #[\Override]
     public function onStart(ReadWriteSpanInterface $span, ContextInterface $parentContext): void
     {
         try {
@@ -40,7 +39,6 @@ final class SafeSpanProcessor implements SpanProcessorInterface
         }
     }
 
-    #[\Override]
     public function onEnd(ReadableSpanInterface $span): void
     {
         try {
@@ -50,7 +48,6 @@ final class SafeSpanProcessor implements SpanProcessorInterface
         }
     }
 
-    #[\Override]
     public function forceFlush(?CancellationInterface $cancellation = null): bool
     {
         try {
@@ -60,7 +57,6 @@ final class SafeSpanProcessor implements SpanProcessorInterface
         }
     }
 
-    #[\Override]
     public function shutdown(?CancellationInterface $cancellation = null): bool
     {
         try {

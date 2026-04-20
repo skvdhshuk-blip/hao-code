@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Support\Terminal;
+namespace HaoCode\Support\Terminal;
 
 use League\CommonMark\Environment\Environment;
 use League\CommonMark\Extension\CommonMark\CommonMarkCoreExtension;

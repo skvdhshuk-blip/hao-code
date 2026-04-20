@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Support\Terminal;
+namespace HaoCode\Support\Terminal;
 
 class TranscriptRenderer
 {

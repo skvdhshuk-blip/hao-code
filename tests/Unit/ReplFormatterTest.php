@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Support\Terminal\ReplFormatter;
+use HaoCode\Support\Terminal\ReplFormatter;
 use PHPUnit\Framework\TestCase;
 
 class ReplFormatterTest extends TestCase

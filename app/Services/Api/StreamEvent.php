@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services\Api;
+namespace HaoCode\Services\Api;
 
 class StreamEvent
 {

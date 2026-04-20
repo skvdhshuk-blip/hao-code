@@ -2,9 +2,9 @@
 
 namespace Tests\Unit;
 
-use App\Support\Terminal\Autocomplete\AutocompleteEngine;
-use App\Support\Terminal\Autocomplete\CommandSuggestionProvider;
-use App\Support\Terminal\Autocomplete\FilePathSuggestionProvider;
+use HaoCode\Support\Terminal\Autocomplete\AutocompleteEngine;
+use HaoCode\Support\Terminal\Autocomplete\CommandSuggestionProvider;
+use HaoCode\Support\Terminal\Autocomplete\FilePathSuggestionProvider;
 use PHPUnit\Framework\TestCase;
 
 class AutocompleteEngineTest extends TestCase

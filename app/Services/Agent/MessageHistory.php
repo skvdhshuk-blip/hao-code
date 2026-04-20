@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services\Agent;
+namespace HaoCode\Services\Agent;
 
 class MessageHistory
 {

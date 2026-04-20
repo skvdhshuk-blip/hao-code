@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Tools;
+namespace HaoCode\Tools;
 
 class ToolResult
 {

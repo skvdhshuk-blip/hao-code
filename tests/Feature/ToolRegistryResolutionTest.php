@@ -2,7 +2,7 @@
 
 namespace Tests\Feature;
 
-use App\Tools\ToolRegistry;
+use HaoCode\Tools\ToolRegistry;
 use Tests\TestCase;
 
 class ToolRegistryResolutionTest extends TestCase

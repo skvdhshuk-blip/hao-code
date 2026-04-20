@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services\Cache;
+namespace HaoCode\Services\Cache;
 
 /**
  * LRU cache for file read state, matching claude-code's fileStateCache.ts.

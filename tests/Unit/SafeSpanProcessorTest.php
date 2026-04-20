@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Services\Telemetry\SafeSpanProcessor;
+use HaoCode\Services\Telemetry\SafeSpanProcessor;
 use OpenTelemetry\Context\ContextInterface;
 use OpenTelemetry\SDK\Common\Future\CancellationInterface;
 use OpenTelemetry\SDK\Trace\ReadableSpanInterface;

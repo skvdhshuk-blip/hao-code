@@ -1,11 +1,11 @@
 <?php
 
-namespace App\Contracts;
+namespace HaoCode\Contracts;
 
-use App\Services\Permissions\PermissionDecision;
-use App\Tools\ToolInputSchema;
-use App\Tools\ToolResult;
-use App\Tools\ToolUseContext;
+use HaoCode\Services\Permissions\PermissionDecision;
+use HaoCode\Tools\ToolInputSchema;
+use HaoCode\Tools\ToolResult;
+use HaoCode\Tools\ToolUseContext;
 
 interface ToolInterface
 {

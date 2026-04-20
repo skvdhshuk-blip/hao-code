@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Tools\Cron\CronScheduler;
+use HaoCode\Tools\Cron\CronScheduler;
 use PHPUnit\Framework\TestCase;
 
 class CronSchedulerTest extends TestCase

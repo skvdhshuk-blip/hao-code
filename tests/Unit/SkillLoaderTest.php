@@ -2,8 +2,8 @@
 
 namespace Tests\Unit;
 
-use App\Tools\Skill\SkillDefinition;
-use App\Tools\Skill\SkillLoader;
+use HaoCode\Tools\Skill\SkillDefinition;
+use HaoCode\Tools\Skill\SkillLoader;
 use PHPUnit\Framework\TestCase;
 
 class SkillLoaderTest extends TestCase

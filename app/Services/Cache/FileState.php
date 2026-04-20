@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services\Cache;
+namespace HaoCode\Services\Cache;
 
 /**
  * Cached state for a file that was read via the Read tool.

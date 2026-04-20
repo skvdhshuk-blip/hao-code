@@ -2,11 +2,11 @@
 
 namespace Tests\Unit;
 
-use App\Services\Agent\QueryEngine;
-use App\Services\Agent\StreamProcessor;
-use App\Services\Api\StreamEvent;
-use App\Services\Api\StreamingClient;
-use App\Tools\ToolRegistry;
+use HaoCode\Services\Agent\QueryEngine;
+use HaoCode\Services\Agent\StreamProcessor;
+use HaoCode\Services\Api\StreamEvent;
+use HaoCode\Services\Api\StreamingClient;
+use HaoCode\Tools\ToolRegistry;
 use PHPUnit\Framework\TestCase;
 
 class QueryEngineTest extends TestCase

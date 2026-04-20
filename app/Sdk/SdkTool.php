@@ -1,11 +1,11 @@
 <?php
 
-namespace App\Sdk;
+namespace HaoCode\Sdk;
 
-use App\Tools\BaseTool;
-use App\Tools\ToolInputSchema;
-use App\Tools\ToolResult;
-use App\Tools\ToolUseContext;
+use HaoCode\Tools\BaseTool;
+use HaoCode\Tools\ToolInputSchema;
+use HaoCode\Tools\ToolResult;
+use HaoCode\Tools\ToolUseContext;
 
 /**
  * Simplified base class for SDK consumers to define custom tools.

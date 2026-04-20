@@ -2,10 +2,10 @@
 
 namespace Tests\Unit;
 
-use App\Tools\Skill\SkillDefinition;
-use App\Tools\Skill\SkillLoader;
-use App\Tools\Skill\SkillTool;
-use App\Tools\ToolUseContext;
+use HaoCode\Tools\Skill\SkillDefinition;
+use HaoCode\Tools\Skill\SkillLoader;
+use HaoCode\Tools\Skill\SkillTool;
+use HaoCode\Tools\ToolUseContext;
 use PHPUnit\Framework\TestCase;
 
 class SkillToolTest extends TestCase
@@ -47,7 +47,7 @@ class SkillToolTest extends TestCase
         );
     }
 
-    private function callTool(SkillTool $tool, array $input): \App\Tools\ToolResult
+    private function callTool(SkillTool $tool, array $input): \HaoCode\Tools\ToolResult
     {
         return $tool->call($input, $this->context);
     }

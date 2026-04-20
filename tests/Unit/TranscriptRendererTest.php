@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Support\Terminal\TranscriptRenderer;
+use HaoCode\Support\Terminal\TranscriptRenderer;
 use PHPUnit\Framework\TestCase;
 
 class TranscriptRendererTest extends TestCase

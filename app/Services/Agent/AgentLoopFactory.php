@@ -1,15 +1,15 @@
 <?php
 
-namespace App\Services\Agent;
+namespace HaoCode\Services\Agent;
 
-use App\Services\Api\StreamingClient;
-use App\Services\Compact\ContextCompactor;
-use App\Services\Cost\CostTracker;
-use App\Services\Hooks\HookExecutor;
-use App\Services\Session\SessionManager;
-use App\Services\Settings\SettingsManager;
-use App\Services\Telemetry\PhoenixTracer;
-use App\Tools\ToolRegistry;
+use HaoCode\Services\Api\StreamingClient;
+use HaoCode\Services\Compact\ContextCompactor;
+use HaoCode\Services\Cost\CostTracker;
+use HaoCode\Services\Hooks\HookExecutor;
+use HaoCode\Services\Session\SessionManager;
+use HaoCode\Services\Settings\SettingsManager;
+use HaoCode\Services\Telemetry\PhoenixTracer;
+use HaoCode\Tools\ToolRegistry;
 use Illuminate\Contracts\Container\Container;
 
 class AgentLoopFactory
@@ -23,7 +23,7 @@ class AgentLoopFactory
      *
      * @param callable|null $toolFilter If provided, only tools where $toolFilter(toolName) returns true are included
      * @param string|null $workingDirectory Override working directory (e.g., for worktree isolation)
-     * @param array<int, \App\Contracts\ToolInterface> $additionalTools Extra tools to register (e.g., SDK custom tools)
+     * @param array<int, \HaoCode\Contracts\ToolInterface> $additionalTools Extra tools to register (e.g., SDK custom tools)
      * @param StreamingClient|null $streamingClient Custom API client (e.g., SDK config overrides)
      */
     public function createIsolated(
@@ -33,7 +33,7 @@ class AgentLoopFactory
         ?StreamingClient $streamingClient = null,
     ): AgentLoop {
         $contextBuilder = $this->container->make(ContextBuilder::class);
-        $permissionChecker = $this->container->make(\App\Services\Permissions\PermissionChecker::class);
+        $permissionChecker = $this->container->make(\HaoCode\Services\Permissions\PermissionChecker::class);
         $hookExecutor = $this->container->make(HookExecutor::class);
 
         // Build tool registry with optional filtering

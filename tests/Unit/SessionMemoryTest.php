@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Services\Memory\SessionMemory;
+use HaoCode\Services\Memory\SessionMemory;
 use PHPUnit\Framework\TestCase;
 
 class SessionMemoryTest extends TestCase

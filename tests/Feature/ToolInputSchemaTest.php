@@ -2,7 +2,7 @@
 
 namespace Tests\Feature;
 
-use App\Tools\ToolInputSchema;
+use HaoCode\Tools\ToolInputSchema;
 use Tests\TestCase;
 
 class ToolInputSchemaTest extends TestCase

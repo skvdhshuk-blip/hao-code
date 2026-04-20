@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Tools\Bash;
+namespace HaoCode\Tools\Bash;
 
 /**
  * Classifies bash commands by their behavior, matching claude-code's

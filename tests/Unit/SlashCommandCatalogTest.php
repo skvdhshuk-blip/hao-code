@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Support\Terminal\Autocomplete\SlashCommandCatalog;
+use HaoCode\Support\Terminal\Autocomplete\SlashCommandCatalog;
 use PHPUnit\Framework\TestCase;
 
 class SlashCommandCatalogTest extends TestCase

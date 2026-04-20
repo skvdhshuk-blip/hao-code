@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Services\Permissions\DangerousPatterns;
+use HaoCode\Services\Permissions\DangerousPatterns;
 use PHPUnit\Framework\TestCase;
 
 class DangerousPatternsTest extends TestCase

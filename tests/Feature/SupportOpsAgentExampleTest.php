@@ -4,9 +4,9 @@ declare(strict_types=1);
 
 namespace Tests\Feature;
 
-use App\Sdk\Examples\SupportOpsAgent;
-use App\Services\Api\StreamingClient;
-use App\Services\Settings\SettingsManager;
+use HaoCode\Sdk\Examples\SupportOpsAgent;
+use HaoCode\Services\Api\StreamingClient;
+use HaoCode\Services\Settings\SettingsManager;
 use Symfony\Component\HttpClient\Response\MockResponse;
 use Tests\Support\MockAnthropicSse;
 use Tests\TestCase;

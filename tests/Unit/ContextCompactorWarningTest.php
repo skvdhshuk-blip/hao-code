@@ -2,8 +2,8 @@
 
 namespace Tests\Unit;
 
-use App\Services\Compact\ContextCompactor;
-use App\Services\Agent\QueryEngine;
+use HaoCode\Services\Compact\ContextCompactor;
+use HaoCode\Services\Agent\QueryEngine;
 use PHPUnit\Framework\TestCase;
 
 class ContextCompactorWarningTest extends TestCase

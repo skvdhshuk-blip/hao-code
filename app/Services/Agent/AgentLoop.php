@@ -1,16 +1,16 @@
 <?php
 
-namespace App\Services\Agent;
+namespace HaoCode\Services\Agent;
 
-use App\Services\Compact\ContextCompactor;
-use App\Services\Cost\CostTracker;
-use App\Services\Hooks\HookExecutor;
-use App\Services\Permissions\PermissionChecker;
-use App\Services\Session\SessionManager;
-use App\Services\Telemetry\PhoenixTracer;
-use App\Services\ToolResult\ToolResultStorage;
-use App\Tools\ToolRegistry;
-use App\Tools\ToolUseContext;
+use HaoCode\Services\Compact\ContextCompactor;
+use HaoCode\Services\Cost\CostTracker;
+use HaoCode\Services\Hooks\HookExecutor;
+use HaoCode\Services\Permissions\PermissionChecker;
+use HaoCode\Services\Session\SessionManager;
+use HaoCode\Services\Telemetry\PhoenixTracer;
+use HaoCode\Services\ToolResult\ToolResultStorage;
+use HaoCode\Tools\ToolRegistry;
+use HaoCode\Tools\ToolUseContext;
 
 class AgentLoop
 {

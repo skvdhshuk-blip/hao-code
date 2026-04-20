@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Services\FileHistory\FileHistoryManager;
+use HaoCode\Services\FileHistory\FileHistoryManager;
 use PHPUnit\Framework\TestCase;
 
 class FileHistoryManagerTest extends TestCase

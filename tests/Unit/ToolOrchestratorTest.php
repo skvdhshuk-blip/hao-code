@@ -2,16 +2,16 @@
 
 namespace Tests\Unit;
 
-use App\Services\Agent\ToolOrchestrator;
-use App\Services\Hooks\HookExecutor;
-use App\Services\Hooks\HookResult;
-use App\Services\Permissions\PermissionChecker;
-use App\Services\Permissions\PermissionDecision;
-use App\Tools\BaseTool;
-use App\Tools\ToolInputSchema;
-use App\Tools\ToolRegistry;
-use App\Tools\ToolResult;
-use App\Tools\ToolUseContext;
+use HaoCode\Services\Agent\ToolOrchestrator;
+use HaoCode\Services\Hooks\HookExecutor;
+use HaoCode\Services\Hooks\HookResult;
+use HaoCode\Services\Permissions\PermissionChecker;
+use HaoCode\Services\Permissions\PermissionDecision;
+use HaoCode\Tools\BaseTool;
+use HaoCode\Tools\ToolInputSchema;
+use HaoCode\Tools\ToolRegistry;
+use HaoCode\Tools\ToolResult;
+use HaoCode\Tools\ToolUseContext;
 use PHPUnit\Framework\TestCase;
 
 class ToolOrchestratorTest extends TestCase

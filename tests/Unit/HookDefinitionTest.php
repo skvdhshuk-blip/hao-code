@@ -1,7 +1,7 @@
 <?php
 namespace Tests\Unit;
 
-use App\Services\Hooks\HookDefinition;
+use HaoCode\Services\Hooks\HookDefinition;
 use PHPUnit\Framework\TestCase;
 
 class HookDefinitionTest extends TestCase

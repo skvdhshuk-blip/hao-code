@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Tools\Agent;
+namespace HaoCode\Tools\Agent;
 
 /**
  * Registry of built-in agent types, matching claude-code's built-in/ directory.

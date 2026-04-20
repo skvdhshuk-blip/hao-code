@@ -2,8 +2,8 @@
 
 namespace Tests\Unit;
 
-use App\Tools\Glob\GlobTool;
-use App\Tools\ToolUseContext;
+use HaoCode\Tools\Glob\GlobTool;
+use HaoCode\Tools\ToolUseContext;
 use PHPUnit\Framework\TestCase;
 
 class GlobToolTest extends TestCase
@@ -44,7 +44,7 @@ class GlobToolTest extends TestCase
         file_put_contents($full, $content);
     }
 
-    private function call(array $input): \App\Tools\ToolResult
+    private function call(array $input): \HaoCode\Tools\ToolResult
     {
         return $this->tool->call($input, $this->context);
     }

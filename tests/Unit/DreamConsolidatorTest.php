@@ -2,9 +2,9 @@
 
 namespace Tests\Unit;
 
-use App\Services\Memory\ConsolidationLock;
-use App\Services\Memory\DreamConsolidator;
-use App\Services\Memory\SessionMemory;
+use HaoCode\Services\Memory\ConsolidationLock;
+use HaoCode\Services\Memory\DreamConsolidator;
+use HaoCode\Services\Memory\SessionMemory;
 use PHPUnit\Framework\TestCase;
 
 class DreamConsolidatorTest extends TestCase

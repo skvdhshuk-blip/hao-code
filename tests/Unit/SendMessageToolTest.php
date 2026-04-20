@@ -2,9 +2,9 @@
 
 namespace Tests\Unit;
 
-use App\Services\Agent\BackgroundAgentManager;
-use App\Tools\Agent\SendMessageTool;
-use App\Tools\ToolUseContext;
+use HaoCode\Services\Agent\BackgroundAgentManager;
+use HaoCode\Tools\Agent\SendMessageTool;
+use HaoCode\Tools\ToolUseContext;
 use PHPUnit\Framework\TestCase;
 
 class SendMessageToolTest extends TestCase

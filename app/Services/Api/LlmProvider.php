@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services\Api;
+namespace HaoCode\Services\Api;
 
 /**
  * Low-level streaming LLM provider contract.

@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services\System;
+namespace HaoCode\Services\System;
 
 /**
  * Prevents system sleep during long operations using macOS caffeinate.

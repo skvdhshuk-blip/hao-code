@@ -2,8 +2,8 @@
 
 namespace Tests\Unit;
 
-use App\Tools\Sleep\SleepTool;
-use App\Tools\ToolUseContext;
+use HaoCode\Tools\Sleep\SleepTool;
+use HaoCode\Tools\ToolUseContext;
 use PHPUnit\Framework\TestCase;
 
 class SleepToolTest extends TestCase
@@ -87,12 +87,12 @@ class SleepToolTest extends TestCase
         // by patching sleep via a child class proxy.
         $proxy = new class extends SleepTool {
             public int $sleptSeconds = 0;
-            public function call(array $input, \App\Tools\ToolUseContext $ctx): \App\Tools\ToolResult
+            public function call(array $input, \HaoCode\Tools\ToolUseContext $ctx): \HaoCode\Tools\ToolResult
             {
                 $seconds = (int)($input['seconds'] ?? 1);
                 $seconds = max(1, min(300, $seconds));
                 $this->sleptSeconds = $seconds;
-                return \App\Tools\ToolResult::success("Slept for {$seconds} second(s).");
+                return \HaoCode\Tools\ToolResult::success("Slept for {$seconds} second(s).");
             }
         };
 
@@ -105,11 +105,11 @@ class SleepToolTest extends TestCase
     {
         // Use a no-sleep proxy
         $proxy = new class extends SleepTool {
-            public function call(array $input, \App\Tools\ToolUseContext $ctx): \App\Tools\ToolResult
+            public function call(array $input, \HaoCode\Tools\ToolUseContext $ctx): \HaoCode\Tools\ToolResult
             {
                 $seconds = (int)($input['seconds'] ?? 1);
                 $seconds = max(1, min(300, $seconds));
-                return \App\Tools\ToolResult::success("Slept for {$seconds} second(s).");
+                return \HaoCode\Tools\ToolResult::success("Slept for {$seconds} second(s).");
             }
         };
 

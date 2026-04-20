@@ -2,8 +2,8 @@
 
 namespace Tests\Unit;
 
-use App\Services\Agent\StreamProcessor;
-use App\Services\Api\StreamEvent;
+use HaoCode\Services\Agent\StreamProcessor;
+use HaoCode\Services\Api\StreamEvent;
 use PHPUnit\Framework\TestCase;
 
 class StreamProcessorExtendedTest extends TestCase

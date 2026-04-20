@@ -2,12 +2,12 @@
 
 namespace Tests\Unit;
 
-use App\Services\Agent\MessageHistory;
-use App\Services\Agent\QueryEngine;
-use App\Services\Agent\StreamProcessor;
-use App\Services\Compact\ContextCompactor;
-use App\Services\Hooks\HookExecutor;
-use App\Services\Hooks\HookResult;
+use HaoCode\Services\Agent\MessageHistory;
+use HaoCode\Services\Agent\QueryEngine;
+use HaoCode\Services\Agent\StreamProcessor;
+use HaoCode\Services\Compact\ContextCompactor;
+use HaoCode\Services\Hooks\HookExecutor;
+use HaoCode\Services\Hooks\HookResult;
 use PHPUnit\Framework\TestCase;
 
 class ContextCompactorTest extends TestCase

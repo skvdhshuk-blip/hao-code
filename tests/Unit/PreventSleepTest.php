@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Services\System\PreventSleep;
+use HaoCode\Services\System\PreventSleep;
 use PHPUnit\Framework\TestCase;
 
 class PreventSleepTest extends TestCase

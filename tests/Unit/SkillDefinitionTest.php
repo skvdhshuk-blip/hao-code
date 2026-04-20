@@ -1,7 +1,7 @@
 <?php
 namespace Tests\Unit;
 
-use App\Tools\Skill\SkillDefinition;
+use HaoCode\Tools\Skill\SkillDefinition;
 use PHPUnit\Framework\TestCase;
 
 class SkillDefinitionTest extends TestCase

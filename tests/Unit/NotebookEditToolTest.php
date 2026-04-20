@@ -2,8 +2,8 @@
 
 namespace Tests\Unit;
 
-use App\Tools\Notebook\NotebookEditTool;
-use App\Tools\ToolUseContext;
+use HaoCode\Tools\Notebook\NotebookEditTool;
+use HaoCode\Tools\ToolUseContext;
 use PHPUnit\Framework\TestCase;
 
 class NotebookEditToolTest extends TestCase

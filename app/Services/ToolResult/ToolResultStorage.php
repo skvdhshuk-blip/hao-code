@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services\ToolResult;
+namespace HaoCode\Services\ToolResult;
 
 /**
  * Persists large tool results to disk and generates previews.

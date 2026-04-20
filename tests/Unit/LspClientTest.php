@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Services\Lsp\LspClient;
+use HaoCode\Services\Lsp\LspClient;
 use PHPUnit\Framework\TestCase;
 
 class LspClientTest extends TestCase

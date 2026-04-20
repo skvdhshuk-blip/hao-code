@@ -2,9 +2,9 @@
 
 namespace Tests\Unit;
 
-use App\Tools\ToolUseContext;
-use App\Tools\Worktree\EnterWorktreeTool;
-use App\Tools\Worktree\ExitWorktreeTool;
+use HaoCode\Tools\ToolUseContext;
+use HaoCode\Tools\Worktree\EnterWorktreeTool;
+use HaoCode\Tools\Worktree\ExitWorktreeTool;
 use PHPUnit\Framework\TestCase;
 
 class WorktreeToolsTest extends TestCase
@@ -54,7 +54,7 @@ class WorktreeToolsTest extends TestCase
     {
         // Test sanitisation via a proxy that skips the git checks
         $proxy = new class extends EnterWorktreeTool {
-            public function call(array $input, \App\Tools\ToolUseContext $ctx): \App\Tools\ToolResult
+            public function call(array $input, \HaoCode\Tools\ToolUseContext $ctx): \HaoCode\Tools\ToolResult
             {
                 $name = $input['name'] ?? null;
                 if ($name) {
@@ -66,7 +66,7 @@ class WorktreeToolsTest extends TestCase
                         $name = mb_substr($name, 0, 64);
                     }
                 }
-                return \App\Tools\ToolResult::success("Name: {$name}");
+                return \HaoCode\Tools\ToolResult::success("Name: {$name}");
             }
         };
 
@@ -77,7 +77,7 @@ class WorktreeToolsTest extends TestCase
     public function test_enter_long_name_is_truncated(): void
     {
         $proxy = new class extends EnterWorktreeTool {
-            public function call(array $input, \App\Tools\ToolUseContext $ctx): \App\Tools\ToolResult
+            public function call(array $input, \HaoCode\Tools\ToolUseContext $ctx): \HaoCode\Tools\ToolResult
             {
                 $name = $input['name'] ?? null;
                 if ($name) {
@@ -86,7 +86,7 @@ class WorktreeToolsTest extends TestCase
                         $name = mb_substr($name, 0, 64);
                     }
                 }
-                return \App\Tools\ToolResult::success("Name length: " . mb_strlen($name));
+                return \HaoCode\Tools\ToolResult::success("Name length: " . mb_strlen($name));
             }
         };
 

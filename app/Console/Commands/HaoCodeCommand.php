@@ -1,47 +1,47 @@
 <?php
 
-namespace App\Console\Commands;
+namespace HaoCode\Console\Commands;
 
-use App\Services\Agent\AgentLoop;
-use App\Services\Agent\BackgroundAgentManager;
-use App\Services\Agent\MessageHistory;
-use App\Services\Buddy\BuddyManager;
-use App\Services\Api\ApiErrorException;
-use App\Services\Compact\ContextCompactor;
-use App\Services\Cost\CostTracker;
-use App\Services\Git\GitContext;
-use App\Services\Hooks\HookExecutor;
-use App\Services\Mcp\McpConnectionManager;
-use App\Services\Mcp\McpServerConfigManager;
-use App\Services\Memory\SessionMemory;
-use App\Services\OutputStyle\OutputStyleLoader;
-use App\Services\Permissions\PermissionMode;
-use App\Services\Session\AwaySummaryService;
-use App\Services\Session\SessionManager;
-use App\Services\Session\SessionStatsService;
-use App\Services\Session\SessionTitleService;
-use App\Services\Settings\SettingsManager;
-use App\Services\Task\TaskManager;
-use App\Support\Terminal\Autocomplete\AutocompleteEngine;
-use App\Support\Terminal\DraftInputBuffer;
-use App\Support\Terminal\DockedPromptScreen;
-use App\Support\Terminal\Autocomplete\SlashCommandCatalog;
-use App\Support\Terminal\InputSanitizer;
-use App\Support\Terminal\MarkdownRenderer;
-use App\Support\Terminal\PromptHudState;
-use App\Support\Terminal\ReplFormatter;
-use App\Support\Terminal\StreamingMarkdownOutput;
-use App\Support\Terminal\TranscriptBuffer;
-use App\Support\Terminal\TranscriptRenderer;
-use App\Support\Terminal\ImagePaste;
-use App\Support\Terminal\ToolResultRenderer;
-use App\Support\Terminal\TurnStatusRenderer;
-use App\Tools\Bash\BashTool;
-use App\Tools\Config\ConfigTool;
-use App\Tools\Mcp\McpDynamicTool;
-use App\Tools\Skill\SkillLoader;
-use App\Tools\ToolRegistry;
-use App\Tools\ToolUseContext;
+use HaoCode\Services\Agent\AgentLoop;
+use HaoCode\Services\Agent\BackgroundAgentManager;
+use HaoCode\Services\Agent\MessageHistory;
+use HaoCode\Services\Buddy\BuddyManager;
+use HaoCode\Services\Api\ApiErrorException;
+use HaoCode\Services\Compact\ContextCompactor;
+use HaoCode\Services\Cost\CostTracker;
+use HaoCode\Services\Git\GitContext;
+use HaoCode\Services\Hooks\HookExecutor;
+use HaoCode\Services\Mcp\McpConnectionManager;
+use HaoCode\Services\Mcp\McpServerConfigManager;
+use HaoCode\Services\Memory\SessionMemory;
+use HaoCode\Services\OutputStyle\OutputStyleLoader;
+use HaoCode\Services\Permissions\PermissionMode;
+use HaoCode\Services\Session\AwaySummaryService;
+use HaoCode\Services\Session\SessionManager;
+use HaoCode\Services\Session\SessionStatsService;
+use HaoCode\Services\Session\SessionTitleService;
+use HaoCode\Services\Settings\SettingsManager;
+use HaoCode\Services\Task\TaskManager;
+use HaoCode\Support\Terminal\Autocomplete\AutocompleteEngine;
+use HaoCode\Support\Terminal\DraftInputBuffer;
+use HaoCode\Support\Terminal\DockedPromptScreen;
+use HaoCode\Support\Terminal\Autocomplete\SlashCommandCatalog;
+use HaoCode\Support\Terminal\InputSanitizer;
+use HaoCode\Support\Terminal\MarkdownRenderer;
+use HaoCode\Support\Terminal\PromptHudState;
+use HaoCode\Support\Terminal\ReplFormatter;
+use HaoCode\Support\Terminal\StreamingMarkdownOutput;
+use HaoCode\Support\Terminal\TranscriptBuffer;
+use HaoCode\Support\Terminal\TranscriptRenderer;
+use HaoCode\Support\Terminal\ImagePaste;
+use HaoCode\Support\Terminal\ToolResultRenderer;
+use HaoCode\Support\Terminal\TurnStatusRenderer;
+use HaoCode\Tools\Bash\BashTool;
+use HaoCode\Tools\Config\ConfigTool;
+use HaoCode\Tools\Mcp\McpDynamicTool;
+use HaoCode\Tools\Skill\SkillLoader;
+use HaoCode\Tools\ToolRegistry;
+use HaoCode\Tools\ToolUseContext;
 use Illuminate\Console\Command;
 use Symfony\Component\Console\Formatter\OutputFormatter;
 use Symfony\Component\Console\Terminal;
@@ -1930,7 +1930,7 @@ class HaoCodeCommand extends Command
             // all tools are already visible in the API payload and ToolSearch
             // just wastes tokens (especially for non-Claude models).
             if (! $registry->has('ToolSearch')) {
-                $registry->register(app(\App\Tools\ToolSearch\ToolSearchTool::class));
+                $registry->register(app(\HaoCode\Tools\ToolSearch\ToolSearchTool::class));
             }
         }
     }
@@ -3109,7 +3109,7 @@ class HaoCodeCommand extends Command
             default => '*/10 * * * *',
         };
 
-        $scheduler = app(\App\Tools\Cron\CronScheduler::class);
+        $scheduler = app(\HaoCode\Tools\Cron\CronScheduler::class);
         $job = [
             'id' => uniqid('loop_'),
             'cron' => $cron,
@@ -3696,8 +3696,8 @@ class HaoCodeCommand extends Command
             $personality = "A loyal {$name} who loves to observe your code and offer unsolicited opinions.";
             $companion = $buddy->hatch($name, $personality);
             $rarity = $companion['rarity'];
-            $stars = \App\Services\Buddy\CompanionTypes::RARITY_STARS[$rarity];
-            $color = \App\Services\Buddy\CompanionTypes::RARITY_COLORS[$rarity];
+            $stars = \HaoCode\Services\Buddy\CompanionTypes::RARITY_STARS[$rarity];
+            $color = \HaoCode\Services\Buddy\CompanionTypes::RARITY_COLORS[$rarity];
             $shiny = $companion['shiny'] ? ' <fg=yellow>✨ SHINY!</>' : '';
 
             $this->line('');
@@ -3839,7 +3839,7 @@ class HaoCodeCommand extends Command
 
     private function handleDream(string $args): void
     {
-        $consolidator = app(\App\Services\Memory\DreamConsolidator::class);
+        $consolidator = app(\HaoCode\Services\Memory\DreamConsolidator::class);
         $stats = $consolidator->getMemoryStats();
 
         $lines = [
@@ -3869,7 +3869,7 @@ class HaoCodeCommand extends Command
         );
 
         $this->line('  <fg=cyan>Starting dream consolidation...</>');
-        $this->runAgentTurn(app(\App\Services\Agent\AgentLoop::class), $prompt);
+        $this->runAgentTurn(app(\HaoCode\Services\Agent\AgentLoop::class), $prompt);
     }
 
     private function runAgentTurn(AgentLoop $agent, string|array $input): void
@@ -3986,7 +3986,7 @@ class HaoCodeCommand extends Command
             }
 
             // Auto-dream: background memory consolidation check
-            $autoDream = app(\App\Services\Memory\AutoDreamService::class);
+            $autoDream = app(\HaoCode\Services\Memory\AutoDreamService::class);
             $dreamResult = $autoDream->maybeExecute();
             if ($dreamResult !== null && ($dreamResult['triggered'] ?? false)) {
                 $this->line("  <fg=gray>✨ Auto-dream triggered ({$dreamResult['hours_since']}h since last, {$dreamResult['sessions_reviewed']} sessions)</>");
@@ -4791,7 +4791,7 @@ PROMPT;
     private function getActivityDescription(string $toolName, array $input): ?string
     {
         // Delegate to tool's own method
-        $registry = app(\App\Tools\ToolRegistry::class);
+        $registry = app(\HaoCode\Tools\ToolRegistry::class);
         $tool = $registry->getTool($toolName);
         if ($tool !== null) {
             $desc = $tool->getActivityDescription($input);
@@ -6442,7 +6442,7 @@ PROMPT;
 
     private function handleAgents(): void
     {
-        $registry = app(\App\Tools\ToolRegistry::class);
+        $registry = app(\HaoCode\Tools\ToolRegistry::class);
         $tools = $registry->getAllTools();
 
         if ($tools === []) {

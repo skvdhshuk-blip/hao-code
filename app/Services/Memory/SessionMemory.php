@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services\Memory;
+namespace HaoCode\Services\Memory;
 
 /**
  * Persistent key-value memory that survives session restarts.

@@ -1,8 +1,8 @@
 <?php
 
-namespace App\Sdk;
+namespace HaoCode\Sdk;
 
-use App\Tools\Skill\SkillDefinition;
+use HaoCode\Tools\Skill\SkillDefinition;
 
 /**
  * Simplified skill definition for SDK consumers.

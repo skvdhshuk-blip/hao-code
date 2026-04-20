@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace App\Support\Terminal\Autocomplete;
+namespace HaoCode\Support\Terminal\Autocomplete;
 
 /**
  * Provides shell history completions for bash-like input.

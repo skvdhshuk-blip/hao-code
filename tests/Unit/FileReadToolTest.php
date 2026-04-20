@@ -2,8 +2,8 @@
 
 namespace Tests\Unit;
 
-use App\Tools\FileRead\FileReadTool;
-use App\Tools\ToolUseContext;
+use HaoCode\Tools\FileRead\FileReadTool;
+use HaoCode\Tools\ToolUseContext;
 use PHPUnit\Framework\TestCase;
 
 class FileReadToolTest extends TestCase

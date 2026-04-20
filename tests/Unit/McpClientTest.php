@@ -2,11 +2,11 @@
 
 namespace Tests\Unit;
 
-use App\Services\Mcp\McpClient;
-use App\Services\Mcp\McpConnectionException;
-use App\Services\Mcp\McpConnectionManager;
-use App\Services\Mcp\McpServerConfigManager;
-use App\Services\Mcp\McpTransport;
+use HaoCode\Services\Mcp\McpClient;
+use HaoCode\Services\Mcp\McpConnectionException;
+use HaoCode\Services\Mcp\McpConnectionManager;
+use HaoCode\Services\Mcp\McpServerConfigManager;
+use HaoCode\Services\Mcp\McpTransport;
 use PHPUnit\Framework\TestCase;
 
 class McpClientTest extends TestCase

@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Services\Agent\MessageHistory;
+use HaoCode\Services\Agent\MessageHistory;
 use PHPUnit\Framework\TestCase;
 
 class MessageHistoryTest extends TestCase

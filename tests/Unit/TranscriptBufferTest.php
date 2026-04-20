@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Support\Terminal\TranscriptBuffer;
+use HaoCode\Support\Terminal\TranscriptBuffer;
 use PHPUnit\Framework\TestCase;
 
 class TranscriptBufferTest extends TestCase

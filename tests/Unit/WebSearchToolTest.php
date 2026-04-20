@@ -2,8 +2,8 @@
 
 namespace Tests\Unit;
 
-use App\Tools\WebSearch\WebSearchTool;
-use App\Tools\ToolUseContext;
+use HaoCode\Tools\WebSearch\WebSearchTool;
+use HaoCode\Tools\ToolUseContext;
 use PHPUnit\Framework\TestCase;
 
 class WebSearchToolTest extends TestCase
@@ -77,7 +77,7 @@ class WebSearchToolTest extends TestCase
                 ];
             }
 
-            public function call(array $input, \App\Tools\ToolUseContext $ctx): \App\Tools\ToolResult
+            public function call(array $input, \HaoCode\Tools\ToolUseContext $ctx): \HaoCode\Tools\ToolResult
             {
                 $results = $this->searchDuckDuckGoForTest();
                 $allowedDomains = $input['allowed_domains'] ?? [];
@@ -104,14 +104,14 @@ class WebSearchToolTest extends TestCase
                 }
 
                 if (empty($results)) {
-                    return \App\Tools\ToolResult::success("No search results found for: {$input['query']}");
+                    return \HaoCode\Tools\ToolResult::success("No search results found for: {$input['query']}");
                 }
 
                 $output = "Search results for: \"{$input['query']}\"\n\n";
                 foreach (array_values($results) as $i => $result) {
                     $output .= ($i + 1) . ". [{$result['title']}]({$result['url']})\n\n";
                 }
-                return \App\Tools\ToolResult::success($output);
+                return \HaoCode\Tools\ToolResult::success($output);
             }
         };
 
@@ -129,7 +129,7 @@ class WebSearchToolTest extends TestCase
     public function test_blocked_domains_filter_removes_matching_results(): void
     {
         $proxy = new class extends WebSearchTool {
-            public function call(array $input, \App\Tools\ToolUseContext $ctx): \App\Tools\ToolResult
+            public function call(array $input, \HaoCode\Tools\ToolUseContext $ctx): \HaoCode\Tools\ToolResult
             {
                 $results = [
                     ['title' => 'PHP Docs', 'url' => 'https://php.net/manual', 'snippet' => ''],
@@ -151,7 +151,7 @@ class WebSearchToolTest extends TestCase
                 foreach (array_values($results) as $r) {
                     $output .= "[{$r['title']}]({$r['url']})\n";
                 }
-                return \App\Tools\ToolResult::success($output);
+                return \HaoCode\Tools\ToolResult::success($output);
             }
         };
 

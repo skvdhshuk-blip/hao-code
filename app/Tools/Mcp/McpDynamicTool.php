@@ -1,14 +1,14 @@
 <?php
 
-namespace App\Tools\Mcp;
+namespace HaoCode\Tools\Mcp;
 
-use App\Contracts\ToolInterface;
-use App\Services\Mcp\McpConnectionException;
-use App\Services\Mcp\McpConnectionManager;
-use App\Services\Permissions\PermissionDecision;
-use App\Tools\ToolInputSchema;
-use App\Tools\ToolResult;
-use App\Tools\ToolUseContext;
+use HaoCode\Contracts\ToolInterface;
+use HaoCode\Services\Mcp\McpConnectionException;
+use HaoCode\Services\Mcp\McpConnectionManager;
+use HaoCode\Services\Permissions\PermissionDecision;
+use HaoCode\Tools\ToolInputSchema;
+use HaoCode\Tools\ToolResult;
+use HaoCode\Tools\ToolUseContext;
 
 /**
  * A dynamically generated tool that wraps a single tool from an MCP server.

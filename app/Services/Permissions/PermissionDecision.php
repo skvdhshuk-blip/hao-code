@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services\Permissions;
+namespace HaoCode\Services\Permissions;
 
 class PermissionDecision
 {

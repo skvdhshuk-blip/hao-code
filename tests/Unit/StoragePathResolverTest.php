@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Support\Runtime\StoragePathResolver;
+use HaoCode\Support\Runtime\StoragePathResolver;
 use Tests\TestCase;
 
 class StoragePathResolverTest extends TestCase

@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Services\Session\SessionManager;
+use HaoCode\Services\Session\SessionManager;
 use Tests\TestCase;
 
 class SessionManagerTest extends TestCase

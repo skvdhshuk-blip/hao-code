@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace App\Services\Buddy;
+namespace HaoCode\Services\Buddy;
 
 /**
  * BuddyManager — the full companion pet system.

@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services\Session;
+namespace HaoCode\Services\Session;
 
 final class SessionStatsService
 {

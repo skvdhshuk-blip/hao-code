@@ -1,9 +1,9 @@
 <?php
 
-namespace App\Services\Session;
+namespace HaoCode\Services\Session;
 
-use App\Services\Api\SimpleCompletionClient;
-use App\Services\Settings\SettingsManager;
+use HaoCode\Services\Api\SimpleCompletionClient;
+use HaoCode\Services\Settings\SettingsManager;
 
 /**
  * Generate a concise AI-powered session title via the Haiku model.

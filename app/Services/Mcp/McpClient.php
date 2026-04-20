@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services\Mcp;
+namespace HaoCode\Services\Mcp;
 
 /**
  * MCP protocol client — handles initialization handshake, tool/resource

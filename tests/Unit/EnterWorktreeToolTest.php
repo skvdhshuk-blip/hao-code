@@ -2,8 +2,8 @@
 
 namespace Tests\Unit;
 
-use App\Tools\Worktree\EnterWorktreeTool;
-use App\Tools\ToolUseContext;
+use HaoCode\Tools\Worktree\EnterWorktreeTool;
+use HaoCode\Tools\ToolUseContext;
 use PHPUnit\Framework\TestCase;
 
 class EnterWorktreeToolTest extends TestCase

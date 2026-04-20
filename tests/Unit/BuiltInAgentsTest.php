@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Tools\Agent\BuiltInAgents;
+use HaoCode\Tools\Agent\BuiltInAgents;
 use PHPUnit\Framework\TestCase;
 
 class BuiltInAgentsTest extends TestCase

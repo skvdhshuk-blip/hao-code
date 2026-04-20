@@ -2,14 +2,14 @@
 
 namespace Tests\Unit;
 
-use App\Services\Agent\AgentLoopFactory;
-use App\Services\Agent\ContextBuilder;
-use App\Services\Agent\QueryEngine;
-use App\Services\Agent\ToolOrchestrator;
-use App\Services\Hooks\HookExecutor;
-use App\Services\Permissions\PermissionChecker;
+use HaoCode\Services\Agent\AgentLoopFactory;
+use HaoCode\Services\Agent\ContextBuilder;
+use HaoCode\Services\Agent\QueryEngine;
+use HaoCode\Services\Agent\ToolOrchestrator;
+use HaoCode\Services\Hooks\HookExecutor;
+use HaoCode\Services\Permissions\PermissionChecker;
 use Illuminate\Contracts\Container\Container;
-use App\Tools\ToolRegistry;
+use HaoCode\Tools\ToolRegistry;
 use Tests\TestCase;
 
 class AgentLoopFactoryTest extends TestCase
@@ -40,8 +40,8 @@ class AgentLoopFactoryTest extends TestCase
                     PermissionChecker::class => $permissionChecker,
                     ToolRegistry::class => $toolRegistry,
                     HookExecutor::class => $hookExecutor,
-                    \App\Services\Telemetry\PhoenixTracer::class => \App\Services\Telemetry\PhoenixTracer::fromConfig(['enabled' => false]),
-                    \App\Services\Settings\SettingsManager::class => new \App\Services\Settings\SettingsManager(),
+                    \HaoCode\Services\Telemetry\PhoenixTracer::class => \HaoCode\Services\Telemetry\PhoenixTracer::fromConfig(['enabled' => false]),
+                    \HaoCode\Services\Settings\SettingsManager::class => new \HaoCode\Services\Settings\SettingsManager(),
                     default => throw new \RuntimeException("Unexpected container resolution: {$abstract}"),
                 };
             });

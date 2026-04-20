@@ -2,7 +2,7 @@
 
 declare(strict_types=1);
 
-namespace App\Services\Memory;
+namespace HaoCode\Services\Memory;
 
 /**
  * Lock file whose mtime IS lastConsolidatedAt.

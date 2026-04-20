@@ -2,9 +2,9 @@
 
 namespace Tests\Unit;
 
-use App\Services\Api\ApiErrorException;
-use App\Services\Api\StreamEvent;
-use App\Tools\ToolUseContext;
+use HaoCode\Services\Api\ApiErrorException;
+use HaoCode\Services\Api\StreamEvent;
+use HaoCode\Tools\ToolUseContext;
 use PHPUnit\Framework\TestCase;
 
 class ValueObjectsTest extends TestCase

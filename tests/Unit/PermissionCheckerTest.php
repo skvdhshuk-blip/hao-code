@@ -2,15 +2,15 @@
 
 namespace Tests\Unit;
 
-use App\Contracts\ToolInterface;
-use App\Services\Permissions\DenialTracker;
-use App\Services\Permissions\PermissionChecker;
-use App\Services\Permissions\PermissionMode;
-use App\Services\Settings\SettingsManager;
-use App\Tools\BaseTool;
-use App\Tools\ToolInputSchema;
-use App\Tools\ToolResult;
-use App\Tools\ToolUseContext;
+use HaoCode\Contracts\ToolInterface;
+use HaoCode\Services\Permissions\DenialTracker;
+use HaoCode\Services\Permissions\PermissionChecker;
+use HaoCode\Services\Permissions\PermissionMode;
+use HaoCode\Services\Settings\SettingsManager;
+use HaoCode\Tools\BaseTool;
+use HaoCode\Tools\ToolInputSchema;
+use HaoCode\Tools\ToolResult;
+use HaoCode\Tools\ToolUseContext;
 use PHPUnit\Framework\TestCase;
 
 class PermissionCheckerTest extends TestCase

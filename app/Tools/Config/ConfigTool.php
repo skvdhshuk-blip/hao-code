@@ -1,12 +1,12 @@
 <?php
 
-namespace App\Tools\Config;
+namespace HaoCode\Tools\Config;
 
-use App\Services\Settings\SettingsManager;
-use App\Tools\BaseTool;
-use App\Tools\ToolInputSchema;
-use App\Tools\ToolResult;
-use App\Tools\ToolUseContext;
+use HaoCode\Services\Settings\SettingsManager;
+use HaoCode\Tools\BaseTool;
+use HaoCode\Tools\ToolInputSchema;
+use HaoCode\Tools\ToolResult;
+use HaoCode\Tools\ToolUseContext;
 
 class ConfigTool extends BaseTool
 {

@@ -1,12 +1,12 @@
 <?php
 
-namespace App\Tools\Mcp;
+namespace HaoCode\Tools\Mcp;
 
-use App\Services\Mcp\McpConnectionManager;
-use App\Tools\BaseTool;
-use App\Tools\ToolInputSchema;
-use App\Tools\ToolResult;
-use App\Tools\ToolUseContext;
+use HaoCode\Services\Mcp\McpConnectionManager;
+use HaoCode\Tools\BaseTool;
+use HaoCode\Tools\ToolInputSchema;
+use HaoCode\Tools\ToolResult;
+use HaoCode\Tools\ToolUseContext;
 
 /**
  * Lists available resources across all connected MCP servers,

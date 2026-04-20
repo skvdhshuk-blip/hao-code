@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services\OutputStyle;
+namespace HaoCode\Services\OutputStyle;
 
 /**
  * Load custom output style instructions from Markdown files.

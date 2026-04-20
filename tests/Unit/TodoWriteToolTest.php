@@ -2,8 +2,8 @@
 
 namespace Tests\Unit;
 
-use App\Tools\TodoWrite\TodoWriteTool;
-use App\Tools\ToolUseContext;
+use HaoCode\Tools\TodoWrite\TodoWriteTool;
+use HaoCode\Tools\ToolUseContext;
 use Tests\TestCase;
 
 class TodoWriteToolTest extends TestCase

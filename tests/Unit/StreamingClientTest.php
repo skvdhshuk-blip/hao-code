@@ -2,8 +2,8 @@
 
 namespace Tests\Unit;
 
-use App\Services\Api\ApiErrorException;
-use App\Services\Api\StreamingClient;
+use HaoCode\Services\Api\ApiErrorException;
+use HaoCode\Services\Api\StreamingClient;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\HttpClient\MockHttpClient;
 use Symfony\Component\HttpClient\Exception\TransportException;
@@ -828,7 +828,7 @@ class StreamingClientTest extends TestCase
             ], ['http_code' => 200]);
         });
 
-        $settings = $this->createMock(\App\Services\Settings\SettingsManager::class);
+        $settings = $this->createMock(\HaoCode\Services\Settings\SettingsManager::class);
         $settings->method('getModel')->willReturn('claude-opus-4-20250514');
         $settings->method('getMaxTokens')->willReturn(32768);
 
@@ -865,7 +865,7 @@ class StreamingClientTest extends TestCase
             ], ['http_code' => 200]);
         });
 
-        $settings = $this->createMock(\App\Services\Settings\SettingsManager::class);
+        $settings = $this->createMock(\HaoCode\Services\Settings\SettingsManager::class);
         $settings->method('getModel')->willReturn('glm-5.1');
         $settings->method('getMaxTokens')->willReturn(16384);
         $settings->method('getApiKey')->willReturn('dynamic-key');

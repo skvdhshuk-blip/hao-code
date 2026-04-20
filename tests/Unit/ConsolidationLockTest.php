@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Services\Memory\ConsolidationLock;
+use HaoCode\Services\Memory\ConsolidationLock;
 use PHPUnit\Framework\TestCase;
 
 class ConsolidationLockTest extends TestCase

@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services\FileHistory;
+namespace HaoCode\Services\FileHistory;
 
 /**
  * Immutable file snapshot value object.

@@ -2,10 +2,10 @@
 
 namespace Tests\Unit;
 
-use App\Services\Agent\AgentLoop;
-use App\Services\Agent\AgentLoopFactory;
-use App\Tools\Agent\AgentTool;
-use App\Tools\ToolUseContext;
+use HaoCode\Services\Agent\AgentLoop;
+use HaoCode\Services\Agent\AgentLoopFactory;
+use HaoCode\Tools\Agent\AgentTool;
+use HaoCode\Tools\ToolUseContext;
 use PHPUnit\Framework\TestCase;
 
 class AgentToolTest extends TestCase

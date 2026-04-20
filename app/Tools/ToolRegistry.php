@@ -1,8 +1,8 @@
 <?php
 
-namespace App\Tools;
+namespace HaoCode\Tools;
 
-use App\Contracts\ToolInterface;
+use HaoCode\Contracts\ToolInterface;
 
 class ToolRegistry
 {

@@ -2,8 +2,8 @@
 
 namespace Tests\Unit;
 
-use App\Support\Terminal\ReplFormatter;
-use App\Support\Terminal\TurnStatusRenderer;
+use HaoCode\Support\Terminal\ReplFormatter;
+use HaoCode\Support\Terminal\TurnStatusRenderer;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\Console\Output\BufferedOutput;
 use Symfony\Component\Console\Output\OutputInterface;

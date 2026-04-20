@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services\Task;
+namespace HaoCode\Services\Task;
 
 /**
  * Immutable task value object.

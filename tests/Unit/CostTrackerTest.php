@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Services\Cost\CostTracker;
+use HaoCode\Services\Cost\CostTracker;
 use PHPUnit\Framework\TestCase;
 
 class CostTrackerTest extends TestCase

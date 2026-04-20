@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Services\Buddy\BuddyManager;
+use HaoCode\Services\Buddy\BuddyManager;
 use PHPUnit\Framework\TestCase;
 
 class BuddyManagerTest extends TestCase
@@ -69,7 +69,7 @@ class BuddyManagerTest extends TestCase
         $manager = new BuddyManager();
         $companion = $manager->hatch('TestPet', 'Test personality');
 
-        $this->assertContains($companion['species'], \App\Services\Buddy\CompanionTypes::SPECIES);
+        $this->assertContains($companion['species'], \HaoCode\Services\Buddy\CompanionTypes::SPECIES);
     }
 
     public function test_hatched_companion_has_all_required_fields(): void

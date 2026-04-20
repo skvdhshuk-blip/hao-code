@@ -1,7 +1,7 @@
 <?php
 
 return [
-    'default' => App\Console\Commands\HaoCodeCommand::class,
+    'default' => HaoCode\Console\Commands\HaoCodeCommand::class,
 
     'paths' => [app_path('Console/Commands')],
 

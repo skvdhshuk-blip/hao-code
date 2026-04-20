@@ -1,6 +1,6 @@
 <?php
 
-namespace App\Services\Lsp;
+namespace HaoCode\Services\Lsp;
 
 /**
  * Basic LSP client that communicates with language servers via stdio.

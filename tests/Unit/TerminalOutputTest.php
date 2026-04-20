@@ -2,7 +2,7 @@
 
 namespace Tests\Unit;
 
-use App\Support\Terminal\TerminalOutput;
+use HaoCode\Support\Terminal\TerminalOutput;
 use PHPUnit\Framework\TestCase;
 
 class TerminalOutputTest extends TestCase
