@@ -7,6 +7,8 @@ use App\Services\Compact\ContextCompactor;
 use App\Services\Cost\CostTracker;
 use App\Services\Hooks\HookExecutor;
 use App\Services\Session\SessionManager;
+use App\Services\Settings\SettingsManager;
+use App\Services\Telemetry\PhoenixTracer;
 use App\Tools\ToolRegistry;
 use Illuminate\Contracts\Container\Container;
 
@@ -38,9 +40,12 @@ class AgentLoopFactory
         $parentRegistry = $this->container->make(ToolRegistry::class);
         $toolRegistry = $this->buildToolRegistry($parentRegistry, $toolFilter);
 
+        $tracer = $this->container->make(PhoenixTracer::class);
+        $settings = $this->container->make(SettingsManager::class);
+
         // Use custom StreamingClient if provided, otherwise resolve from container
         if ($streamingClient !== null) {
-            $queryEngine = new QueryEngine($streamingClient, $toolRegistry);
+            $queryEngine = new QueryEngine($streamingClient, $toolRegistry, $tracer, $settings);
         } else {
             $queryEngine = $this->container->make(QueryEngine::class);
         }
@@ -54,6 +59,7 @@ class AgentLoopFactory
             toolRegistry: $toolRegistry,
             permissionChecker: $permissionChecker,
             hookExecutor: $hookExecutor,
+            tracer: $tracer,
         );
 
         $loop = new AgentLoop(
@@ -67,6 +73,7 @@ class AgentLoopFactory
             costTracker: new CostTracker(),
             toolRegistry: $toolRegistry,
             hookExecutor: $hookExecutor,
+            tracer: $tracer,
         );
 
         if ($workingDirectory !== null) {

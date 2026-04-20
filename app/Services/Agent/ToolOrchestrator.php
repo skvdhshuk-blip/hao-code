@@ -4,6 +4,7 @@ namespace App\Services\Agent;
 
 use App\Services\Hooks\HookExecutor;
 use App\Services\Permissions\PermissionChecker;
+use App\Services\Telemetry\PhoenixTracer;
 use App\Services\ToolResult\ToolResultStorage;
 use App\Tools\ToolRegistry;
 use App\Tools\ToolUseContext;
@@ -18,6 +19,7 @@ class ToolOrchestrator
         private readonly ToolRegistry $toolRegistry,
         private readonly PermissionChecker $permissionChecker,
         private readonly HookExecutor $hookExecutor,
+        private readonly ?PhoenixTracer $tracer = null,
     ) {}
 
     public function setToolResultStorage(ToolResultStorage $storage): void
@@ -204,6 +206,50 @@ class ToolOrchestrator
     }
 
     private function executeSingleTool(
+        array $block,
+        ToolUseContext $context,
+        ?callable $onStart,
+        ?callable $onComplete,
+    ): array {
+        $toolUseId = $block['id'];
+        $toolName = $block['name'];
+        $input = $block['input'] ?? [];
+
+        $toolSpan = $this->tracer?->startSpan(
+            name: "tool.{$toolName}",
+            openInferenceKind: PhoenixTracer::KIND_TOOL,
+            attributes: [
+                'tool.name' => $toolName,
+                'tool.call_id' => (string) $toolUseId,
+                'input.value' => json_encode($input, JSON_UNESCAPED_UNICODE) ?: '',
+                'input.mime_type' => 'application/json',
+            ],
+        );
+        $toolScope = $toolSpan?->activate();
+
+        try {
+            $apiResult = $this->executeSingleToolInner($block, $context, $onStart, $onComplete);
+
+            if ($toolSpan !== null) {
+                $toolSpan->setAttribute('output.value', (string) ($apiResult['content'] ?? ''));
+                $toolSpan->setAttribute('tool.is_error', (bool) ($apiResult['is_error'] ?? false));
+            }
+
+            return $apiResult;
+        } catch (\Throwable $e) {
+            $this->tracer?->recordException($toolSpan, $e);
+            throw $e;
+        } finally {
+            $toolScope?->detach();
+            $toolSpan?->end();
+        }
+    }
+
+    /**
+     * Original executeSingleTool body, wrapped by {@see executeSingleTool()} so
+     * the span lifecycle stays out of the permission / hook / validation logic.
+     */
+    private function executeSingleToolInner(
         array $block,
         ToolUseContext $context,
         ?callable $onStart,
