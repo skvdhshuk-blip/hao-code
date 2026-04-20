@@ -40,6 +40,8 @@ class AgentLoopFactoryTest extends TestCase
                     PermissionChecker::class => $permissionChecker,
                     ToolRegistry::class => $toolRegistry,
                     HookExecutor::class => $hookExecutor,
+                    \App\Services\Telemetry\PhoenixTracer::class => \App\Services\Telemetry\PhoenixTracer::fromConfig(['enabled' => false]),
+                    \App\Services\Settings\SettingsManager::class => new \App\Services\Settings\SettingsManager(),
                     default => throw new \RuntimeException("Unexpected container resolution: {$abstract}"),
                 };
             });

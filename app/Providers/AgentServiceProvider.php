@@ -26,6 +26,7 @@ use App\Services\Permissions\DenialTracker;
 use App\Services\FileHistory\FileHistoryManager;
 use App\Services\Settings\SettingsManager;
 use App\Services\Session\SessionManager;
+use App\Services\Telemetry\PhoenixTracer;
 use App\Services\Permissions\PermissionChecker;
 use App\Support\Terminal\PromptHudState;
 use App\Tools\Skill\SkillLoader;
@@ -46,6 +47,10 @@ class AgentServiceProvider extends ServiceProvider
 
         $this->app->singleton(SettingsManager::class);
         $this->app->singleton(SessionManager::class);
+
+        $this->app->singleton(PhoenixTracer::class, function ($app) {
+            return PhoenixTracer::fromSettings($app->make(SettingsManager::class));
+        });
 
         $this->app->singleton(SessionTitleService::class, function ($app) {
             $settings = $app->make(SettingsManager::class);
@@ -118,8 +123,22 @@ class AgentServiceProvider extends ServiceProvider
         });
 
         $this->app->singleton(MessageHistory::class);
-        $this->app->singleton(QueryEngine::class);
-        $this->app->singleton(ToolOrchestrator::class);
+        $this->app->singleton(QueryEngine::class, function ($app) {
+            return new QueryEngine(
+                streamingClient: $app->make(StreamingClient::class),
+                toolRegistry: $app->make(ToolRegistry::class),
+                tracer: $app->make(PhoenixTracer::class),
+                settings: $app->make(SettingsManager::class),
+            );
+        });
+        $this->app->singleton(ToolOrchestrator::class, function ($app) {
+            return new ToolOrchestrator(
+                toolRegistry: $app->make(ToolRegistry::class),
+                permissionChecker: $app->make(PermissionChecker::class),
+                hookExecutor: $app->make(HookExecutor::class),
+                tracer: $app->make(PhoenixTracer::class),
+            );
+        });
         $this->app->singleton(ContextCompactor::class);
         $this->app->singleton(AgentLoopFactory::class);
 
@@ -135,6 +154,7 @@ class AgentServiceProvider extends ServiceProvider
                 costTracker: $app->make(CostTracker::class),
                 toolRegistry: $app->make(ToolRegistry::class),
                 hookExecutor: $app->make(HookExecutor::class),
+                tracer: $app->make(PhoenixTracer::class),
             );
         });
     }

@@ -245,6 +245,61 @@ Auto-loaded project files: `HAOCODE.md`, `CLAUDE.md`, `.haocode/rules/*.md`, `.h
 
 ---
 
+## Observability (Arize Phoenix)
+
+Every turn, LLM call, and tool invocation can be emitted as OpenTelemetry
+spans to [Arize Phoenix](https://arize.com/phoenix) (self-hosted or cloud).
+Spans use OpenInference semantic conventions (`AGENT`, `LLM`, `TOOL`) so the
+Phoenix UI renders them as proper agent traces out of the box.
+
+Enable via `~/.haocode/settings.json`:
+
+```json
+{
+  "telemetry": {
+    "phoenix": {
+      "enabled": true,
+      "endpoint": "https://phoenix.example.com",
+      "api_key": "...",
+      "project_name": "hao-code",
+      "redact_messages": false
+    }
+  }
+}
+```
+
+Or via env vars (take precedence):
+
+```bash
+export HAOCODE_PHOENIX_ENABLED=true
+export HAOCODE_PHOENIX_ENDPOINT=https://phoenix.example.com
+export HAOCODE_PHOENIX_API_KEY=...
+export HAOCODE_PHOENIX_PROJECT=hao-code
+export HAOCODE_PHOENIX_REDACT=false      # set to true to scrub prompts/outputs
+```
+
+Spans emitted per turn:
+
+| Span | Kind | Key attributes |
+|---|---|---|
+| `agent.run` | `AGENT` | `input.value`, `output.value`, `session.id`, `llm.token_count.*` |
+| `llm.chat` | `LLM` | `llm.model_name`, `llm.provider`, `llm.input_messages.*`, `llm.token_count.*`, `llm.stop_reason` |
+| `tool.<name>` | `TOOL` | `tool.name`, `tool.call_id`, `input.value`, `output.value`, `tool.is_error` |
+
+Telemetry is disabled by default — no data leaves the process unless
+`enabled` is explicitly set. Tracer initialization failures are swallowed:
+if Phoenix is unreachable or the config is malformed, the agent keeps
+working silently. `BatchSpanProcessor` flushes on process exit, so
+one-shot `HaoCode::query()` calls and short CLI sessions still export.
+
+Check status from the REPL:
+
+```
+/telemetry
+```
+
+---
+
 ## Runnable examples
 
 Both examples in [`examples/`](examples/) work against any configured provider

@@ -144,6 +144,79 @@ class SettingsManager
         return $config['type'] ?? 'anthropic';
     }
 
+    /**
+     * Resolve Phoenix / OpenTelemetry settings, honouring env var overrides.
+     * Always returns the full shape so consumers can pluck fields without
+     * null checks; `enabled` is false when nothing is configured.
+     *
+     * @return array{enabled: bool, endpoint: string, api_key: string, project_name: string, redact_messages: bool}
+     */
+    public function getTelemetryConfig(): array
+    {
+        $settings = $this->loadProjectSettings();
+        $raw = is_array($settings['telemetry']['phoenix'] ?? null)
+            ? $settings['telemetry']['phoenix']
+            : [];
+
+        $enabled = $this->resolveBoolSetting(
+            getenv('HAOCODE_PHOENIX_ENABLED'),
+            $raw['enabled'] ?? null,
+            false,
+        );
+
+        $endpoint = $this->firstNonEmptyString(
+            getenv('HAOCODE_PHOENIX_ENDPOINT') ?: null,
+            $raw['endpoint'] ?? null,
+        ) ?? '';
+
+        $apiKey = $this->firstNonEmptyString(
+            getenv('HAOCODE_PHOENIX_API_KEY') ?: null,
+            $raw['api_key'] ?? null,
+            $raw['apiKey'] ?? null,
+        ) ?? '';
+
+        $projectName = $this->firstNonEmptyString(
+            getenv('HAOCODE_PHOENIX_PROJECT') ?: null,
+            $raw['project_name'] ?? null,
+            $raw['projectName'] ?? null,
+        ) ?? 'hao-code';
+
+        $redact = $this->resolveBoolSetting(
+            getenv('HAOCODE_PHOENIX_REDACT'),
+            $raw['redact_messages'] ?? $raw['redactMessages'] ?? null,
+            false,
+        );
+
+        return [
+            'enabled' => $enabled,
+            'endpoint' => $endpoint,
+            'api_key' => $apiKey,
+            'project_name' => $projectName,
+            'redact_messages' => $redact,
+        ];
+    }
+
+    private function resolveBoolSetting(mixed $envValue, mixed $settingValue, bool $default): bool
+    {
+        if ($envValue !== false && $envValue !== '') {
+            return filter_var($envValue, FILTER_VALIDATE_BOOLEAN);
+        }
+
+        if (is_bool($settingValue)) {
+            return $settingValue;
+        }
+
+        if (is_string($settingValue) && $settingValue !== '') {
+            return filter_var($settingValue, FILTER_VALIDATE_BOOLEAN);
+        }
+
+        if (is_int($settingValue)) {
+            return $settingValue !== 0;
+        }
+
+        return $default;
+    }
+
     public function getResolvedModelIdentifier(): string
     {
         $settings = $this->loadProjectSettings();

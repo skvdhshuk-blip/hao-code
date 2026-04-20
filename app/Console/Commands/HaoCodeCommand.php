@@ -1160,6 +1160,7 @@ class HaoCodeCommand extends Command
             'config' => $this->handleConfig($args),
             'model' => $this->handleModel($args),
             'provider' => $this->handleProvider($args),
+            'telemetry' => $this->handleTelemetry(),
             'cost' => $this->printUsageStats($agent),
             'hooks' => $this->handleHooks(),
             'files' => $this->handleFiles($agent),
@@ -2258,6 +2259,34 @@ class HaoCodeCommand extends Command
 
         // /provider (no args) — interactive picker
         $this->interactiveProviderPicker($settings, $providers);
+    }
+
+    private function handleTelemetry(): void
+    {
+        $settings = app(SettingsManager::class);
+        $config = $settings->getTelemetryConfig();
+
+        $status = $config['enabled']
+            ? '<fg=green>enabled</>'
+            : '<fg=gray>disabled</>';
+        $endpoint = $config['endpoint'] !== '' ? $config['endpoint'] : '<fg=gray>not set</>';
+        $apiKey = $config['api_key'] !== ''
+            ? ($config['api_key'] === '' ? '' : substr($config['api_key'], 0, 6).'…'.substr($config['api_key'], -4))
+            : '<fg=gray>not set</>';
+        $redact = $config['redact_messages'] ? 'yes (inputs/outputs masked)' : 'no';
+
+        $lines = [
+            $this->formatter()->keyValue('Phoenix status', $status),
+            $this->formatter()->keyValue('Endpoint', $endpoint),
+            $this->formatter()->keyValue('Project', $config['project_name']),
+            $this->formatter()->keyValue('API key', $apiKey),
+            $this->formatter()->keyValue('Redact messages', $redact),
+            '',
+            '<fg=gray>Configure in settings.json under telemetry.phoenix.{enabled,endpoint,api_key,project_name,redact_messages}</>',
+            '<fg=gray>Or via env: HAOCODE_PHOENIX_ENABLED, HAOCODE_PHOENIX_ENDPOINT, HAOCODE_PHOENIX_API_KEY, HAOCODE_PHOENIX_PROJECT, HAOCODE_PHOENIX_REDACT</>',
+        ];
+
+        $this->renderPanel('Telemetry', $lines);
     }
 
     private function switchProvider(SettingsManager $settings, array $providers, string $name): void

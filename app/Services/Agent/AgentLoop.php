@@ -7,6 +7,7 @@ use App\Services\Cost\CostTracker;
 use App\Services\Hooks\HookExecutor;
 use App\Services\Permissions\PermissionChecker;
 use App\Services\Session\SessionManager;
+use App\Services\Telemetry\PhoenixTracer;
 use App\Services\ToolResult\ToolResultStorage;
 use App\Tools\ToolRegistry;
 use App\Tools\ToolUseContext;
@@ -49,6 +50,7 @@ class AgentLoop
         private readonly CostTracker $costTracker,
         private readonly ToolRegistry $toolRegistry,
         private readonly ?HookExecutor $hookExecutor = null,
+        private readonly ?PhoenixTracer $tracer = null,
     ) {}
 
     public function setPermissionPromptHandler(callable $handler): void
@@ -89,6 +91,44 @@ class AgentLoop
         ?callable $onToolStart = null,
         ?callable $onToolComplete = null,
         ?callable $onTurnStart = null,
+    ): string {
+        $agentSpan = $this->tracer?->startSpan(
+            name: 'agent.run',
+            openInferenceKind: PhoenixTracer::KIND_AGENT,
+            attributes: [
+                'input.value' => is_string($userInput) ? $userInput : json_encode($userInput, JSON_UNESCAPED_UNICODE),
+                'input.mime_type' => is_string($userInput) ? 'text/plain' : 'application/json',
+                'session.id' => $this->sessionManager->getSessionId(),
+            ],
+        );
+        $agentScope = $agentSpan?->activate();
+
+        try {
+            $output = $this->runInternal($userInput, $onTextDelta, $onToolStart, $onToolComplete, $onTurnStart);
+            $agentSpan?->setAttribute('output.value', $output);
+            $agentSpan?->setAttribute('llm.token_count.prompt', $this->totalInputTokens);
+            $agentSpan?->setAttribute('llm.token_count.completion', $this->totalOutputTokens);
+
+            return $output;
+        } catch (\Throwable $e) {
+            $this->tracer?->recordException($agentSpan, $e);
+            throw $e;
+        } finally {
+            $agentScope?->detach();
+            $agentSpan?->end();
+        }
+    }
+
+    /**
+     * Original run body, preserved verbatim behind the tracer wrapper in
+     * {@see run()} so span lifecycle stays isolated from the agent logic.
+     */
+    private function runInternal(
+        string|array $userInput,
+        ?callable $onTextDelta,
+        ?callable $onToolStart,
+        ?callable $onToolComplete,
+        ?callable $onTurnStart,
     ): string {
         $this->aborted = false;
         $this->messageHistory->addUserMessage($userInput);
