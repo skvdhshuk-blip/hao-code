@@ -558,4 +558,98 @@ class ToolOrchestratorTest extends TestCase
         $this->assertTrue($completedResults[0][1]->isError);
         $this->assertTrue($completedResults[1][1]->isError);
     }
+
+    // ─── repeated Read hint ───────────────────────────────────────────────
+
+    public function test_read_hint_appears_only_after_threshold(): void
+    {
+        $registry = new ToolRegistry;
+        $registry->register($this->makeTool('Read', fn () => ToolResult::success('file body'), true));
+        $o = $this->makeOrchestrator($registry);
+
+        $outputs = [];
+        for ($i = 1; $i <= 5; $i++) {
+            $r = $o->executeToolBlock(
+                ['id' => "r{$i}", 'name' => 'Read', 'input' => ['file_path' => '/tmp/rules.json']],
+                $this->context(),
+            );
+            $outputs[] = $r['content'];
+        }
+
+        // First three Reads return clean output.
+        $this->assertSame('file body', $outputs[0]);
+        $this->assertSame('file body', $outputs[1]);
+        $this->assertSame('file body', $outputs[2]);
+        // Fourth and fifth Reads get a hint appended.
+        $this->assertStringContainsString('read /tmp/rules.json 4 times', $outputs[3]);
+        $this->assertStringContainsString('read /tmp/rules.json 5 times', $outputs[4]);
+    }
+
+    public function test_write_resets_read_counter_for_same_file(): void
+    {
+        $registry = new ToolRegistry;
+        $registry->register($this->makeTool('Read', fn () => ToolResult::success('body')));
+        $registry->register($this->makeTool('Write', fn () => ToolResult::success('written')));
+        $o = $this->makeOrchestrator($registry);
+
+        // Push Read count up to threshold.
+        for ($i = 0; $i < 4; $i++) {
+            $o->executeToolBlock(
+                ['id' => "r{$i}", 'name' => 'Read', 'input' => ['file_path' => '/tmp/x']],
+                $this->context(),
+            );
+        }
+
+        // Write on the same path should reset the counter.
+        $o->executeToolBlock(
+            ['id' => 'w1', 'name' => 'Write', 'input' => ['file_path' => '/tmp/x', 'content' => 'new']],
+            $this->context(),
+        );
+
+        // Next Read is effectively the first post-mutation Read — no hint.
+        $after = $o->executeToolBlock(
+            ['id' => 'r5', 'name' => 'Read', 'input' => ['file_path' => '/tmp/x']],
+            $this->context(),
+        );
+
+        $this->assertSame('body', $after['content']);
+    }
+
+    public function test_hint_keys_by_file_path_not_global(): void
+    {
+        $registry = new ToolRegistry;
+        $registry->register($this->makeTool('Read', fn () => ToolResult::success('body')));
+        $o = $this->makeOrchestrator($registry);
+
+        // Read file A three times — no hint yet.
+        for ($i = 0; $i < 3; $i++) {
+            $o->executeToolBlock(
+                ['id' => "a{$i}", 'name' => 'Read', 'input' => ['file_path' => '/tmp/a']],
+                $this->context(),
+            );
+        }
+
+        // First read of file B must be clean — no cross-file leakage.
+        $firstB = $o->executeToolBlock(
+            ['id' => 'b1', 'name' => 'Read', 'input' => ['file_path' => '/tmp/b']],
+            $this->context(),
+        );
+        $this->assertSame('body', $firstB['content']);
+    }
+
+    public function test_hint_is_not_appended_on_error_results(): void
+    {
+        $registry = new ToolRegistry;
+        $registry->register($this->makeTool('Read', fn () => ToolResult::error('permission denied')));
+        $o = $this->makeOrchestrator($registry);
+
+        for ($i = 0; $i < 5; $i++) {
+            $r = $o->executeToolBlock(
+                ['id' => "r{$i}", 'name' => 'Read', 'input' => ['file_path' => '/tmp/guarded']],
+                $this->context(),
+            );
+            // Errors must not grow a hint suffix.
+            $this->assertStringNotContainsString('[hint]', $r['content']);
+        }
+    }
 }
