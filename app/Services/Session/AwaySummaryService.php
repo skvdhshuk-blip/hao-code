@@ -2,8 +2,8 @@
 
 namespace App\Services\Session;
 
+use App\Services\Api\SimpleCompletionClient;
 use App\Services\Settings\SettingsManager;
-use Symfony\Component\HttpClient\HttpClient;
 
 /**
  * Generate an "While you were away" summary when resuming a session.
@@ -102,7 +102,10 @@ PROMPT;
 
     private function callHaiku(array $messages): ?string
     {
-        // Build a condensed transcript for Haiku
+        if ($this->settingsManager === null) {
+            return null;
+        }
+
         $transcript = '';
         foreach ($messages as $msg) {
             $role = ucfirst($msg['role']);
@@ -110,29 +113,23 @@ PROMPT;
             $transcript .= "[{$role}]: {$content}\n\n";
         }
 
-        $client = HttpClient::create(['timeout' => 15]);
-        $baseUrl = rtrim($this->resolveBaseUrl(), '/');
+        $client = new SimpleCompletionClient($this->settingsManager);
 
-        $response = $client->request('POST', $baseUrl . '/v1/messages', [
-            'headers' => [
-                'x-api-key' => $this->resolveApiKey(),
-                'anthropic-version' => '2023-06-01',
-                'content-type' => 'application/json',
-            ],
-            'json' => [
-                'model' => $this->resolveModel(),
-                'max_tokens' => 150,
-                'system' => self::PROMPT,
-                'messages' => [
-                    ['role' => 'user', 'content' => $transcript],
-                ],
-            ],
-        ]);
+        return $client->complete(
+            systemPrompt: self::PROMPT,
+            userPrompt: $transcript,
+            maxOutputTokens: 150,
+            modelOverride: $this->resolveAnthropicCallModel(),
+        );
+    }
 
-        $body = $response->toArray();
-        $summary = trim($body['content'][0]['text'] ?? '');
+    private function resolveAnthropicCallModel(): string
+    {
+        if (($this->settingsManager?->getProviderType() ?? 'anthropic') !== 'anthropic') {
+            return '';
+        }
 
-        return $summary !== '' ? $summary : null;
+        return $this->isKimiCodingEndpoint() ? 'kimi-for-coding' : self::HAIKU_MODEL;
     }
 
     private function shouldPreferLocalGeneration(): bool
@@ -143,18 +140,6 @@ PROMPT;
     private function isKimiCodingEndpoint(): bool
     {
         return str_contains(strtolower($this->resolveBaseUrl()), 'api.kimi.com/coding');
-    }
-
-    private function resolveModel(): string
-    {
-        return $this->isKimiCodingEndpoint()
-            ? 'kimi-for-coding'
-            : self::HAIKU_MODEL;
-    }
-
-    private function resolveApiKey(): string
-    {
-        return $this->settingsManager?->getApiKey() ?: $this->apiKey;
     }
 
     private function resolveBaseUrl(): string

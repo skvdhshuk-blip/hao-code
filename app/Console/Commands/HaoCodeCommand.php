@@ -2280,7 +2280,8 @@ class HaoCodeCommand extends Command
         foreach ($providers as $name => $provider) {
             $marker = $name === $current ? '<fg=green>✓</>' : ' ';
             $model = $provider['model'] ?? '<fg=gray>default</>';
-            $lines[] = "{$marker} <fg=yellow>{$name}</> <fg=gray>·</> {$model}";
+            $type = $provider['type'] ?? 'anthropic';
+            $lines[] = "{$marker} <fg=yellow>{$name}</> <fg=gray>·</> {$model} <fg=gray>[{$type}]</>";
         }
 
         $lines[] = '';
