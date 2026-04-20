@@ -20,6 +20,15 @@ class HaoCodeConfig
         /** API base URL (for custom endpoints / proxies). */
         public readonly ?string $baseUrl = null,
 
+        /**
+         * Provider wire format: 'anthropic' (default), 'openai' (Responses
+         * API), or 'openai_chat' (Chat Completions — use for aihubmix,
+         * DeepSeek, vLLM, and other OpenAI-compatible gateways). Only honoured
+         * when one of {apiKey, baseUrl, model, maxTokens} is also set, since
+         * otherwise the SDK falls back to whatever is in settings.json.
+         */
+        public readonly ?string $providerType = null,
+
         /** Maximum output tokens per response. */
         public readonly ?int $maxTokens = null,
 

@@ -1,6 +1,6 @@
 # Hao Code
 
-A PHP Agent SDK and interactive CLI for Anthropic-compatible APIs.
+A PHP Agent SDK and interactive CLI for Anthropic, OpenAI Responses, and OpenAI Chat Completions APIs.
 
 [![PHP](https://img.shields.io/badge/PHP-%3E%3D8.2-777BB4?style=flat-square&logo=php&logoColor=white)](https://php.net)
 [![Laravel](https://img.shields.io/badge/Laravel-12-FF2D20?style=flat-square&logo=laravel&logoColor=white)](https://laravel.com)
@@ -66,7 +66,7 @@ $result = HaoCode::query('Find order #123', new HaoCodeConfig(
 | Abort control | `AbortController` — cancel from outside |
 | Cost tracking | `$result->cost`, `$result->usage`, `maxBudgetUsd` |
 | Streaming callbacks | `onText`, `onToolStart`, `onToolComplete`, `onTurnStart` |
-| Multi-provider | Anthropic, ZAI, or any Anthropic-compatible endpoint |
+| Multi-provider | Anthropic, ZAI, OpenAI Responses, OpenAI Chat Completions (aihubmix / DeepSeek / vLLM / local OSS) |
 
 </details>
 
@@ -178,26 +178,97 @@ Settings are read from `~/.haocode/settings.json` (global) and `.haocode/setting
 }
 ```
 
-Multi-provider example:
+Multi-provider example (Anthropic + Z.ai + OpenAI Responses + Chat Completions gateway):
 
 ```json
 {
-  "active_provider": "zai",
+  "active_provider": "aihubmix",
   "provider": {
     "anthropic": {
+      "type": "anthropic",
       "api_key": "sk-ant-...",
       "model": "claude-sonnet-4-20250514"
     },
     "zai": {
+      "type": "anthropic",
       "api_key": "your-zai-key",
       "api_base_url": "https://api.z.ai/api/anthropic",
       "model": "glm-5.1"
+    },
+    "openai": {
+      "type": "openai",
+      "api_key": "sk-...",
+      "api_base_url": "https://api.openai.com",
+      "model": "gpt-5-codex"
+    },
+    "aihubmix": {
+      "type": "openai_chat",
+      "api_key": "sk-...",
+      "api_base_url": "https://aihubmix.com",
+      "model": "gpt-4o-mini"
+    },
+    "deepseek": {
+      "type": "openai_chat",
+      "api_key": "sk-...",
+      "api_base_url": "https://api.deepseek.com",
+      "model": "deepseek-reasoner"
     }
   }
 }
 ```
 
+Each provider entry declares a wire format via `type`:
+
+- `"type": "anthropic"` (default when omitted) — talks to `/v1/messages` with
+  Anthropic SSE events and prompt-caching. Works with the official Anthropic
+  API and any Anthropic-compatible gateway (Z.ai, Kimi Coding, aihubmix, etc.).
+- `"type": "openai"` — talks to OpenAI's `/v1/responses` API. Required for
+  the official OpenAI endpoint and any gateway that has adopted Responses.
+  `reasoning.effort` is derived from `/effort`; prompt-caching is skipped (no
+  equivalent on the Responses API).
+- `"type": "openai_chat"` — talks to `/v1/chat/completions`. Use this for
+  OpenAI-compatible gateways that haven't shipped Responses yet (aihubmix,
+  DeepSeek, vLLM, local OSS servers, most third-party proxies). Tool-calls,
+  `reasoning_content` → thinking deltas, and usage accounting are translated
+  internally.
+
+All three types expose the same streaming surface to the rest of the agent
+loop, so the SDK, tools, sub-agents, session resume, and CLI commands behave
+identically regardless of which wire format is active.
+
+Switch at runtime with `/provider <name>` or pre-select with
+`"active_provider": "<name>"`. Use `/provider` with no argument for an
+interactive picker; the listing shows `[anthropic]`, `[openai]`, or
+`[openai_chat]` next to each entry.
+
 Auto-loaded project files: `HAOCODE.md`, `CLAUDE.md`, `.haocode/rules/*.md`, `.haocode/memory/MEMORY.md`
+
+---
+
+## Runnable examples
+
+Both examples in [`examples/`](examples/) work against any configured provider
+and exercise the real SDK surface end-to-end:
+
+```bash
+# One-shot + streaming + structured JSON weather agent, Open-Meteo tools (no key),
+# running through an OpenAI-compatible gateway:
+WEATHER_PROVIDER_TYPE=openai_chat \
+WEATHER_API_KEY=sk-... \
+WEATHER_BASE_URL=https://aihubmix.com \
+WEATHER_MODEL=gpt-4o-mini \
+php examples/weather-agent.php
+
+# The same script works unchanged against Anthropic (omit env vars and set
+# ANTHROPIC_API_KEY in settings.json) or OpenAI Responses:
+WEATHER_PROVIDER_TYPE=openai \
+WEATHER_API_KEY=sk-... \
+WEATHER_MODEL=gpt-5 \
+php examples/weather-agent.php
+```
+
+See also `examples/support-ops-agent.php` for a larger walkthrough covering
+`HaoCode::resume()`, `continueLatest()`, custom `SdkSkill`s, and `AbortController`.
 
 ---
 
@@ -305,4 +376,4 @@ php vendor/bin/phpunit
 
 ---
 
-**[MIT License](LICENSE)** · Built with Laravel Zero · Powered by Anthropic-compatible APIs
+**[MIT License](LICENSE)** · Built with Laravel Zero · Works with Anthropic, OpenAI Responses, and OpenAI Chat Completions APIs

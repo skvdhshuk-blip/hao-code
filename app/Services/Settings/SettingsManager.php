@@ -113,7 +113,7 @@ class SettingsManager
     }
 
     /**
-     * @return array{api_key: string|null, api_base_url: string|null, model: string|null, max_tokens: int|null}|null
+     * @return array{api_key: string|null, api_base_url: string|null, model: string|null, max_tokens: int|null, type: string}|null
      */
     public function getProviderConfig(?string $name = null): ?array
     {
@@ -125,6 +125,23 @@ class SettingsManager
         }
 
         return $providers[$selected];
+    }
+
+    /**
+     * Return the wire-format type of the active provider.
+     *
+     * Defaults to "anthropic" when no provider is configured or when
+     * the provider entry omits a "type" field (back-compat).
+     */
+    public function getProviderType(): string
+    {
+        $config = $this->getProviderConfig();
+
+        if ($config === null) {
+            return 'anthropic';
+        }
+
+        return $config['type'] ?? 'anthropic';
     }
 
     public function getResolvedModelIdentifier(): string
@@ -946,11 +963,17 @@ class SettingsManager
 
     /**
      * @param array<string, mixed> $provider
-     * @return array{api_key: string|null, api_base_url: string|null, model: string|null, max_tokens: int|null}
+     * @return array{api_key: string|null, api_base_url: string|null, model: string|null, max_tokens: int|null, type: string}
      */
     private function normalizeProviderConfig(string $name, array $provider): array
     {
         $options = is_array($provider['options'] ?? null) ? $provider['options'] : [];
+
+        $rawType = $this->firstNonEmptyString(
+            $provider['type'] ?? null,
+            $options['type'] ?? null,
+        );
+        $type = $this->normalizeProviderType($rawType ?? $name);
 
         return [
             'api_key' => $this->firstNonEmptyString(
@@ -979,7 +1002,27 @@ class SettingsManager
                 $options['maxTokens'] ?? null,
                 $options['max_tokens'] ?? null,
             ),
+            'type' => $type,
         ];
+    }
+
+    /**
+     * Map a raw "type" value (or fallback provider name) to one of
+     * the supported wire formats.
+     */
+    private function normalizeProviderType(?string $value): string
+    {
+        if ($value === null) {
+            return 'anthropic';
+        }
+
+        $normalized = strtolower(trim($value));
+
+        return match ($normalized) {
+            'openai', 'openai_responses', 'responses' => 'openai',
+            'openai_chat', 'openai_chat_completions', 'chat_completions' => 'openai_chat',
+            default => 'anthropic',
+        };
     }
 
     private function hasLegacyTopLevelConfig(array $settings): bool

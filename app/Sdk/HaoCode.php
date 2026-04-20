@@ -384,20 +384,34 @@ class HaoCode
         if ($config->apiKey === null
             && $config->baseUrl === null
             && $config->model === null
-            && $config->maxTokens === null) {
+            && $config->maxTokens === null
+            && $config->providerType === null) {
             return null;
         }
+
+        $providerType = match ($config->providerType) {
+            'openai', 'openai_responses', 'responses' => 'openai',
+            'openai_chat', 'openai_chat_completions', 'chat_completions' => 'openai_chat',
+            'anthropic', null => 'anthropic',
+            default => 'anthropic',
+        };
+
+        $defaultBaseUrl = match ($providerType) {
+            'openai', 'openai_chat' => 'https://api.openai.com',
+            default => 'https://api.anthropic.com',
+        };
 
         return new StreamingClient(
             apiKey: $config->apiKey ?? config('haocode.api_key', ''),
             model: $config->model ?? config('haocode.model', 'claude-sonnet-4-20250514'),
-            baseUrl: $config->baseUrl ?? config('haocode.api_base_url', 'https://api.anthropic.com'),
+            baseUrl: $config->baseUrl ?? config('haocode.api_base_url', $defaultBaseUrl),
             maxTokens: $config->maxTokens ?? (int) config('haocode.max_tokens', 16384),
             thinkingEnabled: $config->thinkingEnabled,
             thinkingBudget: $config->thinkingBudget,
             settingsManager: null, // SDK controls config, bypass SettingsManager
             idleTimeoutSeconds: (int) config('haocode.api_stream_idle_timeout', 60),
             streamPollTimeoutSeconds: (float) config('haocode.api_stream_poll_timeout', 1.0),
+            providerType: $providerType,
         );
     }
 
