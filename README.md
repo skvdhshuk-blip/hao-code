@@ -2,7 +2,7 @@
 
 A PHP Agent SDK and interactive CLI for Anthropic, OpenAI Responses, and OpenAI Chat Completions APIs.
 
-[![PHP](https://img.shields.io/badge/PHP-%3E%3D8.2-777BB4?style=flat-square&logo=php&logoColor=white)](https://php.net)
+[![PHP](https://img.shields.io/badge/PHP-%3E%3D8.1-777BB4?style=flat-square&logo=php&logoColor=white)](https://php.net)
 [![Laravel](https://img.shields.io/badge/Laravel-12-FF2D20?style=flat-square&logo=laravel&logoColor=white)](https://laravel.com)
 [![License](https://img.shields.io/badge/License-MIT-blue?style=flat-square)](LICENSE)
 
@@ -425,7 +425,7 @@ php vendor/bin/phpunit
 
 ## Requirements
 
-- PHP 8.2+, Composer
+- PHP 8.1+, Composer
 - `pcntl` recommended (signal handling, parallel tools)
 - `ripgrep` recommended (fast grep)
 
