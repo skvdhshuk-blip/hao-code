@@ -21,7 +21,7 @@ composer require sk-wang/hao-code
 ```
 
 ```php
-use App\Sdk\{HaoCode, HaoCodeConfig};
+use HaoCode\Sdk\{HaoCode, HaoCodeConfig};
 
 // One-shot
 $result = HaoCode::query('Explain this codebase');
@@ -74,7 +74,7 @@ $result = HaoCode::query('Find order #123', new HaoCodeConfig(
 <summary><strong>Custom tool example — 30 lines of PHP</strong></summary>
 
 ```php
-use App\Sdk\SdkTool;
+use HaoCode\Sdk\SdkTool;
 
 class LookupOrderTool extends SdkTool
 {
