@@ -41,7 +41,7 @@ ANTHROPIC_API_KEY=your-api-key
 ## Quick Start
 
 ```php
-use App\Sdk\HaoCode;
+use HaoCode\Sdk\HaoCode;
 
 // One line — ask the agent anything
 $result = HaoCode::query('What files are in this directory?');
@@ -278,7 +278,7 @@ $result->outputTokens();         // int
 Define domain-specific tools the agent can call. Implement 4 methods:
 
 ```php
-use App\Sdk\SdkTool;
+use HaoCode\Sdk\SdkTool;
 
 class LookupOrderTool extends SdkTool
 {
@@ -380,7 +380,7 @@ class ShoppingCart extends SdkTool
 Skills are named prompt templates the agent can invoke. Unlike tools (which execute PHP code), skills inject instructions that guide the agent's behavior.
 
 ```php
-use App\Sdk\SdkSkill;
+use HaoCode\Sdk\SdkSkill;
 
 $skill = new SdkSkill(
     name: 'security-review',
@@ -539,7 +539,7 @@ echo $ticket->queryResult->cost;
 Cancel long-running operations from external code:
 
 ```php
-use App\Sdk\AbortController;
+use HaoCode\Sdk\AbortController;
 
 $abort = new AbortController();
 
@@ -629,9 +629,9 @@ $result = HaoCode::query('Run a full system health check', new HaoCodeConfig(
 The SDK is testable with mock HTTP responses. The test infrastructure uses `MockAnthropicSse` to simulate API responses without real API calls:
 
 ```php
-use App\Sdk\HaoCode;
-use App\Sdk\HaoCodeConfig;
-use App\Services\Api\StreamingClient;
+use HaoCode\Sdk\HaoCode;
+use HaoCode\Sdk\HaoCodeConfig;
+use HaoCode\Services\Api\StreamingClient;
 use Tests\Support\MockAnthropicSse;
 
 // In your test:
