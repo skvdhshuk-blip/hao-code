@@ -26,16 +26,22 @@ use HaoCode\Tools\ToolUseContext;
  *           return Order::find($input['order_id'])->toJson();
  *       }
  *   }
+ *
+ * @api
  */
 abstract class SdkTool extends BaseTool
 {
     /**
      * Tool name as it appears to the model.
+     *
+     * @api
      */
     abstract public function name(): string;
 
     /**
      * Description shown to the model to explain when to use this tool.
+     *
+     * @api
      */
     abstract public function description(): string;
 
@@ -48,6 +54,8 @@ abstract class SdkTool extends BaseTool
      *   'required'    => bool (default: false)
      *   'enum'        => string[] (optional)
      *
+     * @api
+     *
      * @return array<string, array{type?: string, description?: string, required?: bool, enum?: string[]}>
      */
     abstract public function parameters(): array;
@@ -55,13 +63,18 @@ abstract class SdkTool extends BaseTool
     /**
      * Execute the tool and return a string result.
      *
-     * @param  array<string, mixed>  $input  Validated input matching parameters().
-     * @return string  The tool's output shown to the model.
+     * @api
      *
-     * @throws \Throwable  Any exception is caught and returned as a ToolResult error.
+     * @param  array<string, mixed>  $input  Validated input matching parameters().
+     * @return string The tool's output shown to the model.
+     *
+     * @throws \Throwable Any exception is caught and returned as a ToolResult error.
      */
     abstract public function handle(array $input): string;
 
+    /**
+     * @internal
+     */
     public function inputSchema(): ToolInputSchema
     {
         $properties = [];
@@ -91,9 +104,9 @@ abstract class SdkTool extends BaseTool
 
             if ($param['required'] ?? false) {
                 $required[] = $name;
-                $rules[$name] = 'required|' . $laravelType;
+                $rules[$name] = 'required|'.$laravelType;
             } else {
-                $rules[$name] = 'nullable|' . $laravelType;
+                $rules[$name] = 'nullable|'.$laravelType;
             }
         }
 
@@ -104,6 +117,9 @@ abstract class SdkTool extends BaseTool
         ], $rules);
     }
 
+    /**
+     * @internal
+     */
     public function call(array $input, ToolUseContext $context): ToolResult
     {
         try {
@@ -115,6 +131,9 @@ abstract class SdkTool extends BaseTool
         }
     }
 
+    /**
+     * @internal
+     */
     public function isReadOnly(array $input): bool
     {
         return true;

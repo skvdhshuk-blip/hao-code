@@ -37,6 +37,8 @@ use HaoCode\Tools\Skill\SkillLoader;
  *   HaoCode::query('Look up order #123', new HaoCodeConfig(
  *       tools: [new LookupOrderTool()],
  *   ));
+ *
+ * @api
  */
 class HaoCode
 {
@@ -45,6 +47,8 @@ class HaoCode
      *
      * QueryResult implements Stringable, so `echo HaoCode::query(...)` works.
      * But it also carries usage, cost, sessionId, and turnsUsed metadata.
+     *
+     * @api
      */
     public static function query(string $prompt, ?HaoCodeConfig $config = null): QueryResult
     {
@@ -87,6 +91,8 @@ class HaoCode
      * as it arrives from the API, rather than being buffered until the full
      * response completes.
      *
+     * @api
+     *
      * @return \Generator<int, Message>
      */
     public static function stream(string $prompt, ?HaoCodeConfig $config = null): \Generator
@@ -102,7 +108,7 @@ class HaoCode
         }
 
         $loop = self::createLoop($config);
-        $queue = new \SplQueue();
+        $queue = new \SplQueue;
 
         // These callbacks are exclusively invoked from within the Fiber below.
         // Fiber::getCurrent()?->suspend() uses the nullable operator as a defensive
@@ -180,6 +186,8 @@ class HaoCode
 
     /**
      * Create a multi-turn conversation.
+     *
+     * @api
      */
     public static function conversation(?HaoCodeConfig $config = null): Conversation
     {
@@ -196,6 +204,8 @@ class HaoCode
      * Resume a previous session by ID.
      *
      * Returns a Conversation pre-loaded with the session's message history.
+     *
+     * @api
      *
      * @example
      *   $conv = HaoCode::resume('20260407_143022_a1b2c3d4');
@@ -217,6 +227,8 @@ class HaoCode
 
     /**
      * Continue the most recent session in the working directory.
+     *
+     * @api
      *
      * @example
      *   $conv = HaoCode::continueLatest();
@@ -257,6 +269,8 @@ class HaoCode
      *       'required' => ['category', 'priority'],
      *   ]);
      *   echo $result->category; // 'shipping'
+     *
+     * @api
      */
     public static function structured(string $prompt, array $jsonSchema, ?HaoCodeConfig $config = null): StructuredResult
     {
