@@ -1,0 +1,316 @@
+<?php
+
+namespace HaoCode\Services\Mcp\Server;
+
+use HaoCode\Contracts\ToolInterface;
+use HaoCode\Sdk\SdkTool;
+use HaoCode\Tools\Skill\SkillDefinition;
+use HaoCode\Tools\Skill\SkillLoader;
+use HaoCode\Tools\ToolUseContext;
+use Throwable;
+
+/**
+ * Bridges Tool / SdkTool instances to MCP tool meta and invocation.
+ * Handles exception redaction (red line #11) and SdkTool registration gate.
+ */
+class ToolAdapter
+{
+    /** Sensitive path blacklist patterns (red line #3) */
+    private const SENSITIVE_PATTERNS = [
+        '/^\.env/', '/\.key$/', '/^id_rsa/', '/^id_ed25519/',
+        '/\.git\/config$/', '/\/\.ssh\//', '/\/\.aws\//',
+        '/vendor\/.*\.env/', '/vendor\/.*\.key$/',
+    ];
+
+    /** Pattern to redact tokens, keys from exception messages */
+    private const REDACT_PATTERN = '/([A-Za-z0-9+\/=]{20,}|Bearer [^\s]+|sk-[A-Za-z0-9]+|AKIA[A-Z0-9]{16})/';
+
+    /** @var array<string, ToolInterface> */
+    private array $tools = [];
+
+    /** @var array<string, string> FQCN → user.name map */
+    private array $sdkToolMap = [];
+
+    private string $root;
+
+    public function __construct(
+        private readonly ?SkillLoader $skillLoader = null,
+    ) {
+        $this->root = getcwd() ?: '/';
+    }
+
+    public function setRoot(string $root): void
+    {
+        $this->root = rtrim($root, '/');
+    }
+
+    /** Register a built-in tool (Read/Bash/Write/Grep/Glob). */
+    public function registerBuiltin(ToolInterface $tool): void
+    {
+        $name = $tool->name();
+        $this->tools[$name] = $tool;
+    }
+
+    /**
+     * Register an SdkTool from FQCN (red line #10).
+     * Fails fast on naming collision with built-in.
+     */
+    public function registerSdkTool(string $fqcn): void
+    {
+        if (! class_exists($fqcn)) {
+            throw new \RuntimeException("SdkTool class not found: $fqcn");
+        }
+
+        $instance = new $fqcn;
+        if (! ($instance instanceof SdkTool)) {
+            throw new \RuntimeException("$fqcn is not an SdkTool");
+        }
+
+        $shortName = (new \ReflectionClass($fqcn))->getShortName();
+        $mcpName = 'user.'.$shortName;
+
+        if (isset($this->tools[$instance->name()])) {
+            throw new \RuntimeException("SdkTool naming collision: '{$instance->name()}' already registered as built-in");
+        }
+
+        $this->tools[$mcpName] = $instance;
+        $this->sdkToolMap[$fqcn] = $mcpName;
+
+        fwrite(STDERR, "[allowed] {$mcpName} from {$fqcn}\n");
+    }
+
+    /** Returns MCP tools/list format. */
+    public function listTools(): array
+    {
+        $list = [];
+        foreach ($this->tools as $name => $tool) {
+            $schema = $tool->inputSchema()->toJsonSchema();
+            $list[] = [
+                'name' => $name,
+                'description' => $tool->description(),
+                'inputSchema' => $schema,
+            ];
+        }
+
+        return $list;
+    }
+
+    /**
+     * Invoke a tool by MCP name.
+     * Applies: root prefix check, sensitive path blacklist, permission check, exception redaction.
+     */
+    public function invoke(string $name, array $args): array
+    {
+        $tool = $this->tools[$name] ?? null;
+        if ($tool === null) {
+            return $this->denied('access denied');
+        }
+
+        // Path validation for built-ins that accept file paths (red lines #3 & #4)
+        $pathArg = $args['file_path'] ?? $args['path'] ?? $args['pattern'] ?? null;
+        if ($pathArg !== null && is_string($pathArg)) {
+            // Normalize the path for checking; resolve relative to root
+            $absPath = str_starts_with($pathArg, '/') ? $pathArg : ($this->root.'/'.$pathArg);
+
+            // Sensitive filename check (before realpath to catch .env etc.)
+            if ($this->isSensitivePath(basename($pathArg)) || $this->isSensitivePath($pathArg)) {
+                return $this->denied('access denied');
+            }
+
+            $normalizedRoot = realpath($this->root) ?: $this->root;
+
+            // For existing paths, use realpath (resolves symlinks - red line #4)
+            $real = realpath($absPath);
+            if ($real !== false) {
+                if (! str_starts_with($real.'/', $normalizedRoot.'/') && $real !== $normalizedRoot) {
+                    return $this->denied('access denied');
+                }
+            } else {
+                // Non-existent path (e.g., Write target): normalize manually
+                $normalized = $this->normalizePath($absPath);
+                if (! str_starts_with($normalized.'/', $normalizedRoot.'/') && $normalized !== $normalizedRoot) {
+                    return $this->denied('access denied');
+                }
+            }
+        }
+
+        // Check permissions via tool's own checkPermissions
+        $ctx = new ToolUseContext(workingDirectory: $this->root, sessionId: 'mcp');
+        $decision = $tool->checkPermissions($args, $ctx);
+
+        if (! $decision->allowed) {
+            return $this->denied('access denied');
+        }
+
+        try {
+            $result = $tool->call($args, $ctx);
+            $isSdk = isset($this->sdkToolMap[get_class($tool)]) || str_starts_with($name, 'user.');
+            $origin = $isSdk ? 'sdk' : 'builtin';
+
+            if ($result->isError) {
+                $msg = $isSdk ? $this->redactMessage($result->output) : 'access denied';
+
+                return [
+                    'isError' => true,
+                    'content' => [['type' => 'text', 'text' => $msg]],
+                    'tool.origin' => $origin,
+                ];
+            }
+
+            return [
+                'content' => [['type' => 'text', 'text' => $result->output]],
+                'tool.origin' => $origin,
+            ];
+        } catch (Throwable $e) {
+            $isSdk = str_starts_with($name, 'user.');
+            $msg = $isSdk ? $this->redactMessage($e->getMessage()) : 'access denied';
+
+            return [
+                'isError' => true,
+                'content' => [['type' => 'text', 'text' => $msg]],
+            ];
+        }
+    }
+
+    /** Returns MCP prompts/list format (only public:true skills from project dir). */
+    public function listPrompts(): array
+    {
+        if ($this->skillLoader === null) {
+            return [];
+        }
+        $prompts = [];
+        foreach ($this->skillLoader->loadSkills() as $name => $skill) {
+            if (! $this->isPublicProjectSkill($skill)) {
+                continue;
+            }
+            $prompts[] = [
+                'name' => $name,
+                'description' => $skill->description,
+            ];
+        }
+
+        return $prompts;
+    }
+
+    /** Returns MCP prompts/get format with credential masking. */
+    public function getPrompt(string $name): array
+    {
+        if ($this->skillLoader === null) {
+            return ['isError' => true, 'content' => [['type' => 'text', 'text' => 'access denied']]];
+        }
+
+        $skill = $this->skillLoader->findSkill($name);
+        if ($skill === null || ! $this->isPublicProjectSkill($skill)) {
+            return ['isError' => true, 'content' => [['type' => 'text', 'text' => 'access denied']]];
+        }
+
+        // Outbound scan + mask credentials (red line #12)
+        $body = $this->maskCredentials($skill->prompt);
+
+        return [
+            'description' => $skill->description,
+            'messages' => [
+                ['role' => 'user', 'content' => ['type' => 'text', 'text' => $body]],
+            ],
+        ];
+    }
+
+    private function isPublicProjectSkill(SkillDefinition $skill): bool
+    {
+        // Must have public: true in frontmatter (we check skillDir is under project dir)
+        $cwd = getcwd() ?: '/';
+        $projectSkillsDir = realpath($cwd.'/.haocode/skills') ?: $cwd.'/.haocode/skills';
+        $skillRealDir = realpath($skill->skillDir) ?: $skill->skillDir;
+
+        // Only project skills (not global ~/.haocode/skills)
+        if (! str_starts_with($skillRealDir, $projectSkillsDir)) {
+            return false;
+        }
+
+        // We need the skill to have 'public: true' — we check via context property
+        // SkillDefinition doesn't carry this directly; we'll re-read the file
+        $skillFile = $skill->skillDir.'/SKILL.md';
+        if (! file_exists($skillFile)) {
+            $skillFile = $skill->skillDir.'.md';
+        }
+        if (! file_exists($skillFile)) {
+            return false;
+        }
+
+        $content = file_get_contents($skillFile);
+        if ($content === false) {
+            return false;
+        }
+
+        if (preg_match('/^---\s*\n(.*?)\n---/s', $content, $m)) {
+            return (bool) preg_match('/^public:\s*true\s*$/m', $m[1]);
+        }
+
+        return false;
+    }
+
+    private function isSensitivePath(string $path): bool
+    {
+        $base = basename($path);
+        foreach (self::SENSITIVE_PATTERNS as $pattern) {
+            if (preg_match($pattern, $base) || preg_match($pattern, $path)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function redactMessage(string $msg): string
+    {
+        // Check for SQL/PDO/stacktrace patterns
+        $dangerous = ['/SQLSTATE/', '/PDO/', '/Stack trace/', '/vendor\//', '/HaoCode\\\\/'];
+        foreach ($dangerous as $pattern) {
+            if (preg_match($pattern, $msg)) {
+                return 'tool execution failed';
+            }
+        }
+        $msg = preg_replace(self::REDACT_PATTERN, '***', $msg) ?? $msg;
+
+        return mb_substr($msg, 0, 200);
+    }
+
+    private function maskCredentials(string $text): string
+    {
+        // Mask credential patterns in skill body (red line #12)
+        $text = preg_replace('/AKIA[A-Z0-9]{16}/', '***MASKED***', $text) ?? $text;
+        $text = preg_replace('/-----BEGIN [A-Z ]+PRIVATE KEY-----.*?-----END [A-Z ]+PRIVATE KEY-----/s', '***MASKED***', $text) ?? $text;
+        $text = preg_replace('/sk-ant-[A-Za-z0-9\-]+/', '***MASKED***', $text) ?? $text;
+        $text = preg_replace('/token:\s*[A-Za-z0-9\-_\.]+/', 'token: ***MASKED***', $text) ?? $text;
+        // Strip template expressions that would leak config/env
+        $text = preg_replace('/\{\{\s*(env|config)\s*\(.*?\)\s*\}\}/', '{{ /* masked */ }}', $text) ?? $text;
+
+        return $text;
+    }
+
+    private function normalizePath(string $path): string
+    {
+        $parts = explode('/', $path);
+        $out = [];
+        foreach ($parts as $part) {
+            if ($part === '' || $part === '.') {
+                continue;
+            }
+            if ($part === '..') {
+                array_pop($out);
+            } else {
+                $out[] = $part;
+            }
+        }
+
+        return '/'.implode('/', $out);
+    }
+
+    private function denied(string $msg): array
+    {
+        return [
+            'isError' => true,
+            'content' => [['type' => 'text', 'text' => $msg]],
+        ];
+    }
+}

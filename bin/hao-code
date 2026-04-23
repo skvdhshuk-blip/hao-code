@@ -107,7 +107,11 @@ if (is_string($storagePath) && $storagePath !== '') {
     $app->useStoragePath($storagePath);
 }
 
-array_splice($argv, 1, 0, ['hao-code']);
+// Only prepend the default command name when the first arg is NOT a registered subcommand.
+$subcommands = ['mcp-serve'];
+if (!isset($argv[1]) || !in_array($argv[1], $subcommands, true)) {
+    array_splice($argv, 1, 0, ['hao-code']);
+}
 $_SERVER['argv'] = $argv;
 $_SERVER['argc'] = count($argv);
 
