@@ -52,6 +52,87 @@ class McpServer
         }
     }
 
+    /**
+     * Handle a single JSON-RPC message and return the JSON-encoded response (or null for notifications).
+     * Extracted for reuse by HTTP transport.
+     */
+    public function handleMessage(string $json): ?string
+    {
+        $msg = json_decode($json, true);
+        if (! is_array($msg)) {
+            return json_encode([
+                'jsonrpc' => '2.0',
+                'id' => null,
+                'error' => ['code' => -32700, 'message' => 'Parse error'],
+            ]);
+        }
+
+        $id = $msg['id'] ?? null;
+        $method = $msg['method'] ?? '';
+        $params = $msg['params'] ?? [];
+
+        if (! is_string($method) || $method === '') {
+            return json_encode([
+                'jsonrpc' => '2.0',
+                'id' => $id,
+                'error' => ['code' => -32600, 'message' => 'Invalid Request'],
+            ]);
+        }
+
+        $spanName = match ($method) {
+            'tools/call' => 'mcp.server.tool.call',
+            default => 'mcp.server.'.str_replace('/', '.', $method),
+        };
+        $span = $this->tracer?->startSpan($spanName, PhoenixTracer::KIND_TOOL, [
+            'mcp.caller' => $this->caller,
+            'mcp.method' => $method,
+        ]);
+
+        try {
+            $result = match ($method) {
+                'initialize' => $this->handleInitialize($params),
+                'tools/list' => $this->handleToolsList(),
+                'tools/call' => $this->handleToolsCall($params, $span),
+                'prompts/list' => $this->handlePromptsList(),
+                'prompts/get' => $this->handlePromptsGet($params),
+                'notifications/initialized' => null,
+                'shutdown' => (function () {
+                    $this->running = false;
+
+                    return [];
+                })(),
+                'exit' => (function () {
+                    $this->running = false;
+
+                    return null;
+                })(),
+                default => throw new \RuntimeException("Method not found: $method"),
+            };
+
+            if ($result === null) {
+                return null; // notification — no response
+            }
+
+            if ($id !== null) {
+                return json_encode(['jsonrpc' => '2.0', 'id' => $id, 'result' => $result]);
+            }
+
+            return null;
+        } catch (\RuntimeException $e) {
+            $code = str_starts_with($e->getMessage(), 'Method not found') ? -32601 : -32603;
+            $message = str_starts_with($e->getMessage(), 'Method not found') ? 'Method not found' : 'Internal error';
+            $this->tracer?->recordException($span, $e);
+
+            return json_encode(['jsonrpc' => '2.0', 'id' => $id, 'error' => ['code' => $code, 'message' => $message]]);
+        } catch (\Throwable $e) {
+            $this->tracer?->recordException($span, $e);
+
+            return json_encode(['jsonrpc' => '2.0', 'id' => $id, 'error' => ['code' => -32603, 'message' => 'Internal error']]);
+        } finally {
+            $span?->end();
+        }
+    }
+
     private function readFrame(): ?string
     {
         $contentLength = null;
@@ -127,68 +208,9 @@ class McpServer
 
     private function dispatch(string $json): void
     {
-        $msg = json_decode($json, true);
-        if (! is_array($msg)) {
-            $this->sendError(null, -32700, 'Parse error');
-
-            return;
-        }
-
-        $id = $msg['id'] ?? null;
-        $method = $msg['method'] ?? '';
-        $params = $msg['params'] ?? [];
-
-        if (! is_string($method) || $method === '') {
-            $this->sendError($id, -32600, 'Invalid Request');
-
-            return;
-        }
-
-        $spanName = match ($method) {
-            'tools/call' => 'mcp.server.tool.call',
-            default => 'mcp.server.'.str_replace('/', '.', $method),
-        };
-        $span = $this->tracer?->startSpan($spanName, PhoenixTracer::KIND_TOOL, [
-            'mcp.caller' => $this->caller,
-            'mcp.method' => $method,
-        ]);
-
-        try {
-            $result = match ($method) {
-                'initialize' => $this->handleInitialize($params),
-                'tools/list' => $this->handleToolsList(),
-                'tools/call' => $this->handleToolsCall($params, $span),
-                'prompts/list' => $this->handlePromptsList(),
-                'prompts/get' => $this->handlePromptsGet($params),
-                'notifications/initialized' => null, // no response
-                'shutdown' => (function () {
-                    $this->running = false;
-
-                    return [];
-                })(),
-                'exit' => (function () {
-                    $this->running = false;
-
-                    return null;
-                })(),
-                default => throw new \RuntimeException("Method not found: $method"),
-            };
-
-            if ($result !== null && $id !== null) {
-                $this->sendResult($id, $result);
-            }
-        } catch (\RuntimeException $e) {
-            if (str_starts_with($e->getMessage(), 'Method not found')) {
-                $this->sendError($id, -32601, 'Method not found');
-            } else {
-                $this->sendError($id, -32603, 'Internal error');
-            }
-            $this->tracer?->recordException($span, $e);
-        } catch (\Throwable $e) {
-            $this->sendError($id, -32603, 'Internal error');
-            $this->tracer?->recordException($span, $e);
-        } finally {
-            $span?->end();
+        $response = $this->handleMessage($json);
+        if ($response !== null) {
+            $this->writeFrame($response);
         }
     }
 
