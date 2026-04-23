@@ -1,0 +1,15 @@
+event: response.created
+data: {"type":"response.created","response":{"id":"resp_mt01","model":"gpt-4o-mini"}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":0,"item":{"type":"function_call","call_id":"toolu_mt01","name":"get_time","arguments":""}}
+
+event: response.function_call_arguments.delta
+data: {"type":"response.function_call_arguments.delta","output_index":0,"delta":"{\"timezone\":\"Asia/Tokyo\"}"}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"function_call"}}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_mt01","output":[{"type":"function_call"}],"usage":{"input_tokens":60,"output_tokens":10}}}
+
