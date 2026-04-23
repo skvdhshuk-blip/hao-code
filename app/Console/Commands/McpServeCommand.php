@@ -2,6 +2,7 @@
 
 namespace HaoCode\Console\Commands;
 
+use HaoCode\Services\Mcp\Server\HttpTransport;
 use HaoCode\Services\Mcp\Server\McpServer;
 use HaoCode\Services\Mcp\Server\ToolAdapter;
 use HaoCode\Services\Settings\SettingsManager;
@@ -32,9 +33,13 @@ class McpServeCommand extends Command
         {--allow=* : Additional allow rules, e.g. --allow=write:./storage/**}
         {--deny=* : Additional deny rules}
         {--tool=* : SdkTool FQCN to register, e.g. --tool=App\\Tools\\LookupOrderTool}
-        {--preset= : Permission preset: strict|laravel|laravel-dev}';
+        {--preset= : Permission preset: strict|laravel|laravel-dev}
+        {--mode=stdio : Transport mode: stdio|http}
+        {--bind=127.0.0.1 : Bind address for HTTP mode (default 127.0.0.1)}
+        {--port=5173 : TCP port for HTTP mode}
+        {--token= : Bearer token for HTTP mode (required when --mode=http)}';
 
-    protected $description = 'Start hao-code as an MCP server (stdio JSON-RPC 2.0)';
+    protected $description = 'Start hao-code as an MCP server (stdio JSON-RPC 2.0 or HTTP)';
 
     // Tools allowed per preset
     private const PRESET_TOOLS = [
@@ -101,7 +106,23 @@ class McpServeCommand extends Command
 
         $tracer = PhoenixTracer::fromSettings($settings);
         $server = new McpServer($adapter, $tracer, $caller);
-        $server->run();
+
+        $mode = $this->option('mode') ?: 'stdio';
+
+        if ($mode === 'http') {
+            $token = (string) ($this->option('token') ?: '');
+            if ($token === '') {
+                fwrite(STDERR, "FATAL: --token is required for HTTP transport\n");
+
+                return 1;
+            }
+            $bind = (string) ($this->option('bind') ?: '127.0.0.1');
+            $port = (int) ($this->option('port') ?: 5173);
+            $transport = new HttpTransport($server, $bind, $port, $token, $tracer);
+            $transport->run();
+        } else {
+            $server->run();
+        }
 
         return 0;
     }
