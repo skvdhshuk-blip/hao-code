@@ -43,17 +43,31 @@ class PermissionCheckerTest extends TestCase
         return new class($name, $readOnly) extends BaseTool
         {
             public function __construct(private string $n, private bool $ro) {}
-            public function name(): string { return $this->n; }
-            public function description(): string { return ''; }
+
+            public function name(): string
+            {
+                return $this->n;
+            }
+
+            public function description(): string
+            {
+                return '';
+            }
+
             public function inputSchema(): ToolInputSchema
             {
                 return ToolInputSchema::make(['type' => 'object', 'properties' => []]);
             }
+
             public function call(array $input, ToolUseContext $ctx): ToolResult
             {
                 return ToolResult::success('ok');
             }
-            public function isReadOnly(array $input): bool { return $this->ro; }
+
+            public function isReadOnly(array $input): bool
+            {
+                return $this->ro;
+            }
         };
     }
 
@@ -307,5 +321,44 @@ class PermissionCheckerTest extends TestCase
 
         $this->assertTrue($decision->allowed,
             'Integer first value cast to string should still match the pattern');
+    }
+
+    public function test_non_interactive_mode_downgrades_ask_to_deny(): void
+    {
+        $checker = $this->makeChecker();
+        $checker->nonInteractive(true);
+
+        // rm -rf triggers ask() in normal mode
+        $tool = $this->makeBashTool();
+        $decision = $checker->check($tool, ['command' => 'rm -rf /tmp/foo'], $this->context);
+
+        $this->assertFalse($decision->allowed);
+        $this->assertFalse($decision->needsPrompt, 'ask() must be downgraded to deny() in non-interactive mode');
+        $this->assertStringContainsString('Non-interactive', $decision->reason ?? '');
+    }
+
+    public function test_non_interactive_false_preserves_ask(): void
+    {
+        $checker = $this->makeChecker();
+        $checker->nonInteractive(false);
+
+        $tool = $this->makeBashTool();
+        $decision = $checker->check($tool, ['command' => 'rm -rf /tmp/foo'], $this->context);
+
+        $this->assertFalse($decision->allowed);
+        $this->assertTrue($decision->needsPrompt, 'ask() should be preserved when non-interactive is false');
+    }
+
+    public function test_is_non_interactive_reflects_flag(): void
+    {
+        $checker = $this->makeChecker();
+        $this->assertFalse($checker->isNonInteractive());
+        $checker->nonInteractive(true);
+        $this->assertTrue($checker->isNonInteractive());
+    }
+
+    private function makeBashTool(): ToolInterface
+    {
+        return $this->makeTool('Bash', false);
     }
 }

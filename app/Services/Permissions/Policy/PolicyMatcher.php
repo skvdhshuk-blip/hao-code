@@ -17,6 +17,17 @@ class PolicyMatcher
     ) {}
 
     /**
+     * Returns a matcher that allows every Bash command — use only when no policy
+     * enforcement is required and the caller must satisfy a non-nullable constraint.
+     */
+    public static function allowAll(): self
+    {
+        return new self([
+            PolicyRule::fromArray(['name' => 'allow-all', 'tool' => 'Bash', 'cmd' => '*']),
+        ]);
+    }
+
+    /**
      * Match tool+cmd against loaded rules and return a decision.
      *
      * @param  array<string, mixed>  $context  Keys: args (string), env (array), cwd (string), stdin_size (int)

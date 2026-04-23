@@ -108,7 +108,7 @@ if (is_string($storagePath) && $storagePath !== '') {
 }
 
 // Only prepend the default command name when the first arg is NOT a registered subcommand.
-$subcommands = ['mcp-serve'];
+$subcommands = ['mcp-serve', 'daemon', 'cron:add', 'cron:history', 'cron:retry'];
 if (!isset($argv[1]) || !in_array($argv[1], $subcommands, true)) {
     array_splice($argv, 1, 0, ['hao-code']);
 }

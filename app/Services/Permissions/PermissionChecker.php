@@ -11,10 +11,27 @@ use HaoCode\Tools\ToolUseContext;
 
 class PermissionChecker
 {
+    private bool $nonInteractive = false;
+
     public function __construct(
         private readonly SettingsManager $settings,
         private readonly DenialTracker $denialTracker,
     ) {}
+
+    /**
+     * Enable non-interactive mode: any ask() decision is downgraded to deny().
+     * Must be set before running daemon or any unattended process — prevents
+     * permission prompts from blocking an unattended process indefinitely.
+     */
+    public function nonInteractive(bool $flag = true): void
+    {
+        $this->nonInteractive = $flag;
+    }
+
+    public function isNonInteractive(): bool
+    {
+        return $this->nonInteractive;
+    }
 
     public function check(ToolInterface $tool, array $input, ToolUseContext $context): PermissionDecision
     {
@@ -42,7 +59,7 @@ class PermissionChecker
         // Policy layer: check DSL rules before deny (fail-closed by default)
         $policyDecision = $this->checkPolicy($tool, $input);
         if ($policyDecision !== null) {
-            return $policyDecision;
+            return $this->maybeDowngradeAsk($policyDecision);
         }
 
         // Check explicit deny rules first — deny always takes precedence
@@ -68,19 +85,19 @@ class PermissionChecker
             // Check shell obfuscation
             $obfuscation = DangerousPatterns::checkObfuscation($command);
             if ($obfuscation !== null) {
-                return PermissionDecision::ask($obfuscation);
+                return $this->maybeDowngradeAsk(PermissionDecision::ask($obfuscation));
             }
 
             // Check dangerous patterns
             foreach (DangerousPatterns::getBashDangerPatterns() as $pattern => $message) {
                 if (preg_match($pattern, $command)) {
-                    return PermissionDecision::ask($message);
+                    return $this->maybeDowngradeAsk(PermissionDecision::ask($message));
                 }
             }
 
             // Check code exec commands
             if (DangerousPatterns::isCodeExecCommand($command)) {
-                return PermissionDecision::ask('Command executes code — requires approval.');
+                return $this->maybeDowngradeAsk(PermissionDecision::ask('Command executes code — requires approval.'));
             }
         }
 
@@ -89,8 +106,21 @@ class PermissionChecker
             return PermissionDecision::allow();
         }
 
-        // Default: needs user approval
-        return PermissionDecision::ask();
+        // Default: needs user approval (downgraded to deny in non-interactive mode)
+        return $this->maybeDowngradeAsk(PermissionDecision::ask());
+    }
+
+    /**
+     * In non-interactive mode, convert ask() to deny() so the daemon never
+     * blocks waiting for a prompt that will never arrive.
+     */
+    private function maybeDowngradeAsk(PermissionDecision $decision): PermissionDecision
+    {
+        if ($this->nonInteractive && $decision->needsPrompt) {
+            return PermissionDecision::deny('Non-interactive mode: approval prompt suppressed and treated as deny');
+        }
+
+        return $decision;
     }
 
     private function checkPolicy(ToolInterface $tool, array $input): ?PermissionDecision
