@@ -40,7 +40,7 @@ class PolicyLoader
     }
 
     /** @param PolicyRule[] $rules */
-    private function validateAll(array $rules): void
+    public function validateAll(array $rules): void
     {
         $this->validateRegexLengths($rules);
         $this->validateNoConflicts($rules);
