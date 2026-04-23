@@ -7,10 +7,15 @@ use HaoCode\Services\Permissions\PermissionMode;
 class SettingsManager
 {
     private const DEFAULT_MODEL = 'claude-sonnet-4-20250514';
+
     private const DEFAULT_BASE_URL = 'https://api.anthropic.com';
+
     private const DEFAULT_MAX_TOKENS = 16384;
+
     private const DEFAULT_APPROVAL_POLICY = 'on-request';
+
     private const DEFAULT_SANDBOX_MODE = 'workspace-write';
+
     private const DEFAULT_STREAM_MODE = 'final';
 
     private const DEFAULT_STATUSLINE = [
@@ -23,6 +28,7 @@ class SettingsManager
     ];
 
     private ?array $cachedSettings = null;
+
     private array $runtimeOverrides = [];
 
     public function getApiKey(): string
@@ -355,6 +361,7 @@ class SettingsManager
         }
 
         $settings = $this->loadProjectSettings();
+
         return $settings['append_system_prompt'] ?? null;
     }
 
@@ -372,13 +379,23 @@ class SettingsManager
     public function getAllowRules(): array
     {
         $settings = $this->loadProjectSettings();
+
         return $settings['permissions']['allow'] ?? [];
     }
 
     public function getDenyRules(): array
     {
         $settings = $this->loadProjectSettings();
+
         return $settings['permissions']['deny'] ?? [];
+    }
+
+    /** @return string[] Paths to policy YAML files */
+    public function getPolicyFiles(): array
+    {
+        $settings = $this->loadProjectSettings();
+
+        return $settings['permissions']['policy_files'] ?? [];
     }
 
     public function getSessionPath(): string
@@ -642,7 +659,7 @@ class SettingsManager
     public function addAllowRule(string $rule): void
     {
         $this->modifyProjectSettings(function (array &$settings) use ($rule) {
-            if (!in_array($rule, $settings['permissions']['allow'] ?? [], true)) {
+            if (! in_array($rule, $settings['permissions']['allow'] ?? [], true)) {
                 $settings['permissions']['allow'][] = $rule;
             }
         });
@@ -654,7 +671,7 @@ class SettingsManager
     public function addDenyRule(string $rule): void
     {
         $this->modifyProjectSettings(function (array &$settings) use ($rule) {
-            if (!in_array($rule, $settings['permissions']['deny'] ?? [], true)) {
+            if (! in_array($rule, $settings['permissions']['deny'] ?? [], true)) {
                 $settings['permissions']['deny'][] = $rule;
             }
         });
@@ -748,7 +765,7 @@ class SettingsManager
             'thinking_budget' => $this->getThinkingBudget(),
             'effort_level' => $this->getEffortLevel(),
             'vim_mode' => $this->isVimMode(),
-            'api_key_set' => !empty($this->getApiKey()),
+            'api_key_set' => ! empty($this->getApiKey()),
         ];
     }
 
@@ -781,8 +798,8 @@ class SettingsManager
         }
 
         $globalPath = config('haocode.global_settings_path')
-            ?? ($_SERVER['HOME'] ?? getenv('HOME') ?: sys_get_temp_dir()) . '/.haocode/settings.json';
-        $projectPath = getcwd() . '/.haocode/settings.json';
+            ?? ($_SERVER['HOME'] ?? getenv('HOME') ?: sys_get_temp_dir()).'/.haocode/settings.json';
+        $projectPath = getcwd().'/.haocode/settings.json';
         $global = $this->loadSettingsFile($globalPath);
         $project = $this->loadSettingsFile($projectPath);
 
@@ -803,7 +820,8 @@ class SettingsManager
         // rather than replacing them. This prevents silent loss of global deny/allow rules.
         $this->cachedSettings['permissions'] = [
             'allow' => array_merge($globalPerms['allow'] ?? [], $projectPerms['allow'] ?? []),
-            'deny'  => array_merge($globalPerms['deny'] ?? [],  $projectPerms['deny'] ?? []),
+            'deny' => array_merge($globalPerms['deny'] ?? [], $projectPerms['deny'] ?? []),
+            'policy_files' => array_merge($globalPerms['policy_files'] ?? [], $projectPerms['policy_files'] ?? []),
         ];
 
         return $this->cachedSettings;
@@ -1035,7 +1053,7 @@ class SettingsManager
     }
 
     /**
-     * @param array<string, mixed> $provider
+     * @param  array<string, mixed>  $provider
      * @return array{api_key: string|null, api_base_url: string|null, model: string|null, max_tokens: int|null, type: string}
      */
     private function normalizeProviderConfig(string $name, array $provider): array
@@ -1154,21 +1172,21 @@ class SettingsManager
      */
     private function modifyProjectSettings(callable $modifier): void
     {
-        $projectPath = getcwd() . '/.haocode/settings.json';
+        $projectPath = getcwd().'/.haocode/settings.json';
 
         $settings = [];
         if (file_exists($projectPath)) {
             $settings = json_decode(file_get_contents($projectPath), true) ?: [];
         }
 
-        if (!isset($settings['permissions'])) {
+        if (! isset($settings['permissions'])) {
             $settings['permissions'] = ['allow' => [], 'deny' => []];
         }
 
         $modifier($settings);
 
         $dir = dirname($projectPath);
-        if (!is_dir($dir)) {
+        if (! is_dir($dir)) {
             mkdir($dir, 0755, true);
         }
 

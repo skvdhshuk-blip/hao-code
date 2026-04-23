@@ -3,8 +3,11 @@
 namespace HaoCode\Services\Permissions;
 
 use HaoCode\Contracts\ToolInterface;
-use HaoCode\Tools\ToolUseContext;
+use HaoCode\Services\Permissions\Policy\PolicyDecisionKind;
+use HaoCode\Services\Permissions\Policy\PolicyLoader;
+use HaoCode\Services\Permissions\Policy\PolicyMatcher;
 use HaoCode\Services\Settings\SettingsManager;
+use HaoCode\Tools\ToolUseContext;
 
 class PermissionChecker
 {
@@ -23,8 +26,9 @@ class PermissionChecker
         }
 
         // Plan mode: deny write operations
-        if ($mode === PermissionMode::Plan && !$tool->isReadOnly($input)) {
+        if ($mode === PermissionMode::Plan && ! $tool->isReadOnly($input)) {
             $this->denialTracker->record($tool->name(), $this->summarizeInput($input), 'plan mode');
+
             return PermissionDecision::deny('Write operations not allowed in plan mode');
         }
 
@@ -35,10 +39,17 @@ class PermissionChecker
             }
         }
 
+        // Policy layer: check DSL rules before deny (fail-closed by default)
+        $policyDecision = $this->checkPolicy($tool, $input);
+        if ($policyDecision !== null) {
+            return $policyDecision;
+        }
+
         // Check explicit deny rules first — deny always takes precedence
         foreach ($this->settings->getDenyRules() as $rule) {
             if ($this->matchesRule($rule, $tool, $input)) {
                 $this->denialTracker->record($tool->name(), $this->summarizeInput($input), "rule: {$rule}");
+
                 return PermissionDecision::deny("Denied by rule: {$rule}");
             }
         }
@@ -82,9 +93,47 @@ class PermissionChecker
         return PermissionDecision::ask();
     }
 
+    private function checkPolicy(ToolInterface $tool, array $input): ?PermissionDecision
+    {
+        $policyFiles = $this->settings->getPolicyFiles();
+        if (empty($policyFiles)) {
+            return null;
+        }
+
+        $loader = new PolicyLoader;
+        $rules = [];
+        foreach ($policyFiles as $file) {
+            try {
+                $rules = array_merge($rules, $loader->load($file));
+            } catch (\Throwable $e) {
+                // Fail-closed: a broken policy file must not silently allow all actions
+                return PermissionDecision::deny('Policy file could not be loaded: '.$e->getMessage());
+            }
+        }
+
+        if (empty($rules)) {
+            return null;
+        }
+
+        $matcher = new PolicyMatcher($rules);
+        $cmd = $input['command'] ?? '';
+        // Extract the first token as the command binary, pass rest as args
+        $parts = preg_split('/\s+/', trim($cmd), 2);
+        $binary = $parts[0] ?? $cmd;
+        $args = $parts[1] ?? '';
+
+        $decision = $matcher->match($tool->name(), $binary, ['args' => $args]);
+
+        return match ($decision->kind) {
+            PolicyDecisionKind::Allow => null, // let normal flow continue
+            PolicyDecisionKind::Deny => PermissionDecision::deny($decision->reason ?? 'Denied by policy'),
+            PolicyDecisionKind::ApprovalRequired => PermissionDecision::ask($decision->reason ?? 'Policy requires approval'),
+        };
+    }
+
     private function matchesRule(string $rule, ToolInterface $tool, array $input): bool
     {
-        if (!preg_match('/^(\w+)(?:\((.+)\))?$/', $rule, $m)) {
+        if (! preg_match('/^(\w+)(?:\((.+)\))?$/', $rule, $m)) {
             return false;
         }
 
@@ -106,14 +155,16 @@ class PermissionChecker
             if (is_string($matchField)) {
                 if (str_ends_with($pattern, ':*')) {
                     $prefix = substr($pattern, 0, -2);
+
                     // Require exact match or a space after the prefix to avoid
                     // partial-word false positives (e.g. "git:*" must not match "gitlint")
                     return $matchField === $prefix
-                        || str_starts_with($matchField, $prefix . ' ');
+                        || str_starts_with($matchField, $prefix.' ');
                 }
                 if (str_contains($pattern, '*')) {
                     return fnmatch($pattern, $matchField);
                 }
+
                 return $matchField === $pattern;
             }
         }
