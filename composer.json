@@ -20,7 +20,8 @@
         "symfony/clock": "^6.4 || ^7.0",
         "symfony/http-client": "^6.4 || ^7.0",
         "symfony/string": "^6.4 || ^7.0",
-        "symfony/translation": "^6.4 || ^7.0"
+        "symfony/translation": "^6.4 || ^7.0",
+        "symfony/yaml": "^6.4 || ^7.0"
     },
     "require-dev": {
         "illuminate/database": "^10.48 || ^11.0 || ^12.0",

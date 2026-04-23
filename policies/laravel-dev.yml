@@ -1,0 +1,102 @@
+# Laravel development execpolicy rules
+# Extends default.yml patterns for Laravel dev workflows.
+
+rules:
+  - name: laravel-artisan-safe
+    tool: Bash
+    cmd: php
+    args_match:
+      - "/artisan (list|route:list|migrate:status|config:show|env)/"
+    risk: normal
+    allow_chain: false
+    allow_auto: true
+    env_deny:
+      - LD_PRELOAD
+      - DYLD_INSERT_LIBRARIES
+      - DYLD_LIBRARY_PATH
+      - PYTHONPATH
+      - NODE_OPTIONS
+      - PERL5OPT
+    note: Safe artisan read-only commands.
+
+  - name: laravel-artisan-migrate
+    tool: Bash
+    cmd: php
+    args_match:
+      - "/artisan migrate/"
+    risk: high
+    allow_chain: false
+    allow_auto: false
+    approval_ttl: 300
+    env_deny:
+      - LD_PRELOAD
+      - DYLD_INSERT_LIBRARIES
+      - DYLD_LIBRARY_PATH
+      - PYTHONPATH
+      - NODE_OPTIONS
+      - PERL5OPT
+    note: Database migrations are high-risk.
+
+  - name: laravel-composer-require
+    tool: Bash
+    cmd: composer
+    args_match:
+      - "require*"
+    risk: normal
+    allow_chain: false
+    allow_auto: false
+    env_deny:
+      - LD_PRELOAD
+      - DYLD_INSERT_LIBRARIES
+      - DYLD_LIBRARY_PATH
+      - PYTHONPATH
+      - NODE_OPTIONS
+      - PERL5OPT
+    note: Adding dependencies needs review.
+
+  - name: laravel-pint
+    tool: Bash
+    cmd: vendor/bin/pint
+    risk: normal
+    allow_chain: false
+    allow_auto: true
+    cwd_restriction: /var/www
+    env_deny:
+      - LD_PRELOAD
+      - DYLD_INSERT_LIBRARIES
+      - DYLD_LIBRARY_PATH
+      - PYTHONPATH
+      - NODE_OPTIONS
+      - PERL5OPT
+
+  - name: laravel-phpunit
+    tool: Bash
+    cmd: vendor/bin/phpunit
+    risk: normal
+    allow_chain: false
+    allow_auto: true
+    cwd_restriction: /var/www
+    env_deny:
+      - LD_PRELOAD
+      - DYLD_INSERT_LIBRARIES
+      - DYLD_LIBRARY_PATH
+      - PYTHONPATH
+      - NODE_OPTIONS
+      - PERL5OPT
+
+  - name: laravel-storage-link
+    tool: Bash
+    cmd: php
+    args_match:
+      - "/artisan storage:link/"
+    risk: high
+    allow_chain: false
+    allow_auto: false
+    env_deny:
+      - LD_PRELOAD
+      - DYLD_INSERT_LIBRARIES
+      - DYLD_LIBRARY_PATH
+      - PYTHONPATH
+      - NODE_OPTIONS
+      - PERL5OPT
+    note: Creates symlinks in public directory.
