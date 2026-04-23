@@ -1,0 +1,8 @@
+{
+  "messages": [{"role": "user", "content": "What time is it?"}],
+  "tools": [{"name": "get_time", "description": "Get current time", "input_schema": {"type": "object", "properties": {}, "required": []}}],
+  "expected": {
+    "tool_use_count": 1,
+    "tool_name": "get_time"
+  }
+}
