@@ -383,6 +383,57 @@ Supports `$ARGUMENTS` substitution, session variables, `allowedTools`, model ove
 
 ---
 
+## MCP Servers
+
+Connect the agent to any [Model Context Protocol](https://modelcontextprotocol.io/) server. Tools and resources exposed by the MCP server are automatically available to the agent.
+
+Configure in `~/.haocode/settings.json` (global) or `.haocode/settings.json` (project):
+
+```json
+{
+  "mcp": {
+    "servers": {
+      "filesystem": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-filesystem", "/tmp"]
+      },
+      "github": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-github"],
+        "env": { "GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_..." }
+      }
+    }
+  }
+}
+```
+
+Manage from the REPL with `/mcp` (list servers, inspect tools, reconnect).
+
+---
+
+## Scheduled Tasks & Automation
+
+Schedule recurring prompts with cron syntax using `CronCreate`:
+
+```
+# Run a health check every hour
+CronCreate(prompt: "Check system health and alert if anything is down",
+           cron: "0 * * * *", recurring: true)
+
+# One-shot reminder in 5 minutes
+CronCreate(prompt: "Send daily summary email", cron: "*/5 * * * *", recurring: false)
+
+# View and cancel
+CronList()
+CronDelete(id: "cron_abc123")
+```
+
+Track background work items with `TaskCreate/TaskUpdate/TaskList/TaskStop`. Tasks are persisted to disk and survive REPL restarts (auto-cleaned after 24 hours).
+
+**Current limitation**: Cron jobs are in-process — they fire only while `hao-code` is running. Cross-process persistent scheduling (daemon mode) is planned for M4.
+
+---
+
 ## Teams
 
 Create a group of specialized background agents that collaborate on a shared objective:
