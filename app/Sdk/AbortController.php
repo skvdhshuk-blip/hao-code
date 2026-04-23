@@ -7,6 +7,8 @@ namespace HaoCode\Sdk;
  *
  * Pass into HaoCodeConfig, then call abort() from another
  * thread, signal handler, or timeout callback.
+ *
+ * @api
  */
 class AbortController
 {
@@ -15,6 +17,7 @@ class AbortController
     /** @var callable[] */
     private array $listeners = [];
 
+    /** @api */
     public function abort(): void
     {
         if ($this->aborted) {
@@ -28,11 +31,13 @@ class AbortController
         }
     }
 
+    /** @api */
     public function isAborted(): bool
     {
         return $this->aborted;
     }
 
+    /** @api */
     public function onAbort(callable $callback): void
     {
         if ($this->aborted) {

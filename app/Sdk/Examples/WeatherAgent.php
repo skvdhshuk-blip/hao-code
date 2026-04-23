@@ -9,7 +9,6 @@ use HaoCode\Sdk\HaoCodeConfig;
 use HaoCode\Sdk\QueryResult;
 use HaoCode\Sdk\SdkTool;
 use HaoCode\Sdk\StructuredResult;
-use HaoCode\Tools\ToolResult;
 use Symfony\Component\HttpClient\HttpClient;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 

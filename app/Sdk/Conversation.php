@@ -12,6 +12,8 @@ use HaoCode\Services\Session\SessionManager;
  *
  * Maintains a persistent AgentLoop so subsequent send() calls
  * share the same message history and session.
+ *
+ * @api
  */
 class Conversation
 {
@@ -21,6 +23,9 @@ class Conversation
 
     private int $turnCount = 0;
 
+    /**
+     * @internal
+     */
     public function __construct(
         private readonly HaoCodeConfig $config,
         AgentLoopFactory $factory,
@@ -50,6 +55,8 @@ class Conversation
 
     /**
      * Send a message and get the agent's response as a QueryResult.
+     *
+     * @api
      */
     public function send(string $prompt): QueryResult
     {
@@ -88,6 +95,8 @@ class Conversation
      * as it arrives from the API, rather than being buffered until the full
      * response completes.
      *
+     * @api
+     *
      * @return \Generator<int, Message>
      */
     public function stream(string $prompt): \Generator
@@ -98,7 +107,7 @@ class Conversation
 
         $this->turnCount++;
 
-        $queue = new \SplQueue();
+        $queue = new \SplQueue;
 
         // These callbacks are exclusively invoked from within the Fiber below.
         // Fiber::getCurrent()?->suspend() uses the nullable operator as a defensive
@@ -181,6 +190,8 @@ class Conversation
 
     /**
      * Load a previous session's message history into this conversation.
+     *
+     * @api
      */
     public function loadSession(string $sessionId): void
     {
@@ -211,31 +222,49 @@ class Conversation
         $this->loop->getSessionManager()->switchToSession($sessionId);
     }
 
+    /**
+     * @internal
+     */
     public function getLoop(): AgentLoop
     {
         return $this->loop;
     }
 
+    /**
+     * @api
+     */
     public function getTurnCount(): int
     {
         return $this->turnCount;
     }
 
+    /**
+     * @api
+     */
     public function getSessionId(): ?string
     {
         return $this->loop->getSessionManager()->getSessionId();
     }
 
+    /**
+     * @api
+     */
     public function getCost(): float
     {
         return $this->loop->getEstimatedCost();
     }
 
+    /**
+     * @api
+     */
     public function abort(): void
     {
         $this->loop->abort();
     }
 
+    /**
+     * @api
+     */
     public function close(): void
     {
         $this->closed = true;

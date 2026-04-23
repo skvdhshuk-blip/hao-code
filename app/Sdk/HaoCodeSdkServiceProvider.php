@@ -16,13 +16,15 @@ use Illuminate\Support\ServiceProvider;
  *
  *   use HaoCode\Sdk\HaoCode;
  *   $result = HaoCode::query('Explain this codebase');
+ *
+ * @internal
  */
 class HaoCodeSdkServiceProvider extends ServiceProvider
 {
     public function register(): void
     {
         $this->mergeConfigFrom(
-            __DIR__ . '/../../config/haocode.php',
+            __DIR__.'/../../config/haocode.php',
             'haocode',
         );
     }
@@ -31,7 +33,7 @@ class HaoCodeSdkServiceProvider extends ServiceProvider
     {
         if ($this->app->runningInConsole()) {
             $this->publishes([
-                __DIR__ . '/../../config/haocode.php' => config_path('haocode.php'),
+                __DIR__.'/../../config/haocode.php' => config_path('haocode.php'),
             ], 'haocode-config');
         }
     }

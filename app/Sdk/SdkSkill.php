@@ -21,31 +21,54 @@ use HaoCode\Tools\Skill\SkillDefinition;
  *   $result = HaoCode::query('Review auth.php', new HaoCodeConfig(
  *       skills: [$skill],
  *   ));
+ *
+ * @api
  */
 class SdkSkill
 {
     public function __construct(
-        /** Skill name (used as /name slash command). */
+        /**
+         * Skill name (used as /name slash command).
+         *
+         * @api
+         */
         public readonly string $name,
 
-        /** One-line description shown to the agent. */
+        /**
+         * One-line description shown to the agent.
+         *
+         * @api
+         */
         public readonly string $description,
 
-        /** The prompt template. Use $ARGUMENTS for user-provided args. */
+        /**
+         * The prompt template. Use $ARGUMENTS for user-provided args.
+         *
+         * @api
+         */
         public readonly string $prompt,
 
         /**
          * Tools allowed when executing this skill. Empty = all tools.
+         *
+         * @api
+         *
          * @var string[]
          */
         public readonly array $allowedTools = [],
 
-        /** Optional model override for this skill. */
+        /**
+         * Optional model override for this skill.
+         *
+         * @api
+         */
         public readonly ?string $model = null,
     ) {}
 
     /**
      * Convert to internal SkillDefinition.
+     *
+     * @internal
      */
     public function toDefinition(): SkillDefinition
     {
