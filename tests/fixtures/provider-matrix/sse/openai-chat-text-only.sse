@@ -1,0 +1,8 @@
+data: {"id":"chatcmpl-01","model":"gpt-4o-mini","choices":[{"delta":{"role":"assistant"}}]}
+
+data: {"choices":[{"delta":{"content":"hi"}}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":10,"completion_tokens":2}}
+
+data: [DONE]
+

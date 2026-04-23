@@ -1,0 +1,8 @@
+{
+  "messages": [{"role": "user", "content": "Say hi"}],
+  "tools": null,
+  "expected": {
+    "text_contains": "hi",
+    "usage_shape": ["input_tokens", "output_tokens"]
+  }
+}
