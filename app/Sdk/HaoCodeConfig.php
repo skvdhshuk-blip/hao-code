@@ -222,6 +222,17 @@ class HaoCodeConfig
          * @var array<string, mixed>|null
          */
         public readonly ?array $responseSchema = null,
+
+        /**
+         * Optional credential pool for multi-key rotation. When set, the SDK
+         * wraps the resolved LlmProvider with a PooledProvider decorator.
+         *
+         * Single-key users can leave this null — all existing behaviour is
+         * unchanged (BC preserved).
+         *
+         * @api
+         */
+        public readonly ?\HaoCode\Sdk\CredentialPool $credentialPool = null,
     ) {}
 
     /**
