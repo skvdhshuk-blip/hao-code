@@ -19,10 +19,22 @@ final class McpTransport
     /** @var resource|null stdout pipe */
     private $stdout = null;
 
+    /** @var resource|null stderr pipe for capturing server error logs */
+    private $stderr = null;
+
     /** @var string read buffer for stdio */
     private string $readBuffer = '';
 
+    /** 4 MB read-buffer ceiling to prevent OOM from malicious servers */
+    private const READ_BUFFER_MAX = 4 * 1024 * 1024;
+
     private ?string $httpSessionId = null;
+
+    /** @var array<string, callable[]> Registered notification handlers by method */
+    private array $notificationHandlers = [];
+
+    /** @var array<string, callable> Registered inbound request handlers by method (for reverse RPCs) */
+    private array $requestHandlers = [];
 
     private function __construct(
         private readonly string $transport,
@@ -36,7 +48,7 @@ final class McpTransport
     /**
      * Create a transport from a normalized server config array.
      *
-     * @param array{transport: string, command: ?string, args: array, url: ?string, env: array, headers: array} $config
+     * @param  array{transport: string, command: ?string, args: array, url: ?string, env: array, headers: array}  $config
      */
     public static function fromConfig(array $config): self
     {
@@ -53,6 +65,23 @@ final class McpTransport
     public function getTransportType(): string
     {
         return $this->transport;
+    }
+
+    /**
+     * Register a handler for inbound notifications (server → client, no response expected).
+     */
+    public function onNotification(string $method, callable $handler): void
+    {
+        $this->notificationHandlers[$method][] = $handler;
+    }
+
+    /**
+     * Register a handler for inbound requests (server → client, response required).
+     * Handler receives (array $params) and must return the result array.
+     */
+    public function onRequest(string $method, callable $handler): void
+    {
+        $this->requestHandlers[$method] = $handler;
     }
 
     /**
@@ -73,6 +102,7 @@ final class McpTransport
      * Send a JSON-RPC request and return the result.
      *
      * @return mixed The 'result' field from the JSON-RPC response
+     *
      * @throws McpConnectionException on transport or protocol errors
      */
     public function request(string $method, array $params = [], int $timeoutSeconds = 60): mixed
@@ -112,6 +142,29 @@ final class McpTransport
     }
 
     /**
+     * Drain any pending stderr output from the server process.
+     * Returns captured lines (for OTEL logging / debugging).
+     *
+     * @return string[]
+     */
+    public function drainStderr(): array
+    {
+        if ($this->stderr === null) {
+            return [];
+        }
+
+        $lines = [];
+        while (($line = fgets($this->stderr)) !== false) {
+            $trimmed = rtrim($line);
+            if ($trimmed !== '') {
+                $lines[] = $this->redactMessage($trimmed);
+            }
+        }
+
+        return $lines;
+    }
+
+    /**
      * Close the transport and release resources.
      */
     public function close(): void
@@ -123,6 +176,10 @@ final class McpTransport
         if ($this->stdout !== null) {
             @fclose($this->stdout);
             $this->stdout = null;
+        }
+        if ($this->stderr !== null) {
+            @fclose($this->stderr);
+            $this->stderr = null;
         }
         if ($this->process !== null) {
             // Send SIGTERM, then SIGKILL after a short wait
@@ -160,8 +217,8 @@ final class McpTransport
         }
 
         $cmd = $this->command;
-        if (!empty($this->args)) {
-            $cmd .= ' ' . implode(' ', array_map('escapeshellarg', $this->args));
+        if (! empty($this->args)) {
+            $cmd .= ' '.implode(' ', array_map('escapeshellarg', $this->args));
         }
 
         $env = array_merge(getenv(), $this->env);
@@ -169,23 +226,23 @@ final class McpTransport
         $descriptorSpec = [
             0 => ['pipe', 'r'], // stdin
             1 => ['pipe', 'w'], // stdout
-            2 => ['pipe', 'w'], // stderr (discard)
+            2 => ['pipe', 'w'], // stderr (captured)
         ];
 
         $this->process = proc_open($cmd, $descriptorSpec, $pipes, null, $env);
 
-        if (!is_resource($this->process)) {
-            throw new McpConnectionException("Failed to start MCP server: {$cmd}");
+        if (! is_resource($this->process)) {
+            // Omit $cmd to avoid leaking local filesystem paths in exception messages
+            throw new McpConnectionException('Failed to start MCP server process');
         }
 
         $this->stdin = $pipes[0];
         $this->stdout = $pipes[1];
+        $this->stderr = $pipes[2];
 
-        // Set stdout to non-blocking for timeout support
+        // Set stdout/stderr to non-blocking for timeout support
         stream_set_blocking($this->stdout, false);
-
-        // Close stderr pipe to avoid blocking
-        @fclose($pipes[2]);
+        stream_set_blocking($this->stderr, false);
     }
 
     private function writeStdio(array $message): void
@@ -195,7 +252,7 @@ final class McpTransport
         }
 
         $json = json_encode($message, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-        $written = @fwrite($this->stdin, $json . "\n");
+        $written = @fwrite($this->stdin, $json."\n");
 
         if ($written === false) {
             throw new McpConnectionException('Failed to write to MCP server stdin');
@@ -218,6 +275,14 @@ final class McpTransport
                 $this->readBuffer .= $chunk;
             }
 
+            // Guard against OOM: drop buffer and abort if no newline within 4 MB
+            if (strlen($this->readBuffer) > self::READ_BUFFER_MAX) {
+                $this->readBuffer = '';
+                throw McpConnectionException::transport(
+                    "MCP server sent oversized payload (>{$this->formatBytes(self::READ_BUFFER_MAX)}) without newline delimiter"
+                );
+            }
+
             // Try to extract complete lines
             while (($newlinePos = strpos($this->readBuffer, "\n")) !== false) {
                 $line = substr($this->readBuffer, 0, $newlinePos);
@@ -229,22 +294,38 @@ final class McpTransport
                 }
 
                 $response = json_decode($line, true);
-                if (!is_array($response)) {
+                if (! is_array($response)) {
                     continue;
                 }
 
-                // Skip notifications (no id)
-                if (!isset($response['id'])) {
+                // Inbound notification (no id): dispatch to handlers
+                if (! isset($response['id']) && isset($response['method'])) {
+                    $this->dispatchNotification($response);
+
+                    continue;
+                }
+
+                // Inbound request from server (has both id and method): handle and respond
+                if (isset($response['id'], $response['method'])) {
+                    $this->handleInboundRequest($response);
+                    // This is not our awaited response — keep reading
+                    if ($response['id'] !== $expectedId) {
+                        continue;
+                    }
+                }
+
+                if (! isset($response['id'])) {
                     continue;
                 }
 
                 if ($response['id'] === $expectedId) {
                     if (isset($response['error'])) {
                         throw new McpConnectionException(
-                            'MCP error: ' . ($response['error']['message'] ?? 'Unknown error'),
+                            'MCP error: '.($response['error']['message'] ?? 'Unknown error'),
                             (int) ($response['error']['code'] ?? 0),
                         );
                     }
+
                     return $response['result'] ?? null;
                 }
             }
@@ -254,6 +335,65 @@ final class McpTransport
         }
 
         throw new McpConnectionException("MCP request timed out after {$timeoutSeconds}s: {$message['method']}");
+    }
+
+    /**
+     * Dispatch an inbound notification to registered handlers.
+     */
+    private function dispatchNotification(array $message): void
+    {
+        $method = $message['method'] ?? '';
+        $params = $message['params'] ?? [];
+
+        if (isset($this->notificationHandlers[$method])) {
+            foreach ($this->notificationHandlers[$method] as $handler) {
+                try {
+                    ($handler)($params);
+                } catch (\Throwable) {
+                    // Handlers must not crash the read loop
+                }
+            }
+        }
+    }
+
+    /**
+     * Handle an inbound JSON-RPC request from the server and send a response.
+     */
+    private function handleInboundRequest(array $message): void
+    {
+        $method = $message['method'] ?? '';
+        $params = $message['params'] ?? [];
+        $id = $message['id'];
+
+        if (isset($this->requestHandlers[$method])) {
+            try {
+                $result = ($this->requestHandlers[$method])($params);
+                $this->writeStdio([
+                    'jsonrpc' => '2.0',
+                    'id' => $id,
+                    'result' => $result,
+                ]);
+            } catch (\Throwable $e) {
+                $this->writeStdio([
+                    'jsonrpc' => '2.0',
+                    'id' => $id,
+                    'error' => [
+                        'code' => -32603,
+                        'message' => $e->getMessage(),
+                    ],
+                ]);
+            }
+        } else {
+            // Method not found
+            $this->writeStdio([
+                'jsonrpc' => '2.0',
+                'id' => $id,
+                'error' => [
+                    'code' => -32601,
+                    'message' => "Method not found: {$method}",
+                ],
+            ]);
+        }
     }
 
     // ─── HTTP transport (streamable HTTP / SSE) ─────────────────────────
@@ -272,7 +412,7 @@ final class McpTransport
         ], $this->buildHttpHeaders());
 
         if ($this->httpSessionId !== null) {
-            $headers[] = 'Mcp-Session-Id: ' . $this->httpSessionId;
+            $headers[] = 'Mcp-Session-Id: '.$this->httpSessionId;
         }
 
         $ch = curl_init($this->url);
@@ -293,7 +433,7 @@ final class McpTransport
         curl_close($ch);
 
         if ($rawResponse === false) {
-            throw new McpConnectionException("HTTP request failed: {$curlError}");
+            throw McpConnectionException::transport("HTTP request failed: {$curlError}");
         }
 
         $responseHeaders = substr($rawResponse, 0, $headerSize);
@@ -305,17 +445,42 @@ final class McpTransport
         }
 
         if ($httpCode === 401) {
-            throw new McpConnectionException('MCP server authentication required (401)', 401);
+            throw McpConnectionException::application('MCP server authentication required (401)', 401);
         }
 
         if ($httpCode === 404) {
-            // Session expired
+            // Session expired — retry once with a fresh session
             $this->httpSessionId = null;
-            throw new McpConnectionException('MCP session expired (404)', 404);
+            $headers = array_filter($headers, fn ($h) => ! str_starts_with($h, 'Mcp-Session-Id:'));
+            $ch2 = curl_init($this->url);
+            curl_setopt_array($ch2, [
+                CURLOPT_POST => true,
+                CURLOPT_POSTFIELDS => $json,
+                CURLOPT_HTTPHEADER => array_values($headers),
+                CURLOPT_RETURNTRANSFER => true,
+                CURLOPT_TIMEOUT => $timeoutSeconds,
+                CURLOPT_CONNECTTIMEOUT => 10,
+                CURLOPT_HEADER => true,
+            ]);
+            $rawResponse = curl_exec($ch2);
+            $httpCode = curl_getinfo($ch2, CURLINFO_HTTP_CODE);
+            $headerSize = curl_getinfo($ch2, CURLINFO_HEADER_SIZE);
+            curl_close($ch2);
+
+            if ($rawResponse === false || ($httpCode < 200 || $httpCode >= 300)) {
+                throw McpConnectionException::transport('MCP session expired and retry failed (404)', 404);
+            }
+
+            $responseHeaders = substr($rawResponse, 0, $headerSize);
+            $responseBody = substr($rawResponse, $headerSize);
+
+            if (preg_match('/^Mcp-Session-Id:\s*(.+)$/mi', $responseHeaders, $m)) {
+                $this->httpSessionId = trim($m[1]);
+            }
         }
 
         if ($httpCode < 200 || $httpCode >= 300) {
-            throw new McpConnectionException("MCP HTTP error {$httpCode}: " . substr($responseBody, 0, 500));
+            throw McpConnectionException::transport("MCP HTTP error {$httpCode}: ".substr($responseBody, 0, 500));
         }
 
         // Check if response is SSE (text/event-stream)
@@ -330,13 +495,13 @@ final class McpTransport
 
         // Standard JSON response
         $decoded = json_decode($responseBody, true);
-        if (!is_array($decoded)) {
-            throw new McpConnectionException('Invalid JSON response from MCP server');
+        if (! is_array($decoded)) {
+            throw McpConnectionException::protocol('Invalid JSON response from MCP server');
         }
 
         if (isset($decoded['error'])) {
-            throw new McpConnectionException(
-                'MCP error: ' . ($decoded['error']['message'] ?? 'Unknown error'),
+            throw McpConnectionException::application(
+                'MCP error: '.($decoded['error']['message'] ?? 'Unknown error'),
                 (int) ($decoded['error']['code'] ?? 0),
             );
         }
@@ -357,7 +522,7 @@ final class McpTransport
         ], $this->buildHttpHeaders());
 
         if ($this->httpSessionId !== null) {
-            $headers[] = 'Mcp-Session-Id: ' . $this->httpSessionId;
+            $headers[] = 'Mcp-Session-Id: '.$this->httpSessionId;
         }
 
         $ch = curl_init($this->url);
@@ -382,6 +547,7 @@ final class McpTransport
         foreach ($this->headers as $key => $value) {
             $result[] = "{$key}: {$value}";
         }
+
         return $result;
     }
 
@@ -405,21 +571,59 @@ final class McpTransport
             }
 
             $decoded = json_decode($data, true);
-            if (!is_array($decoded) || !isset($decoded['id'])) {
+            if (! is_array($decoded)) {
+                continue;
+            }
+
+            // Dispatch notifications embedded in SSE stream
+            if (! isset($decoded['id']) && isset($decoded['method'])) {
+                $this->dispatchNotification($decoded);
+
+                continue;
+            }
+
+            if (! isset($decoded['id'])) {
                 continue;
             }
 
             if ($decoded['id'] === $expectedId) {
                 if (isset($decoded['error'])) {
-                    throw new McpConnectionException(
-                        'MCP error: ' . ($decoded['error']['message'] ?? 'Unknown error'),
+                    throw McpConnectionException::application(
+                        'MCP error: '.($decoded['error']['message'] ?? 'Unknown error'),
                         (int) ($decoded['error']['code'] ?? 0),
                     );
                 }
+
                 return $decoded['result'] ?? null;
             }
         }
 
-        throw new McpConnectionException('No matching response found in SSE stream');
+        throw McpConnectionException::protocol('No matching response found in SSE stream');
+    }
+
+    /**
+     * Scrub common sensitive patterns (API keys, tokens, paths) from log lines.
+     */
+    private function redactMessage(string $line): string
+    {
+        // Redact bearer tokens and API keys
+        $line = preg_replace('/\b(Bearer\s+)[A-Za-z0-9\-._~+\/]+=*/i', '$1[REDACTED]', $line) ?? $line;
+        $line = preg_replace('/\b([A-Za-z_-]*(key|token|secret|password|passwd|pwd|auth)[A-Za-z_-]*\s*[=:]\s*)[^\s,;"\']+/i', '$1[REDACTED]', $line) ?? $line;
+
+        // Redact absolute filesystem paths (keep basename only for readability)
+        $line = preg_replace_callback('/(?:\/[a-zA-Z0-9_.~-]+){3,}/', static function (array $m): string {
+            return '/.../'.basename($m[0]);
+        }, $line) ?? $line;
+
+        return $line;
+    }
+
+    private function formatBytes(int $bytes): string
+    {
+        if ($bytes >= 1024 * 1024) {
+            return round($bytes / (1024 * 1024), 0).'MB';
+        }
+
+        return round($bytes / 1024, 0).'KB';
     }
 }

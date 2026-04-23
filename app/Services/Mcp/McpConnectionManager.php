@@ -2,6 +2,8 @@
 
 namespace HaoCode\Services\Mcp;
 
+use HaoCode\Services\Telemetry\PhoenixTracer;
+
 /**
  * Manages the lifecycle of MCP server connections.
  * Connects enabled servers, provides tool discovery, and handles reconnection.
@@ -17,15 +19,22 @@ final class McpConnectionManager
     /** @var bool Whether initial connection has been performed */
     private bool $initialized = false;
 
+    /** Maximum reconnect attempts per server */
+    private const MAX_RECONNECT_ATTEMPTS = 3;
+
+    /** Base delay in milliseconds for exponential backoff */
+    private const RECONNECT_BASE_MS = 500;
+
     public function __construct(
         private readonly McpServerConfigManager $configManager,
+        private readonly ?PhoenixTracer $tracer = null,
     ) {}
 
     /**
      * Connect to all enabled MCP servers.
      * Safe to call multiple times — will only connect on the first call.
      *
-     * @param callable|null $onServerStatus Called with (string $name, string $status, ?string $error) for progress
+     * @param  callable|null  $onServerStatus  Called with (string $name, string $status, ?string $error) for progress
      */
     public function connectAll(?callable $onServerStatus = null): void
     {
@@ -37,19 +46,28 @@ final class McpConnectionManager
         $servers = $this->configManager->listServers();
 
         foreach ($servers as $server) {
-            if (!$server['enabled']) {
-                if ($onServerStatus) { $onServerStatus($server['name'], 'disabled', null); }
+            if (! $server['enabled']) {
+                if ($onServerStatus) {
+                    $onServerStatus($server['name'], 'disabled', null);
+                }
+
                 continue;
             }
 
             try {
-                if ($onServerStatus) { $onServerStatus($server['name'], 'connecting', null); }
+                if ($onServerStatus) {
+                    $onServerStatus($server['name'], 'connecting', null);
+                }
                 $client = $this->connectServer($server);
                 $this->clients[$server['name']] = $client;
-                if ($onServerStatus) { $onServerStatus($server['name'], 'connected', null); }
+                if ($onServerStatus) {
+                    $onServerStatus($server['name'], 'connected', null);
+                }
             } catch (McpConnectionException $e) {
                 $this->failures[$server['name']] = $e;
-                if ($onServerStatus) { $onServerStatus($server['name'], 'failed', $e->getMessage()); }
+                if ($onServerStatus) {
+                    $onServerStatus($server['name'], 'failed', $e->getMessage());
+                }
             }
         }
     }
@@ -70,7 +88,7 @@ final class McpConnectionManager
             throw new McpConnectionException("MCP server '{$name}' not found in configuration");
         }
 
-        if (!$server['enabled']) {
+        if (! $server['enabled']) {
             throw new McpConnectionException("MCP server '{$name}' is disabled");
         }
 
@@ -79,6 +97,70 @@ final class McpConnectionManager
         unset($this->failures[$name]);
 
         return $client;
+    }
+
+    /**
+     * Attempt to reconnect a disconnected server with exponential backoff.
+     * Makes up to MAX_RECONNECT_ATTEMPTS attempts before giving up.
+     *
+     * @throws McpConnectionException if all attempts fail
+     */
+    public function reconnect(string $name): McpClient
+    {
+        // Close existing stale client if present
+        if (isset($this->clients[$name])) {
+            try {
+                $this->clients[$name]->close();
+            } catch (\Throwable) {
+                // Best-effort close
+            }
+            unset($this->clients[$name]);
+        }
+
+        $server = $this->configManager->getServer($name);
+        if ($server === null) {
+            throw new McpConnectionException("MCP server '{$name}' not found in configuration");
+        }
+
+        $lastException = null;
+        for ($attempt = 1; $attempt <= self::MAX_RECONNECT_ATTEMPTS; $attempt++) {
+            if ($attempt > 1) {
+                // Exponential backoff: 500ms, 1000ms, 2000ms
+                $delayMs = self::RECONNECT_BASE_MS * (2 ** ($attempt - 2));
+                usleep($delayMs * 1000);
+            }
+
+            try {
+                $client = $this->connectServer($server);
+                $this->clients[$name] = $client;
+                unset($this->failures[$name]);
+
+                return $client;
+            } catch (McpConnectionException $e) {
+                $lastException = $e;
+            }
+        }
+
+        $this->failures[$name] = $lastException;
+        throw new McpConnectionException(
+            "Failed to reconnect to MCP server '{$name}' after ".self::MAX_RECONNECT_ATTEMPTS.' attempts: '.$lastException->getMessage(),
+            $lastException->getCode(),
+        );
+    }
+
+    /**
+     * Ensure a client is connected, reconnecting if necessary.
+     *
+     * @throws McpConnectionException
+     */
+    public function ensureConnected(string $name): McpClient
+    {
+        $client = $this->clients[$name] ?? null;
+        if ($client !== null && $client->isConnected()) {
+            return $client;
+        }
+
+        return $this->reconnect($name);
     }
 
     /**
@@ -127,7 +209,7 @@ final class McpConnectionManager
         $allTools = [];
 
         foreach ($this->clients as $serverName => $client) {
-            if (!$client->supportsTools()) {
+            if (! $client->supportsTools()) {
                 continue;
             }
 
@@ -161,7 +243,7 @@ final class McpConnectionManager
         $allResources = [];
 
         foreach ($this->clients as $serverName => $client) {
-            if (!$client->supportsResources()) {
+            if (! $client->supportsResources()) {
                 continue;
             }
 
@@ -177,6 +259,34 @@ final class McpConnectionManager
         }
 
         return $allResources;
+    }
+
+    /**
+     * Discover all prompts across all connected MCP servers.
+     *
+     * @return array<int, array{name: string, description: string, arguments?: array, server: string}>
+     */
+    public function discoverAllPrompts(): array
+    {
+        $allPrompts = [];
+
+        foreach ($this->clients as $serverName => $client) {
+            if (! $client->supportsPrompts()) {
+                continue;
+            }
+
+            try {
+                $prompts = $client->listPrompts();
+                foreach ($prompts as $prompt) {
+                    $prompt['server'] = $serverName;
+                    $allPrompts[] = $prompt;
+                }
+            } catch (McpConnectionException) {
+                // Skip servers that fail prompt discovery
+            }
+        }
+
+        return $allPrompts;
     }
 
     /**
@@ -208,7 +318,7 @@ final class McpConnectionManager
      */
     public static function buildToolName(string $serverName, string $toolName): string
     {
-        return 'mcp__' . self::normalizeName($serverName) . '__' . self::normalizeName($toolName);
+        return 'mcp__'.self::normalizeName($serverName).'__'.self::normalizeName($toolName);
     }
 
     /**
@@ -218,7 +328,7 @@ final class McpConnectionManager
      */
     public static function parseToolName(string $qualifiedName): ?array
     {
-        if (!str_starts_with($qualifiedName, 'mcp__')) {
+        if (! str_starts_with($qualifiedName, 'mcp__')) {
             return null;
         }
 
@@ -243,14 +353,16 @@ final class McpConnectionManager
     }
 
     /**
-     * @param array{name: string, transport: string, command: ?string, args: array, url: ?string, env: array, headers: array} $serverConfig
+     * @param  array{name: string, transport: string, command: ?string, args: array, url: ?string, env: array, headers: array}  $serverConfig
+     *
      * @throws McpConnectionException
      */
     private function connectServer(array $serverConfig): McpClient
     {
         $transport = McpTransport::fromConfig($serverConfig);
-        $client = new McpClient($transport, $serverConfig['name']);
+        $client = new McpClient($transport, $serverConfig['name'], $this->tracer);
         $client->connect();
+
         return $client;
     }
 }
