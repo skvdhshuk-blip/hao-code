@@ -6,6 +6,7 @@ namespace Tests\Provider;
 
 use HaoCode\Services\Api\AnthropicProvider;
 use HaoCode\Services\Api\LlmProvider;
+use Symfony\Component\HttpClient\MockHttpClient;
 
 class AnthropicMatrixTest extends AbstractMatrixTest
 {
@@ -20,6 +21,15 @@ class AnthropicMatrixTest extends AbstractMatrixTest
             apiKey: 'test-key',
             model: 'claude-3-5-haiku-20241022',
             httpClient: self::buildMockClient($sseFixturePath),
+        );
+    }
+
+    protected function createMockProviderMulti(MockHttpClient $client): LlmProvider
+    {
+        return new AnthropicProvider(
+            apiKey: 'test-key',
+            model: 'claude-3-5-haiku-20241022',
+            httpClient: $client,
         );
     }
 

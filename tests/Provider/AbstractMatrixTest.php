@@ -103,6 +103,57 @@ abstract class AbstractMatrixTest extends TestCase
         return new MockHttpClient([new MockResponse([(string) file_get_contents($sseFixturePath)], ['http_code' => 200])]);
     }
 
+    /** @param string[] $ssePaths */
+    protected static function buildMockClientMulti(array $ssePaths): MockHttpClient
+    {
+        $responses = array_map(
+            fn (string $path) => new MockResponse([(string) file_get_contents($path)], ['http_code' => 200]),
+            $ssePaths,
+        );
+
+        return new MockHttpClient($responses);
+    }
+
+    abstract protected function createMockProviderMulti(MockHttpClient $client): LlmProvider;
+
+    public function test_multi_turn_tool_cycle(): void
+    {
+        $fixture = $this->loadFixture('multi-turn-tool');
+        $name = $this->providerName();
+        $dir = $this->fixturesDir().'/sse';
+
+        $client = self::buildMockClientMulti([
+            "{$dir}/{$name}-multi-turn-tool-turn1.sse",
+            "{$dir}/{$name}-multi-turn-tool-turn2.sse",
+        ]);
+        $provider = $this->createMockProviderMulti($client);
+
+        // Turn 1: user asks, model calls tool
+        $turn1Events = iterator_to_array($provider->streamMessages(
+            systemPrompt: [],
+            messages: $fixture['messages'],
+            tools: $fixture['tools'],
+        ), false);
+
+        $tools = $this->extractToolUses($turn1Events);
+        $this->assertCount((int) $fixture['expected']['turn1']['tool_use_count'], $tools);
+        $this->assertSame($fixture['expected']['turn1']['tool_name'], $tools[0]['name']);
+
+        // Turn 2: append tool result and get final answer
+        $turn2Messages = array_merge($fixture['messages'], $fixture['turn2_messages_append']);
+        $turn2Events = iterator_to_array($provider->streamMessages(
+            systemPrompt: [],
+            messages: $turn2Messages,
+            tools: $fixture['tools'],
+        ), false);
+
+        $text = $this->extractText($turn2Events);
+        $this->assertStringContainsString($fixture['expected']['turn2']['text_contains'], $text);
+
+        $usage2 = $this->extractUsage($turn2Events);
+        $this->assertSame($fixture['expected']['turn2']['stop_reason'], $usage2['stop_reason']);
+    }
+
     public function test_stream_text_only(): void
     {
         $fixture = $this->loadFixture('text-only');

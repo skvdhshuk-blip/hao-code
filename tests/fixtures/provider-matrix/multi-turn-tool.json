@@ -1,0 +1,46 @@
+{
+  "messages": [
+    {"role": "user", "content": "What time is it in Tokyo?"}
+  ],
+  "tools": [
+    {
+      "name": "get_time",
+      "description": "Get current time for a timezone",
+      "input_schema": {
+        "type": "object",
+        "properties": {
+          "timezone": {"type": "string", "description": "Timezone name, e.g. Asia/Tokyo"}
+        },
+        "required": ["timezone"]
+      }
+    }
+  ],
+  "tool_result": {
+    "tool_use_id": "toolu_mt01",
+    "content": "2026-04-23T10:00:00+09:00"
+  },
+  "turn2_messages_append": [
+    {
+      "role": "assistant",
+      "content": [
+        {"type": "tool_use", "id": "toolu_mt01", "name": "get_time", "input": {"timezone": "Asia/Tokyo"}}
+      ]
+    },
+    {
+      "role": "user",
+      "content": [
+        {"type": "tool_result", "tool_use_id": "toolu_mt01", "content": "2026-04-23T10:00:00+09:00"}
+      ]
+    }
+  ],
+  "expected": {
+    "turn1": {
+      "tool_use_count": 1,
+      "tool_name": "get_time"
+    },
+    "turn2": {
+      "text_contains": "10:00",
+      "stop_reason": "end_turn"
+    }
+  }
+}

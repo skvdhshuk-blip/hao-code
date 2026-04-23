@@ -6,6 +6,7 @@ namespace Tests\Provider;
 
 use HaoCode\Services\Api\LlmProvider;
 use HaoCode\Services\Api\OpenAiChatProvider;
+use Symfony\Component\HttpClient\MockHttpClient;
 
 class OpenAiChatMatrixTest extends AbstractMatrixTest
 {
@@ -20,6 +21,15 @@ class OpenAiChatMatrixTest extends AbstractMatrixTest
             apiKey: 'test-key',
             model: 'gpt-4o-mini',
             httpClient: self::buildMockClient($sseFixturePath),
+        );
+    }
+
+    protected function createMockProviderMulti(MockHttpClient $client): LlmProvider
+    {
+        return new OpenAiChatProvider(
+            apiKey: 'test-key',
+            model: 'gpt-4o-mini',
+            httpClient: $client,
         );
     }
 }

@@ -1,0 +1,8 @@
+data: {"id":"chatcmpl-mt02","model":"gpt-4o-mini","choices":[{"delta":{"role":"assistant"}}]}
+
+data: {"choices":[{"delta":{"content":"It is currently 10:00 AM in Tokyo."}}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":80,"completion_tokens":12}}
+
+data: [DONE]
+
