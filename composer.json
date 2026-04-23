@@ -45,6 +45,12 @@
         "lint": "pint --test",
         "fix": "pint"
     },
+    "suggest": {
+        "ext-sqlite3": "For daemon mode (cron job persistence via SQLite)",
+        "ext-pdo_sqlite": "Required for daemon mode SQLite storage",
+        "ext-pcntl": "Required for daemon signal handling (SIGTERM/SIGINT)",
+        "ext-posix": "Required for daemon PID management and stale-pid detection"
+    },
     "extra": {
         "laravel": {
             "dont-discover": [],
