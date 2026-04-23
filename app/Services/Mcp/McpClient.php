@@ -2,8 +2,11 @@
 
 namespace HaoCode\Services\Mcp;
 
+use HaoCode\Services\Telemetry\PhoenixTracer;
+use OpenTelemetry\API\Trace\SpanInterface;
+
 /**
- * MCP protocol client — handles initialization handshake, tool/resource
+ * MCP protocol client — handles initialization handshake, tool/resource/prompt
  * discovery and invocation over a McpTransport.
  */
 final class McpClient
@@ -25,9 +28,16 @@ final class McpClient
     /** @var array<int, array{uri: string, name: string, mimeType?: string, description?: string}>|null */
     private ?array $resourcesCache = null;
 
+    /** @var array<int, array{name: string, description: string, arguments?: array}>|null */
+    private ?array $promptsCache = null;
+
+    /** @var array<array{uri: string, name?: string}> Workspace roots reported to the server */
+    private array $roots = [];
+
     public function __construct(
         private readonly McpTransport $transport,
         private readonly string $serverName,
+        private readonly ?PhoenixTracer $tracer = null,
     ) {}
 
     public function getServerName(): string
@@ -51,37 +61,88 @@ final class McpClient
     }
 
     /**
+     * Set workspace roots to advertise to the server (used to respond to roots/list).
+     *
+     * @param  array<array{uri: string, name?: string}>  $roots
+     */
+    public function setRoots(array $roots): void
+    {
+        $this->roots = $roots;
+    }
+
+    /**
+     * Register a handler for inbound server notifications.
+     * Multiple handlers per method are allowed.
+     */
+    public function registerNotificationHandler(string $method, callable $handler): void
+    {
+        $this->transport->onNotification($method, $handler);
+    }
+
+    /**
      * Connect to the MCP server and perform the initialization handshake.
      *
      * @throws McpConnectionException
      */
     public function connect(int $timeoutSeconds = 30): void
     {
-        $this->transport->connect($timeoutSeconds);
+        $span = $this->startSpan('initialize');
+        try {
+            $this->transport->connect($timeoutSeconds);
 
-        $result = $this->transport->request('initialize', [
-            'protocolVersion' => '2024-11-05',
-            'capabilities' => [
-                'roots' => ['listChanged' => true],
-            ],
-            'clientInfo' => [
-                'name' => 'hao-code',
-                'version' => '1.0.0',
-            ],
-        ], $timeoutSeconds);
+            // Register roots/list reverse-request handler before initialize
+            $this->transport->onRequest('roots/list', function (array $params): array {
+                return ['roots' => $this->roots];
+            });
 
-        if (!is_array($result)) {
-            throw new McpConnectionException("Invalid initialize response from {$this->serverName}");
+            $result = $this->transport->request('initialize', [
+                'protocolVersion' => '2024-11-05',
+                'capabilities' => [
+                    'roots' => ['listChanged' => true],
+                ],
+                'clientInfo' => [
+                    'name' => 'hao-code',
+                    'version' => '1.0.0',
+                ],
+            ], $timeoutSeconds);
+
+            if (! is_array($result)) {
+                throw new McpConnectionException("Invalid initialize response from {$this->serverName}");
+            }
+
+            // Protocol version fail-fast: reject mismatched versions
+            $serverVersion = $result['protocolVersion'] ?? null;
+            if ($serverVersion !== null && $serverVersion !== '2024-11-05') {
+                throw McpConnectionException::protocol(
+                    "Protocol version mismatch: expected 2024-11-05, got {$serverVersion} from {$this->serverName}"
+                );
+            }
+
+            $this->capabilities = $result['capabilities'] ?? [];
+            $this->serverInfo = $result['serverInfo'] ?? null;
+            $this->instructions = $result['instructions'] ?? null;
+
+            // Send initialized notification
+            $this->transport->notify('notifications/initialized');
+
+            $this->initialized = true;
+
+            // Register list_changed notification handlers to auto-clear cache
+            $this->transport->onNotification('notifications/tools/list_changed', function (): void {
+                $this->toolsCache = null;
+            });
+            $this->transport->onNotification('notifications/resources/list_changed', function (): void {
+                $this->resourcesCache = null;
+            });
+            $this->transport->onNotification('notifications/prompts/list_changed', function (): void {
+                $this->promptsCache = null;
+            });
+        } catch (\Throwable $e) {
+            $this->tracer?->recordException($span, $e);
+            throw $e;
+        } finally {
+            $span?->end();
         }
-
-        $this->capabilities = $result['capabilities'] ?? [];
-        $this->serverInfo = $result['serverInfo'] ?? null;
-        $this->instructions = $result['instructions'] ?? null;
-
-        // Send initialized notification
-        $this->transport->notify('notifications/initialized');
-
-        $this->initialized = true;
     }
 
     /**
@@ -89,7 +150,7 @@ final class McpClient
      */
     public function supportsTools(): bool
     {
-        return !empty($this->capabilities['tools']);
+        return ! empty($this->capabilities['tools']);
     }
 
     /**
@@ -97,16 +158,25 @@ final class McpClient
      */
     public function supportsResources(): bool
     {
-        return !empty($this->capabilities['resources']);
+        return ! empty($this->capabilities['resources']);
+    }
+
+    /**
+     * Whether the server supports prompts capability.
+     */
+    public function supportsPrompts(): bool
+    {
+        return ! empty($this->capabilities['prompts']);
     }
 
     /**
      * Fetch the list of tools from the MCP server.
      *
      * @return array<int, array{name: string, description: string, inputSchema: array}>
+     *
      * @throws McpConnectionException
      */
-    public function listTools(bool $useCache = true): array
+    public function listTools(bool $useCache = true, int $timeoutSeconds = 60): array
     {
         $this->ensureInitialized();
 
@@ -114,65 +184,91 @@ final class McpClient
             return $this->toolsCache;
         }
 
-        if (!$this->supportsTools()) {
+        if (! $this->supportsTools()) {
             return [];
         }
 
-        $result = $this->transport->request('tools/list');
+        $span = $this->startSpan('tools/list');
+        try {
+            $result = $this->transport->request('tools/list', [], $timeoutSeconds);
 
-        $tools = [];
-        foreach (($result['tools'] ?? []) as $tool) {
-            if (!is_array($tool) || !isset($tool['name'])) {
-                continue;
+            $tools = [];
+            foreach (($result['tools'] ?? []) as $tool) {
+                if (! is_array($tool) || ! isset($tool['name'])) {
+                    continue;
+                }
+                $tools[] = [
+                    'name' => (string) $tool['name'],
+                    'description' => (string) ($tool['description'] ?? ''),
+                    'inputSchema' => $tool['inputSchema'] ?? ['type' => 'object', 'properties' => new \stdClass],
+                    'annotations' => $tool['annotations'] ?? [],
+                ];
             }
-            $tools[] = [
-                'name' => (string) $tool['name'],
-                'description' => (string) ($tool['description'] ?? ''),
-                'inputSchema' => $tool['inputSchema'] ?? ['type' => 'object', 'properties' => new \stdClass()],
-                'annotations' => $tool['annotations'] ?? [],
-            ];
-        }
 
-        $this->toolsCache = $tools;
-        return $tools;
+            $this->toolsCache = $tools;
+            $span?->setAttribute('mcp.tools.count', count($tools));
+
+            return $tools;
+        } catch (\Throwable $e) {
+            $this->tracer?->recordException($span, $e);
+            throw $e;
+        } finally {
+            $span?->end();
+        }
     }
 
     /**
      * Call a tool on the MCP server.
      *
      * @return array{content: array, isError: bool, structuredContent?: mixed}
+     *
      * @throws McpConnectionException
      */
     public function callTool(string $toolName, array $arguments = [], int $timeoutSeconds = 60): array
     {
         $this->ensureInitialized();
 
-        $result = $this->transport->request('tools/call', [
-            'name' => $toolName,
-            'arguments' => (object) $arguments,
-        ], $timeoutSeconds);
+        $span = $this->startSpan('tools/call', ['tool.name' => $toolName]);
+        try {
+            $result = $this->transport->request('tools/call', [
+                'name' => $toolName,
+                'arguments' => (object) $arguments,
+            ], $timeoutSeconds);
 
-        if (!is_array($result)) {
-            return [
-                'content' => [['type' => 'text', 'text' => 'Empty response from MCP server']],
-                'isError' => true,
+            if (! is_array($result)) {
+                return [
+                    'content' => [['type' => 'text', 'text' => 'Empty response from MCP server']],
+                    'isError' => true,
+                ];
+            }
+
+            $response = [
+                'content' => $result['content'] ?? [],
+                'isError' => (bool) ($result['isError'] ?? false),
+                'structuredContent' => $result['structuredContent'] ?? null,
             ];
-        }
 
-        return [
-            'content' => $result['content'] ?? [],
-            'isError' => (bool) ($result['isError'] ?? false),
-            'structuredContent' => $result['structuredContent'] ?? null,
-        ];
+            if ($response['isError']) {
+                $span?->setAttribute('mcp.tool.is_error', true);
+            }
+
+            return $response;
+        } catch (\Throwable $e) {
+            $this->tracer?->recordException($span, $e);
+            throw $e;
+        } finally {
+            $span?->end();
+        }
     }
 
     /**
      * Fetch resources list from the MCP server.
      *
      * @return array<int, array{uri: string, name: string, mimeType?: string, description?: string}>
+     *
      * @throws McpConnectionException
      */
-    public function listResources(bool $useCache = true): array
+    public function listResources(bool $useCache = true, int $timeoutSeconds = 60): array
     {
         $this->ensureInitialized();
 
@@ -180,60 +276,240 @@ final class McpClient
             return $this->resourcesCache;
         }
 
-        if (!$this->supportsResources()) {
+        if (! $this->supportsResources()) {
             return [];
         }
 
-        $result = $this->transport->request('resources/list');
+        $span = $this->startSpan('resources/list');
+        try {
+            $result = $this->transport->request('resources/list', [], $timeoutSeconds);
 
-        $resources = [];
-        foreach (($result['resources'] ?? []) as $resource) {
-            if (!is_array($resource) || !isset($resource['uri'])) {
-                continue;
+            $resources = [];
+            foreach (($result['resources'] ?? []) as $resource) {
+                if (! is_array($resource) || ! isset($resource['uri'])) {
+                    continue;
+                }
+                $entry = [
+                    'uri' => (string) $resource['uri'],
+                    'name' => (string) ($resource['name'] ?? $resource['uri']),
+                ];
+                if (isset($resource['mimeType'])) {
+                    $entry['mimeType'] = (string) $resource['mimeType'];
+                }
+                if (isset($resource['description'])) {
+                    $entry['description'] = (string) $resource['description'];
+                }
+                $resources[] = $entry;
             }
-            $entry = [
-                'uri' => (string) $resource['uri'],
-                'name' => (string) ($resource['name'] ?? $resource['uri']),
-            ];
-            if (isset($resource['mimeType'])) {
-                $entry['mimeType'] = (string) $resource['mimeType'];
-            }
-            if (isset($resource['description'])) {
-                $entry['description'] = (string) $resource['description'];
-            }
-            $resources[] = $entry;
+
+            $this->resourcesCache = $resources;
+            $span?->setAttribute('mcp.resources.count', count($resources));
+
+            return $resources;
+        } catch (\Throwable $e) {
+            $this->tracer?->recordException($span, $e);
+            throw $e;
+        } finally {
+            $span?->end();
         }
-
-        $this->resourcesCache = $resources;
-        return $resources;
     }
 
     /**
      * Read a specific resource from the MCP server.
      *
      * @return array{contents: array<int, array{uri: string, mimeType?: string, text?: string, blob?: string}>}
+     *
      * @throws McpConnectionException
      */
-    public function readResource(string $uri): array
+    public function readResource(string $uri, int $timeoutSeconds = 60): array
     {
         $this->ensureInitialized();
 
-        $result = $this->transport->request('resources/read', [
-            'uri' => $uri,
-        ]);
+        $span = $this->startSpan('resources/read', ['mcp.resource.uri' => $uri]);
+        try {
+            $result = $this->transport->request('resources/read', [
+                'uri' => $uri,
+            ], $timeoutSeconds);
 
-        return [
-            'contents' => $result['contents'] ?? [],
-        ];
+            return [
+                'contents' => $result['contents'] ?? [],
+            ];
+        } catch (\Throwable $e) {
+            $this->tracer?->recordException($span, $e);
+            throw $e;
+        } finally {
+            $span?->end();
+        }
     }
 
     /**
-     * Clear cached tools and resources (e.g. after reconnection).
+     * Fetch the list of prompts from the MCP server.
+     *
+     * @return array<int, array{name: string, description: string, arguments?: array}>
+     *
+     * @throws McpConnectionException
+     */
+    public function listPrompts(bool $useCache = true, int $timeoutSeconds = 60): array
+    {
+        $this->ensureInitialized();
+
+        if ($useCache && $this->promptsCache !== null) {
+            return $this->promptsCache;
+        }
+
+        if (! $this->supportsPrompts()) {
+            return [];
+        }
+
+        $span = $this->startSpan('prompts/list');
+        try {
+            $result = $this->transport->request('prompts/list', [], $timeoutSeconds);
+
+            $prompts = [];
+            foreach (($result['prompts'] ?? []) as $prompt) {
+                if (! is_array($prompt) || ! isset($prompt['name'])) {
+                    continue;
+                }
+                $entry = [
+                    'name' => (string) $prompt['name'],
+                    'description' => (string) ($prompt['description'] ?? ''),
+                ];
+                if (isset($prompt['arguments']) && is_array($prompt['arguments'])) {
+                    $entry['arguments'] = $prompt['arguments'];
+                }
+                $prompts[] = $entry;
+            }
+
+            $this->promptsCache = $prompts;
+            $span?->setAttribute('mcp.prompts.count', count($prompts));
+
+            return $prompts;
+        } catch (\Throwable $e) {
+            $this->tracer?->recordException($span, $e);
+            throw $e;
+        } finally {
+            $span?->end();
+        }
+    }
+
+    /**
+     * Get a specific prompt with optional argument substitution.
+     *
+     * @param  array<string, string>  $arguments  Prompt argument values
+     * @return array{description?: string, messages: array}
+     *
+     * @throws McpConnectionException
+     */
+    public function getPrompt(string $name, array $arguments = [], int $timeoutSeconds = 60): array
+    {
+        $this->ensureInitialized();
+
+        $span = $this->startSpan('prompts/get', ['mcp.prompt.name' => $name]);
+        try {
+            $params = ['name' => $name];
+            if (! empty($arguments)) {
+                $params['arguments'] = $arguments;
+            }
+
+            $result = $this->transport->request('prompts/get', $params, $timeoutSeconds);
+
+            return [
+                'description' => $result['description'] ?? null,
+                'messages' => $result['messages'] ?? [],
+            ];
+        } catch (\Throwable $e) {
+            $this->tracer?->recordException($span, $e);
+            throw $e;
+        } finally {
+            $span?->end();
+        }
+    }
+
+    /**
+     * Send a ping to the server to check liveness.
+     *
+     * @throws McpConnectionException
+     */
+    public function ping(int $timeoutSeconds = 10): void
+    {
+        $this->ensureInitialized();
+
+        $span = $this->startSpan('ping');
+        try {
+            $this->transport->request('ping', [], $timeoutSeconds);
+        } catch (\Throwable $e) {
+            $this->tracer?->recordException($span, $e);
+            throw $e;
+        } finally {
+            $span?->end();
+        }
+    }
+
+    /**
+     * Request the server to set its log level.
+     *
+     * @param  string  $level  One of: debug, info, notice, warning, error, critical, alert, emergency
+     *
+     * @throws McpConnectionException
+     */
+    public function setLogLevel(string $level, int $timeoutSeconds = 10): void
+    {
+        $this->ensureInitialized();
+
+        $span = $this->startSpan('logging/setLevel', ['mcp.log.level' => $level]);
+        try {
+            $this->transport->request('logging/setLevel', ['level' => $level], $timeoutSeconds);
+        } catch (\Throwable $e) {
+            $this->tracer?->recordException($span, $e);
+            throw $e;
+        } finally {
+            $span?->end();
+        }
+    }
+
+    /**
+     * Request argument completion from the server.
+     *
+     * @param  array{type: 'ref/prompt'|'ref/resource', name?: string, uri?: string}  $ref
+     * @param  array{name: string, value: string}  $argument
+     * @return array{values: string[], total?: int, hasMore?: bool}
+     *
+     * @throws McpConnectionException
+     */
+    public function complete(array $ref, array $argument, int $timeoutSeconds = 30): array
+    {
+        $this->ensureInitialized();
+
+        $span = $this->startSpan('completion/complete', ['mcp.completion.ref_type' => $ref['type'] ?? '']);
+        try {
+            $result = $this->transport->request('completion/complete', [
+                'ref' => $ref,
+                'argument' => $argument,
+            ], $timeoutSeconds);
+
+            $completion = $result['completion'] ?? [];
+
+            return [
+                'values' => $completion['values'] ?? [],
+                'total' => $completion['total'] ?? null,
+                'hasMore' => $completion['hasMore'] ?? false,
+            ];
+        } catch (\Throwable $e) {
+            $this->tracer?->recordException($span, $e);
+            throw $e;
+        } finally {
+            $span?->end();
+        }
+    }
+
+    /**
+     * Clear cached tools, resources, and prompts (e.g. after reconnection).
      */
     public function clearCache(): void
     {
         $this->toolsCache = null;
         $this->resourcesCache = null;
+        $this->promptsCache = null;
     }
 
     /**
@@ -253,8 +529,26 @@ final class McpClient
 
     private function ensureInitialized(): void
     {
-        if (!$this->initialized) {
+        if (! $this->initialized) {
             throw new McpConnectionException("MCP client for '{$this->serverName}' is not initialized. Call connect() first.");
         }
+    }
+
+    /**
+     * Start an OTEL span named `mcp.client.request.<method>`.
+     * Returns null when telemetry is disabled (no-op path).
+     *
+     * @param  array<string, scalar>  $extraAttributes
+     */
+    private function startSpan(string $method, array $extraAttributes = []): ?SpanInterface
+    {
+        return $this->tracer?->startSpan(
+            'mcp.client.request.'.str_replace('/', '.', $method),
+            PhoenixTracer::KIND_TOOL,
+            array_merge([
+                'mcp.server.name' => $this->serverName,
+                'mcp.method' => $method,
+            ], $extraAttributes),
+        );
     }
 }
