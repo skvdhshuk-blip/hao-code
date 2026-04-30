@@ -371,6 +371,14 @@ class HaoCode
         if ($config->permissionMode !== 'bypass_permissions') {
             $settings->set('permission_mode', $config->permissionMode);
         }
+
+        if ($config->memorySummaryLevel !== 'l0') {
+            $settings->set('memory_summary_level', $config->memorySummaryLevel);
+        }
+
+        if ($config->memoryStoragePath !== null) {
+            $settings->set('memory_storage_path', $config->memoryStoragePath);
+        }
     }
 
     /**

@@ -38,8 +38,15 @@ class ContextBuilder
             $prompt .= "\n\n# Project Instructions (from memory files)\n\n" . $memoryContent;
         }
 
-        // Load persistent session memory
-        $memories = $this->sessionMemory->forSystemPrompt();
+        // Load persistent session memory at the configured summary level.
+        // When a custom storage path is configured, use an isolated SessionMemory
+        // instance so SDK consumers get their own memory namespace.
+        $memoryLevel = $this->settings->getMemorySummaryLevel();
+        $memoryPath = $this->settings->getMemoryStoragePath();
+        $memorySource = $memoryPath !== null
+            ? new \HaoCode\Services\Memory\SessionMemory($memoryPath)
+            : $this->sessionMemory;
+        $memories = $memorySource->forSystemPrompt(level: $memoryLevel);
         if ($memories) {
             $prompt .= "\n\n# Session Memory\n\n" . $memories;
         }
