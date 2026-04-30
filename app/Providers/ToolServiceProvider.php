@@ -33,6 +33,7 @@ use HaoCode\Tools\Task\TaskUpdateTool;
 use HaoCode\Tools\Task\TaskStopTool;
 use HaoCode\Tools\Mcp\ListMcpResourcesTool;
 use HaoCode\Tools\Mcp\ReadMcpResourceTool;
+use HaoCode\Tools\Memory\MemoryReadTool;
 use HaoCode\Tools\Sleep\SleepTool;
 use HaoCode\Tools\Team\TeamCreateTool;
 use HaoCode\Tools\Team\TeamDeleteTool;
@@ -105,6 +106,9 @@ class ToolServiceProvider extends ServiceProvider
             // MCP resources
             $registry->register($app->make(ListMcpResourcesTool::class));
             $registry->register($app->make(ReadMcpResourceTool::class));
+
+            // Memory tools
+            $registry->register($app->make(MemoryReadTool::class));
 
             // Utility
             $registry->register($app->make(SleepTool::class));
