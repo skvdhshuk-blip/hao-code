@@ -376,6 +376,40 @@ class SettingsManager
         return $settings['system_prompt'] ?? null;
     }
 
+    /**
+     * Get the memory summary level for system prompt injection.
+     *
+     * @return string 'l0' (compact), 'l1' (detailed), or 'l2' (full).
+     */
+    public function getMemorySummaryLevel(): string
+    {
+        if (array_key_exists('memory_summary_level', $this->runtimeOverrides)) {
+            return $this->runtimeOverrides['memory_summary_level'];
+        }
+
+        $settings = $this->loadProjectSettings();
+
+        return $settings['memory_summary_level'] ?? 'l0';
+    }
+
+    /**
+     * Get the custom memory storage path, if configured.
+     *
+     * Returns null when using the default ~/.haocode/memory.json.
+     */
+    public function getMemoryStoragePath(): ?string
+    {
+        if (array_key_exists('memory_storage_path', $this->runtimeOverrides)) {
+            $val = $this->runtimeOverrides['memory_storage_path'];
+            return is_string($val) && $val !== '' ? $val : null;
+        }
+
+        $settings = $this->loadProjectSettings();
+
+        $val = $settings['memory_storage_path'] ?? null;
+        return is_string($val) && $val !== '' ? $val : null;
+    }
+
     public function getAllowRules(): array
     {
         $settings = $this->loadProjectSettings();

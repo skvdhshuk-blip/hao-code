@@ -233,6 +233,30 @@ class HaoCodeConfig
          * @api
          */
         public readonly ?\HaoCode\Sdk\CredentialPool $credentialPool = null,
+
+        /**
+         * Memory summary level for system prompt injection.
+         *
+         * - 'l0': Compact one-liners (~50 tokens each) — default.
+         * - 'l1': Structured overviews (~500 tokens each).
+         * - 'l2': Full memory content.
+         *
+         * The agent can always use MemoryRead tool to fetch more detail.
+         *
+         * @api
+         */
+        public readonly string $memorySummaryLevel = 'l0',
+
+        /**
+         * Custom storage path for SessionMemory. When set, memory is persisted
+         * to this file instead of the default ~/.haocode/memory.json.
+         *
+         * Useful for SDK consumers that want isolated memory stores (e.g.,
+         * per-project or per-use-case memory files).
+         *
+         * @api
+         */
+        public readonly ?string $memoryStoragePath = null,
     ) {}
 
     /**
