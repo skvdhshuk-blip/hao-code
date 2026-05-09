@@ -37,7 +37,7 @@ class AgentLoopFactory
 
         // Build tool registry with optional filtering
         $parentRegistry = $this->container->make(ToolRegistry::class);
-        $toolRegistry = $this->buildToolRegistry($parentRegistry, $toolFilter, $additionalTools !== []);
+        $toolRegistry = $this->buildToolRegistry($parentRegistry, $toolFilter);
 
         $tracer = $this->container->make(PhoenixTracer::class);
         $settings = $this->container->make(SettingsManager::class);
@@ -85,16 +85,16 @@ class AgentLoopFactory
     /**
      * Build a filtered ToolRegistry from the parent registry.
      */
-    private function buildToolRegistry(ToolRegistry $parent, ?callable $filter, bool $forceClone = false): ToolRegistry
+    private function buildToolRegistry(ToolRegistry $parent, ?callable $filter): ToolRegistry
     {
-        if ($filter === null && ! $forceClone) {
+        if ($filter === null) {
             return $parent;
         }
 
         $filtered = new ToolRegistry();
 
         foreach ($parent->getAllTools() as $tool) {
-            if ($filter === null || $filter($tool->name())) {
+            if ($filter($tool->name())) {
                 $filtered->register($tool);
             }
         }

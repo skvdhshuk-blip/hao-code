@@ -310,15 +310,13 @@ class HaoCode
         /** @var AgentLoopFactory $factory */
         $factory = app(AgentLoopFactory::class);
 
-        self::syncSandboxWorkspace($config);
-
         // Build a custom StreamingClient when SDK config overrides API settings
         $customClient = self::buildStreamingClient($config);
 
         $loop = $factory->createIsolated(
             toolFilter: $config->toolFilter(),
-            workingDirectory: $config->effectiveWorkingDirectory(),
-            additionalTools: $config->toolsForAgent(),
+            workingDirectory: $config->cwd,
+            additionalTools: $config->tools,
             streamingClient: $customClient,
         );
 
@@ -355,22 +353,6 @@ class HaoCode
     }
 
     /**
-     * Copy the local cwd into AgentRun when explicitly requested.
-     */
-    private static function syncSandboxWorkspace(HaoCodeConfig $config): void
-    {
-        if ($config->sandbox === null || ! $config->sandboxSyncCwd) {
-            return;
-        }
-        if ($config->cwd === null || ! is_dir($config->cwd)) {
-            throw new \RuntimeException('sandboxSyncCwd requires HaoCodeConfig::cwd to point to an existing local directory.');
-        }
-
-        (new \HaoCode\Sdk\AgentRun\AgentRunSandboxClient($config->sandbox))
-            ->syncDirectory($config->cwd, $config->sandbox->remoteCwd, $config->sandboxSyncExclude);
-    }
-
-    /**
      * Push SDK config overrides into SettingsManager so that
      * ContextBuilder and PermissionChecker pick them up.
      */
@@ -397,27 +379,6 @@ class HaoCode
         if ($config->memoryStoragePath !== null) {
             $settings->set('memory_storage_path', $config->memoryStoragePath);
         }
-
-        if ($config->sandbox !== null) {
-            $sandboxPrompt = self::buildSandboxSystemPrompt($config->sandbox);
-            $existingAppend = $settings->getAppendSystemPrompt();
-            $settings->set(
-                'append_system_prompt',
-                trim(($existingAppend ? $existingAppend."\n\n" : '').$sandboxPrompt),
-            );
-        }
-    }
-
-    private static function buildSandboxSystemPrompt(\HaoCode\Sdk\AgentRun\AgentRunSandboxConfig $sandbox): string
-    {
-        return <<<PROMPT
-# AgentRun Sandbox Runtime
-
-Filesystem and shell tools are connected to an Alibaba Cloud AgentRun sandbox.
-- Treat the sandbox working directory as `{$sandbox->remoteCwd}`.
-- `Read`, `Write`, `Glob`, `Grep`, and `Bash` operate in the remote sandbox, not on the PHP host server.
-- Do not reference or modify host server paths. If a file is not present in the sandbox, ask the caller to upload or prepare it there.
-PROMPT;
     }
 
     /**
