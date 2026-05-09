@@ -225,13 +225,13 @@ class TieredSummarizer
 
     /**
      * Resolve provider config from SettingsManager (honours active_provider),
-     * falling back to env vars and Laravel config.
+     * falling back to env vars and SDK config.
      *
      * @return array{apiKey: string, baseUrl: string, model: string, isAnthropic: bool}|null
      */
     private function resolveProviderConfig(): ?array
     {
-        // Route through SettingsManager when in a Laravel context — this
+        // Route through SettingsManager when the SDK runtime is available; this
         // correctly reads the active provider's api_key/base_url/model/type
         // from settings.json (including nested provider.<name> entries).
         if (function_exists('app')) {

@@ -1,6 +1,6 @@
 # SDK Demo Suite
 
-15 standalone demos covering all HaoCode SDK capabilities (T1–T13).
+11 standalone demos covering the main HaoCode SDK capabilities.
 
 ## Prerequisites
 
@@ -15,8 +15,7 @@ composer install          # from repo root
 | 01–08, 15 | `ANTHROPIC_API_KEY` | — |
 | 07 | `ANTHROPIC_API_KEY` | `ANTHROPIC_API_KEY_2` (second key for pool) |
 | 09 | — (npx + @modelcontextprotocol/server-filesystem) | — |
-| 10, 11 | `ANTHROPIC_API_KEY` | — |
-| 12, 13, 14 | — | — |
+| 13 | — | — |
 | 15 | `ANTHROPIC_API_KEY` | `OPENAI_API_KEY` |
 
 All demos print `[skip]` to stderr and exit 0 when required env is absent.
@@ -34,11 +33,7 @@ All demos print `[skip]` to stderr and exit 0 when required env is absent.
 | 07 | `07-credential-pool.php` | `CredentialPool` multi-key round-robin | ANTHROPIC |
 | 08 | `08-apply-patch.php` | `apply_patch` envelope format | ANTHROPIC |
 | 09 | `09-mcp-client.php` | MCP client connecting to filesystem server | npx |
-| 10 | `10-mcp-server-stdio.php` | `bin/hao-code mcp-serve` stdio mode | ANTHROPIC |
-| 11 | `11-mcp-server-http.php` | MCP HTTP transport + Bearer auth | ANTHROPIC |
-| 12 | `12-skill-registry-git.php` | `skills:add-source` + `skills:list` | — |
 | 13 | `13-execpolicy.php` | YAML policy + `PolicyMatcher` deny example | — |
-| 14 | `14-cron-daemon.php` | `cron:add` + `cron:history` via JobStore | — |
 | 15 | `15-provider-matrix.php` | Cross-provider alignment (anthropic/openai/openai_chat) | ANTHROPIC |
 
 ## Running

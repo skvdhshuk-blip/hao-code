@@ -35,32 +35,10 @@ declare(strict_types=1);
 $packageRoot = dirname(__DIR__);
 require_once $packageRoot.'/vendor/autoload.php';
 
-use App\Sdk\Examples\WeatherAgent;
-use App\Sdk\HaoCodeConfig;
-use App\Support\Runtime\StoragePathResolver;
-use Illuminate\Contracts\Console\Kernel;
+use HaoCode\Sdk\Examples\WeatherAgent;
+use HaoCode\Sdk\HaoCodeConfig;
 
-$pathResolver = new StoragePathResolver;
-$storagePath = $pathResolver->resolve(
-    packageRoot: $packageRoot,
-    autoloadPath: $packageRoot.'/vendor/autoload.php',
-);
-if ($storagePath) {
-    if (! is_dir($storagePath)) {
-        mkdir($storagePath, 0755, true);
-    }
-    putenv("LARAVEL_STORAGE_PATH={$storagePath}");
-    $_ENV['LARAVEL_STORAGE_PATH'] = $storagePath;
-    $_SERVER['LARAVEL_STORAGE_PATH'] = $storagePath;
-}
-
-$app = require $packageRoot.'/bootstrap/app.php';
-if ($storagePath) {
-    $app->useStoragePath($storagePath);
-}
-
-$kernel = $app->make(Kernel::class);
-$kernel->bootstrap();
+\HaoCode\Support\Runtime\SdkRuntime::boot(basePath: $packageRoot);
 
 $providerType = getenv('WEATHER_PROVIDER_TYPE') ?: null;
 $apiKey = getenv('WEATHER_API_KEY') ?: null;

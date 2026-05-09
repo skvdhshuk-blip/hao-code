@@ -652,6 +652,8 @@ class SettingsManager
             'statusline_show_todos',
             'append_system_prompt',
             'system_prompt',
+            'memory_summary_level',
+            'memory_storage_path',
             'thinking_enabled',
             'thinking_budget',
             'vim_mode',

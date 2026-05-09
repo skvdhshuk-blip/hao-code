@@ -137,7 +137,7 @@ PROMPT;
             return $storagePath;
         }
 
-        $storagePath = $_SERVER['LARAVEL_STORAGE_PATH'] ?? getenv('LARAVEL_STORAGE_PATH') ?: null;
+        $storagePath = $_SERVER['HAOCODE_STORAGE_PATH'] ?? getenv('HAOCODE_STORAGE_PATH') ?: null;
         if (is_string($storagePath) && $storagePath !== '') {
             return rtrim($storagePath, '/\\').'/app/haocode/sessions';
         }

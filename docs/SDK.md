@@ -1,6 +1,6 @@
 # Hao Code PHP SDK
 
-Use hao-code as a PHP library to embed an AI coding agent in any Laravel application.
+Use hao-code as a framework-free PHP library to embed an AI coding agent in your application.
 
 ```bash
 composer require sk-wang/hao-code
@@ -423,7 +423,7 @@ $result = HaoCode::query('Review auth.php for security', new HaoCodeConfig(
 ```php
 foreach (HaoCode::stream('Refactor the auth module') as $msg) {
     if ($msg->type === 'text') {
-        echo $msg->text;  // stream to browser / CLI
+        echo $msg->text;  // stream to browser, worker output, or logs
     }
 
     if ($msg->type === 'tool_start') {
