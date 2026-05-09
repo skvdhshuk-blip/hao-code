@@ -2,7 +2,7 @@
 
 A framework-free PHP Agent SDK for Anthropic, OpenAI Responses, and OpenAI Chat Completions-compatible APIs.
 
-`hao-code` is now focused on the SDK surface: embed an agent in a PHP application, give it tools and skills, and receive typed results or streaming messages. The old interactive command-line application has been removed.
+`hao-code` focuses on the SDK surface: embed an agent in a PHP application, give it tools and skills, and receive typed results or streaming messages.
 
 ## Install
 
