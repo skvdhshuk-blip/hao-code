@@ -50,7 +50,7 @@ class SdkE2ETest extends TestCase
         $this->homeDir = $this->tempRoot.'/home';
         $this->projectDir = $this->tempRoot.'/project';
         $this->sessionDir = $this->homeDir.'/.haocode/storage/app/haocode/sessions';
-        $this->storageDir = $this->tempRoot.'/laravel-storage';
+        $this->storageDir = $this->tempRoot.'/sdk-storage';
         $this->originalHome = (string) ($_SERVER['HOME'] ?? getenv('HOME') ?: '');
         $this->originalCwd = getcwd();
 
@@ -68,6 +68,8 @@ class SdkE2ETest extends TestCase
             chdir($this->originalCwd);
         }
 
+        unset($_SERVER['HAOCODE_STORAGE_PATH']);
+        putenv('HAOCODE_STORAGE_PATH');
         $this->setHomeDirectory($this->originalHome);
         $this->removeDirectory($this->tempRoot);
 
@@ -1462,8 +1464,8 @@ JSON),
         $this->refreshApplication();
         $this->app->useStoragePath($this->storageDir);
 
-        $_SERVER['LARAVEL_STORAGE_PATH'] = $this->storageDir;
-        putenv('LARAVEL_STORAGE_PATH='.$this->storageDir);
+        $_SERVER['HAOCODE_STORAGE_PATH'] = $this->storageDir;
+        putenv('HAOCODE_STORAGE_PATH='.$this->storageDir);
 
         config([
             'haocode.api_key' => 'test-key',

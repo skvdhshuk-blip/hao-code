@@ -2,39 +2,25 @@
 
 namespace HaoCode\Sdk;
 
-use Illuminate\Support\ServiceProvider;
+use HaoCode\Support\Runtime\SdkRuntime;
 
 /**
- * Service provider for external Laravel apps using HaoCode as an SDK.
+ * Compatibility shim for applications that referenced the old framework provider.
  *
- * When another Laravel app installs hao-code via Composer, this provider
- * is auto-discovered and registers the SDK facade + configuration.
- *
- * Usage in external app:
- *   // config/haocode.php is auto-published
- *   // .env: ANTHROPIC_API_KEY=your-api-key
- *
- *   use HaoCode\Sdk\HaoCode;
- *   $result = HaoCode::query('Explain this codebase');
+ * The SDK now boots itself through a small framework-free runtime, so this
+ * class no longer extends or requires an external ServiceProvider.
  *
  * @internal
  */
-class HaoCodeSdkServiceProvider extends ServiceProvider
+class HaoCodeSdkServiceProvider
 {
     public function register(): void
     {
-        $this->mergeConfigFrom(
-            __DIR__.'/../../config/haocode.php',
-            'haocode',
-        );
+        SdkRuntime::boot();
     }
 
     public function boot(): void
     {
-        if ($this->app->runningInConsole()) {
-            $this->publishes([
-                __DIR__.'/../../config/haocode.php' => config_path('haocode.php'),
-            ], 'haocode-config');
-        }
+        SdkRuntime::boot();
     }
 }

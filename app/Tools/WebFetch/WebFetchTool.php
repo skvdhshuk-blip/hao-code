@@ -73,7 +73,7 @@ DESC;
                 $client = HttpClient::create(['timeout' => 30, 'max_duration' => 60]);
                 $response = $client->request('GET', $url, [
                     'headers' => [
-                        'User-Agent' => 'HaoCode/1.0 (CLI Agent)',
+                        'User-Agent' => 'HaoCode/1.0 (PHP SDK)',
                         'Accept' => 'text/html,text/plain,application/json,*/*',
                     ],
                     'max_redirects' => 5,

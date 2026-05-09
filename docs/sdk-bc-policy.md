@@ -42,7 +42,7 @@
 | `SdkTool::call` | BaseTool 框架内部调用 |
 | `SdkTool::isReadOnly` | BaseTool 框架内部调用 |
 | `SdkSkill::toDefinition` | 转换为内部 SkillDefinition，不属于外部接口 |
-| `HaoCodeSdkServiceProvider` | 整类 Laravel 框架内部使用，SDK 消费者不应直接操作 |
+| `HaoCodeSdkServiceProvider` | 旧框架集成兼容 shim，SDK 消费者不应直接操作 |
 
 ## BC 检查工具
 

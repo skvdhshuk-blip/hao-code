@@ -5,11 +5,11 @@
          colors="true"
 >
     <testsuites>
-        <testsuite name="Unit">
-            <directory>tests/Unit</directory>
-        </testsuite>
-        <testsuite name="Feature">
-            <directory>tests/Feature</directory>
+        <testsuite name="SDK">
+            <directory>tests/Sdk</directory>
+            <file>tests/Feature/SdkE2ETest.php</file>
+            <file>tests/Feature/ToolInputSchemaTest.php</file>
+            <file>tests/Unit/AgentLoopFactoryTest.php</file>
         </testsuite>
     </testsuites>
     <source>

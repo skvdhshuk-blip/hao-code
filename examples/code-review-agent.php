@@ -22,28 +22,16 @@
  *   - ANTHROPIC_API_KEY set in .env or ~/.haocode/settings.json
  */
 
-// Bootstrap Laravel application
+// Bootstrap SDK runtime
 $packageRoot = dirname(__DIR__);
 require_once $packageRoot . '/vendor/autoload.php';
 
-$pathResolver = new \App\Support\Runtime\StoragePathResolver;
-$storagePath = $pathResolver->resolve(packageRoot: $packageRoot, autoloadPath: $packageRoot . '/vendor/autoload.php');
-if ($storagePath) {
-    if (!is_dir($storagePath)) mkdir($storagePath, 0755, true);
-    putenv("LARAVEL_STORAGE_PATH={$storagePath}");
-    $_ENV['LARAVEL_STORAGE_PATH'] = $storagePath;
-    $_SERVER['LARAVEL_STORAGE_PATH'] = $storagePath;
-}
+\HaoCode\Support\Runtime\SdkRuntime::boot(basePath: $packageRoot);
 
-$app = require $packageRoot . '/bootstrap/app.php';
-if ($storagePath) $app->useStoragePath($storagePath);
-$kernel = $app->make(\Illuminate\Contracts\Console\Kernel::class);
-$kernel->bootstrap();
-
-use App\Sdk\HaoCode;
-use App\Sdk\HaoCodeConfig;
-use App\Sdk\SdkTool;
-use App\Sdk\SdkSkill;
+use HaoCode\Sdk\HaoCode;
+use HaoCode\Sdk\HaoCodeConfig;
+use HaoCode\Sdk\SdkTool;
+use HaoCode\Sdk\SdkSkill;
 
 // ─── Custom Tools ────────────────────────────────────────────────
 

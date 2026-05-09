@@ -1,35 +1,34 @@
 {
     "$schema": "https://getcomposer.org/schema.json",
     "name": "sk-wang/hao-code",
-    "version": "v0.4.1",
+    "version": "1.0.0",
     "type": "library",
-    "description": "Terminal-first AI coding agent and PHP SDK for Anthropic, OpenAI Responses, and OpenAI Chat Completions APIs.",
-    "keywords": ["ai", "agent", "cli", "coding-agent", "sdk", "anthropic", "openai"],
+    "description": "PHP agent SDK for Anthropic, OpenAI Responses, and OpenAI Chat Completions APIs.",
+    "keywords": ["ai", "agent", "agent-sdk", "sdk", "anthropic", "openai"],
     "homepage": "https://github.com/sk-wang/hao-code",
     "license": "MIT",
-    "bin": ["bin/hao-code"],
     "require": {
         "php": "^8.1",
-        "illuminate/translation": "^10.48 || ^11.0 || ^12.0",
-        "illuminate/validation": "^10.48 || ^11.0 || ^12.0",
-        "laravel-zero/framework": "^10.0 || ^11.0 || ^12.0",
         "league/commonmark": "^2.4",
+        "nyholm/psr7": "^1.8",
         "open-telemetry/exporter-otlp": "^1.0",
         "open-telemetry/sdk": "^1.0",
         "open-telemetry/sem-conv": "^1.0",
         "symfony/clock": "^6.4 || ^7.0",
+        "symfony/console": "^6.4 || ^7.0",
         "symfony/http-client": "^6.4 || ^7.0",
         "symfony/string": "^6.4 || ^7.0",
         "symfony/translation": "^6.4 || ^7.0",
         "symfony/yaml": "^6.4 || ^7.0"
     },
     "require-dev": {
-        "illuminate/database": "^10.48 || ^11.0 || ^12.0",
-        "laravel/pint": "^1.24",
         "mockery/mockery": "^1.6",
         "phpunit/phpunit": "^10.5 || ^11.5"
     },
     "autoload": {
+        "files": [
+            "app/Support/Runtime/helpers.php"
+        ],
         "psr-4": {
             "HaoCode\\": "app/"
         }
@@ -42,8 +41,7 @@
     "scripts": {
         "test": "phpunit",
         "test:live": "phpunit --group live",
-        "lint": "pint --test",
-        "fix": "pint"
+        "lint": "find app tests -name '*.php' -print0 | xargs -0 -n1 php -l"
     },
     "suggest": {
         "ext-sqlite3": "For daemon mode (cron job persistence via SQLite)",
@@ -51,20 +49,11 @@
         "ext-pcntl": "Required for daemon signal handling (SIGTERM/SIGINT)",
         "ext-posix": "Required for daemon PID management and stale-pid detection"
     },
-    "extra": {
-        "laravel": {
-            "dont-discover": [],
-            "providers": [
-                "HaoCode\\Sdk\\HaoCodeSdkServiceProvider"
-            ]
-        }
-    },
     "config": {
         "optimize-autoloader": true,
         "preferred-install": "dist",
         "sort-packages": true,
         "allow-plugins": {
-            "pestphp/pest-plugin": true,
             "php-http/discovery": true
         }
     },

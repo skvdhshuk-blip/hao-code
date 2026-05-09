@@ -3,17 +3,10 @@
 // Env: none required — uses npx @modelcontextprotocol/server-filesystem if available
 $packageRoot = dirname(__DIR__, 2);
 require_once $packageRoot.'/vendor/autoload.php';
-use HaoCode\Support\Runtime\StoragePathResolver;
 use HaoCode\Services\Mcp\McpServerConfigManager;
 use HaoCode\Services\Mcp\McpConnectionManager;
-use Illuminate\Contracts\Console\Kernel;
 
-$_r = new StoragePathResolver;
-$_s = $_r->resolve($packageRoot, $packageRoot.'/vendor/autoload.php');
-if ($_s) { if (!is_dir($_s)) mkdir($_s, 0755, true); putenv("LARAVEL_STORAGE_PATH={$_s}"); $_ENV['LARAVEL_STORAGE_PATH'] = $_s; $_SERVER['LARAVEL_STORAGE_PATH'] = $_s; }
-$app = require $packageRoot.'/bootstrap/app.php';
-if ($_s) $app->useStoragePath($_s);
-$app->make(Kernel::class)->bootstrap();
+\HaoCode\Support\Runtime\SdkRuntime::boot(basePath: $packageRoot);
 
 /** @var McpServerConfigManager $cfg */
 $cfg = app(McpServerConfigManager::class);

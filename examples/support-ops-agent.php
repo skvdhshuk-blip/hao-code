@@ -27,32 +27,9 @@ declare(strict_types=1);
 $packageRoot = dirname(__DIR__);
 require_once $packageRoot.'/vendor/autoload.php';
 
-$pathResolver = new StoragePathResolver;
-$storagePath = $pathResolver->resolve(
-    packageRoot: $packageRoot,
-    autoloadPath: $packageRoot.'/vendor/autoload.php',
-);
-if ($storagePath) {
-    if (! is_dir($storagePath)) {
-        mkdir($storagePath, 0755, true);
-    }
+use HaoCode\Sdk\Examples\SupportOpsAgent;
 
-    putenv("LARAVEL_STORAGE_PATH={$storagePath}");
-    $_ENV['LARAVEL_STORAGE_PATH'] = $storagePath;
-    $_SERVER['LARAVEL_STORAGE_PATH'] = $storagePath;
-}
-
-$app = require $packageRoot.'/bootstrap/app.php';
-if ($storagePath) {
-    $app->useStoragePath($storagePath);
-}
-
-$kernel = $app->make(Kernel::class);
-$kernel->bootstrap();
-
-use App\Sdk\Examples\SupportOpsAgent;
-use App\Support\Runtime\StoragePathResolver;
-use Illuminate\Contracts\Console\Kernel;
+\HaoCode\Support\Runtime\SdkRuntime::boot(basePath: $packageRoot);
 
 $workspaceDir = $packageRoot.'/examples/output/support-ops-agent';
 

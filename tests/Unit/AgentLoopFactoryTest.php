@@ -8,7 +8,6 @@ use HaoCode\Services\Agent\QueryEngine;
 use HaoCode\Services\Agent\ToolOrchestrator;
 use HaoCode\Services\Hooks\HookExecutor;
 use HaoCode\Services\Permissions\PermissionChecker;
-use Illuminate\Contracts\Container\Container;
 use HaoCode\Tools\ToolRegistry;
 use Tests\TestCase;
 
@@ -23,28 +22,38 @@ class AgentLoopFactoryTest extends TestCase
         $toolRegistry = new ToolRegistry();
         $hookExecutor = $this->createMock(HookExecutor::class);
 
-        $container = $this->createMock(Container::class);
-        $container->method('make')
-            ->willReturnCallback(function (string $abstract) use (
-                $queryEngine,
-                $toolOrchestrator,
-                $contextBuilder,
-                $permissionChecker,
-                $toolRegistry,
-                $hookExecutor,
-            ) {
+        $container = new class (
+            $queryEngine,
+            $toolOrchestrator,
+            $contextBuilder,
+            $permissionChecker,
+            $toolRegistry,
+            $hookExecutor,
+        ) {
+            public function __construct(
+                private readonly QueryEngine $queryEngine,
+                private readonly ToolOrchestrator $toolOrchestrator,
+                private readonly ContextBuilder $contextBuilder,
+                private readonly PermissionChecker $permissionChecker,
+                private readonly ToolRegistry $toolRegistry,
+                private readonly HookExecutor $hookExecutor,
+            ) {}
+
+            public function make(string $abstract): mixed
+            {
                 return match ($abstract) {
-                    QueryEngine::class => $queryEngine,
-                    ToolOrchestrator::class => $toolOrchestrator,
-                    ContextBuilder::class => $contextBuilder,
-                    PermissionChecker::class => $permissionChecker,
-                    ToolRegistry::class => $toolRegistry,
-                    HookExecutor::class => $hookExecutor,
+                    QueryEngine::class => $this->queryEngine,
+                    ToolOrchestrator::class => $this->toolOrchestrator,
+                    ContextBuilder::class => $this->contextBuilder,
+                    PermissionChecker::class => $this->permissionChecker,
+                    ToolRegistry::class => $this->toolRegistry,
+                    HookExecutor::class => $this->hookExecutor,
                     \HaoCode\Services\Telemetry\PhoenixTracer::class => \HaoCode\Services\Telemetry\PhoenixTracer::fromConfig(['enabled' => false]),
                     \HaoCode\Services\Settings\SettingsManager::class => new \HaoCode\Services\Settings\SettingsManager(),
                     default => throw new \RuntimeException("Unexpected container resolution: {$abstract}"),
                 };
-            });
+            }
+        };
 
         $factory = new AgentLoopFactory(
             container: $container,

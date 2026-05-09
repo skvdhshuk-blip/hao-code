@@ -10,12 +10,11 @@ use HaoCode\Services\Session\SessionManager;
 use HaoCode\Services\Settings\SettingsManager;
 use HaoCode\Services\Telemetry\PhoenixTracer;
 use HaoCode\Tools\ToolRegistry;
-use Illuminate\Contracts\Container\Container;
 
 class AgentLoopFactory
 {
     public function __construct(
-        private readonly Container $container,
+        private readonly object $container,
     ) {}
 
     /**

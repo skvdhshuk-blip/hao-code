@@ -94,9 +94,8 @@ abstract class SdkTool extends BaseTool
 
             $properties[$name] = $prop;
 
-            // JSON Schema types don't all line up 1:1 with Laravel validator
-            // rule names — translate `number` and `object` explicitly.
-            $laravelType = match ($type) {
+            // JSON Schema types don't all line up 1:1 with validator rule names.
+            $validatorType = match ($type) {
                 'number' => 'numeric',
                 'object' => 'array',
                 default => $type,
@@ -104,9 +103,9 @@ abstract class SdkTool extends BaseTool
 
             if ($param['required'] ?? false) {
                 $required[] = $name;
-                $rules[$name] = 'required|'.$laravelType;
+                $rules[$name] = 'required|'.$validatorType;
             } else {
-                $rules[$name] = 'nullable|'.$laravelType;
+                $rules[$name] = 'nullable|'.$validatorType;
             }
         }
 

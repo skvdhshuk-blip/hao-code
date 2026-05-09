@@ -15,9 +15,7 @@
 
 // Bootstrap
 require __DIR__ . '/../vendor/autoload.php';
-
-$app = require __DIR__ . '/../bootstrap/app.php';
-$app->make(\Illuminate\Contracts\Console\Kernel::class)->bootstrap();
+\HaoCode\Support\Runtime\SdkRuntime::boot(basePath: dirname(__DIR__));
 
 use HaoCode\Services\Memory\SessionMemory;
 use HaoCode\Services\Memory\TieredSummarizer;
