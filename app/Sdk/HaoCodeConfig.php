@@ -235,6 +235,32 @@ class HaoCodeConfig
         public readonly ?\HaoCode\Sdk\CredentialPool $credentialPool = null,
 
         /**
+         * Optional AgentRun sandbox. When set, filesystem and shell tools are
+         * replaced with REST-backed tools that operate inside the remote sandbox
+         * instead of the PHP host's local cwd.
+         *
+         * @api
+         */
+        public readonly ?\HaoCode\Sdk\AgentRun\AgentRunSandboxConfig $sandbox = null,
+
+        /**
+         * When sandbox is set and cwd points to a local directory, copy a source
+         * snapshot into sandbox->remoteCwd before the agent starts.
+         *
+         * @api
+         */
+        public readonly bool $sandboxSyncCwd = false,
+
+        /**
+         * Extra exclude patterns for sandboxSyncCwd.
+         *
+         * @api
+         *
+         * @var string[]
+         */
+        public readonly array $sandboxSyncExclude = [],
+
+        /**
          * Memory summary level for system prompt injection.
          *
          * - 'l0': Compact one-liners (~50 tokens each) — default.
@@ -276,11 +302,15 @@ class HaoCodeConfig
      */
     public function toolFilter(): ?callable
     {
-        if ($this->allowedTools === ['*'] && $this->disallowedTools === []) {
+        if ($this->allowedTools === ['*'] && $this->disallowedTools === [] && $this->sandbox === null) {
             return null;
         }
 
         return function (string $toolName): bool {
+            if ($this->sandbox !== null && in_array($toolName, \HaoCode\Sdk\AgentRun\AgentRunSandboxTools::localOnlyToolsToDisable(), true)) {
+                return false;
+            }
+
             if (in_array($toolName, $this->disallowedTools, true)) {
                 return false;
             }
@@ -291,5 +321,33 @@ class HaoCodeConfig
 
             return in_array($toolName, $this->allowedTools, true);
         };
+    }
+
+    /**
+     * Built-in tool overrides plus caller-defined custom tools.
+     *
+     * @internal
+     *
+     * @return array<int, \HaoCode\Contracts\ToolInterface>
+     */
+    public function toolsForAgent(): array
+    {
+        $tools = $this->tools;
+
+        if ($this->sandbox !== null) {
+            $tools = array_merge(\HaoCode\Sdk\AgentRun\AgentRunSandboxTools::make($this->sandbox), $tools);
+        }
+
+        return $tools;
+    }
+
+    /**
+     * Working directory exposed to tools.
+     *
+     * @internal
+     */
+    public function effectiveWorkingDirectory(): ?string
+    {
+        return $this->sandbox?->remoteCwd ?? $this->cwd;
     }
 }

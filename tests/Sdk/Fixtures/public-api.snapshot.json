@@ -124,9 +124,14 @@
         "internal": false,
         "methods": {
             "__construct": {
-                "signature": "public function __construct(?string $apiKey = null, ?string $model = null, ?string $baseUrl = null, ?string $providerType = null, ?int $maxTokens = null, ?string $cwd = null, int $maxTurns = 50, ?float $maxBudgetUsd = null, string $permissionMode = \"bypass_permissions\", array $allowedTools = [\"*\"], array $disallowedTools = [], ?string $systemPrompt = null, ?string $appendSystemPrompt = null, bool $thinkingEnabled = false, int $thinkingBudget = 10000, mixed $onText = null, mixed $onToolStart = null, mixed $onToolComplete = null, mixed $onTurnStart = null, bool $ephemeral = false, array $tools = [], array $skills = [], ?HaoCode\\Sdk\\AbortController $abortController = null, ?string $sessionId = null, bool $continueSession = false, ?array $responseSchema = null, ?HaoCode\\Sdk\\CredentialPool $credentialPool = null, string $memorySummaryLevel = \"l0\", ?string $memoryStoragePath = null)",
+                "signature": "public function __construct(?string $apiKey = null, ?string $model = null, ?string $baseUrl = null, ?string $providerType = null, ?int $maxTokens = null, ?string $cwd = null, int $maxTurns = 50, ?float $maxBudgetUsd = null, string $permissionMode = \"bypass_permissions\", array $allowedTools = [\"*\"], array $disallowedTools = [], ?string $systemPrompt = null, ?string $appendSystemPrompt = null, bool $thinkingEnabled = false, int $thinkingBudget = 10000, mixed $onText = null, mixed $onToolStart = null, mixed $onToolComplete = null, mixed $onTurnStart = null, bool $ephemeral = false, array $tools = [], array $skills = [], ?HaoCode\\Sdk\\AbortController $abortController = null, ?string $sessionId = null, bool $continueSession = false, ?array $responseSchema = null, ?HaoCode\\Sdk\\CredentialPool $credentialPool = null, ?HaoCode\\Sdk\\AgentRun\\AgentRunSandboxConfig $sandbox = null, bool $sandboxSyncCwd = false, array $sandboxSyncExclude = [], string $memorySummaryLevel = \"l0\", ?string $memoryStoragePath = null)",
                 "api": false,
                 "internal": false
+            },
+            "effectiveWorkingDirectory": {
+                "signature": "public function effectiveWorkingDirectory() : ?string",
+                "api": false,
+                "internal": true
             },
             "make": {
                 "signature": "public static function make(?string $apiKey = null, ?string $model = null) : self",
@@ -137,6 +142,11 @@
                 "signature": "public function toolFilter() : ?callable",
                 "api": true,
                 "internal": false
+            },
+            "toolsForAgent": {
+                "signature": "public function toolsForAgent() : array",
+                "api": false,
+                "internal": true
             }
         },
         "properties": {
@@ -252,6 +262,21 @@
             },
             "responseSchema": {
                 "signature": "public readonly ?array $responseSchema",
+                "api": true,
+                "internal": false
+            },
+            "sandbox": {
+                "signature": "public readonly ?HaoCode\\Sdk\\AgentRun\\AgentRunSandboxConfig $sandbox",
+                "api": true,
+                "internal": false
+            },
+            "sandboxSyncCwd": {
+                "signature": "public readonly bool $sandboxSyncCwd",
+                "api": true,
+                "internal": false
+            },
+            "sandboxSyncExclude": {
+                "signature": "public readonly array $sandboxSyncExclude",
                 "api": true,
                 "internal": false
             },

@@ -26,6 +26,7 @@ ANTHROPIC_API_KEY=your-api-key
 - [HaoCodeConfig Reference](#haocodeconfig-reference)
 - [QueryResult](#queryresult)
 - [Custom Tools (SdkTool)](#custom-tools-sdktool)
+- [AgentRun Sandbox Runtime](#agentrun-sandbox-runtime)
 - [Custom Skills (SdkSkill)](#custom-skills-sdkskill)
 - [Streaming Messages](#streaming-messages)
 - [Multi-turn Conversations](#multi-turn-conversations)
@@ -203,6 +204,9 @@ When any of these are set, the SDK creates a standalone HTTP client (bypassing g
 | `maxTurns` | `int` | `50` | Maximum agent turns (tool-use round trips) |
 | `maxBudgetUsd` | `?float` | `null` | Cost limit in USD. Agent stops when exceeded |
 | `permissionMode` | `string` | `'bypass_permissions'` | `'default'`, `'plan'`, `'accept_edits'`, `'bypass_permissions'` |
+| `sandbox` | `?AgentRunSandboxConfig` | `null` | Replace local filesystem/shell tools with Alibaba Cloud AgentRun REST sandbox tools |
+| `sandboxSyncCwd` | `bool` | `false` | Copy local `cwd` text files into the sandbox before the run |
+| `sandboxSyncExclude` | `string[]` | `[]` | Extra file or directory patterns to skip during `sandboxSyncCwd` |
 
 ### Prompts
 
@@ -219,6 +223,8 @@ When any of these are set, the SDK creates a standalone HTTP client (bypassing g
 | `disallowedTools` | `string[]` | `[]` | Tools to deny (takes precedence over allowed) |
 | `tools` | `SdkTool[]` | `[]` | Custom tools to register |
 | `skills` | `SdkSkill[]` | `[]` | Custom skills to register |
+
+When `sandbox` is set, these built-in tool names are replaced with remote AgentRun implementations: `Read`, `Write`, `Glob`, `Grep`, and `Bash`. Local-only tools that could touch the PHP host filesystem are disabled by default: `Edit`, `apply_patch`, `NotebookEdit`, `Lsp`, `EnterWorktree`, `ExitWorktree`, `Agent`, and `SendMessage`.
 
 ### Callbacks
 
@@ -371,6 +377,77 @@ class ShoppingCart extends SdkTool
         return false;
     }
 }
+```
+
+## AgentRun Sandbox Runtime
+
+Use Alibaba Cloud AgentRun Code Interpreter when the agent needs a temporary filesystem and shell but must not mutate files on the PHP host server. This is a REST-only integration over the AgentRun data API, so your server does not need Python or the AgentRun Python SDK installed.
+
+### Basic Usage
+
+```php
+use HaoCode\Sdk\AgentRun\AgentRunSandboxConfig;
+use HaoCode\Sdk\HaoCode;
+use HaoCode\Sdk\HaoCodeConfig;
+
+$result = HaoCode::query('Inspect the sandbox project and summarize the risks.', new HaoCodeConfig(
+    cwd: __DIR__,
+    sandbox: AgentRunSandboxConfig::fromEnv(
+        sandboxId: getenv('AGENTRUN_SANDBOX_ID') ?: null,
+        remoteCwd: '/home/user/project',
+    ),
+    sandboxSyncCwd: true,
+    allowedTools: ['Read', 'Write', 'Grep', 'Glob', 'Bash'],
+));
+```
+
+Required environment variables for RAM-signed data API calls:
+
+```env
+ALIBABA_CLOUD_ACCESS_KEY_ID=your-ak
+ALIBABA_CLOUD_ACCESS_KEY_SECRET=your-sk
+AGENTRUN_ACCOUNT_ID=your-main-account-id
+AGENTRUN_SANDBOX_ID=your-sandbox-id
+AGENTRUN_REGION=cn-hangzhou
+```
+
+Optional environment variables:
+
+```env
+AGENTRUN_TEMPLATE_NAME=code-interpreter-template
+AGENTRUN_REMOTE_CWD=/home/user/project
+AGENTRUN_DATA_ENDPOINT=https://your-account.agentrun-data.cn-hangzhou.aliyuncs.com
+AGENTRUN_TIMEOUT_SECONDS=30
+```
+
+If `AGENTRUN_SANDBOX_ID` is not provided and `AGENTRUN_TEMPLATE_NAME` is set, the client creates a sandbox through `POST /sandboxes` and then uses the returned `sandboxId`.
+
+### What Gets Replaced
+
+| Tool | AgentRun endpoint used | Host filesystem touched? |
+| --- | --- | --- |
+| `Read` | `GET /sandboxes/{sandboxId}/files?path=...` | No |
+| `Write` | `POST /sandboxes/{sandboxId}/files` | No |
+| `Glob` | `POST /sandboxes/{sandboxId}/processes/cmd` | No |
+| `Grep` | `POST /sandboxes/{sandboxId}/processes/cmd` | No |
+| `Bash` | `POST /sandboxes/{sandboxId}/processes/cmd` | No |
+
+The agent sees the configured `remoteCwd` as its working directory. Relative file paths are resolved under that remote directory before the REST request is made.
+
+If `sandboxSyncCwd` is true, the SDK copies a source snapshot from local `cwd` into `remoteCwd` before the run. It skips common heavy directories such as `.git`, `node_modules`, `vendor`, cache directories, binary files, and files over 1 MB. This setup reads from the PHP host but still prevents the agent from writing back to the host.
+
+### Direct Client
+
+```php
+use HaoCode\Sdk\AgentRun\AgentRunSandboxClient;
+use HaoCode\Sdk\AgentRun\AgentRunSandboxConfig;
+
+$client = new AgentRunSandboxClient(AgentRunSandboxConfig::fromEnv());
+
+$client->writeFile('/home/user/input.txt', 'hello');
+$file = $client->readFile('/home/user/input.txt');
+$run = $client->cmd('wc -c /home/user/input.txt', cwd: '/home/user');
+$client->syncDirectory(__DIR__, '/home/user/project');
 ```
 
 ## Custom Skills (SdkSkill)
