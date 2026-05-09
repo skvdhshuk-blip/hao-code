@@ -373,8 +373,6 @@ class ShoppingCart extends SdkTool
 }
 ```
 
----
-
 ## Custom Skills (SdkSkill)
 
 Skills are named prompt templates the agent can invoke. Unlike tools (which execute PHP code), skills inject instructions that guide the agent's behavior.
