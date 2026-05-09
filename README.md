@@ -41,7 +41,6 @@ echo $result->text;
 | Skills | Prompt-packaged domain guidance through `SdkSkill` |
 | Structured output | JSON schema guided responses via `HaoCode::structured()` |
 | Runtime control | Working directory, allowed tools, denied tools, permission mode, max turns, max tokens, thinking options |
-| Remote sandbox | Alibaba Cloud AgentRun Code Interpreter REST sandbox for file and shell tools |
 | Operations | Cost budget, usage metadata, abort controller, callbacks for text/tool/turn events |
 | State | Session IDs, conversation handles, memory summary levels, custom memory storage path |
 | Reliability | Credential pools, rate-limit tracking, provider abstraction, SDK-only runtime without Laravel dependency |
@@ -79,37 +78,6 @@ $config = new HaoCodeConfig(
 ```
 
 If no explicit config is provided, the SDK reads environment and settings values such as `ANTHROPIC_API_KEY`, `HAOCODE_MODEL`, `HAOCODE_API_BASE_URL`, and `HAOCODE_MAX_TOKENS`.
-
-## AgentRun Sandbox
-
-Use Alibaba Cloud AgentRun Code Interpreter as the agent runtime when you do not want `Read`, `Write`, `Glob`, `Grep`, or `Bash` to touch the PHP server filesystem. The integration uses AgentRun's REST data API directly; no Python runtime is required on your server.
-
-```php
-use HaoCode\Sdk\AgentRun\AgentRunSandboxConfig;
-use HaoCode\Sdk\HaoCodeConfig;
-
-$config = new HaoCodeConfig(
-    cwd: __DIR__,                 // optional local source snapshot
-    sandbox: AgentRunSandboxConfig::fromEnv(
-        sandboxId: getenv('AGENTRUN_SANDBOX_ID') ?: null,
-        remoteCwd: '/home/user/project',
-    ),
-    sandboxSyncCwd: true,         // copy cwd to sandbox before the run
-    allowedTools: ['Read', 'Write', 'Grep', 'Glob', 'Bash'],
-);
-```
-
-Set these environment variables:
-
-```env
-ALIBABA_CLOUD_ACCESS_KEY_ID=...
-ALIBABA_CLOUD_ACCESS_KEY_SECRET=...
-AGENTRUN_ACCOUNT_ID=...
-AGENTRUN_SANDBOX_ID=...
-AGENTRUN_REGION=cn-hangzhou
-```
-
-When `sandbox` is set, local-only editing tools such as `Edit`, `apply_patch`, `NotebookEdit`, `Lsp`, and worktree tools are disabled by default. If `sandboxSyncCwd` is enabled, the SDK reads the local `cwd` once and copies text files into the sandbox; all subsequent agent file writes happen remotely. If `Bash` is listed in `disallowedTools`, the sandbox shell is also disabled.
 
 ## Streaming
 

@@ -31,18 +31,10 @@ class Conversation
         AgentLoopFactory $factory,
         ?StreamingClient $streamingClient = null,
     ) {
-        if ($config->sandbox !== null && $config->sandboxSyncCwd) {
-            if ($config->cwd === null || ! is_dir($config->cwd)) {
-                throw new \RuntimeException('sandboxSyncCwd requires HaoCodeConfig::cwd to point to an existing local directory.');
-            }
-            (new \HaoCode\Sdk\AgentRun\AgentRunSandboxClient($config->sandbox))
-                ->syncDirectory($config->cwd, $config->sandbox->remoteCwd, $config->sandboxSyncExclude);
-        }
-
         $this->loop = $factory->createIsolated(
             toolFilter: $config->toolFilter(),
-            workingDirectory: $config->effectiveWorkingDirectory(),
-            additionalTools: $config->toolsForAgent(),
+            workingDirectory: $config->cwd,
+            additionalTools: $config->tools,
             streamingClient: $streamingClient,
         );
 
