@@ -225,10 +225,10 @@ When any of these are set, the SDK creates a standalone HTTP client (bypassing g
 
 ## Sandbox Runtime
 
-Use `SandboxConfig` when the agent needs file tools but must not mutate the PHP
-host project directory. The first supported backend is `local`: it creates a
-temporary directory, optionally copies a text snapshot of `cwd` into the sandbox,
-and exposes that snapshot as `/workspace`.
+Use `SandboxConfig` when the agent needs file or shell tools but must not mutate
+the PHP host project directory. Sandbox mode replaces `Read`, `Write`, `Glob`,
+and `Grep` with sandbox-scoped tools. Set `mode: 'full'` to also replace `Bash`
+with a sandbox-scoped shell.
 
 ```php
 use HaoCode\Sdk\HaoCode;
@@ -251,37 +251,43 @@ Sandbox modes:
 | Mode | Replaced tools | Notes |
 |------|----------------|-------|
 | `filesystem` | `Read`, `Write`, `Glob`, `Grep` | Default; `Bash` is disabled |
-| `full` | `Read`, `Write`, `Glob`, `Grep`, `Bash` | Shell commands run inside the sandbox root |
+| `full` | `Read`, `Write`, `Glob`, `Grep`, `Bash` | Shell commands run inside the sandbox backend |
 
 While sandbox mode is active, host-only tools are disabled by default: `Edit`,
 `apply_patch`, `NotebookEdit`, `Lsp`, `EnterWorktree`, `ExitWorktree`, `Agent`,
 and `SendMessage`.
 
-`sync` options:
+### Local backend
+
+The local backend creates an isolated temp directory. With `sync: 'upload-cwd'`,
+it copies text files from `cwd` into `remoteCwd`, skipping `.git`,
+`node_modules`, `vendor`, caches, binaries, and files over 1MB.
 
 | Sync | Behavior |
 |------|----------|
 | `none` | Start with an empty sandbox at `remoteCwd` |
-| `upload-cwd` | Copy text files from `cwd` into `remoteCwd`, skipping `.git`, `node_modules`, `vendor`, caches, binaries, and files over 1MB |
+| `upload-cwd` | Copy a safe text snapshot of `cwd` into `remoteCwd` |
 
-The local backend is intentionally provider-neutral. Remote providers such as
-Alibaba Cloud AgentRun should be added behind the same sandbox backend contract
-instead of being wired into agent tools directly.
+### Alibaba Cloud AgentRun backend
 
-### AgentRun Spike
+`SandboxConfig::agentRun()` uses Alibaba Cloud AgentRun as a remote temporary
+filesystem and script execution environment. It is useful when the PHP server
+must not write project files or execute agent-generated shell commands locally.
 
-`SandboxConfig::agentRun()` is an experimental backend adapter for Alibaba Cloud
-AgentRun's data API. It is not enabled by default; use it only after verifying
-your `sandboxId` or `templateName` with the standalone script:
+Verify credentials and template/instance IDs first:
 
 ```bash
-export AGENTRUN_ACCOUNT_ID=...
-export AGENTRUN_API_KEY=...
-export AGENTRUN_SANDBOX_ID=...      # or AGENTRUN_TEMPLATE_NAME=...
+export AGENTRUN_ACCOUNT_ID=1887527099427005
+export AGENTRUN_API_KEY=ak_xxx
+export AGENTRUN_TEMPLATE_NAME=sandbox-lagal
+export AGENTRUN_REGION=cn-hangzhou
 php scripts/agentrun-verify.php
 ```
 
-Once verified:
+`AGENTRUN_TEMPLATE_NAME` asks AgentRun to create a fresh temporary sandbox from a
+template. `AGENTRUN_SANDBOX_ID` is only for an already-created live sandbox
+instance. Do not put a template ID into `AGENTRUN_SANDBOX_ID`; AgentRun will
+return `sandbox not found`.
 
 ```php
 use HaoCode\Sdk\Sandbox\SandboxConfig;
@@ -290,16 +296,21 @@ $config = new HaoCodeConfig(
     sandbox: SandboxConfig::agentRun(
         accountId: getenv('AGENTRUN_ACCOUNT_ID'),
         sandboxId: getenv('AGENTRUN_SANDBOX_ID') ?: null,
-        templateName: getenv('AGENTRUN_TEMPLATE_NAME') ?: null,
+        templateName: getenv('AGENTRUN_TEMPLATE_NAME') ?: 'sandbox-lagal',
         apiKey: getenv('AGENTRUN_API_KEY') ?: null,
-        mode: 'filesystem',
+        region: getenv('AGENTRUN_REGION') ?: 'cn-hangzhou',
+        mode: 'full',
+        remoteCwd: '/tmp',
     ),
+    allowedTools: ['Read', 'Write', 'Bash'],
 );
 ```
 
-This spike intentionally sits behind `SandboxBackendInterface`; future RAM
-signing or provider-specific lifecycle handling can be added without changing
-the agent tool layer.
+For the current AgentRun code-interpreter template, use a writable directory
+under `/tmp`, such as `/tmp/workspace`, for generated files. Creating `/workspace`
+at the filesystem root can fail with permission denied. The complete demo in
+`examples/agentrun-ml-clustering-agent.php` lets an agent generate data, write a
+pure-Python k-means script, run it in AgentRun, and read back the JSON summary.
 
 ### Callbacks
 

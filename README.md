@@ -80,12 +80,14 @@ $config = new HaoCodeConfig(
 
 If no explicit config is provided, the SDK reads environment and settings values such as `ANTHROPIC_API_KEY`, `HAOCODE_MODEL`, `HAOCODE_API_BASE_URL`, and `HAOCODE_MAX_TOKENS`.
 
-## Local Sandbox
+## Sandbox Runtime
 
-Use the local sandbox when the agent needs a temporary workspace but must not
-write to the PHP host project directory. This copies a text snapshot of `cwd`
-into an isolated temp directory, then replaces file/search tools with sandbox
-tools.
+Use a sandbox when the agent needs file or shell tools but must not mutate the
+PHP host project directory. Sandbox mode replaces `Read`, `Write`, `Glob`, and
+`Grep` with sandbox-scoped tools. Set `mode: 'full'` to also replace `Bash` with
+a sandbox-scoped shell. Host-only tools such as `Edit`, `apply_patch`,
+`NotebookEdit`, `Lsp`, worktree tools, and sub-agent messaging are disabled while
+sandbox mode is active.
 
 ```php
 use HaoCode\Sdk\HaoCode;
@@ -102,13 +104,41 @@ $result = HaoCode::query('Review this project and write notes to notes.md', new 
 ));
 ```
 
-Set `mode: 'full'` to also replace `Bash` with a sandbox-scoped shell. Host-only
-editing tools such as `Edit`, `apply_patch`, `NotebookEdit`, `Lsp`, worktree
-tools, and sub-agent messaging are disabled while sandbox mode is active.
+### Alibaba Cloud AgentRun
 
-An experimental AgentRun backend is available behind the same sandbox interface.
-Verify credentials and sandbox/template IDs first with `php scripts/agentrun-verify.php`,
-then use `SandboxConfig::agentRun(...)`.
+`SandboxConfig::agentRun()` uses Alibaba Cloud AgentRun as a remote temporary
+filesystem and execution environment. Use it when the PHP server should not touch
+local files or run untrusted commands locally.
+
+```bash
+export AGENTRUN_ACCOUNT_ID=1887527099427005
+export AGENTRUN_API_KEY=ak_xxx
+export AGENTRUN_TEMPLATE_NAME=sandbox-lagal
+export AGENTRUN_REGION=cn-hangzhou
+php scripts/agentrun-verify.php
+```
+
+Use `AGENTRUN_TEMPLATE_NAME` to create a fresh temporary sandbox from a template.
+Only set `AGENTRUN_SANDBOX_ID` when you already have a live sandbox instance ID;
+a template ID is not a sandbox instance ID.
+
+```php
+$config = new HaoCodeConfig(
+    sandbox: SandboxConfig::agentRun(
+        accountId: getenv('AGENTRUN_ACCOUNT_ID'),
+        templateName: getenv('AGENTRUN_TEMPLATE_NAME') ?: 'sandbox-lagal',
+        apiKey: getenv('AGENTRUN_API_KEY'),
+        mode: 'full',
+        remoteCwd: '/tmp',
+    ),
+    allowedTools: ['Read', 'Write', 'Bash'],
+);
+```
+
+For the current AgentRun code-interpreter template, write demo files under
+`/tmp/workspace`; creating `/workspace` at the filesystem root can be denied by
+the container. See `examples/agentrun-ml-clustering-agent.php` for a complete
+agent-generated data + Python k-means demo.
 
 ## Streaming
 
