@@ -260,6 +260,7 @@ $config = new HaoCodeConfig(
 | Example | Purpose |
 | --- | --- |
 | `examples/code-review-agent.php` | Code review workflow |
+| `examples/agentrun-ml-clustering-agent.php` | AgentRun sandbox ML clustering demo |
 | `examples/support-ops-agent.php` | End-to-end support operations agent |
 | `examples/weather-agent.php` | Custom tool example |
 | `examples/sdk-suite/` | Focused examples for query, streaming, conversation, structured output, abort, credential pools, patching, MCP, and provider matrix |

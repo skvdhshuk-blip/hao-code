@@ -52,6 +52,7 @@ echo $result;
 Runnable examples:
 
 - `examples/code-review-agent.php` — compact review-focused demo
+- `examples/agentrun-ml-clustering-agent.php` — AgentRun sandbox demo where an agent writes data, creates a pure-Python k-means script, and runs it remotely
 - `examples/support-ops-agent.php` — end-to-end support-operations agent using query, stream, conversation, resume, continue, structured output, custom tools, skills, callbacks, and abort wiring
 
 ---
