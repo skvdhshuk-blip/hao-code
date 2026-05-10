@@ -38,6 +38,7 @@ echo $result->text;
 | Agent execution | One-shot queries, streaming responses, multi-turn conversations, session resume, continue latest session |
 | Providers | Anthropic, OpenAI Responses API, OpenAI Chat Completions-compatible gateways |
 | Tools | Built-in file, search, patch, shell, web, MCP, task, memory, and planning tools, plus custom PHP tools |
+| Sandbox | Optional temporary filesystem for `Read`, `Write`, `Glob`, `Grep`, and sandboxed `Bash` |
 | Skills | Prompt-packaged domain guidance through `SdkSkill` |
 | Structured output | JSON schema guided responses via `HaoCode::structured()` |
 | Runtime control | Working directory, allowed tools, denied tools, permission mode, max turns, max tokens, thinking options |
@@ -78,6 +79,32 @@ $config = new HaoCodeConfig(
 ```
 
 If no explicit config is provided, the SDK reads environment and settings values such as `ANTHROPIC_API_KEY`, `HAOCODE_MODEL`, `HAOCODE_API_BASE_URL`, and `HAOCODE_MAX_TOKENS`.
+
+## Local Sandbox
+
+Use the local sandbox when the agent needs a temporary workspace but must not
+write to the PHP host project directory. This copies a text snapshot of `cwd`
+into an isolated temp directory, then replaces file/search tools with sandbox
+tools.
+
+```php
+use HaoCode\Sdk\HaoCode;
+use HaoCode\Sdk\HaoCodeConfig;
+use HaoCode\Sdk\Sandbox\SandboxConfig;
+
+$result = HaoCode::query('Review this project and write notes to notes.md', new HaoCodeConfig(
+    cwd: __DIR__,
+    sandbox: SandboxConfig::local(
+        mode: 'filesystem',  // Read/Write/Glob/Grep only; Bash disabled
+        sync: 'upload-cwd',  // copy cwd snapshot into /workspace
+    ),
+    allowedTools: ['Read', 'Write', 'Grep', 'Glob'],
+));
+```
+
+Set `mode: 'full'` to also replace `Bash` with a sandbox-scoped shell. Host-only
+editing tools such as `Edit`, `apply_patch`, `NotebookEdit`, `Lsp`, worktree
+tools, and sub-agent messaging are disabled while sandbox mode is active.
 
 ## Streaming
 

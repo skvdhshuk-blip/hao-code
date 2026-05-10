@@ -37,17 +37,13 @@ class AgentLoopFactory
 
         // Build tool registry with optional filtering
         $parentRegistry = $this->container->make(ToolRegistry::class);
-        $toolRegistry = $this->buildToolRegistry($parentRegistry, $toolFilter);
+        $toolRegistry = $this->buildToolRegistry($parentRegistry, $toolFilter, $additionalTools !== []);
 
         $tracer = $this->container->make(PhoenixTracer::class);
         $settings = $this->container->make(SettingsManager::class);
 
-        // Use custom StreamingClient if provided, otherwise resolve from container
-        if ($streamingClient !== null) {
-            $queryEngine = new QueryEngine($streamingClient, $toolRegistry, $tracer, $settings);
-        } else {
-            $queryEngine = $this->container->make(QueryEngine::class);
-        }
+        $client = $streamingClient ?? $this->container->make(StreamingClient::class);
+        $queryEngine = new QueryEngine($client, $toolRegistry, $tracer, $settings);
 
         // Register additional tools (SDK custom tools)
         foreach ($additionalTools as $tool) {
@@ -85,16 +81,16 @@ class AgentLoopFactory
     /**
      * Build a filtered ToolRegistry from the parent registry.
      */
-    private function buildToolRegistry(ToolRegistry $parent, ?callable $filter): ToolRegistry
+    private function buildToolRegistry(ToolRegistry $parent, ?callable $filter, bool $forceClone = false): ToolRegistry
     {
-        if ($filter === null) {
+        if ($filter === null && ! $forceClone) {
             return $parent;
         }
 
         $filtered = new ToolRegistry();
 
         foreach ($parent->getAllTools() as $tool) {
-            if ($filter($tool->name())) {
+            if ($filter === null || $filter($tool->name())) {
                 $filtered->register($tool);
             }
         }

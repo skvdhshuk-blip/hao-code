@@ -6,6 +6,8 @@ use HaoCode\Services\Agent\AgentLoop;
 use HaoCode\Services\Agent\AgentLoopFactory;
 use HaoCode\Services\Api\StreamingClient;
 use HaoCode\Services\Session\SessionManager;
+use HaoCode\Sdk\Sandbox\SandboxManager;
+use HaoCode\Sdk\Sandbox\SandboxRuntime;
 
 /**
  * Multi-turn conversation handle.
@@ -23,6 +25,8 @@ class Conversation
 
     private int $turnCount = 0;
 
+    private ?SandboxRuntime $sandboxRuntime = null;
+
     /**
      * @internal
      */
@@ -31,10 +35,16 @@ class Conversation
         AgentLoopFactory $factory,
         ?StreamingClient $streamingClient = null,
     ) {
+        $additionalTools = $config->tools;
+        if ($config->sandbox !== null) {
+            $this->sandboxRuntime = SandboxManager::create($config->sandbox, $config->cwd);
+            $additionalTools = array_merge($this->sandboxRuntime->tools(), $additionalTools);
+        }
+
         $this->loop = $factory->createIsolated(
             toolFilter: $config->toolFilter(),
-            workingDirectory: $config->cwd,
-            additionalTools: $config->tools,
+            workingDirectory: $config->effectiveWorkingDirectory(),
+            additionalTools: $additionalTools,
             streamingClient: $streamingClient,
         );
 
@@ -267,6 +277,7 @@ class Conversation
      */
     public function close(): void
     {
+        $this->sandboxRuntime?->close();
         $this->closed = true;
     }
 }

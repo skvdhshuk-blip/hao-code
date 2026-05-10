@@ -24,6 +24,7 @@ ANTHROPIC_API_KEY=your-api-key
   - [resume() / continueLatest()](#resume--continuelatest)
   - [structured()](#structured)
 - [HaoCodeConfig Reference](#haocodeconfig-reference)
+- [Sandbox Runtime](#sandbox-runtime)
 - [QueryResult](#queryresult)
 - [Custom Tools (SdkTool)](#custom-tools-sdktool)
 - [Custom Skills (SdkSkill)](#custom-skills-sdkskill)
@@ -203,6 +204,7 @@ When any of these are set, the SDK creates a standalone HTTP client (bypassing g
 | `maxTurns` | `int` | `50` | Maximum agent turns (tool-use round trips) |
 | `maxBudgetUsd` | `?float` | `null` | Cost limit in USD. Agent stops when exceeded |
 | `permissionMode` | `string` | `'bypass_permissions'` | `'default'`, `'plan'`, `'accept_edits'`, `'bypass_permissions'` |
+| `sandbox` | `?SandboxConfig` | `null` | Optional temporary filesystem/shell runtime for tools |
 
 ### Prompts
 
@@ -219,6 +221,51 @@ When any of these are set, the SDK creates a standalone HTTP client (bypassing g
 | `disallowedTools` | `string[]` | `[]` | Tools to deny (takes precedence over allowed) |
 | `tools` | `SdkTool[]` | `[]` | Custom tools to register |
 | `skills` | `SdkSkill[]` | `[]` | Custom skills to register |
+
+## Sandbox Runtime
+
+Use `SandboxConfig` when the agent needs file tools but must not mutate the PHP
+host project directory. The first supported backend is `local`: it creates a
+temporary directory, optionally copies a text snapshot of `cwd` into the sandbox,
+and exposes that snapshot as `/workspace`.
+
+```php
+use HaoCode\Sdk\HaoCode;
+use HaoCode\Sdk\HaoCodeConfig;
+use HaoCode\Sdk\Sandbox\SandboxConfig;
+
+$result = HaoCode::query('Inspect the project and write a report.md file', new HaoCodeConfig(
+    cwd: __DIR__,
+    sandbox: SandboxConfig::local(
+        mode: 'filesystem',
+        sync: 'upload-cwd',
+        remoteCwd: '/workspace',
+    ),
+    allowedTools: ['Read', 'Write', 'Grep', 'Glob'],
+));
+```
+
+Sandbox modes:
+
+| Mode | Replaced tools | Notes |
+|------|----------------|-------|
+| `filesystem` | `Read`, `Write`, `Glob`, `Grep` | Default; `Bash` is disabled |
+| `full` | `Read`, `Write`, `Glob`, `Grep`, `Bash` | Shell commands run inside the sandbox root |
+
+While sandbox mode is active, host-only tools are disabled by default: `Edit`,
+`apply_patch`, `NotebookEdit`, `Lsp`, `EnterWorktree`, `ExitWorktree`, `Agent`,
+and `SendMessage`.
+
+`sync` options:
+
+| Sync | Behavior |
+|------|----------|
+| `none` | Start with an empty sandbox at `remoteCwd` |
+| `upload-cwd` | Copy text files from `cwd` into `remoteCwd`, skipping `.git`, `node_modules`, `vendor`, caches, binaries, and files over 1MB |
+
+The local backend is intentionally provider-neutral. Remote providers such as
+Alibaba Cloud AgentRun should be added behind the same sandbox backend contract
+instead of being wired into agent tools directly.
 
 ### Callbacks
 

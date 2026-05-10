@@ -7,6 +7,8 @@ use HaoCode\Services\Agent\AgentLoopFactory;
 use HaoCode\Services\Api\StreamingClient;
 use HaoCode\Services\Session\SessionManager;
 use HaoCode\Services\Settings\SettingsManager;
+use HaoCode\Sdk\Sandbox\SandboxManager;
+use HaoCode\Sdk\Sandbox\SandboxRuntime;
 use HaoCode\Tools\Skill\SkillLoader;
 
 /**
@@ -312,11 +314,16 @@ class HaoCode
 
         // Build a custom StreamingClient when SDK config overrides API settings
         $customClient = self::buildStreamingClient($config);
+        $sandboxRuntime = self::createSandboxRuntime($config);
+        $additionalTools = $config->tools;
+        if ($sandboxRuntime !== null) {
+            $additionalTools = array_merge($sandboxRuntime->tools(), $additionalTools);
+        }
 
         $loop = $factory->createIsolated(
             toolFilter: $config->toolFilter(),
-            workingDirectory: $config->cwd,
-            additionalTools: $config->tools,
+            workingDirectory: $config->effectiveWorkingDirectory(),
+            additionalTools: $additionalTools,
             streamingClient: $customClient,
         );
 
@@ -337,6 +344,15 @@ class HaoCode
         }
 
         return $loop;
+    }
+
+    private static function createSandboxRuntime(HaoCodeConfig $config): ?SandboxRuntime
+    {
+        if ($config->sandbox === null) {
+            return null;
+        }
+
+        return SandboxManager::create($config->sandbox, $config->cwd);
     }
 
     /**

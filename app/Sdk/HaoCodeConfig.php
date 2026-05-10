@@ -235,6 +235,14 @@ class HaoCodeConfig
         public readonly ?\HaoCode\Sdk\CredentialPool $credentialPool = null,
 
         /**
+         * Optional sandbox runtime. When set, file/search tools operate inside
+         * the sandbox instead of directly against the PHP host cwd.
+         *
+         * @api
+         */
+        public readonly ?\HaoCode\Sdk\Sandbox\SandboxConfig $sandbox = null,
+
+        /**
          * Memory summary level for system prompt injection.
          *
          * - 'l0': Compact one-liners (~50 tokens each) — default.
@@ -276,11 +284,20 @@ class HaoCodeConfig
      */
     public function toolFilter(): ?callable
     {
-        if ($this->allowedTools === ['*'] && $this->disallowedTools === []) {
+        if ($this->allowedTools === ['*'] && $this->disallowedTools === [] && $this->sandbox === null) {
             return null;
         }
 
         return function (string $toolName): bool {
+            if ($this->sandbox !== null) {
+                if (in_array($toolName, self::sandboxLocalOnlyToolsToDisable(), true)) {
+                    return false;
+                }
+                if ($toolName === 'Bash' && ! $this->sandbox->enablesBash()) {
+                    return false;
+                }
+            }
+
             if (in_array($toolName, $this->disallowedTools, true)) {
                 return false;
             }
@@ -291,5 +308,34 @@ class HaoCodeConfig
 
             return in_array($toolName, $this->allowedTools, true);
         };
+    }
+
+    /**
+     * @internal
+     *
+     * @return string[]
+     */
+    private static function sandboxLocalOnlyToolsToDisable(): array
+    {
+        return [
+            'Edit',
+            'apply_patch',
+            'NotebookEdit',
+            'Lsp',
+            'EnterWorktree',
+            'ExitWorktree',
+            'Agent',
+            'SendMessage',
+        ];
+    }
+
+    /**
+     * Working directory exposed to tools.
+     *
+     * @internal
+     */
+    public function effectiveWorkingDirectory(): ?string
+    {
+        return $this->sandbox?->remoteCwd ?? $this->cwd;
     }
 }

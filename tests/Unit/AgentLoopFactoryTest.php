@@ -6,6 +6,7 @@ use HaoCode\Services\Agent\AgentLoopFactory;
 use HaoCode\Services\Agent\ContextBuilder;
 use HaoCode\Services\Agent\QueryEngine;
 use HaoCode\Services\Agent\ToolOrchestrator;
+use HaoCode\Services\Api\StreamingClient;
 use HaoCode\Services\Hooks\HookExecutor;
 use HaoCode\Services\Permissions\PermissionChecker;
 use HaoCode\Tools\ToolRegistry;
@@ -21,6 +22,7 @@ class AgentLoopFactoryTest extends TestCase
         $permissionChecker = $this->createMock(PermissionChecker::class);
         $toolRegistry = new ToolRegistry();
         $hookExecutor = $this->createMock(HookExecutor::class);
+        $streamingClient = $this->createMock(StreamingClient::class);
 
         $container = new class (
             $queryEngine,
@@ -29,6 +31,7 @@ class AgentLoopFactoryTest extends TestCase
             $permissionChecker,
             $toolRegistry,
             $hookExecutor,
+            $streamingClient,
         ) {
             public function __construct(
                 private readonly QueryEngine $queryEngine,
@@ -37,6 +40,7 @@ class AgentLoopFactoryTest extends TestCase
                 private readonly PermissionChecker $permissionChecker,
                 private readonly ToolRegistry $toolRegistry,
                 private readonly HookExecutor $hookExecutor,
+                private readonly StreamingClient $streamingClient,
             ) {}
 
             public function make(string $abstract): mixed
@@ -48,6 +52,7 @@ class AgentLoopFactoryTest extends TestCase
                     PermissionChecker::class => $this->permissionChecker,
                     ToolRegistry::class => $this->toolRegistry,
                     HookExecutor::class => $this->hookExecutor,
+                    StreamingClient::class => $this->streamingClient,
                     \HaoCode\Services\Telemetry\PhoenixTracer::class => \HaoCode\Services\Telemetry\PhoenixTracer::fromConfig(['enabled' => false]),
                     \HaoCode\Services\Settings\SettingsManager::class => new \HaoCode\Services\Settings\SettingsManager(),
                     default => throw new \RuntimeException("Unexpected container resolution: {$abstract}"),
