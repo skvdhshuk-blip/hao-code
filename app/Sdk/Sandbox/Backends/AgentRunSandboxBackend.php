@@ -105,7 +105,7 @@ final class AgentRunSandboxBackend implements SandboxBackendInterface
         return [
             'stdout' => (string) ($result['stdout'] ?? $result['data']['stdout'] ?? $result['result']['stdout'] ?? ''),
             'stderr' => (string) ($result['stderr'] ?? $result['data']['stderr'] ?? $result['result']['stderr'] ?? ''),
-            'exitCode' => (int) ($result['exitCode'] ?? $result['code'] ?? $result['data']['exitCode'] ?? 0),
+            'exitCode' => (int) ($result['exitCode'] ?? $result['code'] ?? $result['data']['exitCode'] ?? $result['result']['exitCode'] ?? 0),
             'timedOut' => (bool) ($result['timedOut'] ?? false),
         ];
     }

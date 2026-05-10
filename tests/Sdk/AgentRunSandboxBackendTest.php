@@ -39,7 +39,7 @@ class AgentRunSandboxBackendTest extends TestCase
         $responses = [
             new MockResponse('{}', ['http_code' => 200]),
             new MockResponse('{"content":"alpha"}', ['http_code' => 200]),
-            new MockResponse('{"stdout":"ok\n","stderr":"","exitCode":0}', ['http_code' => 200]),
+            new MockResponse('{"result":{"stdout":"ok\n","stderr":"warn","exitCode":7}}', ['http_code' => 200]),
         ];
         $http = new MockHttpClient($responses);
         $client = new AgentRunClient(accountId: '1234567890', sandboxId: 'sbx-1', apiKey: 'ak-template', httpClient: $http);
@@ -49,7 +49,8 @@ class AgentRunSandboxBackendTest extends TestCase
         $this->assertSame('alpha', $backend->readFile('/tmp/a.txt'));
         $exec = $backend->exec('echo ok', '/tmp', 5000);
 
-        $this->assertSame(0, $exec['exitCode']);
+        $this->assertSame(7, $exec['exitCode']);
         $this->assertSame("ok\n", $exec['stdout']);
+        $this->assertSame('warn', $exec['stderr']);
     }
 }

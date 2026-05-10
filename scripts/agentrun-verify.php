@@ -39,7 +39,16 @@ area = math.pi * radius ** 2
 print(f"111 半径为 {radius} 的圆面积: {area:.2f}")
 print(f"当前时间: {datetime.datetime.now()}")
 PY, timeoutSeconds: 30);
-    $stdout = $exec['stdout'] ?? $exec['data']['stdout'] ?? $exec['result']['stdout'] ?? json_encode($exec, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+    $stdout = $exec['stdout'] ?? $exec['data']['stdout'] ?? $exec['result']['stdout'] ?? null;
+    if ($stdout === null && isset($exec['results']) && is_array($exec['results'])) {
+        $stdout = '';
+        foreach ($exec['results'] as $item) {
+            if (is_array($item) && ($item['type'] ?? null) === 'stdout') {
+                $stdout .= (string) ($item['text'] ?? '');
+            }
+        }
+    }
+    $stdout ??= json_encode($exec, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
     echo "Execute stdout:\n{$stdout}\n";
 
     try {
