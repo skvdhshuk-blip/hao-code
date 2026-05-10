@@ -106,6 +106,10 @@ Set `mode: 'full'` to also replace `Bash` with a sandbox-scoped shell. Host-only
 editing tools such as `Edit`, `apply_patch`, `NotebookEdit`, `Lsp`, worktree
 tools, and sub-agent messaging are disabled while sandbox mode is active.
 
+An experimental AgentRun backend is available behind the same sandbox interface.
+Verify credentials and sandbox/template IDs first with `php scripts/agentrun-verify.php`,
+then use `SandboxConfig::agentRun(...)`.
+
 ## Streaming
 
 Use `HaoCode::stream()` when the caller needs incremental output:

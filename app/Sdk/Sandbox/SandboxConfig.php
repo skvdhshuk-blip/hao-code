@@ -17,6 +17,7 @@ final class SandboxConfig
         /** @api */ public readonly string $cleanup = 'never',
         /** @api */ public readonly ?string $root = null,
         /** @api */ public readonly array $exclude = [],
+        /** @api */ public readonly array $options = [],
     ) {}
 
     /** @api */
@@ -36,6 +37,39 @@ final class SandboxConfig
             cleanup: $cleanup,
             root: $root,
             exclude: $exclude,
+        );
+    }
+
+    /** @api */
+    public static function agentRun(
+        string $accountId,
+        ?string $sandboxId = null,
+        ?string $templateName = null,
+        ?string $apiKey = null,
+        string $region = 'cn-hangzhou',
+        ?string $endpoint = null,
+        string $mode = 'filesystem',
+        string $sync = 'none',
+        string $remoteCwd = '/workspace',
+        int $timeoutSeconds = 30,
+        array $exclude = [],
+    ): self {
+        return new self(
+            provider: 'agentrun',
+            mode: $mode,
+            remoteCwd: $remoteCwd,
+            sync: $sync,
+            cleanup: 'never',
+            exclude: $exclude,
+            options: [
+                'accountId' => $accountId,
+                'sandboxId' => $sandboxId,
+                'templateName' => $templateName,
+                'apiKey' => $apiKey,
+                'region' => $region,
+                'endpoint' => $endpoint,
+                'timeoutSeconds' => $timeoutSeconds,
+            ],
         );
     }
 

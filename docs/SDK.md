@@ -267,6 +267,39 @@ The local backend is intentionally provider-neutral. Remote providers such as
 Alibaba Cloud AgentRun should be added behind the same sandbox backend contract
 instead of being wired into agent tools directly.
 
+### AgentRun Spike
+
+`SandboxConfig::agentRun()` is an experimental backend adapter for Alibaba Cloud
+AgentRun's data API. It is not enabled by default; use it only after verifying
+your `sandboxId` or `templateName` with the standalone script:
+
+```bash
+export AGENTRUN_ACCOUNT_ID=...
+export AGENTRUN_API_KEY=...
+export AGENTRUN_SANDBOX_ID=...      # or AGENTRUN_TEMPLATE_NAME=...
+php scripts/agentrun-verify.php
+```
+
+Once verified:
+
+```php
+use HaoCode\Sdk\Sandbox\SandboxConfig;
+
+$config = new HaoCodeConfig(
+    sandbox: SandboxConfig::agentRun(
+        accountId: getenv('AGENTRUN_ACCOUNT_ID'),
+        sandboxId: getenv('AGENTRUN_SANDBOX_ID') ?: null,
+        templateName: getenv('AGENTRUN_TEMPLATE_NAME') ?: null,
+        apiKey: getenv('AGENTRUN_API_KEY') ?: null,
+        mode: 'filesystem',
+    ),
+);
+```
+
+This spike intentionally sits behind `SandboxBackendInterface`; future RAM
+signing or provider-specific lifecycle handling can be added without changing
+the agent tool layer.
+
 ### Callbacks
 
 | Parameter | Type | Description |
