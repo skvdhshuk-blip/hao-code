@@ -138,6 +138,21 @@ class HaoCodeConfig
         public readonly mixed $onText = null,
 
         /**
+         * Streaming thinking callback: fn(string $delta): void
+         * Called for each reasoning/thinking chunk (Anthropic extended-thinking,
+         * DeepSeek-R1 `reasoning_content`, qwen reasoning, etc.). For most
+         * reasoning models the final answer arrives via `onText`, but some
+         * proxies/models emit the answer inside `reasoning_content` and never
+         * produce a visible `content` block — consumers that need to capture
+         * everything should hook this in addition to {@see $onText}.
+         *
+         * @api
+         *
+         * @var callable|null
+         */
+        public readonly mixed $onThinking = null,
+
+        /**
          * Tool start callback: fn(string $toolName, array $input): void
          * Called when a tool begins execution.
          *

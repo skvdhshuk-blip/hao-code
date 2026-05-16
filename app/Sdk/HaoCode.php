@@ -76,6 +76,7 @@ class HaoCode
             onToolStart: $config->onToolStart,
             onToolComplete: $config->onToolComplete,
             onTurnStart: $config->onTurnStart,
+            onThinkingDelta: $config->onThinking,
         );
 
         return new QueryResult(

@@ -91,6 +91,7 @@ class AgentLoop
         ?callable $onToolStart = null,
         ?callable $onToolComplete = null,
         ?callable $onTurnStart = null,
+        ?callable $onThinkingDelta = null,
     ): string {
         $agentSpan = $this->tracer?->startSpan(
             name: 'agent.run',
@@ -104,7 +105,7 @@ class AgentLoop
         $agentScope = $agentSpan?->activate();
 
         try {
-            $output = $this->runInternal($userInput, $onTextDelta, $onToolStart, $onToolComplete, $onTurnStart);
+            $output = $this->runInternal($userInput, $onTextDelta, $onToolStart, $onToolComplete, $onTurnStart, $onThinkingDelta);
             $agentSpan?->setAttribute('output.value', $output);
             $agentSpan?->setAttribute('llm.token_count.prompt', $this->totalInputTokens);
             $agentSpan?->setAttribute('llm.token_count.completion', $this->totalOutputTokens);
@@ -129,6 +130,7 @@ class AgentLoop
         ?callable $onToolStart,
         ?callable $onToolComplete,
         ?callable $onTurnStart,
+        ?callable $onThinkingDelta = null,
     ): string {
         $this->aborted = false;
         $this->messageHistory->addUserMessage($userInput);
@@ -195,6 +197,7 @@ class AgentLoop
                     messages: $messages,
                     onTextDelta: $onTextDelta,
                     onToolBlockComplete: fn (array $block, int $index) => $this->aborted ? null : $streamingExecutor->onToolBlockReady($block, $index),
+                    onThinkingDelta: $onThinkingDelta,
                     shouldAbort: fn (): bool => $this->aborted,
                 );
 
