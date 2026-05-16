@@ -102,7 +102,7 @@ DESC;
 
     private function expandPrompt(SkillDefinition $skill, string $args, ToolUseContext $context): string
     {
-        $prompt = $skill->prompt;
+        $prompt = $skill->getPrompt();
 
         // Substitute $ARGUMENTS
         $prompt = str_replace('$ARGUMENTS', $args, $prompt);

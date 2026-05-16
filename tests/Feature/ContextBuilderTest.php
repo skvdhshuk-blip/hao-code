@@ -162,6 +162,24 @@ class ContextBuilderTest extends TestCase
         $this->assertStringContainsString('/commit', $result[0]['text']);
     }
 
+    public function test_skills_section_includes_progressive_disclosure_protocol(): void
+    {
+        $skillLoader = $this->makeSkillLoader("/commit — Create a commit");
+        $result = $this->makeBuilder(['skillLoader' => $skillLoader])->buildSystemPrompt();
+        $text = $result[0]['text'];
+
+        $this->assertStringContainsString('How to use skills', $text);
+        $this->assertStringContainsString('Progressive disclosure', $text);
+        $this->assertStringContainsString('${HAOCODE_SKILL_DIR}', $text);
+        $this->assertStringContainsString('references/', $text);
+    }
+
+    public function test_skills_protocol_omitted_when_no_skills_available(): void
+    {
+        $result = $this->makeBuilder()->buildSystemPrompt();
+        $this->assertStringNotContainsString('How to use skills', $result[0]['text']);
+    }
+
     public function test_skills_section_absent_when_empty(): void
     {
         $result = $this->makeBuilder()->buildSystemPrompt();

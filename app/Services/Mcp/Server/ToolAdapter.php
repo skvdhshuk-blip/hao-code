@@ -205,7 +205,7 @@ class ToolAdapter
         }
 
         // Outbound scan + mask credentials (red line #12)
-        $body = $this->maskCredentials($skill->prompt);
+        $body = $this->maskCredentials($skill->getPrompt());
 
         return [
             'description' => $skill->description,

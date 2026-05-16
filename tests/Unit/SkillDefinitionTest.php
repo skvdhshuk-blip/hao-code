@@ -49,4 +49,46 @@ class SkillDefinitionTest extends TestCase
         $this->assertNull($skill->argumentHint);
         $this->assertSame('', $skill->skillDir);
     }
+
+    public function test_get_prompt_loads_lazily_from_file(): void
+    {
+        $tmp = tempnam(sys_get_temp_dir(), 'skill_lazy_');
+        try {
+            file_put_contents($tmp, "---\ndescription: lazy\n---\n\nlazy body content");
+            $skill = new SkillDefinition(
+                name: 'lazy',
+                description: 'lazy',
+                whenToUse: null,
+                prompt: null,
+                promptPath: $tmp,
+            );
+
+            $this->assertSame('lazy body content', $skill->getPrompt());
+            // Magic property access stays compatible.
+            $this->assertSame('lazy body content', $skill->prompt);
+
+            // After the source file disappears, the cached body must survive
+            // so a single skill invocation still works even if the disk state
+            // changed since loading.
+            unlink($tmp);
+            $this->assertSame('lazy body content', $skill->getPrompt());
+        } finally {
+            if (file_exists($tmp)) {
+                unlink($tmp);
+            }
+        }
+    }
+
+    public function test_get_prompt_returns_empty_when_neither_inline_nor_path(): void
+    {
+        $skill = new SkillDefinition(
+            name: 'empty',
+            description: 'no body',
+            whenToUse: null,
+            prompt: null,
+            promptPath: null,
+        );
+
+        $this->assertSame('', $skill->getPrompt());
+    }
 }

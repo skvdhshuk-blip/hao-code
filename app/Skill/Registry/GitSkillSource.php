@@ -136,7 +136,7 @@ class GitSkillSource implements SkillSource
                 continue;
             }
 
-            $def = $this->parseSkillFile($name, $content, dirname($file));
+            $def = $this->parseSkillFile($name, $content, dirname($file), $file);
             $skills[$name] = $def;
         }
 
@@ -151,14 +151,14 @@ class GitSkillSource implements SkillSource
                 continue;
             }
 
-            $def = $this->parseSkillFile($name, $content, dirname($file));
+            $def = $this->parseSkillFile($name, $content, dirname($file), $file);
             $skills[$name] = $def;
         }
 
         return $skills;
     }
 
-    private function parseSkillFile(string $name, string $content, string $dir): SkillDefinition
+    private function parseSkillFile(string $name, string $content, string $dir, ?string $sourcePath = null): SkillDefinition
     {
         $frontmatter = [];
         $body = $content;
@@ -168,17 +168,20 @@ class GitSkillSource implements SkillSource
             $body = $m[2];
         }
 
+        $promptInline = $sourcePath !== null ? null : trim($body);
+
         return new SkillDefinition(
             name: $name,
             description: $frontmatter['description'] ?? $this->firstLine($body),
             whenToUse: $frontmatter['when_to_use'] ?? null,
-            prompt: trim($body),
+            prompt: $promptInline,
             allowedTools: $this->parseList($frontmatter['allowed-tools'] ?? ''),
             model: $frontmatter['model'] ?? null,
             context: $frontmatter['context'] ?? 'inline',
             userInvocable: ($frontmatter['user-invocable'] ?? 'true') !== 'false',
             argumentHint: $frontmatter['argument-hint'] ?? null,
             skillDir: $dir,
+            promptPath: $sourcePath,
         );
     }
 

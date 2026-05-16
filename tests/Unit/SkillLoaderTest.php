@@ -207,7 +207,54 @@ class SkillLoaderTest extends TestCase
         $loader = $this->makeLoader();
 
         $desc = $loader->getSkillDescriptions(200);
-        $this->assertLessThanOrEqual(250, strlen($desc), 'Should be roughly within max chars');
+        // Listing portion (before the warning) must stay within budget plus a
+        // small slack — verifies that the loader actually stopped emitting
+        // entries instead of dumping all 20.
+        $listing = strstr($desc, "\n\nWarning:", true) ?: $desc;
+        $this->assertLessThanOrEqual(250, strlen($listing));
+    }
+
+    public function test_get_skill_descriptions_warns_when_skills_are_omitted(): void
+    {
+        for ($i = 0; $i < 20; $i++) {
+            $this->writeSkillFile("skill{$i}", "---\ndescription: A description for skill {$i}\n---\n\nPrompt.");
+        }
+        $loader = $this->makeLoader();
+
+        $desc = $loader->getSkillDescriptions(200);
+
+        $this->assertStringContainsString('Warning: skills listing budget exceeded', $desc);
+        $this->assertMatchesRegularExpression(
+            '/\d+ additional skill[s]? (was|were) not shown/',
+            $desc,
+        );
+    }
+
+    public function test_get_skill_descriptions_truncates_per_entry_at_250_chars(): void
+    {
+        $long = str_repeat('verbose ', 80); // 640 chars, far above per-entry cap
+        $this->writeSkillFile('chatty', "---\ndescription: {$long}\n---\n\nPrompt.");
+        $loader = $this->makeLoader();
+
+        $desc = $loader->getSkillDescriptions();
+
+        $this->assertStringContainsString('…', $desc);
+        // Each entry line is "- /chatty: <desc>\n" — the description body
+        // itself must be at or below the cap.
+        $this->assertStringNotContainsString(str_repeat('verbose ', 50), $desc);
+    }
+
+    public function test_get_skill_descriptions_appends_when_to_use(): void
+    {
+        $this->writeSkillFile(
+            'commit',
+            "---\ndescription: Make a commit\nwhen_to_use: After staging changes\n---\n\nPrompt.",
+        );
+        $loader = $this->makeLoader();
+
+        $desc = $loader->getSkillDescriptions();
+
+        $this->assertStringContainsString('Make a commit — After staging changes', $desc);
     }
 
     // ─── listSkills ───────────────────────────────────────────────────────
