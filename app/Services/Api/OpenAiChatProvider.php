@@ -144,56 +144,111 @@ class OpenAiChatProvider implements LlmProvider
     ): \Generator {
         $baseUrl = $this->resolveBaseUrl();
         $payload = $this->buildPayload($systemPrompt, $messages, $tools);
+        $body = $this->encodePayload($payload);
+        $url = rtrim($baseUrl, '/') . '/v1/chat/completions';
+        $debug = getenv('HAOCODE_STREAM_DEBUG') === '1';
 
-        $response = $this->httpClient->request('POST', rtrim($baseUrl, '/') . '/v1/chat/completions', [
-            'headers' => [
-                'authorization' => 'Bearer ' . $this->resolveApiKey(),
-                'content-type' => 'application/json',
-                'accept' => 'text/event-stream',
+        // 用 PHP 原生 stream wrappers 实现 SSE 流式读取，绕开 Symfony HttpClient + Curl
+        // 在某些 SSE/chunked-transfer 网关下被 16KB write-buffer 提前 close stream 的问题。
+        // PHP 的 http:// wrapper 自己管 chunked decoding，对大量 SSE event 友好。
+        $headers = [
+            'Authorization: Bearer ' . $this->resolveApiKey(),
+            'Content-Type: application/json',
+            'Accept: text/event-stream',
+            'Connection: close',
+        ];
+        $ctx = stream_context_create([
+            'http' => [
+                'method' => 'POST',
+                'header' => implode("\r\n", $headers),
+                'content' => $body,
+                'protocol_version' => 1.1,
+                'timeout' => $this->idleTimeoutSeconds,
+                'ignore_errors' => true, // 让我们自己处理 4xx/5xx
+                'follow_location' => 0,
             ],
-            'body' => $this->encodePayload($payload),
-            'buffer' => false,
-            'http_version' => '1.1',
-            'verify_peer' => true,
-            'verify_host' => true,
+            'ssl' => [
+                'verify_peer' => true,
+                'verify_peer_name' => true,
+            ],
         ]);
 
         if ($shouldAbort && $shouldAbort()) {
-            $response->cancel();
-
             return;
         }
 
-        $this->throwForHttpError($response);
-        $this->extractRateLimitHeaders($response);
+        $fp = @fopen($url, 'r', false, $ctx);
+        if ($fp === false) {
+            $err = error_get_last()['message'] ?? 'unknown';
+            throw new ApiErrorException("Failed to open stream to {$url}: {$err}", 'transport_error');
+        }
+
+        // 解析响应头拿状态码
+        $meta = stream_get_meta_data($fp);
+        $statusLine = $meta['wrapper_data'][0] ?? '';
+        $statusCode = 0;
+        if (preg_match('#^HTTP/\d\.\d\s+(\d+)#', (string) $statusLine, $m)) {
+            $statusCode = (int) $m[1];
+        }
+        if ($debug) fwrite(STDERR, "[stream] opened, status={$statusCode}\n");
+
+        if ($statusCode >= 400) {
+            // 读出全部 body 用作错误信息
+            $errBody = stream_get_contents($fp) ?: '';
+            fclose($fp);
+            $msg = $errBody !== '' ? $errBody : "HTTP {$statusCode}";
+            $errorType = 'http_error';
+            $decoded = json_decode($errBody, true);
+            if (is_array($decoded) && is_array($decoded['error'] ?? null)) {
+                $errorType = (string) ($decoded['error']['type'] ?? $errorType);
+                $msg = (string) ($decoded['error']['message'] ?? $msg);
+            }
+            throw new ApiErrorException($msg, $errorType, $statusCode);
+        }
 
         $state = new OpenAiChatTranslatorState();
         $lineBuffer = '';
-        $lastActivityAt = ($this->timeProvider)();
+        $loopStart = ($this->timeProvider)();
+        $lastActivityAt = $loopStart;
+        $chunkCount = 0;
+        $totalBytes = 0;
+        stream_set_timeout($fp, max(1, (int) $this->streamPollTimeoutSeconds));
 
         try {
-            foreach ($this->httpClient->stream($response, $this->streamPollTimeoutSeconds) as $chunk) {
+            while (!feof($fp)) {
                 if ($shouldAbort && $shouldAbort()) {
-                    $response->cancel();
+                    fclose($fp);
 
                     return;
                 }
 
-                if ($chunk->isTimeout()) {
-                    if (($this->timeProvider)() - $lastActivityAt >= $this->idleTimeoutSeconds) {
-                        $response->cancel();
+                $data = fread($fp, 65536);
+                if ($data === false || $data === '') {
+                    // 看是 EOF 还是 timeout
+                    $meta = stream_get_meta_data($fp);
+                    if ($meta['timed_out'] ?? false) {
+                        if (($this->timeProvider)() - $lastActivityAt >= $this->idleTimeoutSeconds) {
+                            fclose($fp);
 
-                        throw new ApiErrorException(
-                            "Streaming response stalled for more than {$this->idleTimeoutSeconds}s without new data. Retry the turn.",
-                            'stream_timeout',
-                        );
+                            throw new ApiErrorException(
+                                "Streaming response stalled for more than {$this->idleTimeoutSeconds}s without new data. Retry the turn.",
+                                'stream_timeout',
+                            );
+                        }
+                        continue;
                     }
-
+                    if (feof($fp)) break;
                     continue;
                 }
 
-                $lineBuffer .= $chunk->getContent();
+                $chunkCount++;
+                $totalBytes += strlen($data);
+                $lineBuffer .= $data;
                 $lastActivityAt = ($this->timeProvider)();
+                if ($debug && ($chunkCount <= 5 || $chunkCount % 50 === 0)) {
+                    $elapsed = round($lastActivityAt - $loopStart, 2);
+                    fwrite(STDERR, "[stream] chunk#{$chunkCount} +" . strlen($data) . "B total={$totalBytes} t={$elapsed}s\n");
+                }
 
                 while (($newlinePos = strpos($lineBuffer, "\n")) !== false) {
                     $line = rtrim(substr($lineBuffer, 0, $newlinePos), "\r");
@@ -201,7 +256,7 @@ class OpenAiChatProvider implements LlmProvider
 
                     foreach ($this->processSseLine($line, $state, $onRawEvent) as $emitted) {
                         if ($shouldAbort && $shouldAbort()) {
-                            $response->cancel();
+                            fclose($fp);
 
                             return;
                         }
@@ -210,17 +265,23 @@ class OpenAiChatProvider implements LlmProvider
                     }
                 }
             }
+            if ($debug) {
+                $elapsed = round(($this->timeProvider)() - $loopStart, 2);
+                fwrite(STDERR, "[stream] EOF chunks={$chunkCount} bytes={$totalBytes} t={$elapsed}s\n");
+            }
         } catch (\Throwable $e) {
+            if ($debug) fwrite(STDERR, "[stream] EXCEPTION: " . get_class($e) . ": " . $e->getMessage() . "\n");
+            if (is_resource($fp)) fclose($fp);
             if ($shouldAbort && $shouldAbort()) {
-                $response->cancel();
-
                 return;
             }
-
             throw $e;
         }
 
+        if (is_resource($fp)) fclose($fp);
+
         if ($lineBuffer !== '') {
+            if ($debug) fwrite(STDERR, "[stream] flushing tail lineBuffer=" . strlen($lineBuffer) . "B\n");
             foreach ($this->processSseLine(rtrim($lineBuffer, "\r"), $state, $onRawEvent) as $emitted) {
                 yield $emitted;
             }
