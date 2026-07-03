@@ -1,11 +1,10 @@
 {
     "$schema": "https://getcomposer.org/schema.json",
     "name": "sk-wang/hao-code",
-    "version": "1.0.0",
     "type": "library",
     "description": "PHP agent SDK for Anthropic, OpenAI Responses, and OpenAI Chat Completions APIs.",
     "keywords": ["ai", "agent", "agent-sdk", "sdk", "anthropic", "openai"],
-    "homepage": "https://github.com/sk-wang/hao-code",
+    "homepage": "https://github.com/skvdhshuk-blip/hao-code",
     "license": "MIT",
     "require": {
         "php": "^8.1",
@@ -58,8 +57,8 @@
         }
     },
     "support": {
-        "issues": "https://github.com/sk-wang/hao-code/issues",
-        "source": "https://github.com/sk-wang/hao-code"
+        "issues": "https://github.com/skvdhshuk-blip/hao-code/issues",
+        "source": "https://github.com/skvdhshuk-blip/hao-code"
     },
     "minimum-stability": "stable",
     "prefer-stable": true

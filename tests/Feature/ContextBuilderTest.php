@@ -170,6 +170,7 @@ class ContextBuilderTest extends TestCase
 
         $this->assertStringContainsString('How to use skills', $text);
         $this->assertStringContainsString('Progressive disclosure', $text);
+        $this->assertStringContainsString('read its SKILL.md body completely', $text);
         $this->assertStringContainsString('${HAOCODE_SKILL_DIR}', $text);
         $this->assertStringContainsString('references/', $text);
     }

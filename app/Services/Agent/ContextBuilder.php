@@ -242,13 +242,13 @@ PROMPT;
 - Trigger: if the user names a skill (`/name` or plain text) OR the task clearly matches a skill's description, invoke it via the Skill tool for that turn. Multiple matches → use them all. Do not carry skills across turns unless re-mentioned.
 - Missing/blocked: if a named skill isn't in the list, say so briefly and continue with the best fallback.
 - Progressive disclosure:
-  1) After deciding to use a skill, invoke it via the Skill tool. The tool returns the SKILL.md body. Read only enough to follow the workflow.
+  1) After deciding to use a skill, invoke it via the Skill tool and read its SKILL.md body completely before taking task actions.
   2) When SKILL.md references relative paths (e.g. `scripts/foo.sh`, `references/api.md`), resolve them under the skill directory (`${HAOCODE_SKILL_DIR}`).
-  3) If SKILL.md points to `references/`, load only the specific files needed for this request — don't bulk-load.
+  3) If SKILL.md points to `references/`, use its routing instructions to identify the specific files needed for this request — don't bulk-load.
   4) If `scripts/` exist, prefer running or patching them over retyping large code blocks.
   5) If `assets/` or templates exist, reuse them instead of recreating from scratch.
 - Coordination: if multiple skills apply, pick the minimal set and state the order. Announce which skill you're using (one short line). If you skip an obvious skill, say why.
-- Context hygiene: summarise long reference sections instead of pasting them. Avoid deep reference-chasing — open only files directly linked from SKILL.md unless blocked.
+- Context hygiene: progressive disclosure applies to selecting relevant files, not partially reading a selected instruction file. Avoid deep reference-chasing — open only files directly linked from SKILL.md unless blocked.
 - Safety: if a skill can't be applied cleanly (missing files, unclear instructions), state the issue, pick the next-best approach, and continue.
 TEXT;
     }
