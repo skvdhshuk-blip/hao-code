@@ -10,6 +10,10 @@ use HaoCode\Tools\ToolUseContext;
 
 class ConfigTool extends BaseTool
 {
+    public function __construct(
+        private readonly ?SettingsManager $settings = null,
+    ) {}
+
     public function name(): string
     {
         return 'Config';
@@ -53,7 +57,7 @@ DESC;
     public function call(array $input, ToolUseContext $context): ToolResult
     {
         /** @var SettingsManager $settings */
-        $settings = app(SettingsManager::class);
+        $settings = $this->settings ?? app(SettingsManager::class);
         $key = $input['key'] ?? null;
         $value = $input['value'] ?? null;
 

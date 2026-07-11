@@ -302,6 +302,28 @@ class ToolOrchestratorTest extends TestCase
         $this->assertStringContainsString('truncated', $result['content']);
     }
 
+    public function test_global_hard_cap_applies_when_tool_disables_its_own_limit(): void
+    {
+        $registry = new ToolRegistry;
+        $tool = new class extends BaseTool {
+            public function name(): string { return 'Unlimited'; }
+            public function description(): string { return ''; }
+            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object'], []); }
+            public function call(array $input, ToolUseContext $ctx): ToolResult { return ToolResult::success(str_repeat('x', 50_000)); }
+            public function maxResultSizeChars(): int { return PHP_INT_MAX; }
+        };
+        $registry->register($tool);
+
+        $orchestrator = $this->makeOrchestrator($registry);
+        $result = $orchestrator->executeToolBlock(
+            ['id' => 'id1', 'name' => 'Unlimited', 'input' => []],
+            $this->context(),
+        );
+
+        $this->assertStringContainsString('truncated', $result['content']);
+        $this->assertLessThan(3000, mb_strlen($result['content']));
+    }
+
     // ─── onStart / onComplete callbacks ──────────────────────────────────
 
     public function test_on_start_and_complete_callbacks_called(): void

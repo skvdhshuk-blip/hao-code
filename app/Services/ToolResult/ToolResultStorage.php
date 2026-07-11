@@ -15,8 +15,11 @@ class ToolResultStorage
     /** Preview truncation size in bytes. */
     public const PREVIEW_SIZE_BYTES = 2000;
 
+    /** Hard cap for any single model-visible tool result. */
+    public const MAX_SINGLE_RESULT_CHARS = 40_000;
+
     /** Per-message aggregate budget for all tool results (chars). */
-    public const MAX_TOOL_RESULTS_PER_MESSAGE_CHARS = 200_000;
+    public const MAX_TOOL_RESULTS_PER_MESSAGE_CHARS = 120_000;
 
     /** Default per-tool persistence threshold (chars). */
     public const DEFAULT_MAX_RESULT_SIZE_CHARS = 50_000;

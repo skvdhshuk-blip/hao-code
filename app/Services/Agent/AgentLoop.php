@@ -39,6 +39,8 @@ class AgentLoop
 
     private ?string $workingDirectory = null;
 
+    private CancellationToken $cancellationToken;
+
     public function __construct(
         private readonly QueryEngine $queryEngine,
         private readonly ToolOrchestrator $toolOrchestrator,
@@ -51,7 +53,10 @@ class AgentLoop
         private readonly ToolRegistry $toolRegistry,
         private readonly ?HookExecutor $hookExecutor = null,
         private readonly ?PhoenixTracer $tracer = null,
-    ) {}
+        ?CancellationToken $cancellationToken = null,
+    ) {
+        $this->cancellationToken = $cancellationToken ?? new CancellationToken();
+    }
 
     public function setPermissionPromptHandler(callable $handler): void
     {
@@ -72,6 +77,7 @@ class AgentLoop
     public function abort(): void
     {
         $this->aborted = true;
+        $this->cancellationToken->cancel();
     }
 
     public function isAborted(): bool
@@ -115,6 +121,7 @@ class AgentLoop
             $this->tracer?->recordException($agentSpan, $e);
             throw $e;
         } finally {
+            $this->cancellationToken->close();
             $agentScope?->detach();
             $agentSpan?->end();
         }
@@ -133,6 +140,7 @@ class AgentLoop
         ?callable $onThinkingDelta = null,
     ): string {
         $this->aborted = false;
+        $this->cancellationToken->reset();
         $this->messageHistory->addUserMessage($userInput);
         $this->sessionManager->recordEntry([
             'type' => 'user_message',
@@ -155,6 +163,7 @@ class AgentLoop
         $turnCount = 0;
         $malformedToolInputRetries = 0;
         $incompleteResponseRetries = 0;
+        $systemPrompt = $this->contextBuilder->buildSystemPrompt();
 
         while ($turnCount < $this->maxTurns && ! $this->aborted) {
             $turnCount++;
@@ -174,19 +183,39 @@ class AgentLoop
                 $this->contextCompactor->microCompact($this->messageHistory);
             }
 
-            // 2. Build system prompt
-            $systemPrompt = $this->contextBuilder->buildSystemPrompt();
+            // 2. Build the request from the turn-stable system prompt and current history.
             $messages = $this->messageHistory->getMessagesForApi();
+            $estimatedTokens = ContextBudget::estimateTokens(
+                $systemPrompt,
+                $messages,
+                $this->toolRegistry->toApiTools(),
+            );
+            if ($estimatedTokens > ContextBudget::MAX_ESTIMATED_INPUT_TOKENS) {
+                $this->contextCompactor->compact($this->messageHistory);
+                $messages = $this->messageHistory->getMessagesForApi();
+                $estimatedTokens = ContextBudget::estimateTokens(
+                    $systemPrompt,
+                    $messages,
+                    $this->toolRegistry->toApiTools(),
+                );
+                if ($estimatedTokens > ContextBudget::MAX_ESTIMATED_INPUT_TOKENS) {
+                    throw new \RuntimeException(
+                        'Estimated model input exceeds the safe context budget after compaction. '.
+                        'Reduce the user input, project instructions, or advertised tools.',
+                    );
+                }
+            }
 
             // 3. Set up streaming tool executor for early tool execution
             $streamingExecutor = new StreamingToolExecutor(
                 toolOrchestrator: $this->toolOrchestrator,
                 toolRegistry: $this->toolRegistry,
+                cancellationToken: $this->cancellationToken,
             );
             $context = new ToolUseContext(
                 workingDirectory: $this->workingDirectory ?? getcwd(),
                 sessionId: $this->sessionManager->getSessionId(),
-                shouldAbort: fn (): bool => $this->aborted,
+                shouldAbort: fn (): bool => $this->cancellationToken->isCancelled(),
             );
             $streamingExecutor->setContext($context, $onToolStart, $onToolComplete);
 
@@ -198,7 +227,7 @@ class AgentLoop
                     onTextDelta: $onTextDelta,
                     onToolBlockComplete: fn (array $block, int $index) => $this->aborted ? null : $streamingExecutor->onToolBlockReady($block, $index),
                     onThinkingDelta: $onThinkingDelta,
-                    shouldAbort: fn (): bool => $this->aborted,
+                    shouldAbort: fn (): bool => $this->cancellationToken->isCancelled(),
                 );
 
                 if ($this->aborted) {
@@ -234,11 +263,11 @@ class AgentLoop
                 }
 
                 $assistantMessage = $processor->toAssistantMessage();
-                $toolUseBlocks = $processor->getIndexedToolUseBlocks();
+                $toolCalls = $processor->getIndexedToolCalls();
                 $stopReason = $processor->getStopReason();
 
                 // 6. Check if we need to execute tools
-                if ($toolUseBlocks === []) {
+                if ($toolCalls === []) {
                     $skipIncompleteAssistantHistory = $this->shouldSkipIncompleteAssistantHistory($assistantMessage);
                     if ($this->shouldRetryIncompleteAssistantResponse(
                         $processor,
@@ -271,7 +300,7 @@ class AgentLoop
                     return $processor->getAccumulatedText();
                 }
 
-                $malformedToolUseFailures = $this->findMalformedToolUseFailures($toolUseBlocks, $context);
+                $malformedToolUseFailures = $this->findMalformedToolUseFailures($toolCalls, $context);
                 if ($malformedToolUseFailures !== []) {
                     $streamingExecutor->cleanup();
 
@@ -313,8 +342,8 @@ class AgentLoop
 
                 // Kimi's SSE stream can omit the trailing content_block_stop for the last tool_use block.
                 // Reconcile against the finalized assistant message so every tool_use gets a matching tool_result.
-                foreach ($toolUseBlocks as $index => $block) {
-                    $streamingExecutor->onToolBlockReady($block, $index);
+                foreach ($toolCalls as $index => $toolCall) {
+                    $streamingExecutor->onToolBlockReady($toolCall->toArray(), $index);
                 }
 
                 // 7. Collect tool results (early-forked safe tools + queued unsafe tools)
@@ -424,36 +453,36 @@ class AgentLoop
     }
 
     /**
-     * @param  array<int, array{id: string, name: string, input: array, raw_input?: string, input_json_error?: ?string}>  $toolUseBlocks
+     * @param  array<int, ToolCall>  $toolCalls
      * @return array<int, array{id: string, name: string, error: string}>
      */
-    private function findMalformedToolUseFailures(array $toolUseBlocks, ToolUseContext $context): array
+    private function findMalformedToolUseFailures(array $toolCalls, ToolUseContext $context): array
     {
         $failures = [];
 
-        foreach ($toolUseBlocks as $block) {
-            $tool = $this->toolRegistry->getTool($block['name']);
+        foreach ($toolCalls as $toolCall) {
+            $tool = $this->toolRegistry->getTool($toolCall->name);
             if ($tool === null) {
                 continue;
             }
 
-            $inputJsonError = $block['input_json_error'] ?? null;
+            $inputJsonError = $toolCall->inputError;
             if (is_string($inputJsonError) && $inputJsonError !== '') {
-                $rawInputSnippet = $this->summarizeMalformedToolInput($block['raw_input'] ?? '');
+                $rawInputSnippet = $this->summarizeMalformedToolInput($toolCall->rawInput);
                 $failures[] = [
-                    'id' => $block['id'],
-                    'name' => $block['name'],
+                    'id' => $toolCall->id,
+                    'name' => $toolCall->name,
                     'error' => $inputJsonError.($rawInputSnippet !== null ? ' Raw input: '.$rawInputSnippet : ''),
                 ];
 
                 continue;
             }
 
-            $rawInput = $block['input'] ?? [];
+            $rawInput = $toolCall->input;
             if (! is_array($rawInput)) {
                 $failures[] = [
-                    'id' => $block['id'],
-                    'name' => $block['name'],
+                    'id' => $toolCall->id,
+                    'name' => $toolCall->name,
                     'error' => 'Tool input must decode to an object.',
                 ];
 
@@ -464,16 +493,16 @@ class AgentLoop
                 $validatedInput = $tool->inputSchema()->validate($rawInput);
             } catch (\InvalidArgumentException $e) {
                 $failures[] = [
-                    'id' => $block['id'],
-                    'name' => $block['name'],
+                    'id' => $toolCall->id,
+                    'name' => $toolCall->name,
                     'error' => $e->getMessage(),
                 ];
 
                 continue;
             } catch (\TypeError $e) {
                 $failures[] = [
-                    'id' => $block['id'],
-                    'name' => $block['name'],
+                    'id' => $toolCall->id,
+                    'name' => $toolCall->name,
                     'error' => $e->getMessage(),
                 ];
 
@@ -483,8 +512,8 @@ class AgentLoop
             $semanticError = $tool->validateInput($validatedInput, $context);
             if ($semanticError !== null) {
                 $failures[] = [
-                    'id' => $block['id'],
-                    'name' => $block['name'],
+                    'id' => $toolCall->id,
+                    'name' => $toolCall->name,
                     'error' => $semanticError,
                 ];
             }

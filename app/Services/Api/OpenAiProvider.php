@@ -73,11 +73,11 @@ class OpenAiProvider implements LlmProvider
                 return;
             }
 
-            $hasYieldedEvents = false;
+            $hasCommittedResponseState = false;
 
             try {
                 foreach ($this->doStreamMessages($systemPrompt, $messages, $tools, $onRawEvent, $shouldAbort) as $event) {
-                    $hasYieldedEvents = true;
+                    $hasCommittedResponseState = $hasCommittedResponseState || $event->commitsResponseState();
                     yield $event;
                 }
                 return;
@@ -86,7 +86,7 @@ class OpenAiProvider implements LlmProvider
                     return;
                 }
 
-                if ($hasYieldedEvents) {
+                if ($hasCommittedResponseState) {
                     throw $this->normalizeTransportException($e);
                 }
 
@@ -105,6 +105,17 @@ class OpenAiProvider implements LlmProvider
     public function getLastRateLimitHeaders(): array
     {
         return $this->lastRateLimitHeaders;
+    }
+
+    /**
+     * Clone this provider while retaining its configured transport.
+     */
+    public function withSettingsManager(\HaoCode\Services\Settings\SettingsManager $settingsManager): self
+    {
+        $provider = clone $this;
+        $provider->settingsManager = $settingsManager;
+
+        return $provider;
     }
 
     private function doStreamMessages(

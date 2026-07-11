@@ -4,6 +4,7 @@ namespace Tests\Unit;
 
 use HaoCode\Services\Agent\StreamingToolExecutor;
 use HaoCode\Services\Agent\ToolOrchestrator;
+use HaoCode\Services\Agent\CancellationToken;
 use HaoCode\Tools\BaseTool;
 use HaoCode\Tools\ToolInputSchema;
 use HaoCode\Tools\ToolRegistry;
@@ -265,5 +266,75 @@ class StreamingToolExecutorTest extends TestCase
         $executor->onToolBlockReady($this->makeBlock(), 0);
         $executor->cleanup();
         $executor->collectResults();
+    }
+
+    public function test_cleanup_emits_terminal_callback_for_started_early_tool(): void
+    {
+        if (! function_exists('pcntl_fork')) {
+            $this->markTestSkipped('pcntl is required for early tool execution.');
+        }
+
+        $completed = [];
+        $executor = new StreamingToolExecutor(
+            $this->createMock(ToolOrchestrator::class),
+            $this->makeRegistry(readOnly: true, concurrencySafe: true),
+        );
+        $executor->setContext(
+            new ToolUseContext('/tmp', 'test'),
+            null,
+            function (string $name, ToolResult $result) use (&$completed): void {
+                $completed[] = [$name, $result];
+            },
+        );
+
+        $executor->onToolBlockReady($this->makeBlock(), 0);
+        $executor->cleanup();
+
+        $this->assertCount(1, $completed);
+        $this->assertSame('MockTool', $completed[0][0]);
+        $this->assertTrue($completed[0][1]->isError);
+        $this->assertSame('Tool execution aborted', $completed[0][1]->output);
+    }
+
+    public function test_cancellation_interrupts_wait_for_forked_tool_and_returns_aborted_result(): void
+    {
+        if (! function_exists('pcntl_fork') || ! function_exists('pcntl_alarm')) {
+            $this->markTestSkipped('pcntl is required for process cancellation.');
+        }
+
+        $token = new CancellationToken();
+        $orchestrator = $this->createMock(ToolOrchestrator::class);
+        $orchestrator->method('executeToolBlock')->willReturnCallback(function (): array {
+            sleep(3);
+
+            return ['tool_use_id' => 'toolu_1', 'content' => 'late', 'is_error' => false];
+        });
+
+        $executor = new StreamingToolExecutor(
+            $orchestrator,
+            $this->makeRegistry(readOnly: true, concurrencySafe: true),
+            $token,
+        );
+        $executor->setContext(new ToolUseContext('/tmp', 'test'), null, null);
+        $executor->onToolBlockReady($this->makeBlock(), 0);
+
+        pcntl_async_signals(true);
+        pcntl_signal(SIGALRM, static function () use ($token): void {
+            $token->cancel();
+        });
+        pcntl_alarm(1);
+        $startedAt = microtime(true);
+
+        try {
+            $results = $executor->collectResults();
+        } finally {
+            pcntl_alarm(0);
+            pcntl_signal(SIGALRM, SIG_DFL);
+            $token->close();
+        }
+
+        $this->assertLessThan(2.5, microtime(true) - $startedAt);
+        $this->assertTrue($results[0]['is_error']);
+        $this->assertSame('Tool execution aborted', $results[0]['content']);
     }
 }

@@ -12,6 +12,7 @@ use Symfony\Contracts\HttpClient\ChunkInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use Symfony\Contracts\HttpClient\ResponseInterface;
 use Symfony\Contracts\HttpClient\ResponseStreamInterface;
+use Tests\Support\MockAnthropicSse;
 
 class StreamingClientTest extends TestCase
 {
@@ -216,11 +217,15 @@ class StreamingClientTest extends TestCase
         $this->assertSame('tool_use', $events[1]->data['delta']['stop_reason'] ?? null);
     }
 
-    public function test_it_does_not_retry_after_a_partial_stream_has_started(): void
+    public function test_it_retries_after_handshake_event_before_response_state_is_committed(): void
     {
         $attempts = 0;
         $httpClient = new MockHttpClient(function () use (&$attempts) {
             $attempts++;
+
+            if ($attempts > 1) {
+                return MockAnthropicSse::textResponse('recovered');
+            }
 
             return new MockResponse((function () {
                 yield "event: message_start\n";
@@ -235,19 +240,14 @@ class StreamingClientTest extends TestCase
             httpClient: $httpClient,
         );
 
-        try {
-            iterator_to_array($client->streamMessages(
-                systemPrompt: [],
-                messages: [['role' => 'user', 'content' => 'hello']],
-                tools: [],
-            ));
+        $events = iterator_to_array($client->streamMessages(
+            systemPrompt: [],
+            messages: [['role' => 'user', 'content' => 'hello']],
+            tools: [],
+        ));
 
-            $this->fail('Expected ApiErrorException to be thrown.');
-        } catch (ApiErrorException $e) {
-            $this->assertSame('transport_error', $e->getErrorType());
-            $this->assertStringContainsString('stream interrupted', $e->getMessage());
-            $this->assertSame(1, $attempts);
-        }
+        $this->assertSame(2, $attempts);
+        $this->assertContains('content_block_delta', array_column($events, 'type'));
     }
 
     public function test_it_throws_stream_timeout_when_no_new_data_arrives(): void
@@ -279,7 +279,7 @@ class StreamingClientTest extends TestCase
         }
     }
 
-    public function test_it_does_not_retry_stream_timeout_after_partial_stream_has_started(): void
+    public function test_it_retries_stream_timeout_after_only_handshake_event(): void
     {
         $attempts = 0;
         $httpClient = $this->makeStreamingHttpClient([
@@ -305,7 +305,41 @@ class StreamingClientTest extends TestCase
             $this->fail('Expected ApiErrorException to be thrown.');
         } catch (ApiErrorException $e) {
             $this->assertSame('stream_timeout', $e->getErrorType());
-            $this->assertSame(1, $attempts, 'Should not retry once the stream has already yielded events');
+            $this->assertSame(3, $attempts, 'Handshake-only attempts are safe to retry');
+        }
+    }
+
+    public function test_it_does_not_retry_after_content_block_has_started(): void
+    {
+        $attempts = 0;
+        $httpClient = new MockHttpClient(function () use (&$attempts) {
+            $attempts++;
+
+            return new MockResponse((function () {
+                yield "event: message_start\n";
+                yield "data: {\"message\":{\"id\":\"msg_1\",\"usage\":[]}}\n\n";
+                yield "event: content_block_start\n";
+                yield "data: {\"index\":0,\"content_block\":{\"type\":\"text\",\"text\":\"\"}}\n\n";
+                throw new TransportException('stream interrupted after content');
+            })(), ['http_code' => 200]);
+        });
+
+        $client = new StreamingClient(
+            apiKey: 'test-key',
+            model: 'kimi-for-coding',
+            httpClient: $httpClient,
+        );
+
+        try {
+            iterator_to_array($client->streamMessages(
+                systemPrompt: [],
+                messages: [['role' => 'user', 'content' => 'hello']],
+                tools: [],
+            ));
+            $this->fail('Expected ApiErrorException to be thrown.');
+        } catch (ApiErrorException $e) {
+            $this->assertSame('transport_error', $e->getErrorType());
+            $this->assertSame(1, $attempts);
         }
     }
 

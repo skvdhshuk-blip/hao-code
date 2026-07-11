@@ -3,6 +3,7 @@
 namespace Tests\Unit;
 
 use HaoCode\Tools\ToolResult;
+use HaoCode\Tools\ToolOutcome;
 use PHPUnit\Framework\TestCase;
 
 class ToolResultTest extends TestCase
@@ -52,5 +53,12 @@ class ToolResultTest extends TestCase
         $api = $result->toApiFormat('toolu_xyz');
 
         $this->assertTrue($api['is_error']);
+    }
+
+    public function test_terminal_outcome_distinguishes_completed_failed_and_aborted(): void
+    {
+        $this->assertSame(ToolOutcome::Completed, ToolResult::success('ok')->outcome());
+        $this->assertSame(ToolOutcome::Failed, ToolResult::error('failed')->outcome());
+        $this->assertSame(ToolOutcome::Aborted, ToolResult::aborted()->outcome());
     }
 }

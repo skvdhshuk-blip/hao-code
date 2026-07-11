@@ -13,4 +13,12 @@ class StreamEvent
     {
         return new self($eventType, json_decode($rawData, true));
     }
+
+    /**
+     * 判断该事件是否已经提交模型可见内容或可能触发工具副作用。
+     */
+    public function commitsResponseState(): bool
+    {
+        return ! in_array($this->type, ['message_start', 'ping'], true);
+    }
 }

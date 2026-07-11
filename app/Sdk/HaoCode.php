@@ -9,7 +9,6 @@ use HaoCode\Services\Session\SessionManager;
 use HaoCode\Services\Settings\SettingsManager;
 use HaoCode\Sdk\Sandbox\SandboxManager;
 use HaoCode\Sdk\Sandbox\SandboxRuntime;
-use HaoCode\Tools\Skill\SkillLoader;
 
 /**
  * HaoCode SDK — programmatic access to the agent's capabilities.
@@ -195,12 +194,12 @@ class HaoCode
     public static function conversation(?HaoCodeConfig $config = null): Conversation
     {
         $config ??= new HaoCodeConfig;
-        self::prepareSdkEnvironment($config);
 
         /** @var AgentLoopFactory $factory */
         $factory = app(AgentLoopFactory::class);
+        $runContext = AgentRunContextFactory::make($config);
 
-        return new Conversation($config, $factory, self::buildStreamingClient($config));
+        return new Conversation($config, $factory, self::buildStreamingClient($config, $runContext->settings));
     }
 
     /**
@@ -217,12 +216,12 @@ class HaoCode
     public static function resume(string $sessionId, ?HaoCodeConfig $config = null): Conversation
     {
         $config ??= new HaoCodeConfig;
-        self::prepareSdkEnvironment($config);
 
         /** @var AgentLoopFactory $factory */
         $factory = app(AgentLoopFactory::class);
+        $runContext = AgentRunContextFactory::make($config);
 
-        $conv = new Conversation($config, $factory, self::buildStreamingClient($config));
+        $conv = new Conversation($config, $factory, self::buildStreamingClient($config, $runContext->settings));
         $conv->loadSession($sessionId);
 
         return $conv;
@@ -308,13 +307,12 @@ class HaoCode
      */
     private static function createLoop(HaoCodeConfig $config): AgentLoop
     {
-        self::prepareSdkEnvironment($config);
-
         /** @var AgentLoopFactory $factory */
         $factory = app(AgentLoopFactory::class);
 
+        $runContext = AgentRunContextFactory::make($config);
         // Build a custom StreamingClient when SDK config overrides API settings
-        $customClient = self::buildStreamingClient($config);
+        $customClient = self::buildStreamingClient($config, $runContext->settings);
         $sandboxRuntime = self::createSandboxRuntime($config);
         $additionalTools = $config->tools;
         if ($sandboxRuntime !== null) {
@@ -326,6 +324,7 @@ class HaoCode
             workingDirectory: $config->effectiveWorkingDirectory(),
             additionalTools: $additionalTools,
             streamingClient: $customClient,
+            runContext: $runContext,
         );
 
         $loop->setPermissionPromptHandler(fn () => true);
@@ -357,68 +356,14 @@ class HaoCode
     }
 
     /**
-     * Apply config-derived SDK state that must be available before loop creation.
-     */
-    private static function prepareSdkEnvironment(HaoCodeConfig $config): void
-    {
-        // Apply system prompt / permission mode overrides to SettingsManager
-        // before ContextBuilder and PermissionChecker are resolved.
-        self::applySettingsOverrides($config);
-
-        // Register SDK skills so they are visible to the Skill tool and system prompt.
-        self::registerSdkSkills($config);
-    }
-
-    /**
-     * Push SDK config overrides into SettingsManager so that
-     * ContextBuilder and PermissionChecker pick them up.
-     */
-    private static function applySettingsOverrides(HaoCodeConfig $config): void
-    {
-        $settings = app(SettingsManager::class);
-
-        if ($config->systemPrompt !== null) {
-            $settings->set('system_prompt', $config->systemPrompt);
-        }
-
-        if ($config->appendSystemPrompt !== null) {
-            $settings->set('append_system_prompt', $config->appendSystemPrompt);
-        }
-
-        if ($config->permissionMode !== 'bypass_permissions') {
-            $settings->set('permission_mode', $config->permissionMode);
-        }
-
-        if ($config->memorySummaryLevel !== 'l0') {
-            $settings->set('memory_summary_level', $config->memorySummaryLevel);
-        }
-
-        if ($config->memoryStoragePath !== null) {
-            $settings->set('memory_storage_path', $config->memoryStoragePath);
-        }
-    }
-
-    /**
-     * Register SDK-defined skills into SkillLoader.
-     */
-    private static function registerSdkSkills(HaoCodeConfig $config): void
-    {
-        if ($config->skills === []) {
-            return;
-        }
-
-        $loader = app(SkillLoader::class);
-        foreach ($config->skills as $skill) {
-            $loader->registerSkillDefinition($skill->toDefinition());
-        }
-    }
-
-    /**
      * Build a standalone StreamingClient when SDK config overrides API settings.
      *
      * Returns null if no overrides are present (use container default).
      */
-    private static function buildStreamingClient(HaoCodeConfig $config): ?StreamingClient
+    private static function buildStreamingClient(
+        HaoCodeConfig $config,
+        ?SettingsManager $settings = null,
+    ): ?StreamingClient
     {
         if ($config->apiKey === null
             && $config->baseUrl === null
@@ -428,10 +373,13 @@ class HaoCode
             return null;
         }
 
+        $settings ??= AgentRunContextFactory::make($config)->settings;
+
         $providerType = match ($config->providerType) {
             'openai', 'openai_responses', 'responses' => 'openai',
             'openai_chat', 'openai_chat_completions', 'chat_completions' => 'openai_chat',
-            'anthropic', null => 'anthropic',
+            'anthropic' => 'anthropic',
+            null => $settings->getProviderType(),
             default => 'anthropic',
         };
 
@@ -441,10 +389,10 @@ class HaoCode
         };
 
         return new StreamingClient(
-            apiKey: $config->apiKey ?? config('haocode.api_key', ''),
-            model: $config->model ?? config('haocode.model', 'claude-sonnet-4-20250514'),
-            baseUrl: $config->baseUrl ?? config('haocode.api_base_url', $defaultBaseUrl),
-            maxTokens: $config->maxTokens ?? (int) config('haocode.max_tokens', 16384),
+            apiKey: $config->apiKey ?? $settings->getApiKey(),
+            model: $config->model ?? $settings->getModel(),
+            baseUrl: $config->baseUrl ?? $settings->getBaseUrl() ?: $defaultBaseUrl,
+            maxTokens: $config->maxTokens ?? $settings->getMaxTokens(),
             thinkingEnabled: $config->thinkingEnabled,
             thinkingBudget: $config->thinkingBudget,
             settingsManager: null, // SDK controls config, bypass SettingsManager

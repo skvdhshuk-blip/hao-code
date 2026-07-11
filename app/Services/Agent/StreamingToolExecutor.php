@@ -43,6 +43,7 @@ class StreamingToolExecutor
     public function __construct(
         private readonly ToolOrchestrator $toolOrchestrator,
         private readonly ToolRegistry $toolRegistry,
+        private readonly ?CancellationToken $cancellationToken = null,
     ) {}
 
     public function setContext(ToolUseContext $context, ?callable $onStart, ?callable $onComplete): void
@@ -75,7 +76,7 @@ class StreamingToolExecutor
             && $tool->isConcurrencySafe($input)
             && $tool->isReadOnly($input);
 
-        if ($isSafe && function_exists('pcntl_fork')) {
+        if ($isSafe && function_exists('pcntl_fork') && function_exists('posix_kill')) {
             $this->forkTool($block, $index);
         } else {
             $this->queuedBlocks[$index] = $block;
@@ -134,11 +135,26 @@ class StreamingToolExecutor
 
         // 1. Collect results from early-forked processes and merge readFileState
         foreach ($this->earlyPids as $index => $info) {
-            pcntl_waitpid($info['pid'], $status);
-            $data = @file_get_contents($info['temp_file']);
+            $aborted = false;
+            do {
+                $waitResult = pcntl_waitpid($info['pid'], $status, WNOHANG);
+                if ($waitResult === 0 && $this->isCancelled()) {
+                    $this->killPid($info['pid']);
+                    pcntl_waitpid($info['pid'], $status);
+                    $aborted = true;
+                    break;
+                }
+                if ($waitResult === 0) {
+                    usleep(10_000);
+                }
+            } while ($waitResult === 0);
+
+            $data = $aborted ? false : @file_get_contents($info['temp_file']);
             $payload = $data !== false ? @unserialize($data) : false;
 
-            if (is_array($payload) && isset($payload['result'])) {
+            if ($aborted) {
+                $result = $this->abortedResult($info['block']);
+            } elseif (is_array($payload) && isset($payload['result'])) {
                 // New format: result + readFileState from child
                 $result = $payload['result'];
                 if (!empty($payload['readState'])) {
@@ -157,6 +173,7 @@ class StreamingToolExecutor
 
             @unlink($info['temp_file']);
             $results[$index] = $result;
+            unset($this->earlyPids[$index]);
 
             if ($this->onToolComplete) {
                 $toolResult = $this->resultArrayToToolResult($result);
@@ -239,17 +256,42 @@ class StreamingToolExecutor
     private function killEarlyPids(): void
     {
         foreach ($this->earlyPids as $info) {
-            if (function_exists('posix_kill')) {
-                posix_kill($info['pid'], SIGKILL);
-            }
+            $this->killPid($info['pid']);
             if (function_exists('pcntl_waitpid')) {
                 pcntl_waitpid($info['pid'], $status); // reap zombie
             }
             if (file_exists($info['temp_file'])) {
                 @unlink($info['temp_file']);
             }
+            if ($this->onToolComplete) {
+                ($this->onToolComplete)(
+                    $info['block']['name'],
+                    ToolResult::aborted(),
+                );
+            }
         }
         $this->earlyPids = [];
+    }
+
+    private function isCancelled(): bool
+    {
+        return $this->cancellationToken?->isCancelled() ?? $this->context->isAborted();
+    }
+
+    private function killPid(int $pid): void
+    {
+        if (function_exists('posix_kill')) {
+            posix_kill($pid, SIGKILL);
+        }
+    }
+
+    private function abortedResult(array $block): array
+    {
+        return [
+            'tool_use_id' => $block['id'],
+            'content' => 'Tool execution aborted',
+            'is_error' => true,
+        ];
     }
 
     private function resultArrayToToolResult(array $result): ToolResult

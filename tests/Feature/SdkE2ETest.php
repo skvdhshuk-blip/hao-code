@@ -647,6 +647,34 @@ class SdkE2ETest extends TestCase
         $config4 = new HaoCodeConfig(maxTokens: 8192);
         $client4 = $method->invoke(null, $config4);
         $this->assertInstanceOf(StreamingClient::class, $client4);
+
+        mkdir($this->projectDir.'/.haocode', 0755, true);
+        file_put_contents($this->projectDir.'/.haocode/settings.json', json_encode([
+            'active_provider' => 'project-openai',
+            'provider' => [
+                'project-openai' => [
+                    'type' => 'openai',
+                    'api_key' => 'project-key',
+                    'api_base_url' => 'https://project-openai.example.com',
+                    'model' => 'project-default-model',
+                    'max_tokens' => 12345,
+                ],
+            ],
+        ]));
+
+        $projectClient = $method->invoke(null, new HaoCodeConfig(
+            cwd: $this->projectDir,
+            model: 'explicit-model',
+        ));
+        $clientReflection = new \ReflectionObject($projectClient);
+        $this->assertSame('openai', $clientReflection->getProperty('defaultProviderType')->getValue($projectClient));
+
+        $openAiProvider = $clientReflection->getProperty('openai')->getValue($projectClient);
+        $providerReflection = new \ReflectionObject($openAiProvider);
+        $this->assertSame('project-key', $providerReflection->getProperty('apiKey')->getValue($openAiProvider));
+        $this->assertSame('https://project-openai.example.com', $providerReflection->getProperty('baseUrl')->getValue($openAiProvider));
+        $this->assertSame('explicit-model', $providerReflection->getProperty('model')->getValue($openAiProvider));
+        $this->assertSame(12345, $providerReflection->getProperty('maxTokens')->getValue($openAiProvider));
     }
 
     // ──────────────────────────────────────────────────────────────
@@ -665,6 +693,26 @@ class SdkE2ETest extends TestCase
         $result = HaoCode::query('Hello', new HaoCodeConfig);
 
         $this->assertStringContainsString('Default client response', $result->text);
+    }
+
+    public function test_default_container_client_uses_run_scoped_project_settings(): void
+    {
+        mkdir($this->projectDir.'/.haocode', 0755, true);
+        file_put_contents($this->projectDir.'/.haocode/settings.json', json_encode([
+            'model' => 'project-scoped-model',
+        ]));
+
+        $this->bootWithMock([
+            function (array $payload): MockResponse {
+                $this->assertSame('project-scoped-model', $payload['model']);
+
+                return MockAnthropicSse::textResponse('Project settings response.');
+            },
+        ]);
+
+        $result = HaoCode::query('Hello', new HaoCodeConfig(cwd: $this->projectDir));
+
+        $this->assertStringContainsString('Project settings response', $result->text);
     }
 
     // ──────────────────────────────────────────────────────────────
@@ -693,10 +741,17 @@ class SdkE2ETest extends TestCase
     //  Test 22: systemPrompt overrides default
     // ──────────────────────────────────────────────────────────────
 
-    public function test_system_prompt_override_reaches_settings_manager(): void
+    public function test_system_prompt_override_reaches_model_without_mutating_global_settings(): void
     {
         $this->bootWithMock([
-            MockAnthropicSse::textResponse('Custom prompt response.'),
+            function (array $payload): MockResponse {
+                $this->assertStringContainsString(
+                    'You are a pirate. Always say "Arrr!".',
+                    $payload['system'][0]['text'],
+                );
+
+                return MockAnthropicSse::textResponse('Custom prompt response.');
+            },
         ]);
 
         chdir($this->projectDir);
@@ -705,19 +760,25 @@ class SdkE2ETest extends TestCase
             systemPrompt: 'You are a pirate. Always say "Arrr!".',
         ));
 
-        // Verify the system prompt was set in SettingsManager
         $settings = app(SettingsManager::class);
-        $this->assertSame('You are a pirate. Always say "Arrr!".', $settings->getSystemPrompt());
+        $this->assertNull($settings->getSystemPrompt());
     }
 
     // ──────────────────────────────────────────────────────────────
     //  Test 23: appendSystemPrompt reaches SettingsManager
     // ──────────────────────────────────────────────────────────────
 
-    public function test_append_system_prompt_reaches_settings_manager(): void
+    public function test_append_system_prompt_reaches_model_without_mutating_global_settings(): void
     {
         $this->bootWithMock([
-            MockAnthropicSse::textResponse('Appended response.'),
+            function (array $payload): MockResponse {
+                $this->assertStringContainsString(
+                    'Always respond in JSON format.',
+                    $payload['system'][0]['text'],
+                );
+
+                return MockAnthropicSse::textResponse('Appended response.');
+            },
         ]);
 
         chdir($this->projectDir);
@@ -727,7 +788,7 @@ class SdkE2ETest extends TestCase
         ));
 
         $settings = app(SettingsManager::class);
-        $this->assertSame('Always respond in JSON format.', $settings->getAppendSystemPrompt());
+        $this->assertNull($settings->getAppendSystemPrompt());
     }
 
     // ──────────────────────────────────────────────────────────────
@@ -1266,7 +1327,14 @@ class SdkE2ETest extends TestCase
     public function test_conversation_applies_system_prompt_override_before_send(): void
     {
         $this->bootWithMock([
-            MockAnthropicSse::textResponse('Conversation prompt response.'),
+            function (array $payload): MockResponse {
+                $this->assertStringContainsString(
+                    'You are a release manager. Always think about rollback safety.',
+                    $payload['system'][0]['text'],
+                );
+
+                return MockAnthropicSse::textResponse('Conversation prompt response.');
+            },
         ]);
 
         chdir($this->projectDir);
@@ -1279,10 +1347,7 @@ class SdkE2ETest extends TestCase
 
         $this->assertStringContainsString('Conversation prompt response', $result->text);
         $settings = app(SettingsManager::class);
-        $this->assertSame(
-            'You are a release manager. Always think about rollback safety.',
-            $settings->getSystemPrompt(),
-        );
+        $this->assertNull($settings->getSystemPrompt());
 
         $conv->close();
     }

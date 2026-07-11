@@ -9,6 +9,10 @@ use HaoCode\Tools\ToolUseContext;
 
 class SkillTool extends BaseTool
 {
+    public function __construct(
+        private readonly ?SkillLoader $skillLoader = null,
+    ) {}
+
     public function name(): string
     {
         return 'Skill';
@@ -56,7 +60,7 @@ DESC;
     public function call(array $input, ToolUseContext $context): ToolResult
     {
         /** @var SkillLoader $loader */
-        $loader = app(SkillLoader::class);
+        $loader = $this->skillLoader ?? app(SkillLoader::class);
         $skillName = ltrim($input['skill'], '/');
         $args = $input['args'] ?? '';
         $action = $input['action'] ?? 'run';

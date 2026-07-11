@@ -210,17 +210,30 @@ class StreamProcessor
      */
     public function getIndexedToolUseBlocks(): array
     {
+        return array_map(
+            fn (ToolCall $toolCall): array => $toolCall->toArray(),
+            $this->getIndexedToolCalls(),
+        );
+    }
+
+    /**
+     * 返回按流内容块索引排列的强类型工具调用。
+     *
+     * @return array<int, ToolCall>
+     */
+    public function getIndexedToolCalls(): array
+    {
         $blocks = [];
         foreach ($this->contentBlocks as $index => $block) {
             if ($block['type'] === 'tool_use') {
                 $decodedInput = $this->decodeToolInput((string) ($block['input'] ?? ''));
-                $blocks[$index] = [
-                    'id' => $block['id'],
-                    'name' => $block['name'],
-                    'input' => $decodedInput['input'],
-                    'raw_input' => $decodedInput['raw_input'],
-                    'input_json_error' => $decodedInput['input_json_error'],
-                ];
+                $blocks[$index] = new ToolCall(
+                    id: (string) $block['id'],
+                    name: (string) $block['name'],
+                    input: $decodedInput['input'],
+                    rawInput: $decodedInput['raw_input'],
+                    inputError: $decodedInput['input_json_error'],
+                );
             }
         }
 

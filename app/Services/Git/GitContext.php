@@ -8,6 +8,10 @@ namespace HaoCode\Services\Git;
  */
 class GitContext
 {
+    public function __construct(
+        private readonly ?string $workingDirectory = null,
+    ) {}
+
     /**
      * Get the git diff summary for the working tree (unstaged + staged changes).
      * Returns a formatted string suitable for system prompt injection.
@@ -46,7 +50,7 @@ class GitContext
      */
     public function isGitRepo(): bool
     {
-        exec('git rev-parse --is-inside-work-tree 2>/dev/null', $output, $exitCode);
+        exec($this->gitCommand('rev-parse --is-inside-work-tree'), $output, $exitCode);
         return $exitCode === 0;
     }
 
@@ -55,7 +59,7 @@ class GitContext
      */
     public function getCurrentBranch(): string
     {
-        exec('git rev-parse --abbrev-ref HEAD 2>/dev/null', $output);
+        exec($this->gitCommand('rev-parse --abbrev-ref HEAD'), $output);
         return trim($output[0] ?? 'unknown');
     }
 
@@ -64,7 +68,7 @@ class GitContext
      */
     public function hasUncommittedChanges(): bool
     {
-        exec('git status --porcelain 2>/dev/null', $output, $exitCode);
+        exec($this->gitCommand('status --porcelain'), $output, $exitCode);
 
         return $exitCode === 0 && trim(implode("\n", $output)) !== '';
     }
@@ -74,7 +78,7 @@ class GitContext
      */
     public function getRemoteUrl(): string
     {
-        exec('git config --get remote.origin.url 2>/dev/null', $output);
+        exec($this->gitCommand('config --get remote.origin.url'), $output);
         return trim($output[0] ?? '');
     }
 
@@ -84,7 +88,7 @@ class GitContext
     public function getDefaultBranch(): string
     {
         // Try to detect from remote HEAD
-        exec('git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null', $output);
+        exec($this->gitCommand('symbolic-ref refs/remotes/origin/HEAD'), $output);
         if (!empty($output[0])) {
             return str_replace('refs/remotes/origin/', '', $output[0]);
         }
@@ -97,7 +101,7 @@ class GitContext
     public function getWorkingTreeDiff(): string
     {
         // Get diff stat summary
-        exec('git diff --stat HEAD 2>/dev/null', $statOutput, $exitCode);
+        exec($this->gitCommand('diff --stat HEAD'), $statOutput, $exitCode);
         if ($exitCode !== 0 || empty($statOutput)) {
             return '';
         }
@@ -111,7 +115,7 @@ class GitContext
         }
 
         // Get actual diff hunks (limited)
-        exec('git diff HEAD --no-color 2>/dev/null | head -200', $diffOutput);
+        exec($this->gitCommand('diff HEAD --no-color').' | head -200', $diffOutput);
         $diff = implode("\n", $diffOutput);
 
         if (mb_strlen($diff) > 5000) {
@@ -126,7 +130,7 @@ class GitContext
      */
     public function getRecentCommits(int $count = 5): string
     {
-        exec("git log --oneline -n {$count} 2>/dev/null", $output, $exitCode);
+        exec($this->gitCommand('log --oneline -n '.max(1, $count)), $output, $exitCode);
 
         if ($exitCode !== 0 || empty($output)) {
             return '';
@@ -140,7 +144,7 @@ class GitContext
      */
     public function isGitIgnored(string $path): bool
     {
-        exec('git check-ignore -q ' . escapeshellarg($path) . ' 2>/dev/null', $output, $exitCode);
+        exec($this->gitCommand('check-ignore -q '.escapeshellarg($path)), $output, $exitCode);
         return $exitCode === 0;
     }
 
@@ -149,7 +153,17 @@ class GitContext
      */
     public function getGitRoot(): string
     {
-        exec('git rev-parse --show-toplevel 2>/dev/null', $output);
-        return trim($output[0] ?? getcwd());
+        exec($this->gitCommand('rev-parse --show-toplevel'), $output);
+        return trim($output[0] ?? ($this->workingDirectory ?? getcwd()));
+    }
+
+    /**
+     * 为当前运行目录构造安全的 Git 命令。
+     */
+    private function gitCommand(string $arguments): string
+    {
+        $workingDirectory = $this->workingDirectory ?? getcwd();
+
+        return 'git -C '.escapeshellarg($workingDirectory).' '.$arguments.' 2>/dev/null';
     }
 }

@@ -101,6 +101,57 @@ class ContextBuilderTest extends TestCase
         $this->assertStringContainsString(date('Y-m-d'), $result[0]['text']);
     }
 
+    public function test_prompt_uses_explicit_working_directory_instead_of_process_cwd(): void
+    {
+        $workingDirectory = sys_get_temp_dir().'/haocode_context_builder_'.uniqid('', true);
+        mkdir($workingDirectory, 0755, true);
+
+        try {
+            $builder = new ContextBuilder(
+                $this->makeSettings(),
+                $this->createMock(ToolRegistry::class),
+                $this->makeSessionMemory(),
+                $this->makeSkillLoader(),
+                $this->makeGitContext(),
+                null,
+                $workingDirectory,
+            );
+
+            $result = $builder->buildSystemPrompt();
+
+            $this->assertStringContainsString("Working directory: {$workingDirectory}", $result[0]['text']);
+        } finally {
+            rmdir($workingDirectory);
+        }
+    }
+
+    public function test_project_instruction_file_is_truncated_to_hard_budget(): void
+    {
+        $workingDirectory = sys_get_temp_dir().'/haocode_context_budget_'.uniqid('', true);
+        mkdir($workingDirectory, 0755, true);
+        file_put_contents($workingDirectory.'/HAOCODE.md', str_repeat('instruction-', 5000));
+
+        try {
+            $builder = new ContextBuilder(
+                $this->makeSettings(),
+                $this->createMock(ToolRegistry::class),
+                $this->makeSessionMemory(),
+                $this->makeSkillLoader(),
+                $this->makeGitContext(),
+                null,
+                $workingDirectory,
+            );
+
+            $text = $builder->buildSystemPrompt()[0]['text'];
+
+            $this->assertStringContainsString('context truncated by Hao Code budget', $text);
+            $this->assertLessThanOrEqual(160_100, mb_strlen($text));
+        } finally {
+            unlink($workingDirectory.'/HAOCODE.md');
+            rmdir($workingDirectory);
+        }
+    }
+
     public function test_prompt_includes_truthful_validation_instructions(): void
     {
         $result = $this->makeBuilder()->buildSystemPrompt();

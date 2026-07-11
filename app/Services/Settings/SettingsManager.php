@@ -31,6 +31,10 @@ class SettingsManager
 
     private array $runtimeOverrides = [];
 
+    public function __construct(
+        private readonly ?string $workingDirectory = null,
+    ) {}
+
     public function getApiKey(): string
     {
         $settings = $this->loadProjectSettings();
@@ -835,7 +839,7 @@ class SettingsManager
 
         $globalPath = config('haocode.global_settings_path')
             ?? ($_SERVER['HOME'] ?? getenv('HOME') ?: sys_get_temp_dir()).'/.haocode/settings.json';
-        $projectPath = getcwd().'/.haocode/settings.json';
+        $projectPath = ($this->workingDirectory ?? getcwd()).'/.haocode/settings.json';
         $global = $this->loadSettingsFile($globalPath);
         $project = $this->loadSettingsFile($projectPath);
 

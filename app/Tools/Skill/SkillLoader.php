@@ -15,6 +15,10 @@ class SkillLoader
     /** @var array<string, SkillDefinition> */
     private ?array $skills = null;
 
+    public function __construct(
+        private readonly ?string $workingDirectory = null,
+    ) {}
+
     /**
      * Load and return all available skills.
      * @return array<string, SkillDefinition>
@@ -160,7 +164,7 @@ class SkillLoader
     private function getSkillDirectories(): array
     {
         $home = $_SERVER['HOME'] ?? getenv('HOME') ?: sys_get_temp_dir();
-        $cwd = getcwd();
+        $cwd = $this->workingDirectory ?? getcwd();
 
         return [
             "{$home}/.haocode/skills",

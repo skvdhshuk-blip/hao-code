@@ -46,6 +46,7 @@ class Conversation
             workingDirectory: $config->effectiveWorkingDirectory(),
             additionalTools: $additionalTools,
             streamingClient: $streamingClient,
+            runContext: AgentRunContextFactory::make($config),
         );
 
         $this->loop->setPermissionPromptHandler(fn () => true);

@@ -7,7 +7,9 @@ class HookExecutor
     /** @var array<string, HookDefinition[]> */
     private array $hooks = [];
 
-    public function __construct()
+    public function __construct(
+        private readonly ?string $workingDirectory = null,
+    )
     {
         $this->loadHooks();
     }
@@ -78,7 +80,7 @@ class HookExecutor
             2 => ['pipe', 'w'],
         ];
 
-        $process = proc_open($command, $descriptors, $pipes, null, $env);
+        $process = proc_open($command, $descriptors, $pipes, $this->workingDirectory, $env);
 
         if (!is_resource($process)) {
             return new HookResult(allowed: true, output: 'Failed to execute hook');
@@ -128,7 +130,7 @@ class HookExecutor
 
         $home = $_SERVER['HOME'] ?? getenv('HOME') ?: sys_get_temp_dir();
         $paths[] = "{$home}/.haocode/settings.json";
-        $paths[] = getcwd() . '/.haocode/settings.json';
+        $paths[] = ($this->workingDirectory ?? getcwd()) . '/.haocode/settings.json';
 
         foreach ($paths as $path) {
             if (file_exists($path)) {

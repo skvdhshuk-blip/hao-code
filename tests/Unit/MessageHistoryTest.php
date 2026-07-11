@@ -130,6 +130,78 @@ class MessageHistoryTest extends TestCase
         $this->assertTrue($blocks[1]['is_error']);
     }
 
+    public function test_missing_tool_result_is_synthesized_without_mutating_raw_history(): void
+    {
+        $history = new MessageHistory;
+        $history->addAssistantMessage([
+            'role' => 'assistant',
+            'content' => [[
+                'type' => 'tool_use',
+                'id' => 'toolu_missing',
+                'name' => 'Read',
+                'input' => ['file_path' => 'a.php'],
+            ]],
+        ]);
+
+        $messages = $history->getMessagesForApi();
+
+        $this->assertCount(2, $messages);
+        $this->assertSame('toolu_missing', $messages[1]['content'][0]['tool_use_id']);
+        $this->assertSame('aborted', $messages[1]['content'][0]['content']);
+        $this->assertCount(1, $history->getMessages());
+    }
+
+    public function test_orphan_and_duplicate_tool_results_are_removed(): void
+    {
+        $history = new MessageHistory;
+        $history->addAssistantMessage([
+            'role' => 'assistant',
+            'content' => [[
+                'type' => 'tool_use',
+                'id' => 'toolu_valid',
+                'name' => 'Read',
+                'input' => [],
+            ]],
+        ]);
+        $history->addToolResultMessage([
+            ['tool_use_id' => 'toolu_valid', 'content' => 'first', 'is_error' => false],
+            ['tool_use_id' => 'toolu_valid', 'content' => 'duplicate', 'is_error' => false],
+            ['tool_use_id' => 'toolu_orphan', 'content' => 'orphan', 'is_error' => false],
+        ]);
+
+        $messages = $history->getMessagesForApi();
+        $toolResults = array_values(array_filter(
+            $messages[1]['content'],
+            fn (array $block): bool => ($block['type'] ?? null) === 'tool_result',
+        ));
+
+        $this->assertCount(1, $toolResults);
+        $this->assertSame('toolu_valid', $toolResults[0]['tool_use_id']);
+        $this->assertSame('first', $toolResults[0]['content']);
+    }
+
+    public function test_missing_result_is_added_to_following_user_text_message(): void
+    {
+        $history = new MessageHistory;
+        $history->addAssistantMessage([
+            'role' => 'assistant',
+            'content' => [[
+                'type' => 'tool_use',
+                'id' => 'toolu_missing',
+                'name' => 'Read',
+                'input' => [],
+            ]],
+        ]);
+        $history->addUserMessage('continue');
+
+        $messages = $history->getMessagesForApi();
+
+        $this->assertCount(2, $messages);
+        $this->assertSame('tool_result', $messages[1]['content'][0]['type']);
+        $this->assertSame('text', $messages[1]['content'][1]['type']);
+        $this->assertSame('continue', $messages[1]['content'][1]['text']);
+    }
+
     public function test_tool_result_message_can_append_retry_text(): void
     {
         $history = new MessageHistory;

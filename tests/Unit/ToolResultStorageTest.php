@@ -126,6 +126,7 @@ class ToolResultStorageTest extends TestCase
 
     public function test_max_budget_constant(): void
     {
-        $this->assertSame(200_000, ToolResultStorage::MAX_TOOL_RESULTS_PER_MESSAGE_CHARS);
+        $this->assertSame(120_000, ToolResultStorage::MAX_TOOL_RESULTS_PER_MESSAGE_CHARS);
+        $this->assertSame(40_000, ToolResultStorage::MAX_SINGLE_RESULT_CHARS);
     }
 }

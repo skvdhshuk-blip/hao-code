@@ -19,6 +19,10 @@ class OutputStyleLoader
     /** @var array<string, array{name: string, description: string, content: string, path: string}>|null */
     private ?array $cachedStyles = null;
 
+    public function __construct(
+        private readonly ?string $workingDirectory = null,
+    ) {}
+
     /**
      * Return all discovered output styles, keyed by slug.
      */
@@ -44,7 +48,7 @@ class OutputStyleLoader
 
         $dirs = [
             ($_SERVER['HOME'] ?? '') . '/.haocode/output-styles',
-            getcwd() . '/.haocode/output-styles',
+            ($this->workingDirectory ?? getcwd()) . '/.haocode/output-styles',
         ];
 
         $styles = [];

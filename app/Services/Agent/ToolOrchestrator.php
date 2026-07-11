@@ -393,9 +393,10 @@ class ToolOrchestrator
         $result = $this->annotateRepeatedReads($toolName, $input, $result);
 
         // Persist large results to disk (or truncate as fallback)
-        $maxChars = $tool->maxResultSizeChars();
-        if ($maxChars < PHP_INT_MAX && mb_strlen($result->output) > $maxChars) {
-            if ($this->toolResultStorage !== null) {
+        $toolMaxChars = $tool->maxResultSizeChars();
+        $maxChars = min($toolMaxChars, ToolResultStorage::MAX_SINGLE_RESULT_CHARS);
+        if (mb_strlen($result->output) > $maxChars) {
+            if ($toolMaxChars < PHP_INT_MAX && $this->toolResultStorage !== null) {
                 $persisted = $this->toolResultStorage->persist($toolUseId, $result->output);
                 if ($persisted !== null) {
                     $result = new ToolResult(

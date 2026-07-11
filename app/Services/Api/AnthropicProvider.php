@@ -113,11 +113,11 @@ class AnthropicProvider implements LlmProvider
                 return;
             }
 
-            $hasYieldedEvents = false;
+            $hasCommittedResponseState = false;
 
             try {
                 foreach ($this->doStreamMessages($systemPrompt, $messages, $tools, $onRawEvent, $shouldAbort) as $event) {
-                    $hasYieldedEvents = true;
+                    $hasCommittedResponseState = $hasCommittedResponseState || $event->commitsResponseState();
                     yield $event;
                 }
                 return;
@@ -126,7 +126,7 @@ class AnthropicProvider implements LlmProvider
                     return;
                 }
 
-                if ($hasYieldedEvents) {
+                if ($hasCommittedResponseState) {
                     throw $this->normalizeTransportException($e);
                 }
 
@@ -528,6 +528,20 @@ class AnthropicProvider implements LlmProvider
     public function getLastRateLimitHeaders(): array
     {
         return $this->lastRateLimitHeaders;
+    }
+
+    /**
+     * Clone this provider while rebinding its runtime settings.
+     *
+     * The transport is intentionally retained so SDK test doubles and custom
+     * HTTP clients continue to work for isolated agent runs.
+     */
+    public function withSettingsManager(\HaoCode\Services\Settings\SettingsManager $settingsManager): self
+    {
+        $provider = clone $this;
+        $provider->settingsManager = $settingsManager;
+
+        return $provider;
     }
 
     private function cancelResponse(ResponseInterface $response): void

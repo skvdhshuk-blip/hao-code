@@ -2,6 +2,7 @@
 
 namespace Tests\Unit;
 
+use HaoCode\Services\Agent\ToolCall;
 use HaoCode\Services\Agent\StreamProcessor;
 use HaoCode\Services\Api\StreamEvent;
 use PHPUnit\Framework\TestCase;
@@ -297,6 +298,19 @@ class StreamProcessorExtendedTest extends TestCase
 
         $this->assertArrayHasKey(2, $indexed);
         $this->assertSame('Grep', $indexed[2]['name']);
+    }
+
+    public function test_indexed_tool_calls_returns_typed_internal_contract(): void
+    {
+        $processor = $this->makeProcessor();
+        $this->sendToolBlock($processor, 'toolu_1', 'Grep', '{"pattern":"foo"}', index: 2);
+
+        $indexed = $processor->getIndexedToolCalls();
+
+        $this->assertInstanceOf(ToolCall::class, $indexed[2]);
+        $this->assertSame('toolu_1', $indexed[2]->id);
+        $this->assertSame('Grep', $indexed[2]->name);
+        $this->assertSame(['pattern' => 'foo'], $indexed[2]->input);
     }
 
     public function test_get_tool_use_blocks_returns_flat_array(): void

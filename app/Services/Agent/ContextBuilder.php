@@ -12,6 +12,20 @@ use HaoCode\Tools\ToolRegistry;
 
 class ContextBuilder
 {
+    private const MAX_BASE_PROMPT_CHARS = 60_000;
+
+    private const MAX_APPEND_PROMPT_CHARS = 20_000;
+
+    private const MAX_INSTRUCTION_FILE_CHARS = 40_000;
+
+    private const MAX_PROJECT_INSTRUCTIONS_CHARS = 100_000;
+
+    private const MAX_SESSION_MEMORY_CHARS = 40_000;
+
+    private const MAX_OUTPUT_STYLE_CHARS = 20_000;
+
+    private const MAX_SYSTEM_PROMPT_CHARS = 160_000;
+
     public function __construct(
         private readonly SettingsManager $settings,
         private readonly ToolRegistry $toolRegistry,
@@ -19,15 +33,16 @@ class ContextBuilder
         private readonly SkillLoader $skillLoader,
         private readonly GitContext $gitContext,
         private readonly ?OutputStyleLoader $outputStyleLoader = null,
+        private readonly ?string $workingDirectory = null,
     ) {}
 
     public function buildSystemPrompt(): array
     {
-        $prompt = $this->getDefaultSystemPrompt();
+        $prompt = $this->truncateFragment($this->getDefaultSystemPrompt(), self::MAX_BASE_PROMPT_CHARS);
 
         $appendPrompt = $this->settings->getAppendSystemPrompt();
         if ($appendPrompt) {
-            $prompt .= "\n\n" . $appendPrompt;
+            $prompt .= "\n\n" . $this->truncateFragment($appendPrompt, self::MAX_APPEND_PROMPT_CHARS);
         }
 
         $prompt .= $this->getEnvironmentContext();
@@ -48,7 +63,8 @@ class ContextBuilder
             : $this->sessionMemory;
         $memories = $memorySource->forSystemPrompt(level: $memoryLevel);
         if ($memories) {
-            $prompt .= "\n\n# Session Memory\n\n" . $memories;
+            $prompt .= "\n\n# Session Memory\n\n"
+                . $this->truncateFragment($memories, self::MAX_SESSION_MEMORY_CHARS);
         }
 
         // Load available skills + the progressive-disclosure protocol that
@@ -81,9 +97,12 @@ class ContextBuilder
         if ($activeStyle && $this->outputStyleLoader) {
             $styleContent = $this->outputStyleLoader->getActiveStyleContent($activeStyle);
             if ($styleContent) {
-                $prompt .= "\n\n# Output Style Instructions\n\n" . $styleContent;
+                $prompt .= "\n\n# Output Style Instructions\n\n"
+                    . $this->truncateFragment($styleContent, self::MAX_OUTPUT_STYLE_CHARS);
             }
         }
+
+        $prompt = $this->truncateFragment($prompt, self::MAX_SYSTEM_PROMPT_CHARS);
 
         return [['type' => 'text', 'text' => $prompt, 'cache_control' => ['type' => 'ephemeral']]];
     }
@@ -129,7 +148,7 @@ PROMPT;
 
     private function getEnvironmentContext(): string
     {
-        $cwd = getcwd();
+        $cwd = $this->workingDirectory ?? getcwd();
         $date = date('Y-m-d');
         $shell = getenv('SHELL') ?: 'unknown';
 
@@ -140,18 +159,16 @@ PROMPT;
         $context .= "- PHP: " . PHP_VERSION . "\n";
         $context .= "- OS: " . PHP_OS_FAMILY . ' ' . php_uname('r') . "\n";
 
-        exec('git rev-parse --is-inside-work-tree 2>/dev/null', $gitCheck, $gitExit);
-        $isGitRepo = $gitExit === 0;
+        $isGitRepo = $this->gitContext->isGitRepo();
         $context .= '- Is git repo: ' . ($isGitRepo ? 'true' : 'false') . "\n";
 
         if ($isGitRepo) {
-            $gitBranch = trim((string) shell_exec('git rev-parse --abbrev-ref HEAD 2>/dev/null'));
+            $gitBranch = $this->gitContext->getCurrentBranch();
             if ($gitBranch !== '') {
                 $context .= "- Git branch: {$gitBranch}\n";
             }
-            $mainBranch = trim((string) shell_exec('git symbolic-ref refs/remotes/origin/HEAD 2>/dev/null'));
+            $mainBranch = $this->gitContext->getDefaultBranch();
             if ($mainBranch !== '') {
-                $mainBranch = str_replace('refs/remotes/origin/', '', $mainBranch);
                 $context .= "- Main branch: {$mainBranch}\n";
             }
         }
@@ -166,7 +183,7 @@ PROMPT;
     private function loadMemoryFiles(): string
     {
         $content = '';
-        $cwd = getcwd();
+        $cwd = $this->workingDirectory ?? getcwd();
         $home = $_SERVER['HOME'] ?? getenv('HOME') ?: sys_get_temp_dir();
 
         // Global user instructions
@@ -178,7 +195,7 @@ PROMPT;
         foreach ($globalPaths as $path) {
             if (file_exists($path) && is_readable($path)) {
                 $content .= "## Global Instructions ({$path})\n";
-                $content .= file_get_contents($path) . "\n\n";
+                $content .= $this->readInstructionFile($path) . "\n\n";
             }
         }
 
@@ -205,7 +222,7 @@ PROMPT;
             foreach ($candidates as $path) {
                 if (file_exists($path) && is_readable($path)) {
                     $content .= "## {$label} Instructions ({$path})\n";
-                    $content .= file_get_contents($path) . "\n\n";
+                    $content .= $this->readInstructionFile($path) . "\n\n";
                 }
             }
 
@@ -214,7 +231,7 @@ PROMPT;
                 if (is_dir($rulesDir)) {
                     foreach (glob("{$rulesDir}/*.md") as $ruleFile) {
                         $content .= "## Rule: " . basename($ruleFile) . " ({$rulesDir})\n";
-                        $content .= file_get_contents($ruleFile) . "\n\n";
+                        $content .= $this->readInstructionFile($ruleFile) . "\n\n";
                     }
                 }
             }
@@ -222,7 +239,29 @@ PROMPT;
             $dir = dirname($dir);
         }
 
-        return trim($content);
+        return trim($this->truncateFragment($content, self::MAX_PROJECT_INSTRUCTIONS_CHARS));
+    }
+
+    /**
+     * 读取单个项目指令文件，并限制其进入模型上下文的最大长度。
+     */
+    private function readInstructionFile(string $path): string
+    {
+        $content = file_get_contents($path, false, null, 0, self::MAX_INSTRUCTION_FILE_CHARS + 1);
+
+        return $this->truncateFragment(is_string($content) ? $content : '', self::MAX_INSTRUCTION_FILE_CHARS);
+    }
+
+    /**
+     * 截断单个上下文片段并附加可观察的省略标记。
+     */
+    private function truncateFragment(string $content, int $maxChars): string
+    {
+        if (mb_strlen($content) <= $maxChars) {
+            return $content;
+        }
+
+        return mb_substr($content, 0, $maxChars)."\n[... context truncated by Hao Code budget ...]";
     }
 
     /**

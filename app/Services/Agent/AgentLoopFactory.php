@@ -5,10 +5,17 @@ namespace HaoCode\Services\Agent;
 use HaoCode\Services\Api\StreamingClient;
 use HaoCode\Services\Compact\ContextCompactor;
 use HaoCode\Services\Cost\CostTracker;
+use HaoCode\Services\Git\GitContext;
 use HaoCode\Services\Hooks\HookExecutor;
+use HaoCode\Services\Memory\SessionMemory;
+use HaoCode\Services\OutputStyle\OutputStyleLoader;
+use HaoCode\Services\Permissions\DenialTracker;
+use HaoCode\Services\Permissions\PermissionChecker;
 use HaoCode\Services\Session\SessionManager;
 use HaoCode\Services\Settings\SettingsManager;
 use HaoCode\Services\Telemetry\PhoenixTracer;
+use HaoCode\Tools\Config\ConfigTool;
+use HaoCode\Tools\Skill\SkillTool;
 use HaoCode\Tools\ToolRegistry;
 
 class AgentLoopFactory
@@ -30,19 +37,44 @@ class AgentLoopFactory
         ?string $workingDirectory = null,
         array $additionalTools = [],
         ?StreamingClient $streamingClient = null,
+        ?AgentRunContext $runContext = null,
     ): AgentLoop {
-        $contextBuilder = $this->container->make(ContextBuilder::class);
-        $permissionChecker = $this->container->make(\HaoCode\Services\Permissions\PermissionChecker::class);
-        $hookExecutor = $this->container->make(HookExecutor::class);
-
         // Build tool registry with optional filtering
         $parentRegistry = $this->container->make(ToolRegistry::class);
-        $toolRegistry = $this->buildToolRegistry($parentRegistry, $toolFilter, $additionalTools !== []);
+        $toolRegistry = $this->buildToolRegistry(
+            $parentRegistry,
+            $toolFilter,
+            $additionalTools !== [] || $runContext !== null,
+        );
+
+        if ($runContext !== null) {
+            $settings = $runContext->settings;
+            $permissionChecker = new PermissionChecker($settings, new DenialTracker());
+            $hookExecutor = new HookExecutor($runContext->projectDirectory);
+            $toolRegistry->register(new SkillTool($runContext->skillLoader));
+            $toolRegistry->register(new ConfigTool($settings));
+            $contextBuilder = new ContextBuilder(
+                settings: $settings,
+                toolRegistry: $toolRegistry,
+                sessionMemory: $this->container->make(SessionMemory::class),
+                skillLoader: $runContext->skillLoader,
+                gitContext: new GitContext($runContext->projectDirectory),
+                outputStyleLoader: new OutputStyleLoader($runContext->projectDirectory),
+                workingDirectory: $runContext->projectDirectory,
+            );
+        } else {
+            $settings = $this->container->make(SettingsManager::class);
+            $contextBuilder = $this->container->make(ContextBuilder::class);
+            $permissionChecker = $this->container->make(PermissionChecker::class);
+            $hookExecutor = $this->container->make(HookExecutor::class);
+        }
 
         $tracer = $this->container->make(PhoenixTracer::class);
-        $settings = $this->container->make(SettingsManager::class);
 
         $client = $streamingClient ?? $this->container->make(StreamingClient::class);
+        if ($streamingClient === null && $runContext !== null) {
+            $client = $client->withSettingsManager($settings);
+        }
         $queryEngine = new QueryEngine($client, $toolRegistry, $tracer, $settings);
 
         // Register additional tools (SDK custom tools)
@@ -69,6 +101,7 @@ class AgentLoopFactory
             toolRegistry: $toolRegistry,
             hookExecutor: $hookExecutor,
             tracer: $tracer,
+            cancellationToken: $runContext?->cancellationToken,
         );
 
         if ($workingDirectory !== null) {

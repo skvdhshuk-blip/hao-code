@@ -125,6 +125,24 @@ class StreamingClient implements LlmProvider
         return $this->lastUsed?->getLastRateLimitHeaders() ?? [];
     }
 
+    /**
+     * Clone the dispatcher and providers for an isolated agent run.
+     *
+     * Provider transports are preserved, while every dynamic API setting is
+     * resolved from the supplied run-scoped SettingsManager.
+     */
+    public function withSettingsManager(SettingsManager $settingsManager): self
+    {
+        $client = clone $this;
+        $client->settingsManager = $settingsManager;
+        $client->anthropic = $this->anthropic->withSettingsManager($settingsManager);
+        $client->openai = $this->openai->withSettingsManager($settingsManager);
+        $client->openaiChat = $this->openaiChat->withSettingsManager($settingsManager);
+        $client->lastUsed = null;
+
+        return $client;
+    }
+
     private function selectProvider(): LlmProvider
     {
         $type = $this->settingsManager?->getProviderType() ?? $this->defaultProviderType;
