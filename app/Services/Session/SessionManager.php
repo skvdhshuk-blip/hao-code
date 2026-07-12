@@ -12,7 +12,9 @@ class SessionManager
 
     private ?string $currentWorkingDirectory = null;
 
-    public function __construct()
+    public function __construct(
+        private readonly bool $persistenceEnabled = true,
+    )
     {
         $this->sessionId = $this->generateSessionId();
         $this->sessionPath = config('haocode.session_path', storage_path('app/haocode/sessions'));
@@ -21,6 +23,14 @@ class SessionManager
     public function getSessionId(): string
     {
         return $this->sessionId;
+    }
+
+    /**
+     * 判断当前会话是否允许写入持久化存储。
+     */
+    public function isPersistenceEnabled(): bool
+    {
+        return $this->persistenceEnabled;
     }
 
     public function setTitle(string $title): void
@@ -115,6 +125,10 @@ class SessionManager
      */
     public function recordEntry(array $entry): void
     {
+        if (! $this->persistenceEnabled) {
+            return;
+        }
+
         if (! is_dir($this->sessionPath)) {
             mkdir($this->sessionPath, 0755, true);
         }

@@ -34,10 +34,15 @@ class ContextBuilder
         private readonly GitContext $gitContext,
         private readonly ?OutputStyleLoader $outputStyleLoader = null,
         private readonly ?string $workingDirectory = null,
+        private readonly bool $textOnly = false,
     ) {}
 
     public function buildSystemPrompt(): array
     {
+        if ($this->textOnly) {
+            return $this->buildTextOnlySystemPrompt();
+        }
+
         $prompt = $this->truncateFragment($this->getDefaultSystemPrompt(), self::MAX_BASE_PROMPT_CHARS);
 
         $appendPrompt = $this->settings->getAppendSystemPrompt();
@@ -105,6 +110,37 @@ class ContextBuilder
         $prompt = $this->truncateFragment($prompt, self::MAX_SYSTEM_PROMPT_CHARS);
 
         return [['type' => 'text', 'text' => $prompt, 'cache_control' => ['type' => 'ephemeral']]];
+    }
+
+    /**
+     * 为未开放任何工具的基础调用构造精简系统提示。
+     *
+     * 该提示保留用户显式传入的 systemPrompt 和 appendSystemPrompt，
+     * 但不注入工具、Skill、Git、项目文件或持久记忆等 coding-agent 上下文。
+     */
+    private function buildTextOnlySystemPrompt(): array
+    {
+        // 基础调用使用的最小默认提示，明确模型没有工具可调用。
+        $prompt = $this->settings->getSystemPrompt();
+        if (! is_string($prompt) || trim($prompt) === '') {
+            $prompt = <<<'PROMPT'
+You are Hao Code, an embedded PHP AI assistant. Answer the user's request directly and concisely.
+
+You have no tools in this request. Do not claim to have read files, run commands, searched the web, or changed external state.
+PROMPT;
+        }
+
+        $prompt = $this->truncateFragment($prompt, self::MAX_BASE_PROMPT_CHARS);
+        $appendPrompt = $this->settings->getAppendSystemPrompt();
+        if (is_string($appendPrompt) && trim($appendPrompt) !== '') {
+            $prompt .= "\n\n".$this->truncateFragment($appendPrompt, self::MAX_APPEND_PROMPT_CHARS);
+        }
+
+        return [[
+            'type' => 'text',
+            'text' => $this->truncateFragment($prompt, self::MAX_SYSTEM_PROMPT_CHARS),
+            'cache_control' => ['type' => 'ephemeral'],
+        ]];
     }
 
     private function getDefaultSystemPrompt(): string
@@ -211,6 +247,7 @@ PROMPT;
 
             $label = $realDir === realpath($cwd) ? 'Project' : 'Parent';
             $candidates = [
+                "{$realDir}/AGENTS.md",
                 "{$realDir}/HAOCODE.md",
                 "{$realDir}/CLAUDE.md",
                 "{$realDir}/.haocode/instructions.md",

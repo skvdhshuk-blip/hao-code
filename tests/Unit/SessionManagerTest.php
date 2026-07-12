@@ -7,6 +7,17 @@ use Tests\TestCase;
 
 class SessionManagerTest extends TestCase
 {
+    public function test_persistence_can_be_disabled_for_ephemeral_queries(): void
+    {
+        $manager = new SessionManager(persistenceEnabled: false);
+
+        $this->assertFalse($manager->isPersistenceEnabled());
+        $manager->recordEntry(['type' => 'user_message', 'content' => 'temporary']);
+
+        $sessionPath = config('haocode.session_path', storage_path('app/haocode/sessions'));
+        $this->assertFileDoesNotExist($sessionPath.'/'.$manager->getSessionId().'.jsonl');
+    }
+
     private string $tmpDir;
 
     protected function setUp(): void

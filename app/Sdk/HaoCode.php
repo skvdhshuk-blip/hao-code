@@ -4,6 +4,7 @@ namespace HaoCode\Sdk;
 
 use HaoCode\Services\Agent\AgentLoop;
 use HaoCode\Services\Agent\AgentLoopFactory;
+use HaoCode\Services\Agent\AgentRunContext;
 use HaoCode\Services\Api\StreamingClient;
 use HaoCode\Services\Session\SessionManager;
 use HaoCode\Services\Settings\SettingsManager;
@@ -53,7 +54,7 @@ class HaoCode
      */
     public static function query(string $prompt, ?HaoCodeConfig $config = null): QueryResult
     {
-        $config ??= new HaoCodeConfig(allowedTools: []);
+        $config ??= new HaoCodeConfig(allowedTools: [], ephemeral: true);
 
         // Redirect to resume/continue if configured
         if ($config->sessionId !== null) {
@@ -197,7 +198,7 @@ class HaoCode
 
         /** @var AgentLoopFactory $factory */
         $factory = app(AgentLoopFactory::class);
-        $runContext = AgentRunContextFactory::make($config);
+        $runContext = self::createValidatedRunContext($config);
 
         return new Conversation($config, $factory, self::buildStreamingClient($config, $runContext->settings));
     }
@@ -219,7 +220,7 @@ class HaoCode
 
         /** @var AgentLoopFactory $factory */
         $factory = app(AgentLoopFactory::class);
-        $runContext = AgentRunContextFactory::make($config);
+        $runContext = self::createValidatedRunContext($config);
 
         $conv = new Conversation($config, $factory, self::buildStreamingClient($config, $runContext->settings));
         $conv->loadSession($sessionId);
@@ -310,15 +311,7 @@ class HaoCode
         /** @var AgentLoopFactory $factory */
         $factory = app(AgentLoopFactory::class);
 
-        $runContext = AgentRunContextFactory::make($config);
-        // 当前请求最终使用的 API key，基础调用在网络请求前必须完成校验。
-        $apiKey = $config->apiKey ?? $runContext->settings->getApiKey();
-        if (trim($apiKey) === '') {
-            throw new \RuntimeException(
-                'API key is required. Pass HaoCodeConfig(apiKey: ...) or set ANTHROPIC_API_KEY '.
-                'in the process environment. .env files are not loaded automatically.',
-            );
-        }
+        $runContext = self::createValidatedRunContext($config);
 
         // Build a custom StreamingClient when SDK config overrides API settings
         $customClient = self::buildStreamingClient($config, $runContext->settings);
@@ -334,6 +327,7 @@ class HaoCode
             additionalTools: $additionalTools,
             streamingClient: $customClient,
             runContext: $runContext,
+            ephemeral: $config->ephemeral,
         );
 
         $loop->setPermissionPromptHandler(fn () => true);
@@ -362,6 +356,27 @@ class HaoCode
         }
 
         return SandboxManager::create($config->sandbox, $config->cwd);
+    }
+
+    /**
+     * 创建已经完成基础凭据校验的运行上下文。
+     *
+     * query、stream、conversation 和 resume 都通过此方法进入模型调用，
+     * 避免不同入口对空 API key 的处理不一致。
+     */
+    private static function createValidatedRunContext(HaoCodeConfig $config): AgentRunContext
+    {
+        // 当前请求最终使用的 API key，必须在任何网络请求前完成校验。
+        $runContext = AgentRunContextFactory::make($config);
+        $apiKey = $config->apiKey ?? $runContext->settings->getApiKey();
+        if (trim($apiKey) === '') {
+            throw new \RuntimeException(
+                'API key is required. Pass HaoCodeConfig(apiKey: ...) or set ANTHROPIC_API_KEY '.
+                'in the process environment. .env files are not loaded automatically.',
+            );
+        }
+
+        return $runContext;
     }
 
     /**

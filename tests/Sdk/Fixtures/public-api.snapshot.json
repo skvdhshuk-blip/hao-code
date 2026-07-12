@@ -192,8 +192,8 @@
             },
             "ephemeral": {
                 "signature": "public readonly bool $ephemeral",
-                "api": false,
-                "internal": true
+                "api": true,
+                "internal": false
             },
             "maxBudgetUsd": {
                 "signature": "public readonly ?float $maxBudgetUsd",

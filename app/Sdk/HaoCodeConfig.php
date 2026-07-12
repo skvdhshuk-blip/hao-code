@@ -183,9 +183,10 @@ class HaoCodeConfig
         public readonly mixed $onTurnStart = null,
 
         /**
-         * Reserved for future use. Session persistence cannot currently be disabled.
+         * Disable session and tool-result persistence for this run.
+         * The basic no-config HaoCode::query() path enables this automatically.
          *
-         * @internal
+         * @api
          */
         public readonly bool $ephemeral = false,
 

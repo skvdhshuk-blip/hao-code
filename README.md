@@ -38,8 +38,8 @@ echo $result->text;
 php example.php
 ```
 
-The basic `query()` call does not expose file or shell tools. Hao Code reads
-real process environment variables; it does not load `.env` files by itself.
+The basic `query()` call does not expose file or shell tools and does not write
+a session file. Hao Code reads real process environment variables; it does not load `.env` files by itself.
 Applications that already load `.env` may pass the key explicitly with
 `new HaoCodeConfig(apiKey: getenv('ANTHROPIC_API_KEY'))`.
 

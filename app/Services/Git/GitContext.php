@@ -26,6 +26,7 @@ class GitContext
         $remote = $this->getRemoteUrl();
         $defaultBranch = $this->getDefaultBranch();
         $diff = $this->getWorkingTreeDiff();
+        $status = $this->getWorkingTreeStatus();
         $recentCommits = $this->getRecentCommits();
 
         $context = "\n# Git Status\n- Branch: {$branch}"
@@ -36,10 +37,14 @@ class GitContext
             $context .= "\n\n# Recent Commits\n```\n{$recentCommits}\n```";
         }
 
-        if ($diff === '') {
+        if ($status === '') {
             $context .= "\n- Working tree: clean";
         } else {
-            $context .= "\n\n# Uncommitted Changes\n```\n{$diff}\n```";
+            $context .= "\n\n# Uncommitted Changes\n```\n{$status}";
+            if ($diff !== '') {
+                $context .= "\n\n{$diff}";
+            }
+            $context .= "\n```";
         }
 
         return $context;
@@ -123,6 +128,25 @@ class GitContext
         }
 
         return $stat . "\n\n" . $diff;
+    }
+
+    /**
+     * 获取包含未跟踪文件在内的工作区状态摘要。
+     *
+     * 输出采用 git status --short 格式，并限制行数和字符数，避免大型
+     * 工作区状态无限进入模型上下文。
+     */
+    private function getWorkingTreeStatus(): string
+    {
+        exec($this->gitCommand('status --short'), $output, $exitCode);
+        if ($exitCode !== 0 || $output === []) {
+            return '';
+        }
+
+        // 最多向模型展示前 100 条状态记录。
+        $status = implode("\n", array_slice($output, 0, 100));
+
+        return mb_substr($status, 0, 5000);
     }
 
     /**

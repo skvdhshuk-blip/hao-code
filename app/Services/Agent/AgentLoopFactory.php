@@ -38,6 +38,7 @@ class AgentLoopFactory
         array $additionalTools = [],
         ?StreamingClient $streamingClient = null,
         ?AgentRunContext $runContext = null,
+        bool $ephemeral = false,
     ): AgentLoop {
         // Build tool registry with optional filtering
         $parentRegistry = $this->container->make(ToolRegistry::class);
@@ -46,6 +47,9 @@ class AgentLoopFactory
             $toolFilter,
             $additionalTools !== [] || $runContext !== null,
         );
+        foreach ($additionalTools as $tool) {
+            $toolRegistry->register($tool);
+        }
 
         if ($runContext !== null) {
             $settings = $runContext->settings;
@@ -65,6 +69,7 @@ class AgentLoopFactory
                 gitContext: new GitContext($runContext->projectDirectory),
                 outputStyleLoader: new OutputStyleLoader($runContext->projectDirectory),
                 workingDirectory: $runContext->projectDirectory,
+                textOnly: $toolRegistry->getAllTools() === [],
             );
         } else {
             $settings = $this->container->make(SettingsManager::class);
@@ -81,11 +86,6 @@ class AgentLoopFactory
         }
         $queryEngine = new QueryEngine($client, $toolRegistry, $tracer, $settings);
 
-        // Register additional tools (SDK custom tools)
-        foreach ($additionalTools as $tool) {
-            $toolRegistry->register($tool);
-        }
-
         $toolOrchestrator = new ToolOrchestrator(
             toolRegistry: $toolRegistry,
             permissionChecker: $permissionChecker,
@@ -99,7 +99,7 @@ class AgentLoopFactory
             contextBuilder: $contextBuilder,
             messageHistory: new MessageHistory(),
             permissionChecker: $permissionChecker,
-            sessionManager: new SessionManager(),
+            sessionManager: new SessionManager(persistenceEnabled: ! $ephemeral),
             contextCompactor: new ContextCompactor($queryEngine, $hookExecutor),
             costTracker: new CostTracker(),
             toolRegistry: $toolRegistry,

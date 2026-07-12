@@ -47,6 +47,7 @@ class Conversation
             additionalTools: $additionalTools,
             streamingClient: $streamingClient,
             runContext: AgentRunContextFactory::make($config),
+            ephemeral: $config->ephemeral,
         );
 
         $this->loop->setPermissionPromptHandler(fn () => true);

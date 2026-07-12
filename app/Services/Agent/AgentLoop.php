@@ -151,9 +151,11 @@ class AgentLoop
         if (! $this->sessionStarted) {
             $this->sessionStarted = true;
 
-            // Wire up tool result persistence storage
-            $toolResultStorage = new ToolResultStorage($this->sessionManager->getSessionId());
-            $this->toolOrchestrator->setToolResultStorage($toolResultStorage);
+            // Wire up tool result persistence storage only for durable sessions.
+            if ($this->sessionManager->isPersistenceEnabled()) {
+                $toolResultStorage = new ToolResultStorage($this->sessionManager->getSessionId());
+                $this->toolOrchestrator->setToolResultStorage($toolResultStorage);
+            }
 
             $this->hookExecutor?->execute('SessionStart', [
                 'session_id' => $this->sessionManager->getSessionId(),

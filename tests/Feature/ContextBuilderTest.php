@@ -152,6 +152,58 @@ class ContextBuilderTest extends TestCase
         }
     }
 
+    public function test_project_agents_file_is_loaded(): void
+    {
+        $workingDirectory = sys_get_temp_dir().'/haocode_agents_instructions_'.uniqid('', true);
+        mkdir($workingDirectory, 0755, true);
+        file_put_contents($workingDirectory.'/AGENTS.md', 'Follow the project agent rules.');
+
+        try {
+            $builder = new ContextBuilder(
+                $this->makeSettings(),
+                $this->createMock(ToolRegistry::class),
+                $this->makeSessionMemory(),
+                $this->makeSkillLoader(),
+                $this->makeGitContext(),
+                null,
+                $workingDirectory,
+            );
+
+            $text = $builder->buildSystemPrompt()[0]['text'];
+
+            $this->assertStringContainsString('AGENTS.md', $text);
+            $this->assertStringContainsString('Follow the project agent rules.', $text);
+        } finally {
+            unlink($workingDirectory.'/AGENTS.md');
+            rmdir($workingDirectory);
+        }
+    }
+
+    public function test_text_only_prompt_omits_coding_agent_context(): void
+    {
+        $settings = $this->makeSettings(['appendPrompt' => 'Keep the answer factual.']);
+        $builder = new ContextBuilder(
+            $settings,
+            new ToolRegistry(),
+            $this->makeSessionMemory('persistent memory'),
+            $this->makeSkillLoader('/review — Review code'),
+            $this->makeGitContext("# Git Status\n- Working tree: dirty"),
+            null,
+            getcwd() ?: '/',
+            true,
+        );
+
+        $text = $builder->buildSystemPrompt()[0]['text'];
+
+        $this->assertLessThan(1000, strlen($text));
+        $this->assertStringContainsString('Keep the answer factual.', $text);
+        $this->assertStringContainsString('You have no tools', $text);
+        $this->assertStringNotContainsString('# Skills', $text);
+        $this->assertStringNotContainsString('# Git Status', $text);
+        $this->assertStringNotContainsString('# Project Instructions', $text);
+        $this->assertStringNotContainsString('# Session Memory', $text);
+    }
+
     public function test_prompt_includes_truthful_validation_instructions(): void
     {
         $result = $this->makeBuilder()->buildSystemPrompt();

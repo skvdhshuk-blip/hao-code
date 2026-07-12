@@ -85,6 +85,12 @@ class SdkE2ETest extends TestCase
         $this->bootWithMock([
             function (array $payload): MockResponse {
                 $this->assertSame([], $payload['tools'] ?? []);
+                $systemPrompt = (string) ($payload['system'][0]['text'] ?? '');
+                $this->assertLessThan(1000, strlen($systemPrompt));
+                $this->assertStringNotContainsString('# Using tools', $systemPrompt);
+                $this->assertStringNotContainsString('# Skills', $systemPrompt);
+                $this->assertStringNotContainsString('# Git Status', $systemPrompt);
+                $this->assertStringNotContainsString('# Project Instructions', $systemPrompt);
 
                 return MockAnthropicSse::textResponse('Hello from the SDK! The answer is 42.');
             },
@@ -99,6 +105,7 @@ class SdkE2ETest extends TestCase
         $this->assertIsFloat($result->cost);
         // Stringable: can still be used as string
         $this->assertStringContainsString('42', (string) $result);
+        $this->assertSame([], glob($this->sessionDir.'/*.jsonl') ?: []);
     }
 
     public function test_query_rejects_an_empty_api_key_before_sending_a_request(): void
@@ -113,6 +120,23 @@ class SdkE2ETest extends TestCase
         $this->expectExceptionMessage('API key is required');
 
         HaoCode::query('Hello', new HaoCodeConfig(
+            apiKey: '',
+            allowedTools: [],
+        ));
+    }
+
+    public function test_conversation_rejects_an_empty_api_key_before_sending_a_request(): void
+    {
+        $this->bootWithMock([
+            function (): MockResponse {
+                $this->fail('No request should be sent without an API key.');
+            },
+        ]);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('API key is required');
+
+        HaoCode::conversation(new HaoCodeConfig(
             apiKey: '',
             allowedTools: [],
         ));
@@ -1461,7 +1485,10 @@ JSON),
 
         chdir($this->projectDir);
 
-        $seedResult = HaoCode::query('Remember that the project codename is ORBIT.');
+        $seedResult = HaoCode::query(
+            'Remember that the project codename is ORBIT.',
+            new HaoCodeConfig(allowedTools: []),
+        );
         $this->assertNotNull($seedResult->sessionId);
         $this->assertFileExists($this->sessionDir.'/'.$seedResult->sessionId.'.jsonl');
 

@@ -107,6 +107,32 @@ class GitContextTest extends TestCase
         $this->assertSame('', $ctx->getDiffContext());
     }
 
+    public function test_get_diff_context_reports_untracked_files_as_dirty(): void
+    {
+        $directory = sys_get_temp_dir().'/haocode_git_context_'.uniqid('', true);
+        mkdir($directory, 0755, true);
+        exec('git -C '.escapeshellarg($directory).' init -q');
+        file_put_contents($directory.'/untracked.txt', 'local work');
+
+        try {
+            $context = (new GitContext($directory))->getDiffContext();
+
+            $this->assertStringContainsString('?? untracked.txt', $context);
+            $this->assertStringNotContainsString('Working tree: clean', $context);
+        } finally {
+            unlink($directory.'/untracked.txt');
+            $iterator = new \RecursiveIteratorIterator(
+                new \RecursiveDirectoryIterator($directory.'/.git', \FilesystemIterator::SKIP_DOTS),
+                \RecursiveIteratorIterator::CHILD_FIRST,
+            );
+            foreach ($iterator as $item) {
+                $item->isDir() ? rmdir($item->getPathname()) : unlink($item->getPathname());
+            }
+            rmdir($directory.'/.git');
+            rmdir($directory);
+        }
+    }
+
     // ─── isGitIgnored ─────────────────────────────────────────────────────
 
     public function test_is_git_ignored_returns_bool(): void

@@ -56,9 +56,9 @@ $result = HaoCode::query('Reply with exactly: HaoCode works');
 echo $result->text;
 ```
 
-With no explicit config, `query()` is text-only and does not expose tools to
-the model. File and shell access must be enabled explicitly with
-`HaoCodeConfig`.
+With no explicit config, `query()` is text-only, does not expose tools to the
+model, and does not write a session file. File and shell access or durable
+session storage must be enabled explicitly with `HaoCodeConfig`.
 
 Runnable examples:
 
@@ -215,6 +215,7 @@ When any of these are set, the SDK creates a standalone HTTP client (bypassing g
 | `cwd` | `?string` | `null` | Working directory for tool execution. Defaults to `getcwd()` |
 | `maxTurns` | `int` | `50` | Maximum agent turns (tool-use round trips) |
 | `maxBudgetUsd` | `?float` | `null` | Cost limit in USD. Agent stops when exceeded |
+| `ephemeral` | `bool` | `false` | Disable session and tool-result persistence for this run |
 | `permissionMode` | `string` | `'bypass_permissions'` | `'default'`, `'plan'`, `'accept_edits'`, `'bypass_permissions'` |
 | `sandbox` | `?SandboxConfig` | `null` | Optional temporary filesystem/shell runtime for tools |
 
