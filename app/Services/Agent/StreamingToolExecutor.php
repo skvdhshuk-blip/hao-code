@@ -102,10 +102,22 @@ class StreamingToolExecutor
 
         if ($pid === 0) {
             // Child process: execute tool and serialize result + readFileState changes
-            $result = $this->toolOrchestrator->executeToolBlock($block, $this->context);
+            $completedResult = null;
+            $result = $this->toolOrchestrator->executeToolBlock(
+                $block,
+                $this->context,
+                null,
+                function (string $toolName, ToolResult $toolResult) use (&$completedResult): void {
+                    $completedResult = $toolResult;
+                },
+            );
             $childState = $this->context->getReadFileStateSnapshot();
             $newEntries = array_diff_key($childState, $stateBefore);
-            $payload = ['result' => $result, 'readState' => $newEntries];
+            $payload = [
+                'result' => $result,
+                'toolResult' => $completedResult,
+                'readState' => $newEntries,
+            ];
             file_put_contents($tempFile, serialize($payload));
             exit(0);
         }
@@ -176,7 +188,9 @@ class StreamingToolExecutor
             unset($this->earlyPids[$index]);
 
             if ($this->onToolComplete) {
-                $toolResult = $this->resultArrayToToolResult($result);
+                $toolResult = ($payload['toolResult'] ?? null) instanceof ToolResult
+                    ? $payload['toolResult']
+                    : $this->resultArrayToToolResult($result);
                 ($this->onToolComplete)($info['block']['name'], $toolResult);
             }
         }

@@ -18,6 +18,8 @@ class AgentLoop
 
     private int $maxMalformedToolInputRetries = 4;
 
+    private int $maxTotalMalformedToolInputRetries = 10;
+
     private int $maxIncompleteResponseRetries = 2;
 
     private bool $aborted = false;
@@ -57,6 +59,8 @@ class AgentLoop
         private readonly ?PhoenixTracer $tracer = null,
         ?CancellationToken $cancellationToken = null,
         private readonly int $maxEstimatedInputTokens = ContextBudget::MAX_ESTIMATED_INPUT_TOKENS,
+        private readonly ?AgentRunContext $runContext = null,
+        private readonly ?\HaoCode\Services\Api\LlmProvider $provider = null,
     ) {
         $this->cancellationToken = $cancellationToken ?? new CancellationToken();
     }
@@ -167,7 +171,8 @@ class AgentLoop
         }
 
         $turnCount = 0;
-        $malformedToolInputRetries = 0;
+        $malformedToolInputRetries = [];
+        $totalMalformedToolInputRetries = 0;
         $incompleteResponseRetries = 0;
         $systemPrompt = $this->contextBuilder->buildSystemPrompt();
 
@@ -205,10 +210,19 @@ class AgentLoop
                     $this->toolRegistry->toApiTools(),
                 );
                 if ($estimatedTokens > $this->maxEstimatedInputTokens) {
-                    throw new \RuntimeException(
-                        'Estimated model input exceeds the safe context budget after compaction. '.
-                        'Reduce the user input, project instructions, or advertised tools.',
+                    $this->contextCompactor->emergencyCompact($this->messageHistory);
+                    $messages = $this->messageHistory->getMessagesForApi();
+                    $estimatedTokens = ContextBudget::estimateTokens(
+                        $systemPrompt,
+                        $messages,
+                        $this->toolRegistry->toApiTools(),
                     );
+                    if ($estimatedTokens > $this->maxEstimatedInputTokens) {
+                        throw new \RuntimeException(
+                            'Estimated model input exceeds the safe context budget after emergency compaction. '.
+                            'Reduce the user input, project instructions, or advertised tools.',
+                        );
+                    }
                 }
             }
 
@@ -222,6 +236,8 @@ class AgentLoop
                 workingDirectory: $this->workingDirectory ?? getcwd(),
                 sessionId: $this->sessionManager->getSessionId(),
                 shouldAbort: fn (): bool => $this->cancellationToken->isCancelled(),
+                runContext: $this->runContext,
+                provider: $this->provider,
             );
             $streamingExecutor->setContext($context, $onToolStart, $onToolComplete);
 
@@ -310,8 +326,14 @@ class AgentLoop
                 if ($malformedToolUseFailures !== []) {
                     $streamingExecutor->cleanup();
 
-                    if ($malformedToolInputRetries < $this->maxMalformedToolInputRetries) {
-                        $malformedToolInputRetries++;
+                    $failureSignature = $this->malformedFailureSignature($malformedToolUseFailures);
+                    $signatureRetries = $malformedToolInputRetries[$failureSignature] ?? 0;
+
+                    if ($signatureRetries < $this->maxMalformedToolInputRetries
+                        && $totalMalformedToolInputRetries < $this->maxTotalMalformedToolInputRetries) {
+                        $signatureRetries++;
+                        $totalMalformedToolInputRetries++;
+                        $malformedToolInputRetries[$failureSignature] = $signatureRetries;
                         $assistantMessage = $this->sanitizeMalformedToolAssistantMessage(
                             $assistantMessage,
                             $malformedToolUseFailures,
@@ -322,7 +344,7 @@ class AgentLoop
                             $toolResults,
                             $this->buildMalformedToolRetryInstruction(
                                 $malformedToolUseFailures,
-                                $malformedToolInputRetries,
+                                $signatureRetries,
                             ),
                         );
                         $this->sessionManager->recordTurn($assistantMessage, $toolResults);
@@ -341,7 +363,8 @@ class AgentLoop
                         ),
                     );
                 }
-                $malformedToolInputRetries = 0;
+                $malformedToolInputRetries = [];
+                $totalMalformedToolInputRetries = 0;
                 $incompleteResponseRetries = 0;
 
                 $this->messageHistory->addAssistantMessage($assistantMessage);
@@ -398,7 +421,73 @@ class AgentLoop
             return '(aborted)';
         }
 
-        return "Reached maximum turn limit ({$this->maxTurns}). Stopping.";
+        return $this->finalizeAfterTurnLimit($systemPrompt, $onTextDelta, $onThinkingDelta);
+    }
+
+    private function finalizeAfterTurnLimit(
+        array $systemPrompt,
+        ?callable $onTextDelta,
+        ?callable $onThinkingDelta,
+    ): string {
+        $this->contextCompactor->microCompact($this->messageHistory);
+        $messages = $this->messageHistory->getMessagesForApi();
+        $messages[] = [
+            'role' => 'user',
+            'content' => 'The tool-turn limit has been reached. Do not call tools. Return the best final answer now using the evidence already collected, and state any remaining uncertainty.',
+        ];
+
+        $estimatedTokens = ContextBudget::estimateTokens($systemPrompt, $messages, []);
+        if ($estimatedTokens > $this->maxEstimatedInputTokens) {
+            $this->contextCompactor->compact($this->messageHistory);
+            $messages = $this->messageHistory->getMessagesForApi();
+            $messages[] = [
+                'role' => 'user',
+                'content' => 'Return the final answer now without tools, using the retained evidence.',
+            ];
+            if (ContextBudget::estimateTokens($systemPrompt, $messages, []) > $this->maxEstimatedInputTokens) {
+                $this->contextCompactor->emergencyCompact($this->messageHistory);
+                $messages = $this->messageHistory->getMessagesForApi();
+                $messages[] = [
+                    'role' => 'user',
+                    'content' => 'Return a concise final answer now without tools, using the retained evidence previews.',
+                ];
+            }
+        }
+
+        $processor = $this->queryEngine->query(
+            systemPrompt: $systemPrompt,
+            messages: $messages,
+            onTextDelta: $onTextDelta,
+            onThinkingDelta: $onThinkingDelta,
+            shouldAbort: fn (): bool => $this->cancellationToken->isCancelled(),
+            toolsOverride: [],
+        );
+
+        $usage = $processor->getUsage();
+        $this->lastTurnInputTokens = $usage['input_tokens'] ?? 0;
+        $this->totalInputTokens += $this->lastTurnInputTokens;
+        $this->totalOutputTokens += $usage['output_tokens'] ?? 0;
+        $this->totalCacheCreationTokens += $usage['cache_creation_input_tokens'] ?? 0;
+        $this->totalCacheReadTokens += $usage['cache_read_input_tokens'] ?? 0;
+        if ($processor->getModel() !== null) {
+            $this->costTracker->setModel($processor->getModel());
+        }
+        $this->costTracker->addUsage(
+            $usage['input_tokens'] ?? 0,
+            $usage['output_tokens'] ?? 0,
+            $usage['cache_creation_input_tokens'] ?? 0,
+            $usage['cache_read_input_tokens'] ?? 0,
+        );
+
+        $assistantMessage = $processor->toAssistantMessage();
+        $this->messageHistory->addAssistantMessage($assistantMessage);
+        $this->sessionManager->recordTurn($assistantMessage, []);
+
+        $answer = trim($processor->getAccumulatedText());
+
+        return $answer !== ''
+            ? $answer
+            : "Reached maximum turn limit ({$this->maxTurns}) without a final answer.";
     }
 
     public function getTotalInputTokens(): int
@@ -590,7 +679,7 @@ class AgentLoop
 
         if ($toolName === 'Write') {
             $lines[] = 'For Write: include an absolute file_path, send the complete file contents in content, and do not prefix JSON or file contents with stray ":" placeholder text.';
-            if (str_contains($error, 'Tool input JSON could not be parsed')) {
+            if ($this->isToolInputJsonFailure($error)) {
                 $lines[] = 'If the file content is large or multiline, stop resending the same broken JSON blob. Split the file into smaller writes or create it in smaller Bash heredoc chunks.';
                 $lines[] = 'For large source files, create a tiny scaffold first, then use Edit in small chunks no larger than about 8 lines or 400 characters.';
             }
@@ -602,10 +691,15 @@ class AgentLoop
 
         if ($toolName === 'Bash') {
             $lines[] = 'For Bash: do not send shell no-ops or probes such as ": > /dev/null 2>&1" or "true". If you need context first, run a real command like "pwd" or "ls".';
-            if (str_contains($error, 'Tool input JSON could not be parsed')) {
+            if ($this->isToolInputJsonFailure($error)) {
                 $lines[] = 'If the command is large or multiline, split it into smaller concrete commands instead of resending one giant heredoc payload.';
                 $lines[] = 'Do not send large heredocs, inline python/node scripts, base64 blobs, or long printf command lists in one Bash call.';
             }
+        }
+
+        if ($toolName === 'TeamCreate') {
+            $lines[] = 'For TeamCreate: include name, task, and a non-empty members array; every member needs a role.';
+            $lines[] = 'Keep the payload compact. For large teams, omit member prompts and use descriptive role names.';
         }
 
         return implode("\n", $lines);
@@ -627,7 +721,7 @@ class AgentLoop
 
         $hasJsonParseFailure = false;
         foreach ($failures as $failure) {
-            if (str_contains($failure['error'], 'Tool input JSON could not be parsed')) {
+            if ($this->isToolInputJsonFailure($failure['error'])) {
                 $hasJsonParseFailure = true;
                 break;
             }
@@ -652,10 +746,39 @@ class AgentLoop
             } elseif ($toolName === 'Bash') {
                 $lines[] = 'For Bash: send a real shell command in command. Never send ":" placeholders or no-op probes like ": > /dev/null 2>&1" or "true"; use "pwd" or "ls" if you need to inspect the directory first.';
                 $lines[] = 'Keep Bash commands short and concrete; avoid giant multiline file-generation commands.';
+            } elseif ($toolName === 'TeamCreate') {
+                $lines[] = 'For TeamCreate: send one compact JSON object with name, task, and members; each member must contain role.';
+                $lines[] = 'For large teams, omit member prompts and use descriptive role names. Do not include literal newlines, control characters, or omit members.';
             }
         }
 
         return implode("\n", $lines);
+    }
+
+    /**
+     * Track retries by failure category so a corrected, parseable call with a
+     * schema error does not consume the remaining JSON-repair budget.
+     *
+     * @param array<int, array{id: string, name: string, error: string}> $failures
+     */
+    private function malformedFailureSignature(array $failures): string
+    {
+        $parts = array_map(function (array $failure): string {
+            $category = $this->isToolInputJsonFailure($failure['error'])
+                ? 'json'
+                : (str_contains($failure['error'], 'validation failed') ? 'schema' : 'other');
+
+            return $failure['name'].':'.$category;
+        }, $failures);
+        sort($parts);
+
+        return implode('|', $parts);
+    }
+
+    private function isToolInputJsonFailure(string $error): bool
+    {
+        return str_contains($error, 'Tool input JSON could not be parsed')
+            || str_contains($error, 'Tool input JSON was incomplete');
     }
 
     private function summarizeMalformedToolInput(string $rawInput): ?string

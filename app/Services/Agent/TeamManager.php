@@ -11,7 +11,7 @@ class TeamManager
     }
 
     /**
-     * @param  array<int, array{role: string, agent_type: string, prompt: string, model?: string|null}>  $members
+     * @param  array<int, array{role: string, agent_type?: string, prompt?: string, model?: string|null}>  $members
      * @return array<string, mixed>
      */
     public function create(string $name, array $members): array
@@ -23,7 +23,7 @@ class TeamManager
                 'agent_id' => self::memberAgentId($name, $m['role']),
                 'agent_type' => $m['agent_type'] ?? 'general-purpose',
                 'model' => $m['model'] ?? null,
-                'prompt' => $m['prompt'],
+                'prompt' => $m['prompt'] ?? 'Work on the '.$m['role'].' part of the team objective.',
             ], $members),
             'created_at' => time(),
             'updated_at' => time(),

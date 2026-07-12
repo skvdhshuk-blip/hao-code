@@ -389,7 +389,7 @@ class AnthropicProvider implements ApiKeyAwareProvider
                 'rate_limit_error',
                 'api_error',
                 'stream_timeout',
-            ]);
+            ], true) || $this->isRateLimitMessage($e->getMessage());
         }
 
         if ($e instanceof \Symfony\Contracts\HttpClient\Exception\TimeoutExceptionInterface) {
@@ -409,10 +409,20 @@ class AnthropicProvider implements ApiKeyAwareProvider
             return min((float) $retryAfter, 120);
         }
 
-        if ($e instanceof ApiErrorException && $e->getErrorType() === 'rate_limit_error') {
+        if ($e instanceof ApiErrorException
+            && ($e->getErrorType() === 'rate_limit_error' || $this->isRateLimitMessage($e->getMessage()))) {
             return min(2 ** $attempt, 30);
         }
         return min(2 ** $attempt, 10);
+    }
+
+    private function isRateLimitMessage(string $message): bool
+    {
+        $normalized = strtolower($message);
+
+        return str_contains($normalized, 'rate limit')
+            || str_contains($normalized, 'too many requests')
+            || str_contains($normalized, '[1302]');
     }
 
     private function normalizeToolsForProvider(array $tools, string $baseUrl): array

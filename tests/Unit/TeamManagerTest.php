@@ -134,6 +134,19 @@ class TeamManagerTest extends TestCase
         $this->assertNull($team['members'][1]['model']);
     }
 
+    public function test_create_uses_role_based_prompt_when_prompt_is_omitted(): void
+    {
+        $team = $this->manager->create('compact', [
+            ['role' => 'dissertation'],
+        ]);
+
+        $this->assertSame('general-purpose', $team['members'][0]['agent_type']);
+        $this->assertSame(
+            'Work on the dissertation part of the team objective.',
+            $team['members'][0]['prompt'],
+        );
+    }
+
     private function removeDirectory(string $directory): void
     {
         if (!is_dir($directory)) {

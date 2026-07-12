@@ -32,6 +32,7 @@ loads `.env`, you may pass the resulting value through `HaoCodeConfig`.
 - [Custom Tools (SdkTool)](#custom-tools-sdktool)
 - [Custom Skills (SdkSkill)](#custom-skills-sdkskill)
 - [Streaming Messages](#streaming-messages)
+- [Agent Teams](#agent-teams)
 - [Multi-turn Conversations](#multi-turn-conversations)
 - [Session Resume & Continue](#session-resume--continue)
 - [Structured Output](#structured-output)
@@ -558,6 +559,37 @@ foreach (HaoCode::stream('Refactor the auth module', new HaoCodeConfig(
     }
 }
 ```
+
+---
+
+## Agent Teams
+
+Enable the built-in team tools when one query needs several focused agents:
+
+```php
+$result = HaoCode::query(
+    'Create a research team, wait for every member, then summarize the evidence.',
+    new HaoCodeConfig(
+        cwd: __DIR__,
+        allowedTools: [
+            'TeamCreate', 'TeamAwait', 'TeamCollect', 'TeamList', 'TeamDelete',
+            'Read', 'Glob', 'Grep',
+        ],
+    ),
+);
+```
+
+`TeamCreate` starts the members in the configured `cwd` with the parent run's
+model and provider settings. Member prompts are optional; descriptive role
+names provide compact defaults for larger teams, and `default_agent_type` can
+select one agent type for all members without repeating it. `TeamAwait` blocks until every member has returned
+a result or failed and emits one structured JSON aggregate. `TeamCollect`
+returns the same aggregate immediately, which is useful for progress checks.
+Set `read_only: true` in `TeamCreate` when members must be prevented from
+mutating files, including through Bash commands; this is enforced by the
+permission layer rather than relying on prompts.
+Use `SendMessage` only while a member is `running` or `idle`, and call
+`TeamDelete` when the team is no longer needed.
 
 ---
 

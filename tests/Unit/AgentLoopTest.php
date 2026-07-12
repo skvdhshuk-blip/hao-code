@@ -359,7 +359,7 @@ class AgentLoopTest extends TestCase
 
     // ─── max turns exceeded ───────────────────────────────────────────────
 
-    public function test_max_turns_exceeded_returns_limit_message(): void
+    public function test_max_turns_exceeded_returns_finalization_response(): void
     {
         // Need a tool-use loop that never terminates on its own to hit max turns.
         // We'll simulate this by having every response be a tool_use stop_reason
@@ -377,7 +377,7 @@ class AgentLoopTest extends TestCase
         $ref->setValue($loop, 0); // maxTurns=0 → while(0 < 0) is false immediately
 
         $result = $loop->run('hi');
-        $this->assertStringContainsString('maximum turn limit', $result);
+        $this->assertSame('response', $result);
     }
 
     // ─── auto-compact uses last-turn tokens, not cumulative ───────────────
@@ -929,6 +929,46 @@ class AgentLoopTest extends TestCase
         $assistantBlocks = $retryMessages[1]['content'];
         $this->assertCount(1, $assistantBlocks);
         $this->assertSame('tool_use', $assistantBlocks[0]['type']);
+    }
+
+    public function test_team_create_malformed_retry_requires_compact_complete_input(): void
+    {
+        $reflection = new \ReflectionClass(AgentLoop::class);
+        $agent = $reflection->newInstanceWithoutConstructor();
+        $instruction = $reflection->getMethod('buildMalformedToolRetryInstruction')->invoke(
+            $agent,
+            [[
+                'id' => 'toolu_team',
+                'name' => 'TeamCreate',
+                'error' => 'Tool input JSON could not be parsed: Control character error.',
+            ]],
+            2,
+        );
+
+        $this->assertStringContainsString('name, task, and members', $instruction);
+        $this->assertStringContainsString('omit member prompts', $instruction);
+        $this->assertStringContainsString('Do not include literal newlines', $instruction);
+    }
+
+    public function test_malformed_retry_categories_keep_json_and_schema_budgets_separate(): void
+    {
+        $reflection = new \ReflectionClass(AgentLoop::class);
+        $agent = $reflection->newInstanceWithoutConstructor();
+        $method = $reflection->getMethod('malformedFailureSignature');
+
+        $json = $method->invoke($agent, [[
+            'id' => 'toolu_team',
+            'name' => 'TeamCreate',
+            'error' => 'Tool input JSON could not be parsed: Control character error.',
+        ]]);
+        $schema = $method->invoke($agent, [[
+            'id' => 'toolu_team',
+            'name' => 'TeamCreate',
+            'error' => 'Tool input validation failed: The members field is required.',
+        ]]);
+
+        $this->assertSame('TeamCreate:json', $json);
+        $this->assertSame('TeamCreate:schema', $schema);
     }
 
     public function test_it_only_replays_failed_tool_calls_during_malformed_retry(): void
@@ -1784,6 +1824,34 @@ class AgentLoopTest extends TestCase
         $loop->run('call Echo then answer', onTurnStart: function (int $n) use (&$turns) { $turns[] = $n; });
 
         $this->assertSame([1, 2], $turns);
+    }
+
+    public function test_turn_limit_finalization_disables_tools_and_returns_an_answer(): void
+    {
+        $toolsOverride = null;
+        $qe = $this->createMock(QueryEngine::class);
+        $qe->expects($this->once())
+            ->method('query')
+            ->willReturnCallback(function (
+                array $systemPrompt,
+                array $messages,
+                ?callable $onTextDelta = null,
+                ?callable $onToolBlockComplete = null,
+                ?callable $onThinkingDelta = null,
+                ?callable $shouldAbort = null,
+                ?array $override = null,
+            ) use (&$toolsOverride): StreamProcessor {
+                $toolsOverride = $override;
+
+                return $this->makePlainTextProcessor('evidence-backed final answer');
+            });
+
+        $loop = $this->makeLoop($qe);
+        $method = new \ReflectionMethod($loop, 'finalizeAfterTurnLimit');
+        $answer = $method->invoke($loop, [], null, null);
+
+        $this->assertSame([], $toolsOverride);
+        $this->assertSame('evidence-backed final answer', $answer);
     }
 
     private function makePlainTextProcessor(string $text): StreamProcessor

@@ -3,6 +3,7 @@
 namespace Tests\Unit;
 
 use HaoCode\Services\Api\ApiErrorException;
+use HaoCode\Services\Api\AnthropicProvider;
 use HaoCode\Services\Api\StreamingClient;
 use HaoCode\Services\Settings\SettingsManager;
 use PHPUnit\Framework\TestCase;
@@ -724,6 +725,21 @@ class StreamingClientTest extends TestCase
             $this->assertSame('rate_limit_error', $e->getErrorType());
             $this->assertStringContainsString('too many requests', $e->getMessage());
         }
+    }
+
+    public function test_vendor_1302_rate_limit_message_is_retryable(): void
+    {
+        $provider = new AnthropicProvider(
+            apiKey: 'test-key',
+            model: 'kimi-for-coding',
+        );
+        $method = new \ReflectionMethod($provider, 'shouldRetry');
+
+        $this->assertTrue($method->invoke(
+            $provider,
+            new ApiErrorException('[1302][Rate limit reached for requests]', '1302'),
+            1,
+        ));
     }
 
     // ─── data line with leading space ─────────────────────────────────────

@@ -126,7 +126,7 @@ class TeamToolsE2ETest extends TestCase
                 $this->assertStringContainsString('architect', $toolResult);
                 $this->assertStringContainsString('coder', $toolResult);
 
-                return MockAnthropicSse::textResponse('Team has 2 members: architect (running), coder (completed).');
+                return MockAnthropicSse::textResponse('Team has 2 members: architect (idle), coder (completed).');
             },
         ]);
 
@@ -375,7 +375,7 @@ class TeamToolsE2ETest extends TestCase
                 $this->assertStringContainsString('military-analyst', $toolResult);
                 $this->assertStringContainsString('diplomat', $toolResult);
                 $this->assertStringContainsString('editor', $toolResult);
-                $this->assertStringContainsString('running', $toolResult);
+                $this->assertStringContainsString('idle', $toolResult);
 
                 return MockAnthropicSse::toolUseResponse('toolu_w1', 'Write', [
                     'file_path' => 'report/01-historical-context.md',

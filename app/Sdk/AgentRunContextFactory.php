@@ -23,6 +23,9 @@ final class AgentRunContextFactory
         $settings->set('thinking_enabled', $config->thinkingEnabled);
         $settings->set('thinking_budget', $config->thinkingBudget);
 
+        if ($config->apiKey !== null) {
+            $settings->set('api_key', $config->apiKey);
+        }
         if ($config->model !== null) {
             $settings->set('model', $config->model);
         }

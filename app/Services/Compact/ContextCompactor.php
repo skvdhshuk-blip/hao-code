@@ -275,6 +275,54 @@ class ContextCompactor
         return "Micro-compacted: cleared {$modified} old tool results, saved ~" . number_format($charsSaved) . " chars.";
     }
 
+    /**
+     * Last-resort compaction used before rejecting an over-budget request.
+     * Preserves tool-result IDs and short text previews while dropping large
+     * image/base64 payloads from every turn.
+     */
+    public function emergencyCompact(MessageHistory $history, int $previewChars = 2000): string
+    {
+        $messages = $history->getMessagesForApi();
+        $trimmed = 0;
+        $charsSaved = 0;
+
+        foreach ($messages as &$message) {
+            if (($message['role'] ?? '') !== 'user' || ! is_array($message['content'] ?? null)) {
+                continue;
+            }
+
+            foreach ($message['content'] as &$block) {
+                if (($block['type'] ?? '') !== 'tool_result' || ! is_string($block['content'] ?? null)) {
+                    continue;
+                }
+
+                $content = $block['content'];
+                if (mb_strlen($content) <= $previewChars) {
+                    continue;
+                }
+
+                $oldLength = mb_strlen($content);
+                $isImagePayload = str_contains($content, '[Image:') || str_contains($content, 'data:image/');
+                $block['content'] = $isImagePayload
+                    ? '[Large image tool result omitted during emergency context compaction]'
+                    : mb_substr($content, 0, $previewChars)."\n[Tool result truncated during emergency context compaction]";
+                $charsSaved += $oldLength - mb_strlen($block['content']);
+                $trimmed++;
+            }
+            unset($block);
+        }
+        unset($message);
+
+        if ($trimmed === 0) {
+            return 'No oversized tool results found for emergency compaction.';
+        }
+
+        $history->clear();
+        $this->replayMessages($history, $messages);
+
+        return "Emergency-compacted {$trimmed} tool results, saved ~".number_format($charsSaved).' chars.';
+    }
+
     private function isCompactableToolResult(array $block): bool
     {
         $content = $block['content'] ?? '';

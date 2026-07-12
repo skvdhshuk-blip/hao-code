@@ -254,6 +254,26 @@ class StreamProcessorTest extends TestCase
         $this->assertSame("line1\nline2", $blocks[0]['input']['content']);
     }
 
+    public function test_truncated_tool_use_json_is_reported_as_incomplete(): void
+    {
+        $p = new StreamProcessor;
+        $p->processEvent($this->event('content_block_start', [
+            'index' => 0,
+            'content_block' => ['type' => 'tool_use', 'id' => 'tid', 'name' => 'TeamCreate'],
+        ]));
+        $p->processEvent($this->event('content_block_delta', [
+            'index' => 0,
+            'delta' => [
+                'type' => 'input_json_delta',
+                'partial_json' => '{"name":"team","members":[{"role":"code',
+            ],
+        ]));
+
+        $blocks = $p->getIndexedToolUseBlocks();
+
+        $this->assertSame('Tool input JSON was incomplete.', $blocks[0]['input_json_error']);
+    }
+
     public function test_tool_use_json_with_other_control_characters_in_strings_is_repaired(): void
     {
         $p = new StreamProcessor;

@@ -18,7 +18,7 @@ use HaoCode\Sdk\RateLimitTracker;
  * The decorator remains outside the wire-format providers and retries the same
  * normalized request with a fresh provider instance when a key is exhausted.
  */
-class PooledProvider implements LlmProvider
+class PooledProvider implements ForkSafeProvider
 {
     private array $lastRateLimitHeaders = [];
 
@@ -99,6 +99,15 @@ class PooledProvider implements LlmProvider
     public function getLastRateLimitHeaders(): array
     {
         return $this->lastRateLimitHeaders;
+    }
+
+    public function freshAfterFork(?\HaoCode\Services\Settings\SettingsManager $settingsManager = null): LlmProvider
+    {
+        $inner = $this->inner instanceof ForkSafeProvider
+            ? $this->inner->freshAfterFork($settingsManager)
+            : $this->inner;
+
+        return new self($inner, $this->pool, $this->providerName, $this->rateLimitTracker);
     }
 
     private function providerFor(Credential $credential): LlmProvider

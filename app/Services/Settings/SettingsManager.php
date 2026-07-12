@@ -39,7 +39,8 @@ class SettingsManager
     {
         $settings = $this->loadProjectSettings();
         $providerConfig = $this->getProviderConfig();
-        $apiKey = $providerConfig['api_key']
+        $apiKey = $this->runtimeOverrides['api_key']
+            ?? $providerConfig['api_key']
             ?? $settings['api_key']
             ?? config('haocode.api_key')
             ?: getenv('ANTHROPIC_API_KEY')
@@ -653,6 +654,7 @@ class SettingsManager
     public function set(string $key, mixed $value): void
     {
         $allowedKeys = [
+            'api_key',
             'model',
             'active_provider',
             'model_provider',

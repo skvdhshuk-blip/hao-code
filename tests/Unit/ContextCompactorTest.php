@@ -538,4 +538,34 @@ class ContextCompactorTest extends TestCase
         // After reset, should auto compact again
         $this->assertTrue($compactor->shouldAutoCompact(200_000));
     }
+
+    public function test_emergency_compact_drops_large_image_payloads_and_preserves_tool_ids(): void
+    {
+        $history = new MessageHistory;
+        $history->addAssistantMessage([
+            'role' => 'assistant',
+            'content' => [[
+                'type' => 'tool_use',
+                'id' => 'toolu_image',
+                'name' => 'Read',
+                'input' => ['file_path' => '/tmp/image.png'],
+            ]],
+        ]);
+        $history->addToolResultMessage([[
+            'tool_use_id' => 'toolu_image',
+            'content' => '[Image: image/png] data:image/png;base64,'.str_repeat('A', 50000),
+            'is_error' => false,
+        ]]);
+
+        $result = $this->makeCompactor()->emergencyCompact($history);
+        $messages = $history->getMessagesForApi();
+        $toolResult = $messages[1]['content'][0];
+
+        $this->assertStringContainsString('Emergency-compacted 1 tool results', $result);
+        $this->assertSame('toolu_image', $toolResult['tool_use_id']);
+        $this->assertSame(
+            '[Large image tool result omitted during emergency context compaction]',
+            $toolResult['content'],
+        );
+    }
 }

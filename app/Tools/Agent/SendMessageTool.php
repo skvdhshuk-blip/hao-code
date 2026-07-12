@@ -72,12 +72,12 @@ DESC;
             );
         }
 
-        $agent = $this->backgroundAgentManager->get($to);
+        $agent = $this->backgroundAgentManager->refreshStatus($to);
         if ($agent === null) {
             return ToolResult::error("Background agent not found: {$to}");
         }
 
-        if (in_array($agent['status'] ?? '', ['completed', 'error'], true)) {
+        if (in_array($agent['status'] ?? '', ['completed', 'error', 'dead'], true)) {
             return ToolResult::error("Background agent {$to} is no longer running.");
         }
 
@@ -123,9 +123,9 @@ DESC;
 
         foreach ($team['members'] ?? [] as $member) {
             $agentId = $member['agent_id'];
-            $agent = $this->backgroundAgentManager->get($agentId);
+            $agent = $this->backgroundAgentManager->refreshStatus($agentId);
 
-            if ($agent === null || in_array($agent['status'] ?? '', ['completed', 'error'], true)) {
+            if ($agent === null || in_array($agent['status'] ?? '', ['completed', 'error', 'dead'], true)) {
                 $skipped++;
 
                 continue;

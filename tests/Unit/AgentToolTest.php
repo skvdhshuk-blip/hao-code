@@ -146,4 +146,28 @@ class AgentToolTest extends TestCase
         $this->assertSame(45, $result->metadata['outputTokens'] ?? null);
         $this->assertSame(0.0123, $result->metadata['cost'] ?? null);
     }
+
+    public function test_it_inherits_the_parent_working_directory(): void
+    {
+        $loop = $this->makeLoop('done');
+        $factory = $this->createMock(AgentLoopFactory::class);
+        $factory->expects($this->once())
+            ->method('createIsolated')
+            ->with(
+                $this->anything(),
+                '/tmp/parent-project',
+                $this->anything(),
+                $this->anything(),
+                $this->anything(),
+            )
+            ->willReturn($loop);
+
+        $tool = new AgentTool($factory);
+        $result = $tool->call(
+            ['prompt' => 'Inspect a relative file'],
+            new ToolUseContext('/tmp/parent-project', 'session-1'),
+        );
+
+        $this->assertFalse($result->isError);
+    }
 }

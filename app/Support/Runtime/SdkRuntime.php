@@ -58,6 +58,8 @@ use HaoCode\Tools\Task\TaskListTool;
 use HaoCode\Tools\Task\TaskStopTool;
 use HaoCode\Tools\Task\TaskUpdateTool;
 use HaoCode\Tools\Team\TeamCreateTool;
+use HaoCode\Tools\Team\TeamAwaitTool;
+use HaoCode\Tools\Team\TeamCollectTool;
 use HaoCode\Tools\Team\TeamDeleteTool;
 use HaoCode\Tools\Team\TeamListTool;
 use HaoCode\Tools\TodoWrite\TodoWriteTool;
@@ -253,6 +255,8 @@ final class SdkRuntime
                 TaskUpdateTool::class,
                 TaskStopTool::class,
                 TeamCreateTool::class,
+                TeamAwaitTool::class,
+                TeamCollectTool::class,
                 TeamListTool::class,
                 TeamDeleteTool::class,
                 ListMcpResourcesTool::class,

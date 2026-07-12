@@ -19,4 +19,20 @@ final readonly class AgentRunContext
         public SkillLoader $skillLoader,
         public CancellationToken $cancellationToken,
     ) {}
+
+    public function fork(?string $workingDirectory = null, bool $readOnly = false): self
+    {
+        $settings = clone $this->settings;
+        if ($readOnly) {
+            $settings->set('permission_mode', 'plan');
+        }
+
+        return new self(
+            $workingDirectory ?? $this->workingDirectory,
+            $this->projectDirectory,
+            $settings,
+            clone $this->skillLoader,
+            $this->cancellationToken->fork(),
+        );
+    }
 }

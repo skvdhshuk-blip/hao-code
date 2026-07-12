@@ -26,8 +26,9 @@ class QueryEngine
         ?callable $onToolBlockComplete = null,
         ?callable $onThinkingDelta = null,
         ?callable $shouldAbort = null,
+        ?array $toolsOverride = null,
     ): StreamProcessor {
-        $tools = $this->toolRegistry->toApiTools();
+        $tools = $toolsOverride ?? $this->toolRegistry->toApiTools();
         $processor = new StreamProcessor();
 
         if ($onToolBlockComplete) {

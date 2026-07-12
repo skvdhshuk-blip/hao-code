@@ -55,7 +55,7 @@ class TaskGetTool extends BaseTool
             $lines[] = "Result: {$task->result}";
         }
 
-        $agent = app(BackgroundAgentManager::class)->get($task->id);
+        $agent = app(BackgroundAgentManager::class)->refreshStatus($task->id);
         if ($agent !== null) {
             $lines[] = "Agent status: {$agent['status']}";
             if (! empty($agent['pid'])) {

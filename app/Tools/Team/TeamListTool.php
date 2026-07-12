@@ -70,8 +70,8 @@ DESC;
 
         foreach ($members as $member) {
             $agentId = $member['agent_id'];
-            $agent = $this->backgroundAgentManager->get($agentId);
-            $status = $this->resolveStatus($agent);
+            $agent = $this->backgroundAgentManager->refreshStatus($agentId);
+            $status = $agent['status'] ?? 'unknown';
             $pending = $agent['pending_messages'] ?? 0;
             $pendingLabel = $pending > 0 ? "{$pending} msgs queued" : 'idle';
 
@@ -122,33 +122,12 @@ DESC;
     {
         $counts = [];
         foreach ($members as $member) {
-            $agent = $this->backgroundAgentManager->get($member['agent_id']);
-            $status = $this->resolveStatus($agent);
+            $agent = $this->backgroundAgentManager->refreshStatus($member['agent_id']);
+            $status = $agent['status'] ?? 'unknown';
             $counts[$status] = ($counts[$status] ?? 0) + 1;
         }
 
         return $counts;
-    }
-
-    /**
-     * @param  array<string, mixed>|null  $agent
-     */
-    private function resolveStatus(?array $agent): string
-    {
-        if ($agent === null) {
-            return 'unknown';
-        }
-
-        $status = $agent['status'] ?? 'unknown';
-
-        // Check if PID is still alive for running agents
-        if ($status === 'running' && !empty($agent['pid'])) {
-            if (!posix_kill((int) $agent['pid'], 0)) {
-                return 'dead';
-            }
-        }
-
-        return $status;
     }
 
     private function ago(int $timestamp): string

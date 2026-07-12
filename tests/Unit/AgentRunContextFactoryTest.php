@@ -72,6 +72,20 @@ class AgentRunContextFactoryTest extends TestCase
         $this->assertSame($projectDirectory, $context->projectDirectory);
     }
 
+    public function test_explicit_api_key_is_preserved_in_forked_run_context(): void
+    {
+        $projectDirectory = $this->makeProjectDirectory('explicit-key-project');
+        $context = AgentRunContextFactory::make(new HaoCodeConfig(
+            apiKey: 'parent-explicit-key',
+            cwd: $projectDirectory,
+        ));
+
+        $child = $context->fork();
+
+        $this->assertSame('parent-explicit-key', $context->settings->getApiKey());
+        $this->assertSame('parent-explicit-key', $child->settings->getApiKey());
+    }
+
     private function makeProjectDirectory(string $name): string
     {
         $directory = sys_get_temp_dir().'/haocode_run_context_'.uniqid($name.'_', true);

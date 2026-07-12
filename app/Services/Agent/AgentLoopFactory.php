@@ -3,6 +3,7 @@
 namespace HaoCode\Services\Agent;
 
 use HaoCode\Services\Api\LlmProvider;
+use HaoCode\Services\Api\ForkSafeProvider;
 use HaoCode\Services\Api\StreamingClient;
 use HaoCode\Services\Buddy\BuddyManager;
 use HaoCode\Services\Compact\ContextCompactor;
@@ -41,7 +42,22 @@ class AgentLoopFactory
         ?LlmProvider $streamingClient = null,
         ?AgentRunContext $runContext = null,
         bool $ephemeral = false,
+        bool $afterFork = false,
+        bool $readOnly = false,
     ): AgentLoop {
+        if ($readOnly && $runContext === null) {
+            $projectDirectory = ($workingDirectory ?? getcwd()) ?: '/';
+            $settings = clone $this->container->make(SettingsManager::class);
+            $settings->set('permission_mode', 'plan');
+            $runContext = new AgentRunContext(
+                $projectDirectory,
+                $projectDirectory,
+                $settings,
+                new SkillLoader($projectDirectory),
+                new CancellationToken(),
+            );
+        }
+
         // Build tool registry with optional filtering
         $parentRegistry = $this->container->make(ToolRegistry::class);
         $toolRegistry = $this->buildToolRegistry(
@@ -84,6 +100,9 @@ class AgentLoopFactory
         $tracer = $this->container->make(PhoenixTracer::class);
 
         $client = $streamingClient ?? $this->container->make(StreamingClient::class);
+        if ($afterFork && $client instanceof ForkSafeProvider) {
+            $client = $client->freshAfterFork($runContext?->settings);
+        }
         if ($streamingClient === null && $runContext !== null) {
             $client = $client->withSettingsManager($settings);
         }
@@ -113,6 +132,8 @@ class AgentLoopFactory
                 $settings->getContextWindow(),
                 $settings->getMaxTokens(),
             ),
+            runContext: $runContext,
+            provider: $client,
         );
 
         if ($workingDirectory !== null) {

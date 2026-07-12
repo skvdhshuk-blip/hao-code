@@ -71,4 +71,19 @@ class SendMessageToolTest extends TestCase
         $this->assertTrue($result->isError);
         $this->assertStringContainsString('no longer running', $result->output);
     }
+
+    public function test_it_rejects_a_dead_process_instead_of_queuing_forever(): void
+    {
+        $this->manager->create('agent_demo', 'Inspect repo', 'Explore', pid: 99999999);
+        $this->manager->markRunning('agent_demo');
+
+        $result = $this->tool->call([
+            'to' => 'agent_demo',
+            'message' => 'Are you there?',
+        ], $this->context);
+
+        $this->assertTrue($result->isError);
+        $this->assertSame('dead', $this->manager->get('agent_demo')['status']);
+        $this->assertSame(0, $this->manager->get('agent_demo')['pending_messages']);
+    }
 }

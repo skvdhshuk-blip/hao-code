@@ -13,9 +13,17 @@ final class CancellationToken
 
     private string $signalPath;
 
-    public function __construct()
+    private ?self $parent;
+
+    public function __construct(?self $parent = null)
     {
+        $this->parent = $parent;
         $this->signalPath = $this->newSignalPath();
+    }
+
+    public function fork(): self
+    {
+        return new self($this);
     }
 
     public function cancel(): void
@@ -30,7 +38,9 @@ final class CancellationToken
 
     public function isCancelled(): bool
     {
-        return $this->cancelled || file_exists($this->signalPath);
+        return $this->cancelled
+            || file_exists($this->signalPath)
+            || ($this->parent?->isCancelled() ?? false);
     }
 
     public function reset(): void

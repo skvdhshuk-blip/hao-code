@@ -50,7 +50,7 @@ DESC;
                 ],
                 'task' => [
                     'type' => 'string',
-                    'description' => 'The overall objective for the team to work on',
+                    'description' => 'The overall objective in a concise single-line string',
                 ],
                 'members' => [
                     'type' => 'array',
@@ -68,7 +68,7 @@ DESC;
                             ],
                             'prompt' => [
                                 'type' => 'string',
-                                'description' => 'Role-specific instructions for this member',
+                                'description' => 'Optional concise role-specific instructions. Omit for large teams to use a role-based default.',
                             ],
                             'model' => [
                                 'type' => 'string',
@@ -76,8 +76,20 @@ DESC;
                                 'enum' => ['sonnet', 'opus', 'haiku'],
                             ],
                         ],
-                        'required' => ['role', 'prompt'],
+                        'required' => ['role'],
                     ],
+                ],
+                'read_only' => [
+                    'type' => 'boolean',
+                    'description' => 'Enforce read-only permissions for every member, including Bash commands',
+                ],
+                'max_turns' => [
+                    'type' => 'integer',
+                    'description' => 'Optional maximum model turns for each member (1-50)',
+                ],
+                'default_agent_type' => [
+                    'type' => 'string',
+                    'description' => 'Agent type used by members that omit agent_type',
                 ],
             ],
             'required' => ['name', 'task', 'members'],
@@ -87,8 +99,11 @@ DESC;
             'members' => 'required|array|min:1|max:10',
             'members.*.role' => 'required|string',
             'members.*.agent_type' => 'nullable|string',
-            'members.*.prompt' => 'required|string',
+            'members.*.prompt' => 'nullable|string',
             'members.*.model' => 'nullable|string|in:sonnet,opus,haiku',
+            'read_only' => 'nullable|boolean',
+            'max_turns' => 'nullable|integer|min:1|max:50',
+            'default_agent_type' => 'nullable|string',
         ]);
     }
 
@@ -97,6 +112,14 @@ DESC;
         $name = $input['name'];
         $task = $input['task'];
         $members = $input['members'];
+        $readOnly = (bool) ($input['read_only'] ?? false);
+        $maxTurns = isset($input['max_turns']) ? (int) $input['max_turns'] : null;
+        $defaultAgentType = $input['default_agent_type'] ?? 'general-purpose';
+        $members = array_map(function (array $member) use ($defaultAgentType): array {
+            $member['agent_type'] ??= $defaultAgentType;
+
+            return $member;
+        }, $members);
 
         // Check team doesn't already exist
         if ($this->teamManager->get($name) !== null) {
@@ -154,7 +177,7 @@ DESC;
             );
 
             // Fork the background agent process
-            $result = $this->forkMember($agentId, $fullPrompt, $agentDef);
+            $result = $this->forkMember($agentId, $fullPrompt, $agentDef, $context, $readOnly, $maxTurns);
             if ($result['success']) {
                 $spawned[] = ['role' => $member['role'], 'agent_id' => $agentId, 'pid' => $result['pid']];
                 $this->backgroundAgentManager->attachProcess($agentId, $result['pid']);
@@ -240,7 +263,14 @@ PREAMBLE;
     /**
      * @return array{success: bool, pid?: int, error?: string}
      */
-    private function forkMember(string $agentId, string $prompt, AgentDefinition $agentDef): array
+    private function forkMember(
+        string $agentId,
+        string $prompt,
+        AgentDefinition $agentDef,
+        ToolUseContext $context,
+        bool $readOnly,
+        ?int $maxTurns,
+    ): array
     {
         if (!function_exists('pcntl_fork')) {
             return ['success' => false, 'error' => 'pcntl_fork not available'];
@@ -255,7 +285,7 @@ PREAMBLE;
         if ($pid === 0) {
             // Child process: run the background agent
             try {
-                $this->executeBackgroundAgent($agentId, $prompt, $agentDef);
+                $this->executeBackgroundAgent($agentId, $prompt, $agentDef, $context, $readOnly, $maxTurns);
             } catch (\Throwable $e) {
                 $this->backgroundAgentManager->markError($agentId, $e->getMessage());
                 $this->taskManager->update($agentId, 'completed', 'Agent error: ' . $e->getMessage());
@@ -266,15 +296,31 @@ PREAMBLE;
         return ['success' => true, 'pid' => $pid];
     }
 
-    private function executeBackgroundAgent(string $agentId, string $prompt, AgentDefinition $agentDef): void
+    private function executeBackgroundAgent(
+        string $agentId,
+        string $prompt,
+        AgentDefinition $agentDef,
+        ToolUseContext $context,
+        bool $readOnly,
+        ?int $maxTurns,
+    ): void
     {
         $subLoop = $this->agentLoopFactory->createIsolated(
             toolFilter: fn (string $toolName) => $agentDef->isToolAllowed($toolName),
+            workingDirectory: $context->workingDirectory,
+            streamingClient: $context->provider,
+            runContext: $context->runContext?->fork(
+                $context->workingDirectory,
+                $readOnly || $agentDef->readOnly,
+            ),
+            afterFork: true,
+            readOnly: $readOnly || $agentDef->readOnly,
         );
         $subLoop->setPermissionPromptHandler(fn () => true);
 
-        if ($agentDef->maxTurns !== null) {
-            $subLoop->setMaxTurns($agentDef->maxTurns);
+        $effectiveMaxTurns = $maxTurns ?? $agentDef->maxTurns;
+        if ($effectiveMaxTurns !== null) {
+            $subLoop->setMaxTurns($effectiveMaxTurns);
         }
 
         $this->backgroundAgentManager->markRunning($agentId);
@@ -321,6 +367,7 @@ PREAMBLE;
 
     private function runTurn(object $subLoop, string $agentId, string $prompt): ?string
     {
+        $this->backgroundAgentManager->markRunning($agentId);
         $response = $subLoop->run(userInput: $prompt, onTextDelta: null);
 
         if ($response === '(aborted)') {
@@ -331,7 +378,7 @@ PREAMBLE;
             ? mb_substr($response, 0, 4000) . "\n\n[Truncated]"
             : $response;
 
-        $this->backgroundAgentManager->recordResult($agentId, $preview);
+        $this->backgroundAgentManager->recordResult($agentId, $response);
         $this->taskManager->update($agentId, 'in_progress', $preview);
 
         return $response;

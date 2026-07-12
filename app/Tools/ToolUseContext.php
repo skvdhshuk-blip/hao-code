@@ -2,6 +2,8 @@
 
 namespace HaoCode\Tools;
 
+use HaoCode\Services\Agent\AgentRunContext;
+use HaoCode\Services\Api\LlmProvider;
 use HaoCode\Services\Cache\FileState;
 use HaoCode\Services\Cache\FileStateCache;
 
@@ -23,6 +25,8 @@ class ToolUseContext
         \Closure|null $onProgress = null,
         \Closure|null $shouldAbort = null,
         ?FileStateCache $fileStateCache = null,
+        public readonly ?AgentRunContext $runContext = null,
+        public readonly ?LlmProvider $provider = null,
     ) {
         $this->onProgress = $onProgress;
         $this->shouldAbort = $shouldAbort;

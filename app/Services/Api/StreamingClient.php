@@ -19,7 +19,7 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
  * preserved so QueryEngine, SessionTitleService, and existing tests
  * that mock StreamingClient keep working.
  */
-class StreamingClient implements ApiKeyAwareProvider
+class StreamingClient implements ApiKeyAwareProvider, ForkSafeProvider
 {
     private AnthropicProvider $anthropic;
     private OpenAiProvider $openai;
@@ -27,6 +27,9 @@ class StreamingClient implements ApiKeyAwareProvider
     private ?SettingsManager $settingsManager;
     private string $defaultProviderType;
     private ?LlmProvider $lastUsed = null;
+
+    /** @var array<string, mixed> */
+    private array $connectionConfig;
 
     public function __construct(
         string $apiKey,
@@ -46,6 +49,19 @@ class StreamingClient implements ApiKeyAwareProvider
         ?OpenAiChatProvider $openAiChatProvider = null,
         string $providerType = 'anthropic',
     ) {
+        $this->connectionConfig = [
+            'apiKey' => $apiKey,
+            'model' => $model,
+            'baseUrl' => $baseUrl,
+            'maxTokens' => $maxTokens,
+            'apiVersion' => $apiVersion,
+            'thinkingEnabled' => $thinkingEnabled,
+            'thinkingBudget' => $thinkingBudget,
+            'idleTimeoutSeconds' => $idleTimeoutSeconds,
+            'streamPollTimeoutSeconds' => $streamPollTimeoutSeconds,
+            'timeProvider' => $timeProvider,
+            'providerType' => $providerType,
+        ];
         $this->settingsManager = $settingsManager;
         $this->defaultProviderType = match ($providerType) {
             'openai', 'openai_chat', 'anthropic' => $providerType,
@@ -154,6 +170,26 @@ class StreamingClient implements ApiKeyAwareProvider
         $client->lastUsed = null;
 
         return $client;
+    }
+
+    public function freshAfterFork(?SettingsManager $settingsManager = null): LlmProvider
+    {
+        $config = $this->connectionConfig;
+
+        return new self(
+            apiKey: $config['apiKey'],
+            model: $settingsManager?->getModel() ?? $config['model'],
+            baseUrl: $settingsManager?->getBaseUrl() ?? $config['baseUrl'],
+            maxTokens: $settingsManager?->getMaxTokens() ?? $config['maxTokens'],
+            apiVersion: $config['apiVersion'],
+            thinkingEnabled: $settingsManager?->isThinkingEnabled() ?? $config['thinkingEnabled'],
+            thinkingBudget: $settingsManager?->getThinkingBudget() ?? $config['thinkingBudget'],
+            settingsManager: $settingsManager,
+            idleTimeoutSeconds: $config['idleTimeoutSeconds'],
+            streamPollTimeoutSeconds: $config['streamPollTimeoutSeconds'],
+            timeProvider: $config['timeProvider'],
+            providerType: $settingsManager?->getProviderType() ?? $config['providerType'],
+        );
     }
 
     private function selectProvider(): LlmProvider

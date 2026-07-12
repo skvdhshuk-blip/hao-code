@@ -4,6 +4,8 @@ namespace HaoCode\Services\Agent;
 
 class BackgroundAgentManager
 {
+    private const RESULT_LIMIT = 100000;
+
     public function __construct(
         private readonly ?string $storagePath = null,
     ) {
@@ -78,7 +80,9 @@ class BackgroundAgentManager
     {
         return $this->mutateState($id, function (array $state) use ($pid) {
             $state['pid'] = $pid;
-            $state['status'] = 'running';
+            if (($state['status'] ?? null) === 'pending') {
+                $state['status'] = 'running';
+            }
 
             return $state;
         });
@@ -96,8 +100,8 @@ class BackgroundAgentManager
     public function recordResult(string $id, string $result): ?array
     {
         return $this->mutateState($id, function (array $state) use ($result) {
-            $state['last_result'] = $this->truncate($result, 12000);
-            $state['status'] = 'running';
+            $state['last_result'] = $this->truncate($result, self::RESULT_LIMIT);
+            $state['status'] = 'idle';
             $state['error'] = null;
 
             return $state;
@@ -109,7 +113,7 @@ class BackgroundAgentManager
         return $this->mutateState($id, function (array $state) use ($result) {
             $state['status'] = 'completed';
             if ($result !== null) {
-                $state['last_result'] = $this->truncate($result, 12000);
+                $state['last_result'] = $this->truncate($result, self::RESULT_LIMIT);
             }
 
             return $state;
@@ -124,6 +128,43 @@ class BackgroundAgentManager
 
             return $state;
         });
+    }
+
+    public function markDead(string $id, ?string $error = null): ?array
+    {
+        return $this->mutateState($id, function (array $state) use ($error) {
+            $state['status'] = 'dead';
+            if ($error !== null && ($state['error'] ?? null) === null) {
+                $state['error'] = $this->truncate($error, 4000);
+            }
+
+            return $state;
+        });
+    }
+
+    /** Refresh a process-backed state and persist a terminal dead status. */
+    public function refreshStatus(string $id): ?array
+    {
+        $state = $this->get($id);
+        if ($state === null) {
+            return null;
+        }
+
+        $status = $state['status'] ?? 'unknown';
+        $pid = (int) ($state['pid'] ?? 0);
+        if ($pid <= 0 || ! in_array($status, ['pending', 'running', 'idle'], true)) {
+            return $state;
+        }
+
+        if (! function_exists('posix_kill')) {
+            return $state;
+        }
+
+        if (@posix_kill($pid, 0)) {
+            return $state;
+        }
+
+        return $this->markDead($id, 'Background agent process is no longer running.');
     }
 
     public function requestStop(string $id): ?array
@@ -201,20 +242,47 @@ class BackgroundAgentManager
 
     private function mutateState(string $id, callable $callback): ?array
     {
-        $current = $this->get($id);
-        if ($current === null) {
+        $path = $this->statePath($id);
+        if (! is_file($path)) {
             return null;
         }
 
-        $next = $callback($current);
-        if (! is_array($next)) {
-            $next = $current;
+        $handle = fopen($path, 'c+');
+        if ($handle === false) {
+            throw new \RuntimeException("Unable to open background agent state for {$id}");
         }
 
-        $next['updated_at'] = time();
-        $this->writeJson($this->statePath($id), $next);
+        try {
+            if (! flock($handle, LOCK_EX)) {
+                throw new \RuntimeException("Unable to lock background agent state for {$id}");
+            }
 
-        return $next;
+            rewind($handle);
+            $raw = stream_get_contents($handle);
+            $current = json_decode($raw === false || $raw === '' ? 'null' : $raw, true);
+            if (! is_array($current)) {
+                return null;
+            }
+
+            $next = $callback($current);
+            if (! is_array($next)) {
+                $next = $current;
+            }
+
+            $next['updated_at'] = time();
+            rewind($handle);
+            ftruncate($handle, 0);
+            fwrite($handle, (string) json_encode(
+                $next,
+                JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES,
+            ));
+            fflush($handle);
+
+            return $next;
+        } finally {
+            flock($handle, LOCK_UN);
+            fclose($handle);
+        }
     }
 
     private function withLockedMailbox(string $id, callable $callback): mixed

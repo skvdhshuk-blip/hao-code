@@ -339,6 +339,14 @@ class StreamProcessor
                 }
             }
 
+            if (! str_ends_with(rtrim($rawInput), '}')) {
+                return [
+                    'input' => [],
+                    'raw_input' => $rawInput,
+                    'input_json_error' => 'Tool input JSON was incomplete.',
+                ];
+            }
+
             return [
                 'input' => [],
                 'raw_input' => $rawInput,

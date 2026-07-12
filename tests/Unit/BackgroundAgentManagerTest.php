@@ -75,4 +75,36 @@ class BackgroundAgentManagerTest extends TestCase
         $this->assertSame('completed', $agent['status']);
         $this->assertSame('Done', $agent['last_result']);
     }
+
+    public function test_record_result_marks_agent_idle(): void
+    {
+        $this->manager->create('agent_demo', 'Inspect repo', 'Explore');
+        $this->manager->markRunning('agent_demo');
+
+        $this->manager->recordResult('agent_demo', 'Waiting for follow-up');
+
+        $this->assertSame('idle', $this->manager->get('agent_demo')['status']);
+    }
+
+    public function test_refresh_status_persists_dead_process(): void
+    {
+        $this->manager->create('agent_demo', 'Inspect repo', 'Explore', pid: 99999999);
+        $this->manager->markRunning('agent_demo');
+
+        $agent = $this->manager->refreshStatus('agent_demo');
+
+        $this->assertSame('dead', $agent['status']);
+        $this->assertSame('dead', $this->manager->get('agent_demo')['status']);
+    }
+
+    public function test_attach_process_does_not_overwrite_early_error(): void
+    {
+        $this->manager->create('agent_demo', 'Inspect repo', 'Explore');
+        $this->manager->markError('agent_demo', 'Failed before parent attached PID');
+
+        $agent = $this->manager->attachProcess('agent_demo', 1234);
+
+        $this->assertSame('error', $agent['status']);
+        $this->assertSame(1234, $agent['pid']);
+    }
 }

@@ -72,7 +72,7 @@ DESC;
             $status = $agent['status'] ?? 'unknown';
 
             // Signal the agent to stop if it's running
-            if (in_array($status, ['running', 'pending'], true)) {
+            if (in_array($status, ['running', 'idle', 'pending'], true)) {
                 $this->backgroundAgentManager->requestStop($agentId);
 
                 // Also send SIGTERM if the PID is alive

@@ -165,7 +165,13 @@ DESC;
         try {
             $subLoop = $this->agentLoopFactory->createIsolated(
                 toolFilter: fn(string $toolName) => $agentDef->isToolAllowed($toolName),
-                workingDirectory: $worktreePath,
+                workingDirectory: $worktreePath ?? $context->workingDirectory,
+                streamingClient: $context->provider,
+                runContext: $context->runContext?->fork(
+                    $worktreePath ?? $context->workingDirectory,
+                    $agentDef->readOnly,
+                ),
+                readOnly: $agentDef->readOnly,
             );
             // Sub-agents don't prompt for permissions
             $subLoop->setPermissionPromptHandler(fn() => true);
@@ -230,7 +236,7 @@ DESC;
 
         if ($pid === 0) {
             try {
-                $this->executeBackgroundAgent($taskId, $prompt, $systemPrompt, $agentDef, $worktreePath);
+                $this->executeBackgroundAgent($taskId, $prompt, $systemPrompt, $agentDef, $context, $worktreePath);
             } catch (\Throwable $e) {
                 $this->backgroundAgents()->markError($taskId, $e->getMessage());
                 $this->tasks()->update($taskId, 'completed', 'Background agent error: ' . $e->getMessage());
@@ -305,11 +311,19 @@ DESC;
         string $prompt,
         array $systemPrompt,
         AgentDefinition $agentDef,
+        ToolUseContext $context,
         ?string $worktreePath = null,
     ): void {
         $subLoop = $this->agentLoopFactory->createIsolated(
             toolFilter: fn(string $toolName) => $agentDef->isToolAllowed($toolName),
-            workingDirectory: $worktreePath,
+            workingDirectory: $worktreePath ?? $context->workingDirectory,
+            streamingClient: $context->provider,
+            runContext: $context->runContext?->fork(
+                $worktreePath ?? $context->workingDirectory,
+                $agentDef->readOnly,
+            ),
+            afterFork: true,
+            readOnly: $agentDef->readOnly,
         );
         $subLoop->setPermissionPromptHandler(fn() => true);
 
@@ -372,6 +386,7 @@ DESC;
 
     private function runBackgroundTurn(object $subLoop, string $taskId, string $prompt): ?string
     {
+        $this->backgroundAgents()->markRunning($taskId);
         $response = $subLoop->run(userInput: $prompt, onTextDelta: null);
 
         if ($response === '(aborted)') {
@@ -379,7 +394,7 @@ DESC;
         }
 
         $preview = $this->truncateResult($response, 4000);
-        $this->backgroundAgents()->recordResult($taskId, $preview);
+        $this->backgroundAgents()->recordResult($taskId, $response);
         $this->tasks()->update($taskId, 'in_progress', $preview);
 
         return $response;

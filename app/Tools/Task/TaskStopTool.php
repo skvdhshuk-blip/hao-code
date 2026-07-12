@@ -32,9 +32,9 @@ class TaskStopTool extends BaseTool
     public function call(array $input, ToolUseContext $context): ToolResult
     {
         $backgroundAgentManager = app(BackgroundAgentManager::class);
-        $agent = $backgroundAgentManager->get($input['id']);
+        $agent = $backgroundAgentManager->refreshStatus($input['id']);
 
-        if ($agent !== null && !in_array($agent['status'] ?? '', ['completed', 'error'], true)) {
+        if ($agent !== null && !in_array($agent['status'] ?? '', ['completed', 'error', 'dead'], true)) {
             $backgroundAgentManager->requestStop($input['id']);
             app(TaskManager::class)->update($input['id'], 'in_progress', 'Stop requested by user.');
 
