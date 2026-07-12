@@ -14,22 +14,34 @@ composer require sk-wang/hao-code
 
 ## Quick Start
 
+Set the API key in the process environment:
+
+```bash
+export ANTHROPIC_API_KEY=your-api-key
+```
+
+Then create `example.php`:
+
 ```php
 <?php
 
 require __DIR__.'/vendor/autoload.php';
 
 use HaoCode\Sdk\HaoCode;
-use HaoCode\Sdk\HaoCodeConfig;
 
-$result = HaoCode::query('Explain this repository', new HaoCodeConfig(
-    apiKey: getenv('ANTHROPIC_API_KEY') ?: '',
-    cwd: __DIR__,
-    allowedTools: ['Read', 'Grep', 'Glob'],
-));
+$result = HaoCode::query('Reply with exactly: HaoCode works');
 
 echo $result->text;
 ```
+
+```bash
+php example.php
+```
+
+The basic `query()` call does not expose file or shell tools. Hao Code reads
+real process environment variables; it does not load `.env` files by itself.
+Applications that already load `.env` may pass the key explicitly with
+`new HaoCodeConfig(apiKey: getenv('ANTHROPIC_API_KEY'))`.
 
 ## What It Provides
 

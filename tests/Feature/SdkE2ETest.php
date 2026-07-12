@@ -83,7 +83,11 @@ class SdkE2ETest extends TestCase
     public function test_query_returns_final_response_text(): void
     {
         $this->bootWithMock([
-            MockAnthropicSse::textResponse('Hello from the SDK! The answer is 42.'),
+            function (array $payload): MockResponse {
+                $this->assertSame([], $payload['tools'] ?? []);
+
+                return MockAnthropicSse::textResponse('Hello from the SDK! The answer is 42.');
+            },
         ]);
 
         chdir($this->projectDir);
@@ -95,6 +99,23 @@ class SdkE2ETest extends TestCase
         $this->assertIsFloat($result->cost);
         // Stringable: can still be used as string
         $this->assertStringContainsString('42', (string) $result);
+    }
+
+    public function test_query_rejects_an_empty_api_key_before_sending_a_request(): void
+    {
+        $this->bootWithMock([
+            function (): MockResponse {
+                $this->fail('No request should be sent without an API key.');
+            },
+        ]);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('API key is required');
+
+        HaoCode::query('Hello', new HaoCodeConfig(
+            apiKey: '',
+            allowedTools: [],
+        ));
     }
 
     // ──────────────────────────────────────────────────────────────
@@ -118,7 +139,9 @@ class SdkE2ETest extends TestCase
 
         chdir($this->projectDir);
 
-        $result = HaoCode::query('Create hello.txt');
+        $result = HaoCode::query('Create hello.txt', new HaoCodeConfig(
+            allowedTools: ['Write'],
+        ));
 
         $this->assertStringContainsString('File created', $result->text);
         $this->assertFileExists($this->projectDir.'/hello.txt');

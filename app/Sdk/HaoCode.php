@@ -53,7 +53,7 @@ class HaoCode
      */
     public static function query(string $prompt, ?HaoCodeConfig $config = null): QueryResult
     {
-        $config ??= new HaoCodeConfig;
+        $config ??= new HaoCodeConfig(allowedTools: []);
 
         // Redirect to resume/continue if configured
         if ($config->sessionId !== null) {
@@ -311,6 +311,15 @@ class HaoCode
         $factory = app(AgentLoopFactory::class);
 
         $runContext = AgentRunContextFactory::make($config);
+        // 当前请求最终使用的 API key，基础调用在网络请求前必须完成校验。
+        $apiKey = $config->apiKey ?? $runContext->settings->getApiKey();
+        if (trim($apiKey) === '') {
+            throw new \RuntimeException(
+                'API key is required. Pass HaoCodeConfig(apiKey: ...) or set ANTHROPIC_API_KEY '.
+                'in the process environment. .env files are not loaded automatically.',
+            );
+        }
+
         // Build a custom StreamingClient when SDK config overrides API settings
         $customClient = self::buildStreamingClient($config, $runContext->settings);
         $sandboxRuntime = self::createSandboxRuntime($config);

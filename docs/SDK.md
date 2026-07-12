@@ -6,11 +6,14 @@ Use hao-code as a framework-free PHP library to embed an AI coding agent in your
 composer require sk-wang/hao-code
 ```
 
-The SDK auto-registers its service provider. Set your API key in `.env`:
+Set your API key in the process environment:
 
-```env
-ANTHROPIC_API_KEY=your-api-key
+```bash
+export ANTHROPIC_API_KEY=your-api-key
 ```
+
+Hao Code does not load `.env` files by itself. If your application already
+loads `.env`, you may pass the resulting value through `HaoCodeConfig`.
 
 ---
 
@@ -42,12 +45,20 @@ ANTHROPIC_API_KEY=your-api-key
 ## Quick Start
 
 ```php
+<?php
+
+require __DIR__.'/vendor/autoload.php';
+
 use HaoCode\Sdk\HaoCode;
 
-// One line — ask the agent anything
-$result = HaoCode::query('What files are in this directory?');
-echo $result;
+$result = HaoCode::query('Reply with exactly: HaoCode works');
+
+echo $result->text;
 ```
+
+With no explicit config, `query()` is text-only and does not expose tools to
+the model. File and shell access must be enabled explicitly with
+`HaoCodeConfig`.
 
 Runnable examples:
 

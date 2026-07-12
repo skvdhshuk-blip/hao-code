@@ -51,8 +51,12 @@ class AgentLoopFactory
             $settings = $runContext->settings;
             $permissionChecker = new PermissionChecker($settings, new DenialTracker());
             $hookExecutor = new HookExecutor($runContext->projectDirectory);
-            $toolRegistry->register(new SkillTool($runContext->skillLoader));
-            $toolRegistry->register(new ConfigTool($settings));
+            if ($toolFilter === null || $toolFilter('Skill')) {
+                $toolRegistry->register(new SkillTool($runContext->skillLoader));
+            }
+            if ($toolFilter === null || $toolFilter('Config')) {
+                $toolRegistry->register(new ConfigTool($settings));
+            }
             $contextBuilder = new ContextBuilder(
                 settings: $settings,
                 toolRegistry: $toolRegistry,
