@@ -44,7 +44,6 @@ class ApplyPatchToolTest extends TestCase
     protected function tearDown(): void
     {
         $this->removeDir($this->tmpDir);
-        ToolUseContext::resetReadState();
     }
 
     // ─── Scenario 1: Add File ─────────────────────────────────────────────

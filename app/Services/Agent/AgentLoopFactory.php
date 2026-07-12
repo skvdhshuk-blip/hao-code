@@ -2,7 +2,9 @@
 
 namespace HaoCode\Services\Agent;
 
+use HaoCode\Services\Api\LlmProvider;
 use HaoCode\Services\Api\StreamingClient;
+use HaoCode\Services\Buddy\BuddyManager;
 use HaoCode\Services\Compact\ContextCompactor;
 use HaoCode\Services\Cost\CostTracker;
 use HaoCode\Services\Git\GitContext;
@@ -36,7 +38,7 @@ class AgentLoopFactory
         ?callable $toolFilter = null,
         ?string $workingDirectory = null,
         array $additionalTools = [],
-        ?StreamingClient $streamingClient = null,
+        ?LlmProvider $streamingClient = null,
         ?AgentRunContext $runContext = null,
         bool $ephemeral = false,
     ): AgentLoop {
@@ -70,6 +72,7 @@ class AgentLoopFactory
                 outputStyleLoader: new OutputStyleLoader($runContext->projectDirectory),
                 workingDirectory: $runContext->projectDirectory,
                 textOnly: $toolRegistry->getAllTools() === [],
+                buddyManager: $this->container->make(BuddyManager::class),
             );
         } else {
             $settings = $this->container->make(SettingsManager::class);
@@ -106,6 +109,10 @@ class AgentLoopFactory
             hookExecutor: $hookExecutor,
             tracer: $tracer,
             cancellationToken: $runContext?->cancellationToken,
+            maxEstimatedInputTokens: ContextBudget::safeInputLimit(
+                $settings->getContextWindow(),
+                $settings->getMaxTokens(),
+            ),
         );
 
         if ($workingDirectory !== null) {
@@ -128,7 +135,7 @@ class AgentLoopFactory
 
         foreach ($parent->getAllTools() as $tool) {
             if ($filter === null || $filter($tool->name())) {
-                $filtered->register($tool);
+                $filtered->register(clone $tool);
             }
         }
 

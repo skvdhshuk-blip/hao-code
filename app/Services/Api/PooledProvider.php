@@ -11,12 +11,12 @@ use HaoCode\Sdk\RateLimitTracker;
  *
  * On each streaming call the decorator:
  *   1. Picks the next healthy credential from the pool.
- *   2. Injects the credential's API key into the inner provider via reflection.
+ *   2. Clones credential-aware providers with the selected API key.
  *   3. On 429 / rate_limit_error, calls markExhausted() and retries with
  *      the next credential until the pool is exhausted.
  *
- * The three concrete providers (Anthropic, OpenAiProvider, OpenAiChatProvider)
- * are NOT modified — this decorator sits in front of them.
+ * The decorator remains outside the wire-format providers and retries the same
+ * normalized request with a fresh provider instance when a key is exhausted.
  */
 class PooledProvider implements LlmProvider
 {
@@ -58,12 +58,13 @@ class PooledProvider implements LlmProvider
             }
 
             // Avoid infinite loop if all credentials have been tried this round
-            if (in_array($credential->id, $triedIds, true)) {
+            $credentialKey = $credential->idHash();
+            if (in_array($credentialKey, $triedIds, true)) {
                 throw new NoAvailableCredentialException(
                     "All credentials for provider '{$this->providerName}' have been tried and failed."
                 );
             }
-            $triedIds[] = $credential->id;
+            $triedIds[] = $credentialKey;
 
             // Check rate limit before attempting
             if ($this->rateLimitTracker?->checkBlocked($credential)) {
@@ -72,16 +73,15 @@ class PooledProvider implements LlmProvider
                 continue;
             }
 
-            $this->injectApiKey($credential);
-
+            $provider = $this->providerFor($credential);
             try {
-                yield from $this->inner->streamMessages($systemPrompt, $messages, $tools, $onRawEvent, $shouldAbort);
-                $this->lastRateLimitHeaders = $this->inner->getLastRateLimitHeaders();
+                yield from $provider->streamMessages($systemPrompt, $messages, $tools, $onRawEvent, $shouldAbort);
+                $this->lastRateLimitHeaders = $provider->getLastRateLimitHeaders();
                 $this->rateLimitTracker?->record($credential);
 
                 return;
             } catch (ApiErrorException $e) {
-                $this->lastRateLimitHeaders = $this->inner->getLastRateLimitHeaders();
+                $this->lastRateLimitHeaders = $provider->getLastRateLimitHeaders();
 
                 if ($this->isRateLimitError($e)) {
                     $retryAfter = $this->parseRetryAfter($this->lastRateLimitHeaders);
@@ -101,19 +101,30 @@ class PooledProvider implements LlmProvider
         return $this->lastRateLimitHeaders;
     }
 
-    private function injectApiKey(Credential $credential): void
+    private function providerFor(Credential $credential): LlmProvider
     {
+        if ($this->inner instanceof ApiKeyAwareProvider) {
+            return $this->inner->withApiKey($credential->apiKey);
+        }
+
+        // Compatibility fallback for third-party providers created before the
+        // explicit credential-aware contract was introduced.
         try {
             $ref = new \ReflectionObject($this->inner);
-            // All three providers have a private $apiKey property
             if ($ref->hasProperty('apiKey')) {
                 $prop = $ref->getProperty('apiKey');
                 $prop->setAccessible(true);
                 $prop->setValue($this->inner, $credential->apiKey);
+
+                return $this->inner;
             }
-        } catch (\ReflectionException) {
-            // If reflection fails, proceed — the inner provider will use its own key
+        } catch (\Throwable $e) {
+            throw new \RuntimeException('Credential pool cannot apply an API key to the configured provider.', 0, $e);
         }
+
+        throw new \RuntimeException(
+            'Credential pool requires an ApiKeyAwareProvider or a provider with a mutable apiKey property.',
+        );
     }
 
     private function isRateLimitError(ApiErrorException $e): bool

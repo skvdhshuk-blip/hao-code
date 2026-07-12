@@ -46,4 +46,20 @@ class ToolUseContextTest extends TestCase
         ($context->onProgress)('test');
         $this->assertTrue($called);
     }
+
+    public function test_read_state_is_isolated_between_contexts(): void
+    {
+        $file = tempnam(sys_get_temp_dir(), 'haocode-context-');
+        $first = new ToolUseContext('/tmp', 'first');
+        $second = new ToolUseContext('/tmp', 'second');
+
+        try {
+            $first->recordFileRead($file);
+
+            $this->assertTrue($first->wasFileRead($file));
+            $this->assertFalse($second->wasFileRead($file));
+        } finally {
+            @unlink($file);
+        }
+    }
 }

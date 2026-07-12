@@ -157,7 +157,7 @@ agent-generated data + Python k-means demo.
 Use `HaoCode::stream()` when the caller needs incremental output:
 
 ```php
-foreach (HaoCode::stream('Summarize the current project') as $message) {
+foreach (HaoCode::stream('Explain PHP Fibers in three sentences') as $message) {
     if ($message->isError()) {
         throw new RuntimeException($message->error);
     }
@@ -257,7 +257,8 @@ Use credential pools when you have multiple API keys, and cost budgets when the 
 use HaoCode\Sdk\Credential;
 use HaoCode\Sdk\CredentialPool;
 
-$pool = new CredentialPool([
+$pool = new CredentialPool;
+$pool->addMany('anthropic', [
     new Credential(apiKey: getenv('ANTHROPIC_API_KEY_1') ?: ''),
     new Credential(apiKey: getenv('ANTHROPIC_API_KEY_2') ?: ''),
 ]);
@@ -270,7 +271,9 @@ $config = new HaoCodeConfig(
 
 ## Callbacks And Abort
 
-`HaoCodeConfig` supports callbacks for text deltas, tool starts, tool completions, and turn starts. It also supports `AbortController` for external cancellation:
+`HaoCodeConfig` supports callbacks for text and thinking deltas, tool starts,
+tool completions, and turn starts. Streaming APIs also yield a `turn` message at
+the start of every agent turn. It supports `AbortController` for external cancellation:
 
 ```php
 use HaoCode\Sdk\AbortController;
@@ -280,6 +283,7 @@ $abort = new AbortController();
 $config = new HaoCodeConfig(
     abortController: $abort,
     onText: fn (string $delta) => print $delta,
+    onThinking: fn (string $delta) => error_log("thinking: {$delta}"),
     onToolStart: fn (string $name, array $input) => error_log("tool: {$name}"),
 );
 ```

@@ -144,10 +144,11 @@ class CredentialPool
     public function markExhausted(Credential $credential, ?float $retryAfterSeconds = null): void
     {
         $ttl = $retryAfterSeconds ?? $this->exhaustedTtlSeconds;
-        $this->exhausted[$credential->id] = [
+        $key = $credential->idHash();
+        $this->exhausted[$key] = [
             'exhausted_at' => ($this->clock)(),
             'ttl' => $ttl,
-            'error_count' => ($this->exhausted[$credential->id]['error_count'] ?? 0),
+            'error_count' => ($this->exhausted[$key]['error_count'] ?? 0),
         ];
     }
 
@@ -159,9 +160,10 @@ class CredentialPool
      */
     public function markError(Credential $credential): void
     {
-        $this->errorCounts[$credential->id] = ($this->errorCounts[$credential->id] ?? 0) + 1;
+        $key = $credential->idHash();
+        $this->errorCounts[$key] = ($this->errorCounts[$key] ?? 0) + 1;
 
-        if ($this->errorCounts[$credential->id] >= 3) {
+        if ($this->errorCounts[$key] >= 3) {
             $this->markExhausted($credential);
         }
     }
@@ -173,7 +175,8 @@ class CredentialPool
      */
     public function restore(Credential $credential): void
     {
-        unset($this->exhausted[$credential->id], $this->errorCounts[$credential->id]);
+        $key = $credential->idHash();
+        unset($this->exhausted[$key], $this->errorCounts[$key]);
     }
 
     /**
@@ -218,13 +221,14 @@ class CredentialPool
         return array_values(array_filter(
             $this->credentials[$provider] ?? [],
             function (Credential $c) use ($now): bool {
-                if (! isset($this->exhausted[$c->id])) {
+                $key = $c->idHash();
+                if (! isset($this->exhausted[$key])) {
                     return true;
                 }
-                $ttl = $this->exhausted[$c->id]['ttl'] ?? $this->exhaustedTtlSeconds;
-                if ($now - $this->exhausted[$c->id]['exhausted_at'] >= $ttl) {
+                $ttl = $this->exhausted[$key]['ttl'] ?? $this->exhaustedTtlSeconds;
+                if ($now - $this->exhausted[$key]['exhausted_at'] >= $ttl) {
                     // TTL expired — auto-restore
-                    unset($this->exhausted[$c->id], $this->errorCounts[$c->id]);
+                    unset($this->exhausted[$key], $this->errorCounts[$key]);
 
                     return true;
                 }

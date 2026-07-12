@@ -16,7 +16,7 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
  * behind {@see LlmProvider} so a second wire format (OpenAI Responses) can
  * coexist without touching the call sites.
  */
-class AnthropicProvider implements LlmProvider
+class AnthropicProvider implements ApiKeyAwareProvider
 {
     private HttpClientInterface $httpClient;
     private int $maxRetries = 3;
@@ -25,13 +25,13 @@ class AnthropicProvider implements LlmProvider
     private $timeProvider;
 
     public function __construct(
-        private readonly string $apiKey,
+        private string $apiKey,
         private string $model,
-        private readonly string $baseUrl = 'https://api.anthropic.com',
+        private string $baseUrl = 'https://api.anthropic.com',
         private int $maxTokens = 16384,
         private readonly string $apiVersion = '2023-06-01',
-        private readonly bool $thinkingEnabled = false,
-        private readonly int $thinkingBudget = 10000,
+        private bool $thinkingEnabled = false,
+        private int $thinkingBudget = 10000,
         ?HttpClientInterface $httpClient = null,
         private ?\HaoCode\Services\Settings\SettingsManager $settingsManager = null,
         private readonly int $idleTimeoutSeconds = 60,
@@ -540,6 +540,20 @@ class AnthropicProvider implements LlmProvider
     {
         $provider = clone $this;
         $provider->settingsManager = $settingsManager;
+
+        return $provider;
+    }
+
+    public function withApiKey(string $apiKey): self
+    {
+        $provider = clone $this;
+        $provider->apiKey = $apiKey;
+        $provider->model = $this->resolveModel();
+        $provider->baseUrl = $this->resolveBaseUrl();
+        $provider->maxTokens = $this->resolveMaxTokens();
+        $provider->thinkingEnabled = $this->resolveThinkingEnabled();
+        $provider->thinkingBudget = $this->resolveThinkingBudget();
+        $provider->settingsManager = null;
 
         return $provider;
     }

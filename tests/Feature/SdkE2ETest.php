@@ -6,6 +6,8 @@ namespace Tests\Feature;
 
 use HaoCode\Sdk\AbortController;
 use HaoCode\Sdk\Conversation;
+use HaoCode\Sdk\Credential;
+use HaoCode\Sdk\CredentialPool;
 use HaoCode\Sdk\HaoCode;
 use HaoCode\Sdk\HaoCodeConfig;
 use HaoCode\Sdk\Message;
@@ -105,6 +107,7 @@ class SdkE2ETest extends TestCase
         $this->assertIsFloat($result->cost);
         // Stringable: can still be used as string
         $this->assertStringContainsString('42', (string) $result);
+        $this->assertNull($result->sessionId);
         $this->assertSame([], glob($this->sessionDir.'/*.jsonl') ?: []);
     }
 
@@ -207,7 +210,11 @@ class SdkE2ETest extends TestCase
     public function test_stream_yields_text_and_result_messages(): void
     {
         $this->bootWithMock([
-            MockAnthropicSse::textResponse('Streamed answer.'),
+            function (array $payload): MockResponse {
+                $this->assertSame([], $payload['tools'] ?? []);
+
+                return MockAnthropicSse::textResponse('Streamed answer.');
+            },
         ]);
 
         chdir($this->projectDir);
@@ -232,6 +239,8 @@ class SdkE2ETest extends TestCase
         $this->assertArrayHasKey('input_tokens', $result->usage);
         $this->assertArrayHasKey('output_tokens', $result->usage);
         $this->assertIsFloat($result->cost);
+        $this->assertNull($result->sessionId);
+        $this->assertSame([], glob($this->sessionDir.'/*.jsonl') ?: []);
     }
 
     // ──────────────────────────────────────────────────────────────
@@ -253,7 +262,9 @@ class SdkE2ETest extends TestCase
         chdir($this->projectDir);
 
         $types = [];
-        foreach (HaoCode::stream('Run a command') as $msg) {
+        foreach (HaoCode::stream('Run a command', new HaoCodeConfig(
+            allowedTools: ['Bash'],
+        )) as $msg) {
             $types[] = $msg->type;
         }
 
@@ -695,6 +706,14 @@ class SdkE2ETest extends TestCase
         $client4 = $method->invoke(null, $config4);
         $this->assertInstanceOf(StreamingClient::class, $client4);
 
+        $openAiClient = $method->invoke(null, new HaoCodeConfig(providerType: 'openai'));
+        $openAiReflection = new \ReflectionObject($openAiClient);
+        $openAiProvider = $openAiReflection->getProperty('openai')->getValue($openAiClient);
+        $this->assertSame(
+            'https://api.openai.com',
+            (new \ReflectionObject($openAiProvider))->getProperty('baseUrl')->getValue($openAiProvider),
+        );
+
         mkdir($this->projectDir.'/.haocode', 0755, true);
         file_put_contents($this->projectDir.'/.haocode/settings.json', json_encode([
             'active_provider' => 'project-openai',
@@ -777,11 +796,13 @@ class SdkE2ETest extends TestCase
         $config = new HaoCodeConfig(maxBudgetUsd: 2.50);
 
         // Use reflection to verify CostTracker thresholds were set
-        $method = new \ReflectionMethod(HaoCode::class, 'createLoop');
-        $loop = $method->invoke(null, $config);
+        $method = new \ReflectionMethod(HaoCode::class, 'createRun');
+        $run = $method->invoke(null, $config);
+        $loop = $run->loop;
 
         $tracker = $loop->getCostTracker();
         $this->assertSame(2.50, $tracker->getStopThreshold());
+        $run->close();
     }
 
     // ──────────────────────────────────────────────────────────────
@@ -980,7 +1001,9 @@ class SdkE2ETest extends TestCase
         chdir($this->projectDir);
 
         $typeCounter = [];
-        foreach (HaoCode::stream('Find all text files') as $msg) {
+        foreach (HaoCode::stream('Find all text files', new HaoCodeConfig(
+            allowedTools: ['Glob', 'Bash'],
+        )) as $msg) {
             $typeCounter[$msg->type] = ($typeCounter[$msg->type] ?? 0) + 1;
         }
 
@@ -1567,6 +1590,148 @@ JSON),
         ));
 
         $this->assertStringContainsString('workspace alpha', $result->text);
+    }
+
+    public function test_independent_queries_do_not_share_read_before_write_state(): void
+    {
+        $file = $this->projectDir.'/isolated.txt';
+        file_put_contents($file, 'before');
+
+        $this->bootWithMock([
+            MockAnthropicSse::toolUseResponse('toolu_read', 'Read', ['file_path' => $file]),
+            MockAnthropicSse::textResponse('Read complete.'),
+            MockAnthropicSse::toolUseResponse('toolu_edit', 'Edit', [
+                'file_path' => $file,
+                'old_string' => 'before',
+                'new_string' => 'after',
+            ]),
+            function (array $payload): MockResponse {
+                $this->assertStringContainsString('must be read before editing', MockAnthropicSse::lastToolResultText($payload) ?? '');
+
+                return MockAnthropicSse::textResponse('Edit was correctly blocked.');
+            },
+        ]);
+
+        HaoCode::query('Read the file', new HaoCodeConfig(
+            cwd: $this->projectDir,
+            allowedTools: ['Read'],
+            ephemeral: true,
+        ));
+        HaoCode::query('Edit the file without reading it', new HaoCodeConfig(
+            cwd: $this->projectDir,
+            allowedTools: ['Edit'],
+            ephemeral: true,
+        ));
+
+        $this->assertSame('before', file_get_contents($file));
+    }
+
+    public function test_credential_pool_is_applied_by_hao_code_query(): void
+    {
+        $pool = new CredentialPool;
+        $pool->add('anthropic', new Credential(apiKey: 'pool-key', id: 'pool'));
+
+        $this->bootWithMock([
+            function (array $payload, int $requestNumber, array $request): MockResponse {
+                $this->assertStringContainsString('pool-key', json_encode($request['headers']));
+
+                return MockAnthropicSse::textResponse('Pool applied.');
+            },
+        ]);
+        config(['haocode.api_key' => '']);
+
+        $result = HaoCode::query('Use the pool', new HaoCodeConfig(
+            credentialPool: $pool,
+            allowedTools: [],
+            ephemeral: true,
+        ));
+
+        $this->assertSame('Pool applied.', $result->text);
+    }
+
+    public function test_structured_uses_response_schema_from_config(): void
+    {
+        $this->bootWithMock([
+            function (array $payload): MockResponse {
+                $prompt = MockAnthropicSse::lastUserText($payload) ?? '';
+                $this->assertStringContainsString('configured_field', $prompt);
+                $this->assertStringNotContainsString('method_field', $prompt);
+
+                return MockAnthropicSse::textResponse('{"configured_field":"ok"}');
+            },
+        ]);
+
+        $result = HaoCode::structured('Return data', [
+            'type' => 'object',
+            'properties' => ['method_field' => ['type' => 'string']],
+        ], new HaoCodeConfig(
+            responseSchema: [
+                'type' => 'object',
+                'properties' => ['configured_field' => ['type' => 'string']],
+            ],
+        ));
+
+        $this->assertSame('ok', $result->configured_field);
+    }
+
+    public function test_stream_and_conversation_forward_thinking_and_turn_events(): void
+    {
+        $thinking = [];
+        $this->bootWithMock([
+            MockAnthropicSse::thinkingResponse('reasoning', 'answer'),
+            MockAnthropicSse::thinkingResponse('more reasoning', 'second answer'),
+        ]);
+
+        $streamTypes = [];
+        foreach (HaoCode::stream('Think', new HaoCodeConfig(
+            allowedTools: [],
+            ephemeral: true,
+            onThinking: function (string $delta) use (&$thinking): void {
+                $thinking[] = $delta;
+            },
+        )) as $message) {
+            $streamTypes[] = $message->type;
+        }
+
+        $conversation = HaoCode::conversation(new HaoCodeConfig(
+            allowedTools: [],
+            onThinking: function (string $delta) use (&$thinking): void {
+                $thinking[] = $delta;
+            },
+        ));
+        $conversation->send('Think again');
+        $conversation->close();
+
+        $this->assertContains('turn', $streamTypes);
+        $this->assertSame(['reasoning', 'more reasoning'], $thinking);
+    }
+
+    public function test_stream_can_resume_a_persisted_session(): void
+    {
+        $this->bootWithMock([
+            MockAnthropicSse::textResponse('First answer.'),
+            function (array $payload): MockResponse {
+                $this->assertSame(3, MockAnthropicSse::messageCount($payload));
+
+                return MockAnthropicSse::textResponse('Resumed answer.');
+            },
+        ]);
+
+        $first = HaoCode::query('First question', new HaoCodeConfig(
+            cwd: $this->projectDir,
+            allowedTools: [],
+        ));
+        $this->assertNotNull($first->sessionId);
+
+        $messages = iterator_to_array(HaoCode::stream('Second question', new HaoCodeConfig(
+            cwd: $this->projectDir,
+            allowedTools: [],
+            sessionId: $first->sessionId,
+        )));
+
+        $results = array_values(array_filter($messages, fn (Message $message): bool => $message->isResult()));
+        $this->assertCount(1, $results);
+        $this->assertSame('Resumed answer.', $results[0]->text);
     }
 
     // ══════════════════════════════════════════════════════════════

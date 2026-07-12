@@ -6,8 +6,6 @@ use HaoCode\Services\Agent\AgentLoop;
 use HaoCode\Services\Agent\AgentLoopFactory;
 use HaoCode\Services\Api\StreamingClient;
 use HaoCode\Services\Session\SessionManager;
-use HaoCode\Sdk\Sandbox\SandboxManager;
-use HaoCode\Sdk\Sandbox\SandboxRuntime;
 
 /**
  * Multi-turn conversation handle.
@@ -25,7 +23,7 @@ class Conversation
 
     private int $turnCount = 0;
 
-    private ?SandboxRuntime $sandboxRuntime = null;
+    private SdkRun $run;
 
     /**
      * @internal
@@ -35,34 +33,8 @@ class Conversation
         AgentLoopFactory $factory,
         ?StreamingClient $streamingClient = null,
     ) {
-        $additionalTools = $config->tools;
-        if ($config->sandbox !== null) {
-            $this->sandboxRuntime = SandboxManager::create($config->sandbox, $config->cwd);
-            $additionalTools = array_merge($this->sandboxRuntime->tools(), $additionalTools);
-        }
-
-        $this->loop = $factory->createIsolated(
-            toolFilter: $config->toolFilter(),
-            workingDirectory: $config->effectiveWorkingDirectory(),
-            additionalTools: $additionalTools,
-            streamingClient: $streamingClient,
-            runContext: AgentRunContextFactory::make($config),
-            ephemeral: $config->ephemeral,
-        );
-
-        $this->loop->setPermissionPromptHandler(fn () => true);
-        $this->loop->setMaxTurns($config->maxTurns);
-
-        if ($config->maxBudgetUsd !== null) {
-            $this->loop->getCostTracker()->setThresholds(
-                warn: $config->maxBudgetUsd * 0.8,
-                stop: $config->maxBudgetUsd,
-            );
-        }
-
-        if ($config->abortController !== null) {
-            $config->abortController->onAbort(fn () => $this->loop->abort());
-        }
+        $this->run = SdkRunFactory::create($config, $factory, $streamingClient);
+        $this->loop = $this->run->loop;
     }
 
     /**
@@ -84,6 +56,7 @@ class Conversation
             onToolStart: $this->config->onToolStart,
             onToolComplete: $this->config->onToolComplete,
             onTurnStart: $this->config->onTurnStart,
+            onThinkingDelta: $this->config->onThinking,
         );
 
         return new QueryResult(
@@ -95,7 +68,7 @@ class Conversation
                 'cache_read_tokens' => $this->loop->getCacheReadTokens(),
             ],
             cost: $this->loop->getEstimatedCost(),
-            sessionId: $this->loop->getSessionManager()->getSessionId(),
+            sessionId: $this->config->ephemeral ? null : $this->loop->getSessionManager()->getSessionId(),
             turnsUsed: $this->turnCount,
         );
     }
@@ -148,17 +121,26 @@ class Conversation
             \Fiber::getCurrent()?->suspend();
         };
 
+        $onTurnStart = function (int $turn) use ($queue): void {
+            $queue->enqueue(Message::turn($turn));
+            if ($this->config->onTurnStart) {
+                ($this->config->onTurnStart)($turn);
+            }
+            \Fiber::getCurrent()?->suspend();
+        };
+
         $response = null;
         $thrownException = null;
 
-        $fiber = new \Fiber(function () use ($prompt, $onText, $onToolStart, $onToolComplete, &$response, &$thrownException): void {
+        $fiber = new \Fiber(function () use ($prompt, $onText, $onToolStart, $onToolComplete, $onTurnStart, &$response, &$thrownException): void {
             try {
                 $response = $this->loop->run(
                     userInput: $prompt,
                     onTextDelta: $onText,
                     onToolStart: $onToolStart,
                     onToolComplete: $onToolComplete,
-                    onTurnStart: $this->config->onTurnStart,
+                    onTurnStart: $onTurnStart,
+                    onThinkingDelta: $this->config->onThinking,
                 );
             } catch (\Throwable $e) {
                 $thrownException = $e;
@@ -196,7 +178,7 @@ class Conversation
                 'cache_read_tokens' => $this->loop->getCacheReadTokens(),
             ],
             cost: $this->loop->getEstimatedCost(),
-            sessionId: $this->loop->getSessionManager()->getSessionId(),
+            sessionId: $this->config->ephemeral ? null : $this->loop->getSessionManager()->getSessionId(),
         );
     }
 
@@ -279,7 +261,7 @@ class Conversation
      */
     public function close(): void
     {
-        $this->sandboxRuntime?->close();
+        $this->run->close();
         $this->closed = true;
     }
 }

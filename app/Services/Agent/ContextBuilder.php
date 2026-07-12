@@ -35,6 +35,7 @@ class ContextBuilder
         private readonly ?OutputStyleLoader $outputStyleLoader = null,
         private readonly ?string $workingDirectory = null,
         private readonly bool $textOnly = false,
+        private readonly ?BuddyManager $buddyManager = null,
     ) {}
 
     public function buildSystemPrompt(): array
@@ -85,8 +86,7 @@ class ContextBuilder
         $prompt .= $this->getHaoCodeConventions();
 
         // Inject companion intro if hatched
-        $buddy = app(BuddyManager::class);
-        $companionIntro = $buddy->getCompanionIntroText();
+        $companionIntro = $this->buddyManager?->getCompanionIntroText();
         if ($companionIntro) {
             $prompt .= "\n\n# Companion\n\n" . $companionIntro;
         }

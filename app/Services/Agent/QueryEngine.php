@@ -2,7 +2,7 @@
 
 namespace HaoCode\Services\Agent;
 
-use HaoCode\Services\Api\StreamingClient;
+use HaoCode\Services\Api\LlmProvider;
 use HaoCode\Services\Settings\SettingsManager;
 use HaoCode\Services\Telemetry\PhoenixTracer;
 use HaoCode\Tools\ToolRegistry;
@@ -10,7 +10,7 @@ use HaoCode\Tools\ToolRegistry;
 class QueryEngine
 {
     public function __construct(
-        private readonly StreamingClient $streamingClient,
+        private readonly LlmProvider $streamingClient,
         private readonly ToolRegistry $toolRegistry,
         private readonly ?PhoenixTracer $tracer = null,
         private readonly ?SettingsManager $settings = null,

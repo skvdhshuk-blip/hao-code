@@ -91,7 +91,7 @@ class StreamingToolExecutor
         $tempFile = sys_get_temp_dir() . '/haocode_stream_' . $index . '_' . getmypid() . '_' . $block['id'];
 
         // Snapshot readFileState before fork so we can detect child additions.
-        $stateBefore = ToolUseContext::getReadFileStateSnapshot();
+        $stateBefore = $this->context->getReadFileStateSnapshot();
 
         $pid = pcntl_fork();
         if ($pid === -1) {
@@ -103,7 +103,7 @@ class StreamingToolExecutor
         if ($pid === 0) {
             // Child process: execute tool and serialize result + readFileState changes
             $result = $this->toolOrchestrator->executeToolBlock($block, $this->context);
-            $childState = ToolUseContext::getReadFileStateSnapshot();
+            $childState = $this->context->getReadFileStateSnapshot();
             $newEntries = array_diff_key($childState, $stateBefore);
             $payload = ['result' => $result, 'readState' => $newEntries];
             file_put_contents($tempFile, serialize($payload));
@@ -158,7 +158,7 @@ class StreamingToolExecutor
                 // New format: result + readFileState from child
                 $result = $payload['result'];
                 if (!empty($payload['readState'])) {
-                    ToolUseContext::mergeReadFileStateSnapshot($payload['readState']);
+                    $this->context->mergeReadFileStateSnapshot($payload['readState']);
                 }
             } elseif (is_array($payload)) {
                 // Legacy format: bare result

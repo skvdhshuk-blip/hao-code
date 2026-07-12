@@ -96,6 +96,19 @@ class SettingsManager
         return is_numeric($maxTokens) ? (int) $maxTokens : self::DEFAULT_MAX_TOKENS;
     }
 
+    public function getContextWindow(): int
+    {
+        $settings = $this->loadProjectSettings();
+        $contextWindow = $this->runtimeOverrides['context_window']
+            ?? $this->getProviderConfig()['context_window']
+            ?? $settings['context_window']
+            ?? config('haocode.context_window', 200000);
+
+        return is_numeric($contextWindow) && (int) $contextWindow > 0
+            ? (int) $contextWindow
+            : 200000;
+    }
+
     public function getActiveProviderName(): ?string
     {
         return $this->getModelProvider();
@@ -107,7 +120,7 @@ class SettingsManager
     }
 
     /**
-     * @return array<string, array{api_key: string|null, api_base_url: string|null, model: string|null, max_tokens: int|null}>
+     * @return array<string, array{api_key: string|null, api_base_url: string|null, model: string|null, max_tokens: int|null, context_window: int|null, type: string}>
      */
     public function getConfiguredProviders(): array
     {
@@ -123,7 +136,7 @@ class SettingsManager
     }
 
     /**
-     * @return array{api_key: string|null, api_base_url: string|null, model: string|null, max_tokens: int|null, type: string}|null
+     * @return array{api_key: string|null, api_base_url: string|null, model: string|null, max_tokens: int|null, context_window: int|null, type: string}|null
      */
     public function getProviderConfig(?string $name = null): ?array
     {
@@ -145,6 +158,10 @@ class SettingsManager
      */
     public function getProviderType(): string
     {
+        if (isset($this->runtimeOverrides['provider_type'])) {
+            return $this->normalizeProviderType((string) $this->runtimeOverrides['provider_type']);
+        }
+
         $config = $this->getProviderConfig();
 
         if ($config === null) {
@@ -639,8 +656,10 @@ class SettingsManager
             'model',
             'active_provider',
             'model_provider',
+            'provider_type',
             'api_base_url',
             'max_tokens',
+            'context_window',
             'permission_mode',
             'approval_policy',
             'sandbox_mode',
@@ -791,6 +810,7 @@ class SettingsManager
             'configured_providers' => array_keys($this->getConfiguredProviders()),
             'api_base_url' => $this->getBaseUrl(),
             'max_tokens' => $this->getMaxTokens(),
+            'context_window' => $this->getContextWindow(),
             'permission_mode' => $this->getPermissionMode()->value,
             'theme' => $this->getTheme(),
             'output_style' => $this->getOutputStyle(),
@@ -1094,7 +1114,7 @@ class SettingsManager
 
     /**
      * @param  array<string, mixed>  $provider
-     * @return array{api_key: string|null, api_base_url: string|null, model: string|null, max_tokens: int|null, type: string}
+     * @return array{api_key: string|null, api_base_url: string|null, model: string|null, max_tokens: int|null, context_window: int|null, type: string}
      */
     private function normalizeProviderConfig(string $name, array $provider): array
     {
@@ -1132,6 +1152,12 @@ class SettingsManager
                 $provider['maxTokens'] ?? null,
                 $options['maxTokens'] ?? null,
                 $options['max_tokens'] ?? null,
+            ),
+            'context_window' => $this->firstNumericValue(
+                $provider['context_window'] ?? null,
+                $provider['contextWindow'] ?? null,
+                $options['contextWindow'] ?? null,
+                $options['context_window'] ?? null,
             ),
             'type' => $type,
         ];

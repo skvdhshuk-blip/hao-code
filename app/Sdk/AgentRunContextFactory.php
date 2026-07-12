@@ -20,6 +20,25 @@ final class AgentRunContextFactory
         $workingDirectory = $config->effectiveWorkingDirectory() ?? $projectDirectory;
         $settings = new SettingsManager($projectDirectory);
         $settings->set('permission_mode', $config->permissionMode);
+        $settings->set('thinking_enabled', $config->thinkingEnabled);
+        $settings->set('thinking_budget', $config->thinkingBudget);
+
+        if ($config->model !== null) {
+            $settings->set('model', $config->model);
+        }
+        if ($config->baseUrl !== null) {
+            $settings->set('api_base_url', $config->baseUrl);
+        }
+        if ($config->maxTokens !== null) {
+            $settings->set('max_tokens', $config->maxTokens);
+        }
+        if ($config->providerType !== null) {
+            $settings->set('provider_type', match ($config->providerType) {
+                'openai', 'openai_responses', 'responses' => 'openai',
+                'openai_chat', 'openai_chat_completions', 'chat_completions' => 'openai_chat',
+                default => 'anthropic',
+            });
+        }
 
         if ($config->systemPrompt !== null) {
             $settings->set('system_prompt', $config->systemPrompt);

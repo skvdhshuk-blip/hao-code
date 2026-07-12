@@ -4,12 +4,9 @@ namespace HaoCode\Sdk;
 
 use HaoCode\Services\Agent\AgentLoop;
 use HaoCode\Services\Agent\AgentLoopFactory;
-use HaoCode\Services\Agent\AgentRunContext;
 use HaoCode\Services\Api\StreamingClient;
 use HaoCode\Services\Session\SessionManager;
 use HaoCode\Services\Settings\SettingsManager;
-use HaoCode\Sdk\Sandbox\SandboxManager;
-use HaoCode\Sdk\Sandbox\SandboxRuntime;
 
 /**
  * HaoCode SDK — programmatic access to the agent's capabilities.
@@ -22,7 +19,7 @@ use HaoCode\Sdk\Sandbox\SandboxRuntime;
  *   echo $result->cost;  // plus metadata
  *
  *   // 2. Streaming messages
- *   foreach (HaoCode::stream('Build a REST API') as $msg) { ... }
+ *   foreach (HaoCode::stream('Explain PHP Fibers') as $msg) { ... }
  *
  *   // 3. Multi-turn conversation
  *   $conv = HaoCode::conversation();
@@ -59,32 +56,43 @@ class HaoCode
         // Redirect to resume/continue if configured
         if ($config->sessionId !== null) {
             $conv = self::resume($config->sessionId, $config);
-
-            return $conv->send($prompt);
+            try {
+                return $conv->send($prompt);
+            } finally {
+                $conv->close();
+            }
         }
         if ($config->continueSession) {
             $conv = self::continueLatest($config->cwd, $config);
-
-            return $conv->send($prompt);
+            try {
+                return $conv->send($prompt);
+            } finally {
+                $conv->close();
+            }
         }
 
-        $loop = self::createLoop($config);
+        $run = self::createRun($config);
+        $loop = $run->loop;
 
-        $response = $loop->run(
-            userInput: $prompt,
-            onTextDelta: $config->onText,
-            onToolStart: $config->onToolStart,
-            onToolComplete: $config->onToolComplete,
-            onTurnStart: $config->onTurnStart,
-            onThinkingDelta: $config->onThinking,
-        );
+        try {
+            $response = $loop->run(
+                userInput: $prompt,
+                onTextDelta: $config->onText,
+                onToolStart: $config->onToolStart,
+                onToolComplete: $config->onToolComplete,
+                onTurnStart: $config->onTurnStart,
+                onThinkingDelta: $config->onThinking,
+            );
 
-        return new QueryResult(
-            text: $response,
-            usage: self::extractUsage($loop),
-            cost: $loop->getEstimatedCost(),
-            sessionId: $loop->getSessionManager()->getSessionId(),
-        );
+            return new QueryResult(
+                text: $response,
+                usage: self::extractUsage($loop),
+                cost: $loop->getEstimatedCost(),
+                sessionId: $config->ephemeral ? null : $loop->getSessionManager()->getSessionId(),
+            );
+        } finally {
+            $run->close();
+        }
     }
 
     /**
@@ -100,17 +108,32 @@ class HaoCode
      */
     public static function stream(string $prompt, ?HaoCodeConfig $config = null): \Generator
     {
-        $config ??= new HaoCodeConfig;
+        $config ??= new HaoCodeConfig(allowedTools: [], ephemeral: true);
 
         // Redirect to conversation stream if resuming
         if ($config->sessionId !== null) {
-            return self::resume($config->sessionId, $config)->stream($prompt);
+            $conversation = self::resume($config->sessionId, $config);
+            try {
+                yield from $conversation->stream($prompt);
+            } finally {
+                $conversation->close();
+            }
+
+            return;
         }
         if ($config->continueSession) {
-            return self::continueLatest($config->cwd, $config)->stream($prompt);
+            $conversation = self::continueLatest($config->cwd, $config);
+            try {
+                yield from $conversation->stream($prompt);
+            } finally {
+                $conversation->close();
+            }
+
+            return;
         }
 
-        $loop = self::createLoop($config);
+        $run = self::createRun($config);
+        $loop = $run->loop;
         $queue = new \SplQueue;
 
         // These callbacks are exclusively invoked from within the Fiber below.
@@ -140,51 +163,64 @@ class HaoCode
             \Fiber::getCurrent()?->suspend();
         };
 
+        $onTurnStart = function (int $turn) use ($queue, $config): void {
+            $queue->enqueue(Message::turn($turn));
+            if ($config->onTurnStart) {
+                ($config->onTurnStart)($turn);
+            }
+            \Fiber::getCurrent()?->suspend();
+        };
+
         $response = null;
         $thrownException = null;
 
-        $fiber = new \Fiber(function () use ($loop, $prompt, $onText, $onToolStart, $onToolComplete, $config, &$response, &$thrownException): void {
+        $fiber = new \Fiber(function () use ($loop, $prompt, $onText, $onToolStart, $onToolComplete, $onTurnStart, $config, &$response, &$thrownException): void {
             try {
                 $response = $loop->run(
                     userInput: $prompt,
                     onTextDelta: $onText,
                     onToolStart: $onToolStart,
                     onToolComplete: $onToolComplete,
-                    onTurnStart: $config->onTurnStart,
+                    onTurnStart: $onTurnStart,
+                    onThinkingDelta: $config->onThinking,
                 );
             } catch (\Throwable $e) {
                 $thrownException = $e;
             }
         });
 
-        $fiber->start();
+        try {
+            $fiber->start();
 
-        while (! $fiber->isTerminated()) {
+            while (! $fiber->isTerminated()) {
+                while (! $queue->isEmpty()) {
+                    yield $queue->dequeue();
+                }
+                if (! $fiber->isTerminated()) {
+                    $fiber->resume();
+                }
+            }
+
+            // Drain any messages enqueued before the fiber's final termination
             while (! $queue->isEmpty()) {
                 yield $queue->dequeue();
             }
-            if (! $fiber->isTerminated()) {
-                $fiber->resume();
+
+            if ($thrownException !== null) {
+                yield Message::error($thrownException->getMessage());
+
+                return;
             }
+
+            yield Message::result(
+                text: $response ?? '',
+                usage: self::extractUsage($loop),
+                cost: $loop->getEstimatedCost(),
+                sessionId: $config->ephemeral ? null : $loop->getSessionManager()->getSessionId(),
+            );
+        } finally {
+            $run->close();
         }
-
-        // Drain any messages enqueued before the fiber's final termination
-        while (! $queue->isEmpty()) {
-            yield $queue->dequeue();
-        }
-
-        if ($thrownException !== null) {
-            yield Message::error($thrownException->getMessage());
-
-            return;
-        }
-
-        yield Message::result(
-            text: $response ?? '',
-            usage: self::extractUsage($loop),
-            cost: $loop->getEstimatedCost(),
-            sessionId: $loop->getSessionManager()->getSessionId(),
-        );
     }
 
     /**
@@ -198,9 +234,7 @@ class HaoCode
 
         /** @var AgentLoopFactory $factory */
         $factory = app(AgentLoopFactory::class);
-        $runContext = self::createValidatedRunContext($config);
-
-        return new Conversation($config, $factory, self::buildStreamingClient($config, $runContext->settings));
+        return new Conversation($config, $factory);
     }
 
     /**
@@ -220,10 +254,14 @@ class HaoCode
 
         /** @var AgentLoopFactory $factory */
         $factory = app(AgentLoopFactory::class);
-        $runContext = self::createValidatedRunContext($config);
+        $conv = new Conversation($config, $factory);
+        try {
+            $conv->loadSession($sessionId);
+        } catch (\Throwable $e) {
+            $conv->close();
 
-        $conv = new Conversation($config, $factory, self::buildStreamingClient($config, $runContext->settings));
-        $conv->loadSession($sessionId);
+            throw $e;
+        }
 
         return $conv;
     }
@@ -277,7 +315,8 @@ class HaoCode
      */
     public static function structured(string $prompt, array $jsonSchema, ?HaoCodeConfig $config = null): StructuredResult
     {
-        $schemaJson = json_encode($jsonSchema, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+        $effectiveSchema = $config?->responseSchema ?? $jsonSchema;
+        $schemaJson = json_encode($effectiveSchema, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
 
         $structuredPrompt = $prompt."\n\n".
             'IMPORTANT: You MUST respond with ONLY a valid JSON object matching this schema. '.
@@ -303,80 +342,12 @@ class HaoCode
         return new StructuredResult($decoded, $queryResult->text, $queryResult);
     }
 
-    /**
-     * Create a configured AgentLoop from config.
-     */
-    private static function createLoop(HaoCodeConfig $config): AgentLoop
+    private static function createRun(HaoCodeConfig $config): SdkRun
     {
         /** @var AgentLoopFactory $factory */
         $factory = app(AgentLoopFactory::class);
 
-        $runContext = self::createValidatedRunContext($config);
-
-        // Build a custom StreamingClient when SDK config overrides API settings
-        $customClient = self::buildStreamingClient($config, $runContext->settings);
-        $sandboxRuntime = self::createSandboxRuntime($config);
-        $additionalTools = $config->tools;
-        if ($sandboxRuntime !== null) {
-            $additionalTools = array_merge($sandboxRuntime->tools(), $additionalTools);
-        }
-
-        $loop = $factory->createIsolated(
-            toolFilter: $config->toolFilter(),
-            workingDirectory: $config->effectiveWorkingDirectory(),
-            additionalTools: $additionalTools,
-            streamingClient: $customClient,
-            runContext: $runContext,
-            ephemeral: $config->ephemeral,
-        );
-
-        $loop->setPermissionPromptHandler(fn () => true);
-        $loop->setMaxTurns($config->maxTurns);
-
-        // Wire cost budget
-        if ($config->maxBudgetUsd !== null) {
-            $loop->getCostTracker()->setThresholds(
-                warn: $config->maxBudgetUsd * 0.8,
-                stop: $config->maxBudgetUsd,
-            );
-        }
-
-        // Wire abort controller
-        if ($config->abortController !== null) {
-            $config->abortController->onAbort(fn () => $loop->abort());
-        }
-
-        return $loop;
-    }
-
-    private static function createSandboxRuntime(HaoCodeConfig $config): ?SandboxRuntime
-    {
-        if ($config->sandbox === null) {
-            return null;
-        }
-
-        return SandboxManager::create($config->sandbox, $config->cwd);
-    }
-
-    /**
-     * 创建已经完成基础凭据校验的运行上下文。
-     *
-     * query、stream、conversation 和 resume 都通过此方法进入模型调用，
-     * 避免不同入口对空 API key 的处理不一致。
-     */
-    private static function createValidatedRunContext(HaoCodeConfig $config): AgentRunContext
-    {
-        // 当前请求最终使用的 API key，必须在任何网络请求前完成校验。
-        $runContext = AgentRunContextFactory::make($config);
-        $apiKey = $config->apiKey ?? $runContext->settings->getApiKey();
-        if (trim($apiKey) === '') {
-            throw new \RuntimeException(
-                'API key is required. Pass HaoCodeConfig(apiKey: ...) or set ANTHROPIC_API_KEY '.
-                'in the process environment. .env files are not loaded automatically.',
-            );
-        }
-
-        return $runContext;
+        return SdkRunFactory::create($config, $factory);
     }
 
     /**
@@ -389,41 +360,7 @@ class HaoCode
         ?SettingsManager $settings = null,
     ): ?StreamingClient
     {
-        if ($config->apiKey === null
-            && $config->baseUrl === null
-            && $config->model === null
-            && $config->maxTokens === null
-            && $config->providerType === null) {
-            return null;
-        }
-
-        $settings ??= AgentRunContextFactory::make($config)->settings;
-
-        $providerType = match ($config->providerType) {
-            'openai', 'openai_responses', 'responses' => 'openai',
-            'openai_chat', 'openai_chat_completions', 'chat_completions' => 'openai_chat',
-            'anthropic' => 'anthropic',
-            null => $settings->getProviderType(),
-            default => 'anthropic',
-        };
-
-        $defaultBaseUrl = match ($providerType) {
-            'openai', 'openai_chat' => 'https://api.openai.com',
-            default => 'https://api.anthropic.com',
-        };
-
-        return new StreamingClient(
-            apiKey: $config->apiKey ?? $settings->getApiKey(),
-            model: $config->model ?? $settings->getModel(),
-            baseUrl: $config->baseUrl ?? $settings->getBaseUrl() ?: $defaultBaseUrl,
-            maxTokens: $config->maxTokens ?? $settings->getMaxTokens(),
-            thinkingEnabled: $config->thinkingEnabled,
-            thinkingBudget: $config->thinkingBudget,
-            settingsManager: null, // SDK controls config, bypass SettingsManager
-            idleTimeoutSeconds: (int) config('haocode.api_stream_idle_timeout', 60),
-            streamPollTimeoutSeconds: (float) config('haocode.api_stream_poll_timeout', 1.0),
-            providerType: $providerType,
-        );
+        return SdkRunFactory::buildStreamingClient($config, $settings);
     }
 
     private static function extractUsage(AgentLoop $loop): array

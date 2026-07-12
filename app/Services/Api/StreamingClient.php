@@ -19,7 +19,7 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
  * preserved so QueryEngine, SessionTitleService, and existing tests
  * that mock StreamingClient keep working.
  */
-class StreamingClient implements LlmProvider
+class StreamingClient implements ApiKeyAwareProvider
 {
     private AnthropicProvider $anthropic;
     private OpenAiProvider $openai;
@@ -138,6 +138,19 @@ class StreamingClient implements LlmProvider
         $client->anthropic = $this->anthropic->withSettingsManager($settingsManager);
         $client->openai = $this->openai->withSettingsManager($settingsManager);
         $client->openaiChat = $this->openaiChat->withSettingsManager($settingsManager);
+        $client->lastUsed = null;
+
+        return $client;
+    }
+
+    public function withApiKey(string $apiKey): LlmProvider
+    {
+        $client = clone $this;
+        $client->defaultProviderType = $this->settingsManager?->getProviderType() ?? $this->defaultProviderType;
+        $client->settingsManager = null;
+        $client->anthropic = $this->anthropic->withApiKey($apiKey);
+        $client->openai = $this->openai->withApiKey($apiKey);
+        $client->openaiChat = $this->openaiChat->withApiKey($apiKey);
         $client->lastUsed = null;
 
         return $client;

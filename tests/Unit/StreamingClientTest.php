@@ -4,6 +4,7 @@ namespace Tests\Unit;
 
 use HaoCode\Services\Api\ApiErrorException;
 use HaoCode\Services\Api\StreamingClient;
+use HaoCode\Services\Settings\SettingsManager;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\HttpClient\MockHttpClient;
 use Symfony\Component\HttpClient\Exception\TransportException;
@@ -1117,5 +1118,35 @@ class StreamingClientTest extends TestCase
         $this->assertSame('1.1', $capturedOptions['http_version'] ?? null);
         $this->assertTrue($capturedOptions['verify_peer'] ?? false);
         $this->assertTrue($capturedOptions['verify_host'] ?? false);
+    }
+
+    public function test_with_api_key_snapshots_run_scoped_provider_settings(): void
+    {
+        $settings = $this->createMock(SettingsManager::class);
+        $settings->method('getProviderType')->willReturn('openai');
+        $settings->method('getModel')->willReturn('project-model');
+        $settings->method('getBaseUrl')->willReturn('https://project.example.com');
+        $settings->method('getMaxTokens')->willReturn(3210);
+        $settings->method('isThinkingEnabled')->willReturn(true);
+        $settings->method('getThinkingBudget')->willReturn(4321);
+
+        $client = new StreamingClient(
+            apiKey: 'fallback-key',
+            model: 'fallback-model',
+            settingsManager: $settings,
+            httpClient: new MockHttpClient([]),
+        );
+
+        $pooledClient = $client->withApiKey('pool-key');
+        $clientReflection = new \ReflectionObject($pooledClient);
+        $this->assertSame('openai', $clientReflection->getProperty('defaultProviderType')->getValue($pooledClient));
+
+        $openAi = $clientReflection->getProperty('openai')->getValue($pooledClient);
+        $providerReflection = new \ReflectionObject($openAi);
+        $this->assertSame('pool-key', $providerReflection->getProperty('apiKey')->getValue($openAi));
+        $this->assertSame('project-model', $providerReflection->getProperty('model')->getValue($openAi));
+        $this->assertSame('https://project.example.com', $providerReflection->getProperty('baseUrl')->getValue($openAi));
+        $this->assertSame(3210, $providerReflection->getProperty('maxTokens')->getValue($openAi));
+        $this->assertNull($providerReflection->getProperty('settingsManager')->getValue($openAi));
     }
 }

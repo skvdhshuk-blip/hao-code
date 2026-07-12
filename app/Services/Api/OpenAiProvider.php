@@ -31,7 +31,7 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
  * equivalent to Anthropic's cache_control breakpoints, so caller-supplied
  * cache_control hints are stripped during translation.
  */
-class OpenAiProvider implements LlmProvider
+class OpenAiProvider implements ApiKeyAwareProvider
 {
     private HttpClientInterface $httpClient;
     private int $maxRetries = 3;
@@ -40,12 +40,12 @@ class OpenAiProvider implements LlmProvider
     private $timeProvider;
 
     public function __construct(
-        private readonly string $apiKey,
+        private string $apiKey,
         private string $model,
-        private readonly string $baseUrl = 'https://api.openai.com',
+        private string $baseUrl = 'https://api.openai.com',
         private int $maxTokens = 16384,
-        private readonly bool $thinkingEnabled = false,
-        private readonly int $thinkingBudget = 10000,
+        private bool $thinkingEnabled = false,
+        private int $thinkingBudget = 10000,
         ?HttpClientInterface $httpClient = null,
         private ?\HaoCode\Services\Settings\SettingsManager $settingsManager = null,
         private readonly int $idleTimeoutSeconds = 60,
@@ -114,6 +114,20 @@ class OpenAiProvider implements LlmProvider
     {
         $provider = clone $this;
         $provider->settingsManager = $settingsManager;
+
+        return $provider;
+    }
+
+    public function withApiKey(string $apiKey): self
+    {
+        $provider = clone $this;
+        $provider->apiKey = $apiKey;
+        $provider->model = $this->resolveModel();
+        $provider->baseUrl = $this->resolveBaseUrl();
+        $provider->maxTokens = $this->resolveMaxTokens();
+        $provider->thinkingEnabled = $this->resolveThinkingEnabled();
+        $provider->thinkingBudget = $this->resolveThinkingBudget();
+        $provider->settingsManager = null;
 
         return $provider;
     }

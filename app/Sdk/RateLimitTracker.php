@@ -53,7 +53,7 @@ class RateLimitTracker
      */
     public function setLimit(Credential $credential, int $rpm, int $tpm = 0): void
     {
-        $this->limits[$credential->id] = ['rpm' => $rpm, 'tpm' => $tpm];
+        $this->limits[$credential->idHash()] = ['rpm' => $rpm, 'tpm' => $tpm];
     }
 
     /**
@@ -64,7 +64,7 @@ class RateLimitTracker
     public function record(Credential $credential, int $tokens = 0): void
     {
         $now = ($this->clock)();
-        $id = $credential->id;
+        $id = $credential->idHash();
 
         $this->requestLog[$id][] = $now;
         if ($tokens > 0) {
@@ -84,12 +84,12 @@ class RateLimitTracker
      */
     public function checkBlocked(Credential $credential): bool
     {
-        if (! isset($this->limits[$credential->id])) {
+        $id = $credential->idHash();
+        if (! isset($this->limits[$id])) {
             return false;
         }
 
         $now = ($this->clock)();
-        $id = $credential->id;
         $this->prune($id, $now);
 
         $rpm = count($this->requestLog[$id] ?? []);
@@ -125,7 +125,7 @@ class RateLimitTracker
     public function windowStats(Credential $credential): array
     {
         $now = ($this->clock)();
-        $id = $credential->id;
+        $id = $credential->idHash();
         $this->prune($id, $now);
 
         return [

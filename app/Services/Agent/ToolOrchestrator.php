@@ -140,7 +140,7 @@ class ToolOrchestrator
 
         // Capture the parent's readFileState snapshot before forking so we can
         // detect which entries the child added.
-        $parentStateBefore = ToolUseContext::getReadFileStateSnapshot();
+        $parentStateBefore = $context->getReadFileStateSnapshot();
 
         foreach ($blocks as $idx => $block) {
             $tempFile = sys_get_temp_dir() . '/haocode_tool_' . $idx . '_' . getmypid();
@@ -159,7 +159,7 @@ class ToolOrchestrator
                 $result = $this->executeSingleTool($block, $context, null, null);
                 // Serialize both the tool result and any readFileState changes so the
                 // parent can merge them back (fixes read-before-write across fork).
-                $childState = ToolUseContext::getReadFileStateSnapshot();
+                $childState = $context->getReadFileStateSnapshot();
                 $newEntries = array_diff_key($childState, $parentStateBefore);
                 $payload = ['result' => $result, 'readState' => $newEntries];
                 file_put_contents($tempFile, serialize($payload));
@@ -182,7 +182,7 @@ class ToolOrchestrator
                     // New format: result + readState
                     $results[$idx] = $data['result'];
                     if (!empty($data['readState'])) {
-                        ToolUseContext::mergeReadFileStateSnapshot($data['readState']);
+                        $context->mergeReadFileStateSnapshot($data['readState']);
                     }
                 } elseif (is_array($data)) {
                     // Legacy format: bare result (backward compat)

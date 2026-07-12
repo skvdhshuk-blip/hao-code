@@ -11,6 +11,15 @@ final class ContextBudget
 {
     public const MAX_ESTIMATED_INPUT_TOKENS = 167_000;
 
+    public static function safeInputLimit(int $contextWindow, int $maxOutputTokens): int
+    {
+        $contextWindow = max(1, $contextWindow);
+        $maxOutputTokens = max(0, $maxOutputTokens);
+        $safetyMargin = max(4_000, (int) ceil($contextWindow * 0.05));
+
+        return max(1, $contextWindow - $maxOutputTokens - $safetyMargin);
+    }
+
     public static function estimateTokens(array $systemPrompt, array $messages, array $tools): int
     {
         $json = json_encode(

@@ -13,7 +13,7 @@ class ToolUseContext
     public readonly \Closure|null $shouldAbort;
 
     /** @var array<string, int> Tracks which files have been read (path => timestamp) */
-    private static array $readFileState = [];
+    private array $readFileState = [];
 
     private FileStateCache $fileStateCache;
 
@@ -40,7 +40,7 @@ class ToolUseContext
     public function recordFileRead(string $filePath, ?string $content = null, ?int $offset = null, ?int $limit = null, bool $isPartialView = false): void
     {
         $resolved = realpath($filePath) ?: $filePath;
-        self::$readFileState[$resolved] = time();
+        $this->readFileState[$resolved] = time();
 
         if ($content !== null) {
             $this->fileStateCache->set($filePath, new FileState(
@@ -55,7 +55,7 @@ class ToolUseContext
 
     public function wasFileRead(string $filePath): bool
     {
-        return isset(self::$readFileState[realpath($filePath) ?: $filePath]);
+        return isset($this->readFileState[realpath($filePath) ?: $filePath]);
     }
 
     /**
@@ -71,9 +71,9 @@ class ToolUseContext
         return $this->fileStateCache;
     }
 
-    public static function resetReadState(): void
+    public function resetReadState(): void
     {
-        self::$readFileState = [];
+        $this->readFileState = [];
     }
 
     /**
@@ -83,9 +83,9 @@ class ToolUseContext
      *
      * @return array<string, int>
      */
-    public static function getReadFileStateSnapshot(): array
+    public function getReadFileStateSnapshot(): array
     {
-        return self::$readFileState;
+        return $this->readFileState;
     }
 
     /**
@@ -94,11 +94,11 @@ class ToolUseContext
      *
      * @param array<string, int> $snapshot
      */
-    public static function mergeReadFileStateSnapshot(array $snapshot): void
+    public function mergeReadFileStateSnapshot(array $snapshot): void
     {
         foreach ($snapshot as $path => $timestamp) {
-            if (!isset(self::$readFileState[$path]) || $timestamp > self::$readFileState[$path]) {
-                self::$readFileState[$path] = $timestamp;
+            if (!isset($this->readFileState[$path]) || $timestamp > $this->readFileState[$path]) {
+                $this->readFileState[$path] = $timestamp;
             }
         }
     }

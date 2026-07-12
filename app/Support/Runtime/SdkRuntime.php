@@ -2,7 +2,6 @@
 
 namespace HaoCode\Support\Runtime;
 
-use HaoCode\Services\Agent\AgentLoop;
 use HaoCode\Services\Agent\AgentLoopFactory;
 use HaoCode\Services\Agent\BackgroundAgentManager;
 use HaoCode\Services\Agent\ContextBuilder;
@@ -10,6 +9,7 @@ use HaoCode\Services\Agent\MessageHistory;
 use HaoCode\Services\Agent\QueryEngine;
 use HaoCode\Services\Agent\ToolOrchestrator;
 use HaoCode\Services\Api\StreamingClient;
+use HaoCode\Services\Buddy\BuddyManager;
 use HaoCode\Services\Compact\ContextCompactor;
 use HaoCode\Services\Cost\CostTracker;
 use HaoCode\Services\Git\GitContext;
@@ -183,6 +183,7 @@ final class SdkRuntime
             skillLoader: $app->make(SkillLoader::class),
             gitContext: $app->make(GitContext::class),
             outputStyleLoader: $app->make(OutputStyleLoader::class),
+            buddyManager: $app->make(BuddyManager::class),
         ));
         $app->singleton(StreamingClient::class, function (Container $app) {
             $settings = $app->make(SettingsManager::class);
@@ -214,19 +215,6 @@ final class SdkRuntime
         ));
         $app->singleton(ContextCompactor::class);
         $app->singleton(AgentLoopFactory::class, fn (Container $app) => new AgentLoopFactory($app));
-        $app->singleton(AgentLoop::class, fn (Container $app) => new AgentLoop(
-            queryEngine: $app->make(QueryEngine::class),
-            toolOrchestrator: $app->make(ToolOrchestrator::class),
-            contextBuilder: $app->make(ContextBuilder::class),
-            messageHistory: $app->make(MessageHistory::class),
-            permissionChecker: $app->make(PermissionChecker::class),
-            sessionManager: $app->make(SessionManager::class),
-            contextCompactor: $app->make(ContextCompactor::class),
-            costTracker: $app->make(CostTracker::class),
-            toolRegistry: $app->make(ToolRegistry::class),
-            hookExecutor: $app->make(HookExecutor::class),
-            tracer: $app->make(PhoenixTracer::class),
-        ));
     }
 
     private static function registerToolRegistry(Container $app): void

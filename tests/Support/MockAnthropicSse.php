@@ -138,6 +138,42 @@ class MockAnthropicSse
         ]);
     }
 
+    public static function thinkingResponse(string $thinking, string $text): MockResponse
+    {
+        return self::response([
+            self::event('message_start', [
+                'message' => [
+                    'id' => 'msg_thinking_1',
+                    'model' => 'claude-test',
+                    'usage' => ['input_tokens' => 32, 'output_tokens' => 0],
+                ],
+            ]),
+            self::event('content_block_start', [
+                'index' => 0,
+                'content_block' => ['type' => 'thinking', 'thinking' => ''],
+            ]),
+            self::event('content_block_delta', [
+                'index' => 0,
+                'delta' => ['type' => 'thinking_delta', 'thinking' => $thinking],
+            ]),
+            self::event('content_block_stop', ['index' => 0]),
+            self::event('content_block_start', [
+                'index' => 1,
+                'content_block' => ['type' => 'text', 'text' => ''],
+            ]),
+            self::event('content_block_delta', [
+                'index' => 1,
+                'delta' => ['type' => 'text_delta', 'text' => $text],
+            ]),
+            self::event('content_block_stop', ['index' => 1]),
+            self::event('message_delta', [
+                'delta' => ['stop_reason' => 'end_turn'],
+                'usage' => ['output_tokens' => max(1, strlen($text))],
+            ]),
+            self::event('message_stop', []),
+        ]);
+    }
+
     /**
      * @param  array<string, mixed>  $payload
      */

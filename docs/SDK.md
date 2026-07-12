@@ -92,12 +92,15 @@ echo $result->sessionId; // session ID for later resume
 
 Execute a query and yield typed [`Message`](#streaming-messages) objects as they arrive.
 
+With no explicit config, `stream()` matches `query()`: it is text-only,
+ephemeral, and does not expose tools. Pass `HaoCodeConfig` to run an agent.
+
 ```php
 HaoCode::stream(string $prompt, ?HaoCodeConfig $config = null): Generator<Message>
 ```
 
 ```php
-foreach (HaoCode::stream('Build a REST API') as $msg) {
+foreach (HaoCode::stream('Explain dependency injection briefly') as $msg) {
     match ($msg->type) {
         'text'        => print($msg->text),
         'tool_start'  => print("⚙ {$msg->toolName}\n"),
@@ -205,8 +208,13 @@ $config = new HaoCodeConfig(
 | `model` | `?string` | `null` | Model ID. Falls back to config default |
 | `baseUrl` | `?string` | `null` | API endpoint URL (for proxies, custom endpoints) |
 | `maxTokens` | `?int` | `null` | Maximum output tokens per response |
+| `providerType` | `?string` | `null` | `anthropic`, `openai`, or `openai_chat` wire format |
 
 When any of these are set, the SDK creates a standalone HTTP client (bypassing global settings).
+
+Input budgeting uses the active provider's `context_window` setting. It falls
+back to `HAOCODE_CONTEXT_WINDOW` (200000 by default) and reserves both the
+configured output tokens and a safety margin before sending a request.
 
 ### Agent Behavior
 
@@ -218,6 +226,7 @@ When any of these are set, the SDK creates a standalone HTTP client (bypassing g
 | `ephemeral` | `bool` | `false` | Disable session and tool-result persistence for this run |
 | `permissionMode` | `string` | `'bypass_permissions'` | `'default'`, `'plan'`, `'accept_edits'`, `'bypass_permissions'` |
 | `sandbox` | `?SandboxConfig` | `null` | Optional temporary filesystem/shell runtime for tools |
+| `credentialPool` | `?CredentialPool` | `null` | Rotate provider credentials and retry rate-limited keys |
 
 ### Prompts
 
@@ -225,6 +234,7 @@ When any of these are set, the SDK creates a standalone HTTP client (bypassing g
 |-----------|------|---------|-------------|
 | `systemPrompt` | `?string` | `null` | Replace the default system prompt entirely |
 | `appendSystemPrompt` | `?string` | `null` | Append text to the default system prompt |
+| `responseSchema` | `?array` | `null` | Override the schema used by `structured()` |
 
 ### Tools & Skills
 
@@ -516,6 +526,7 @@ $result = HaoCode::query('Review auth.php for security', new HaoCodeConfig(
 
 | Type | Fields | Description |
 |------|--------|-------------|
+| `turn` | `$msg->turnNumber` | A new agent turn started |
 | `text` | `$msg->text` | Streaming text delta |
 | `tool_start` | `$msg->toolName`, `$msg->toolInput` | Tool execution began |
 | `tool_result` | `$msg->toolName`, `$msg->toolOutput`, `$msg->toolIsError` | Tool completed |
@@ -523,7 +534,10 @@ $result = HaoCode::query('Review auth.php for security', new HaoCodeConfig(
 | `error` | `$msg->error` | An error occurred |
 
 ```php
-foreach (HaoCode::stream('Refactor the auth module') as $msg) {
+foreach (HaoCode::stream('Refactor the auth module', new HaoCodeConfig(
+    cwd: __DIR__,
+    allowedTools: ['Read', 'Edit', 'Grep', 'Glob'],
+)) as $msg) {
     if ($msg->type === 'text') {
         echo $msg->text;  // stream to browser, worker output, or logs
     }

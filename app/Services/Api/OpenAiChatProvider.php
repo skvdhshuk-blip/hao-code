@@ -27,7 +27,7 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
  *   - Usage arrives on the final delta only when `stream_options.include_usage`
  *     is set; we always request it.
  */
-class OpenAiChatProvider implements LlmProvider
+class OpenAiChatProvider implements ApiKeyAwareProvider
 {
     private HttpClientInterface $httpClient;
     private int $maxRetries = 3;
@@ -36,12 +36,12 @@ class OpenAiChatProvider implements LlmProvider
     private $timeProvider;
 
     public function __construct(
-        private readonly string $apiKey,
+        private string $apiKey,
         private string $model,
-        private readonly string $baseUrl = 'https://api.openai.com',
+        private string $baseUrl = 'https://api.openai.com',
         private int $maxTokens = 16384,
-        private readonly bool $thinkingEnabled = false,
-        private readonly int $thinkingBudget = 10000,
+        private bool $thinkingEnabled = false,
+        private int $thinkingBudget = 10000,
         ?HttpClientInterface $httpClient = null,
         private ?\HaoCode\Services\Settings\SettingsManager $settingsManager = null,
         private readonly int $idleTimeoutSeconds = 60,
@@ -110,6 +110,20 @@ class OpenAiChatProvider implements LlmProvider
     {
         $provider = clone $this;
         $provider->settingsManager = $settingsManager;
+
+        return $provider;
+    }
+
+    public function withApiKey(string $apiKey): self
+    {
+        $provider = clone $this;
+        $provider->apiKey = $apiKey;
+        $provider->model = $this->resolveModel();
+        $provider->baseUrl = $this->resolveBaseUrl();
+        $provider->maxTokens = $this->resolveMaxTokens();
+        $provider->thinkingEnabled = $this->resolveThinkingEnabled();
+        $provider->thinkingBudget = $this->resolveThinkingBudget();
+        $provider->settingsManager = null;
 
         return $provider;
     }

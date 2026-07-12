@@ -10,6 +10,7 @@ use HaoCode\Services\Api\StreamingClient;
 use HaoCode\Services\Hooks\HookExecutor;
 use HaoCode\Services\Permissions\PermissionChecker;
 use HaoCode\Tools\ToolRegistry;
+use HaoCode\Tools\TodoWrite\TodoWriteTool;
 use Tests\TestCase;
 
 class AgentLoopFactoryTest extends TestCase
@@ -71,5 +72,11 @@ class AgentLoopFactoryTest extends TestCase
         $this->assertNotSame($first->getMessageHistory(), $second->getMessageHistory());
         $this->assertNotSame($first->getSessionManager(), $second->getSessionManager());
         $this->assertNotSame($first->getCostTracker(), $second->getCostTracker());
+
+        $toolRegistry->register(new TodoWriteTool);
+        $method = new \ReflectionMethod($factory, 'buildToolRegistry');
+        $clonedRegistry = $method->invoke($factory, $toolRegistry, null, true);
+
+        $this->assertNotSame($toolRegistry->getTool('TodoWrite'), $clonedRegistry->getTool('TodoWrite'));
     }
 }

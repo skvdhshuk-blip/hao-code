@@ -98,6 +98,34 @@ class SettingsManagerTest extends TestCase
         $this->assertSame(8192, $settings->getMaxTokens());
     }
 
+    public function test_context_window_supports_config_and_runtime_override(): void
+    {
+        config(['haocode.context_window' => 128000]);
+        $settings = new SettingsManager;
+
+        $this->assertSame(128000, $settings->getContextWindow());
+
+        $settings->set('context_window', 64000);
+        $this->assertSame(64000, $settings->getContextWindow());
+    }
+
+    public function test_context_window_can_be_defined_per_provider(): void
+    {
+        $settings = new SettingsManager;
+        $reflection = new \ReflectionObject($settings);
+        $reflection->getProperty('cachedSettings')->setValue($settings, [
+            'active_provider' => 'small-window',
+            'provider' => [
+                'small-window' => [
+                    'type' => 'anthropic',
+                    'context_window' => 64000,
+                ],
+            ],
+        ]);
+
+        $this->assertSame(64000, $settings->getContextWindow());
+    }
+
     // ─── getPermissionMode ────────────────────────────────────────────────
 
     public function test_get_permission_mode_returns_default(): void

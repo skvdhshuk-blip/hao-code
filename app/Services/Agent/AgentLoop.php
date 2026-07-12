@@ -41,6 +41,8 @@ class AgentLoop
 
     private CancellationToken $cancellationToken;
 
+    private ?ToolUseContext $toolUseContext = null;
+
     public function __construct(
         private readonly QueryEngine $queryEngine,
         private readonly ToolOrchestrator $toolOrchestrator,
@@ -54,6 +56,7 @@ class AgentLoop
         private readonly ?HookExecutor $hookExecutor = null,
         private readonly ?PhoenixTracer $tracer = null,
         ?CancellationToken $cancellationToken = null,
+        private readonly int $maxEstimatedInputTokens = ContextBudget::MAX_ESTIMATED_INPUT_TOKENS,
     ) {
         $this->cancellationToken = $cancellationToken ?? new CancellationToken();
     }
@@ -71,6 +74,7 @@ class AgentLoop
     public function setWorkingDirectory(string $dir): void
     {
         $this->workingDirectory = $dir;
+        $this->toolUseContext = null;
         $this->sessionManager->setCurrentWorkingDirectory($dir);
     }
 
@@ -192,7 +196,7 @@ class AgentLoop
                 $messages,
                 $this->toolRegistry->toApiTools(),
             );
-            if ($estimatedTokens > ContextBudget::MAX_ESTIMATED_INPUT_TOKENS) {
+            if ($estimatedTokens > $this->maxEstimatedInputTokens) {
                 $this->contextCompactor->compact($this->messageHistory);
                 $messages = $this->messageHistory->getMessagesForApi();
                 $estimatedTokens = ContextBudget::estimateTokens(
@@ -200,7 +204,7 @@ class AgentLoop
                     $messages,
                     $this->toolRegistry->toApiTools(),
                 );
-                if ($estimatedTokens > ContextBudget::MAX_ESTIMATED_INPUT_TOKENS) {
+                if ($estimatedTokens > $this->maxEstimatedInputTokens) {
                     throw new \RuntimeException(
                         'Estimated model input exceeds the safe context budget after compaction. '.
                         'Reduce the user input, project instructions, or advertised tools.',
@@ -214,7 +218,7 @@ class AgentLoop
                 toolRegistry: $this->toolRegistry,
                 cancellationToken: $this->cancellationToken,
             );
-            $context = new ToolUseContext(
+            $context = $this->toolUseContext ??= new ToolUseContext(
                 workingDirectory: $this->workingDirectory ?? getcwd(),
                 sessionId: $this->sessionManager->getSessionId(),
                 shouldAbort: fn (): bool => $this->cancellationToken->isCancelled(),

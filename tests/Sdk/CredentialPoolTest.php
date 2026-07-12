@@ -98,6 +98,18 @@ class CredentialPoolTest extends TestCase
         $this->assertNull($pool->pickNext('openai'));
     }
 
+    public function test_credentials_without_explicit_ids_are_tracked_independently(): void
+    {
+        $pool = new CredentialPool;
+        $first = new Credential(apiKey: 'first-key');
+        $second = new Credential(apiKey: 'second-key');
+        $pool->addMany('anthropic', [$first, $second]);
+
+        $pool->markExhausted($first);
+
+        $this->assertSame($second->idHash(), $pool->pickNext('anthropic')->idHash());
+    }
+
     // --- markExhausted / restore ---
 
     public function test_exhausted_credential_is_skipped(): void
@@ -303,8 +315,8 @@ class CredentialPoolTest extends TestCase
     public function test_pooled_provider_rotates_on_rate_limit_error(): void
     {
         $pool = new CredentialPool;
-        $credA = new Credential(apiKey: 'key-a', id: 'a');
-        $credB = new Credential(apiKey: 'key-b', id: 'b');
+        $credA = new Credential(apiKey: 'key-a');
+        $credB = new Credential(apiKey: 'key-b');
         $pool->addMany('anthropic', [$credA, $credB]);
 
         $usedKeys = [];
