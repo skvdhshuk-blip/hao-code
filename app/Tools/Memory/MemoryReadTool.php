@@ -63,7 +63,7 @@ DESC;
         $level = $input['level'] ?? 'l1';
 
         /** @var SessionMemory $memory */
-        $memory = app(SessionMemory::class);
+        $memory = \HaoCode\Support\Runtime\SdkRuntime::app(SessionMemory::class);
 
         // List all keys
         if ($key === 'keys') {

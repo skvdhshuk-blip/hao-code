@@ -734,6 +734,80 @@
             }
         }
     },
+    "HaoCode\\Sdk\\Sandbox\\SandboxConfig": {
+        "kind": "class",
+        "api": true,
+        "internal": false,
+        "methods": {
+            "__construct": {
+                "signature": "public function __construct(string $provider = \"local\", string $mode = \"filesystem\", string $remoteCwd = \"/workspace\", string $sync = \"none\", string $cleanup = \"never\", ?string $root = null, array $exclude = [], array $options = [])",
+                "api": false,
+                "internal": false
+            },
+            "agentRun": {
+                "signature": "public static function agentRun(string $accountId, ?string $sandboxId = null, ?string $templateName = null, ?string $apiKey = null, string $region = \"cn-hangzhou\", ?string $endpoint = null, string $mode = \"filesystem\", string $sync = \"none\", string $remoteCwd = \"/workspace\", int $timeoutSeconds = 30, array $exclude = []) : self",
+                "api": true,
+                "internal": false
+            },
+            "enablesBash": {
+                "signature": "public function enablesBash() : bool",
+                "api": false,
+                "internal": true
+            },
+            "local": {
+                "signature": "public static function local(string $mode = \"filesystem\", string $sync = \"none\", string $remoteCwd = \"/workspace\", string $cleanup = \"never\", ?string $root = null, array $exclude = []) : self",
+                "api": true,
+                "internal": false
+            },
+            "native": {
+                "signature": "public static function native(string $mode = \"full\", string $sync = \"none\", string $remoteCwd = \"/workspace\", string $cleanup = \"always\", ?string $root = null, array $exclude = [], string $network = \"blocked\", string $engine = \"auto\") : self",
+                "api": true,
+                "internal": false
+            }
+        },
+        "properties": {
+            "cleanup": {
+                "signature": "public readonly string $cleanup",
+                "api": true,
+                "internal": false
+            },
+            "exclude": {
+                "signature": "public readonly array $exclude",
+                "api": true,
+                "internal": false
+            },
+            "mode": {
+                "signature": "public readonly string $mode",
+                "api": true,
+                "internal": false
+            },
+            "options": {
+                "signature": "public readonly array $options",
+                "api": true,
+                "internal": false
+            },
+            "provider": {
+                "signature": "public readonly string $provider",
+                "api": true,
+                "internal": false
+            },
+            "remoteCwd": {
+                "signature": "public readonly string $remoteCwd",
+                "api": true,
+                "internal": false
+            },
+            "root": {
+                "signature": "public readonly ?string $root",
+                "api": true,
+                "internal": false
+            },
+            "sync": {
+                "signature": "public readonly string $sync",
+                "api": true,
+                "internal": false
+            }
+        }
+    },
     "HaoCode\\Sdk\\SdkSkill": {
         "kind": "class",
         "api": true,

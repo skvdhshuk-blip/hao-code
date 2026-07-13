@@ -312,7 +312,7 @@ class Conversation
     public function loadSession(string $sessionId): void
     {
         /** @var SessionManager $sessionManager */
-        $sessionManager = app(SessionManager::class);
+        $sessionManager = \HaoCode\Support\Runtime\SdkRuntime::app(SessionManager::class);
         $entries = $sessionManager->loadSession($sessionId);
 
         if ($entries === null || $entries === []) {

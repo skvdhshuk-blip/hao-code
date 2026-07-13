@@ -34,7 +34,7 @@ class ToolSearchTool extends BaseTool
     public function call(array $input, ToolUseContext $context): ToolResult
     {
         $query = strtolower(trim((string) $input['query']));
-        $registry = app(ToolRegistry::class);
+        $registry = \HaoCode\Support\Runtime\SdkRuntime::app(ToolRegistry::class);
         $tools = $registry->getAllTools();
         $keywords = $this->keywords($query);
 

@@ -28,7 +28,10 @@ final class SessionStatsService
      */
     public function getOverview(?string $currentSessionId = null): array
     {
-        $sessionPath = config('haocode.session_path', storage_path('app/haocode/sessions'));
+        $sessionPath = \HaoCode\Support\Runtime\SdkRuntime::config(
+            'haocode.session_path',
+            \HaoCode\Support\Runtime\SdkRuntime::storagePath('app/haocode/sessions'),
+        );
         $today = date('Y-m-d');
 
         if (! is_dir($sessionPath)) {

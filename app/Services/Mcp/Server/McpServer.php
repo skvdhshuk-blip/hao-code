@@ -227,7 +227,7 @@ class McpServer
             ],
             'serverInfo' => [
                 'name' => 'hao-code',
-                'version' => config('app.version', 'dev'),
+                'version' => \HaoCode\Support\Runtime\SdkRuntime::config('app.version', 'dev'),
                 'meta' => [
                     'allowed_tools' => $allowedTools,
                     'bash_concurrency' => 1,

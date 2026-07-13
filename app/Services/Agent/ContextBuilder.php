@@ -142,7 +142,7 @@ PROMPT;
             return $override;
         }
 
-        $path = resource_path('prompts/system.md');
+        $path = \HaoCode\Support\Runtime\SdkRuntime::resourcePath('prompts/system.md');
         if (file_exists($path)) {
             return file_get_contents($path);
         }

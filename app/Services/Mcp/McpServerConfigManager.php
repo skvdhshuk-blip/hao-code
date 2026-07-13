@@ -12,7 +12,7 @@ class McpServerConfigManager
         $home = $_SERVER['HOME'] ?? getenv('HOME') ?: sys_get_temp_dir();
 
         return [
-            'global' => config('haocode.global_settings_path') ?: $home.'/.haocode/settings.json',
+            'global' => \HaoCode\Support\Runtime\SdkRuntime::config('haocode.global_settings_path') ?: $home.'/.haocode/settings.json',
             'project' => getcwd().'/.haocode/settings.json',
         ];
     }

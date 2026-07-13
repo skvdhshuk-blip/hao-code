@@ -20,7 +20,7 @@ final class SdkRunFactory
         $runContext = self::createValidatedRunContext($config);
         $provider = $streamingClient
             ?? self::buildStreamingClient($config, $runContext->settings)
-            ?? app(StreamingClient::class)->withSettingsManager($runContext->settings);
+            ?? \HaoCode\Support\Runtime\SdkRuntime::app(StreamingClient::class)->withSettingsManager($runContext->settings);
 
         $providerType = self::resolveProviderType($config, $runContext->settings);
         if ($config->credentialPool !== null) {
@@ -111,8 +111,8 @@ final class SdkRunFactory
             thinkingEnabled: $config->thinkingEnabled,
             thinkingBudget: $config->thinkingBudget,
             settingsManager: null,
-            idleTimeoutSeconds: (int) config('haocode.api_stream_idle_timeout', 60),
-            streamPollTimeoutSeconds: (float) config('haocode.api_stream_poll_timeout', 1.0),
+            idleTimeoutSeconds: (int) \HaoCode\Support\Runtime\SdkRuntime::config('haocode.api_stream_idle_timeout', 60),
+            streamPollTimeoutSeconds: (float) \HaoCode\Support\Runtime\SdkRuntime::config('haocode.api_stream_poll_timeout', 1.0),
             providerType: $providerType,
         );
     }

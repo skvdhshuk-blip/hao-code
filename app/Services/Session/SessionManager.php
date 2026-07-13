@@ -17,7 +17,10 @@ class SessionManager
     )
     {
         $this->sessionId = $this->generateSessionId();
-        $this->sessionPath = config('haocode.session_path', storage_path('app/haocode/sessions'));
+        $this->sessionPath = \HaoCode\Support\Runtime\SdkRuntime::config(
+            'haocode.session_path',
+            \HaoCode\Support\Runtime\SdkRuntime::storagePath('app/haocode/sessions'),
+        );
     }
 
     public function getSessionId(): string

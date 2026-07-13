@@ -40,6 +40,47 @@ final class SandboxConfig
         );
     }
 
+    /**
+     * Create an operating-system isolated local sandbox.
+     *
+     * macOS uses Seatbelt (`sandbox-exec`) and Linux uses bubblewrap. Unlike
+     * `local()`, this configuration fails when the requested isolation engine
+     * is unavailable instead of running the command directly on the host.
+     *
+     * @api
+     */
+    public static function native(
+        string $mode = 'full',
+        string $sync = 'none',
+        string $remoteCwd = '/workspace',
+        string $cleanup = 'always',
+        ?string $root = null,
+        array $exclude = [],
+        string $network = 'blocked',
+        string $engine = 'auto',
+    ): self {
+        if (! in_array($network, ['blocked', 'allow-all'], true)) {
+            throw new \InvalidArgumentException("Unsupported native sandbox network policy: {$network}");
+        }
+        if ($root !== null && rtrim($root, DIRECTORY_SEPARATOR) === '') {
+            throw new \InvalidArgumentException('The native sandbox root cannot be the filesystem root.');
+        }
+
+        return new self(
+            provider: 'native',
+            mode: $mode,
+            remoteCwd: $remoteCwd,
+            sync: $sync,
+            cleanup: $cleanup,
+            root: $root,
+            exclude: $exclude,
+            options: [
+                'network' => $network,
+                'engine' => $engine,
+            ],
+        );
+    }
+
     /** @api */
     public static function agentRun(
         string $accountId,

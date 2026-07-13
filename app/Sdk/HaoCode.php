@@ -238,7 +238,7 @@ class HaoCode
         $config ??= new HaoCodeConfig;
 
         /** @var AgentLoopFactory $factory */
-        $factory = app(AgentLoopFactory::class);
+        $factory = \HaoCode\Support\Runtime\SdkRuntime::app(AgentLoopFactory::class);
         return new Conversation($config, $factory);
     }
 
@@ -258,7 +258,7 @@ class HaoCode
         $config ??= new HaoCodeConfig;
 
         /** @var AgentLoopFactory $factory */
-        $factory = app(AgentLoopFactory::class);
+        $factory = \HaoCode\Support\Runtime\SdkRuntime::app(AgentLoopFactory::class);
         $conv = new Conversation($config, $factory);
         try {
             $conv->loadSession($sessionId);
@@ -284,7 +284,7 @@ class HaoCode
         ?HaoCodeConfig $config = null,
     ): QueryResult|StructuredResult {
         /** @var SessionManager $sessionManager */
-        $sessionManager = app(SessionManager::class);
+        $sessionManager = \HaoCode\Support\Runtime\SdkRuntime::app(SessionManager::class);
         $state = $sessionManager->getInterruptState($sessionId, $interruptId);
         $checkpoint = is_array($state['checkpoint'] ?? null) ? $state['checkpoint'] : [];
         $pendingInterrupt = HumanInterrupt::fromArray($state['interrupt'] ?? []);
@@ -304,15 +304,15 @@ class HaoCode
                     );
                 }
                 if ($pendingInterrupt->sourceAgentId !== null) {
-                    app(\HaoCode\Services\Agent\BackgroundAgentManager::class)
+                    \HaoCode\Support\Runtime\SdkRuntime::app(\HaoCode\Services\Agent\BackgroundAgentManager::class)
                         ->markWaitingForInput($pendingInterrupt->sourceAgentId, $e->interrupt);
                 }
                 throw $e;
             }
             if ($pendingInterrupt->sourceAgentId !== null) {
-                app(\HaoCode\Services\Agent\BackgroundAgentManager::class)
+                \HaoCode\Support\Runtime\SdkRuntime::app(\HaoCode\Services\Agent\BackgroundAgentManager::class)
                     ->markCompleted($pendingInterrupt->sourceAgentId, $result->text);
-                app(\HaoCode\Services\Task\TaskManager::class)
+                \HaoCode\Support\Runtime\SdkRuntime::app(\HaoCode\Services\Task\TaskManager::class)
                     ->update($pendingInterrupt->sourceAgentId, 'completed', $result->text);
             }
             if ($parentLink !== null) {
@@ -347,7 +347,7 @@ class HaoCode
         ?HaoCodeConfig $config = null,
     ): \Generator {
         /** @var SessionManager $sessionManager */
-        $sessionManager = app(SessionManager::class);
+        $sessionManager = \HaoCode\Support\Runtime\SdkRuntime::app(SessionManager::class);
         $state = $sessionManager->getInterruptState($sessionId, $interruptId);
         $pendingInterrupt = HumanInterrupt::fromArray($state['interrupt'] ?? []);
         $parentLink = $sessionManager->findInterruptParentLink($sessionId, $interruptId);
@@ -366,7 +366,7 @@ class HaoCode
                         );
                     }
                     if ($pendingInterrupt->sourceAgentId !== null && $message->interrupt !== null) {
-                        app(\HaoCode\Services\Agent\BackgroundAgentManager::class)
+                        \HaoCode\Support\Runtime\SdkRuntime::app(\HaoCode\Services\Agent\BackgroundAgentManager::class)
                             ->markWaitingForInput($pendingInterrupt->sourceAgentId, $message->interrupt);
                     }
                     yield $message;
@@ -382,9 +382,9 @@ class HaoCode
                 return;
             }
             if ($pendingInterrupt->sourceAgentId !== null) {
-                app(\HaoCode\Services\Agent\BackgroundAgentManager::class)
+                \HaoCode\Support\Runtime\SdkRuntime::app(\HaoCode\Services\Agent\BackgroundAgentManager::class)
                     ->markCompleted($pendingInterrupt->sourceAgentId, $final->text);
-                app(\HaoCode\Services\Task\TaskManager::class)
+                \HaoCode\Support\Runtime\SdkRuntime::app(\HaoCode\Services\Task\TaskManager::class)
                     ->update($pendingInterrupt->sourceAgentId, 'completed', $final->text ?? '');
             }
             if ($parentLink !== null) {
@@ -416,7 +416,7 @@ class HaoCode
         $cwd ??= getcwd() ?: '/';
 
         /** @var SessionManager $sessionManager */
-        $sessionManager = app(SessionManager::class);
+        $sessionManager = \HaoCode\Support\Runtime\SdkRuntime::app(SessionManager::class);
         $sessionId = $sessionManager->findMostRecentSessionId($cwd);
 
         if ($sessionId === null) {
@@ -488,7 +488,7 @@ class HaoCode
     private static function createRun(HaoCodeConfig $config): SdkRun
     {
         /** @var AgentLoopFactory $factory */
-        $factory = app(AgentLoopFactory::class);
+        $factory = \HaoCode\Support\Runtime\SdkRuntime::app(AgentLoopFactory::class);
 
         return SdkRunFactory::create($config, $factory);
     }

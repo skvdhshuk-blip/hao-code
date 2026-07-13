@@ -4,6 +4,7 @@ namespace HaoCode\Sdk\Sandbox;
 
 use HaoCode\Sdk\Sandbox\Backends\LocalSandboxBackend;
 use HaoCode\Sdk\Sandbox\Backends\AgentRunSandboxBackend;
+use HaoCode\Sdk\Sandbox\Backends\NativeSandboxBackend;
 
 /** @internal */
 final class SandboxManager
@@ -12,6 +13,7 @@ final class SandboxManager
     {
         $backend = match ($config->provider) {
             'local' => new LocalSandboxBackend($config),
+            'native' => new NativeSandboxBackend($config),
             'agentrun' => new AgentRunSandboxBackend($config),
             default => throw new \InvalidArgumentException("Unsupported sandbox provider: {$config->provider}"),
         };

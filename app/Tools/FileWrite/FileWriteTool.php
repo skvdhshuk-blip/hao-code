@@ -70,7 +70,7 @@ DESC;
         if (file_exists($filePath)) {
             $originalContent = file_get_contents($filePath);
             try {
-                app(\HaoCode\Services\FileHistory\FileHistoryManager::class)
+                \HaoCode\Support\Runtime\SdkRuntime::app(\HaoCode\Services\FileHistory\FileHistoryManager::class)
                     ->recordBefore($filePath);
             } catch (\Throwable) {}
         }

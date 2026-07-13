@@ -237,7 +237,7 @@ class TieredSummarizer
         if (function_exists('app')) {
             try {
                 /** @var \HaoCode\Services\Settings\SettingsManager $settings */
-                $settings = app(\HaoCode\Services\Settings\SettingsManager::class);
+                $settings = \HaoCode\Support\Runtime\SdkRuntime::app(\HaoCode\Services\Settings\SettingsManager::class);
                 $apiKey = $settings->getApiKey();
                 $baseUrl = $settings->getBaseUrl();
                 $model = $settings->getModel();
@@ -263,7 +263,7 @@ class TieredSummarizer
         $key = $_ENV['ANTHROPIC_API_KEY'] ?? $_SERVER['ANTHROPIC_API_KEY'] ?? null;
         if (function_exists('config')) {
             try {
-                $key = $key ?: config('haocode.api_key');
+                $key = $key ?: \HaoCode\Support\Runtime\SdkRuntime::config('haocode.api_key');
             } catch (\Throwable) {}
         }
 
@@ -274,7 +274,7 @@ class TieredSummarizer
         $baseUrl = 'https://api.anthropic.com';
         if (function_exists('config')) {
             try {
-                $url = config('haocode.api_base_url');
+                $url = \HaoCode\Support\Runtime\SdkRuntime::config('haocode.api_base_url');
                 if (is_string($url) && $url !== '') {
                     $baseUrl = $url;
                 }
@@ -284,7 +284,7 @@ class TieredSummarizer
         $model = 'claude-haiku-4-5-20251001';
         if (function_exists('config')) {
             try {
-                $m = config('haocode.model');
+                $m = \HaoCode\Support\Runtime\SdkRuntime::config('haocode.model');
                 if (is_string($m) && $m !== '') {
                     $model = $m;
                 }

@@ -228,7 +228,10 @@ class PhoenixTracer
             Context::setStorage(new ContextStorage());
 
             $this->provider = $this->buildProvider();
-            $this->tracer = $this->provider->getTracer('hao-code', env('HAO_CODE_VERSION', 'dev'));
+            $this->tracer = $this->provider->getTracer(
+                'hao-code',
+                \HaoCode\Support\Runtime\SdkRuntime::environment('HAO_CODE_VERSION', 'dev'),
+            );
 
             // Ensure queued spans get exported when the PHP process ends,
             // even on the `$result = HaoCode::query(...); echo $result;` SDK
@@ -272,7 +275,7 @@ class PhoenixTracer
 
         $resource = ResourceInfoFactory::emptyResource()->merge(ResourceInfo::create(Attributes::create([
             'service.name' => 'hao-code',
-            'service.version' => env('HAO_CODE_VERSION', 'dev'),
+            'service.version' => \HaoCode\Support\Runtime\SdkRuntime::environment('HAO_CODE_VERSION', 'dev'),
             // Phoenix buckets spans by this resource attribute.
             'openinference.project.name' => $this->projectName,
         ])));

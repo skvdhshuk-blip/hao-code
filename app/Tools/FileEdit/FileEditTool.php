@@ -84,7 +84,7 @@ DESC;
 
         // Record file history before editing
         try {
-            app(\HaoCode\Services\FileHistory\FileHistoryManager::class)
+            \HaoCode\Support\Runtime\SdkRuntime::app(\HaoCode\Services\FileHistory\FileHistoryManager::class)
                 ->recordBefore($filePath);
         } catch (\Throwable) {}
 

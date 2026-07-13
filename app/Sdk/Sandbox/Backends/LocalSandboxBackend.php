@@ -27,6 +27,15 @@ final class LocalSandboxBackend implements SandboxBackendInterface
             }
         }
 
+        $canonicalRoot = realpath($this->root);
+        if ($canonicalRoot === false) {
+            throw new \RuntimeException("Failed to resolve sandbox root: {$this->root}");
+        }
+        $this->root = rtrim($canonicalRoot, DIRECTORY_SEPARATOR);
+        if ($this->root === '') {
+            $this->root = DIRECTORY_SEPARATOR;
+        }
+
         $this->ensureDirectory($this->resolve($this->config->remoteCwd));
     }
 
@@ -121,7 +130,7 @@ final class LocalSandboxBackend implements SandboxBackendInterface
         );
 
         foreach ($iterator as $file) {
-            if (! $file instanceof \SplFileInfo || ! $file->isFile()) {
+            if (! $file instanceof \SplFileInfo || $file->isLink() || ! $file->isFile()) {
                 continue;
             }
             $relative = ltrim(str_replace($baseLocal, '', $file->getPathname()), DIRECTORY_SEPARATOR);
@@ -289,7 +298,31 @@ final class LocalSandboxBackend implements SandboxBackendInterface
             $parts[] = $part;
         }
 
-        return $this->root.'/'.implode('/', $parts);
+        $resolved = $this->root.'/'.implode('/', $parts);
+        $this->assertPathInsideRoot($resolved, $path);
+
+        return $resolved;
+    }
+
+    private function assertPathInsideRoot(string $path, string $requestedPath): void
+    {
+        $existing = $path;
+        while (! file_exists($existing) && ! is_link($existing)) {
+            $parent = dirname($existing);
+            if ($parent === $existing) {
+                break;
+            }
+            $existing = $parent;
+        }
+
+        $canonical = realpath($existing);
+        if ($canonical === false) {
+            throw new \RuntimeException("Failed to resolve sandbox path: {$requestedPath}");
+        }
+
+        if ($canonical !== $this->root && ! str_starts_with($canonical, $this->root.DIRECTORY_SEPARATOR)) {
+            throw new \RuntimeException("Sandbox path escapes through a symbolic link: {$requestedPath}");
+        }
     }
 
     private function toRemotePath(string $localPath): string
@@ -315,7 +348,9 @@ final class LocalSandboxBackend implements SandboxBackendInterface
             \RecursiveIteratorIterator::CHILD_FIRST,
         );
         foreach ($iterator as $file) {
-            if ($file instanceof \SplFileInfo && $file->isDir()) {
+            if ($file instanceof \SplFileInfo && $file->isLink()) {
+                @unlink($file->getPathname());
+            } elseif ($file instanceof \SplFileInfo && $file->isDir()) {
                 @rmdir($file->getPathname());
             } else {
                 @unlink($file->getPathname());
@@ -333,7 +368,7 @@ final class LocalSandboxBackend implements SandboxBackendInterface
             \RecursiveIteratorIterator::LEAVES_ONLY,
         );
         foreach ($iterator as $file) {
-            if ($file instanceof \SplFileInfo && $file->isFile()) {
+            if ($file instanceof \SplFileInfo && ! $file->isLink() && $file->isFile()) {
                 $files[] = $file->getPathname();
             }
         }

@@ -31,7 +31,7 @@ class TaskGetTool extends BaseTool
 
     public function call(array $input, ToolUseContext $context): ToolResult
     {
-        $manager = app(TaskManager::class);
+        $manager = \HaoCode\Support\Runtime\SdkRuntime::app(TaskManager::class);
         $task = $manager->get($input['id']);
 
         if (!$task) {
@@ -55,7 +55,7 @@ class TaskGetTool extends BaseTool
             $lines[] = "Result: {$task->result}";
         }
 
-        $agent = app(BackgroundAgentManager::class)->refreshStatus($task->id);
+        $agent = \HaoCode\Support\Runtime\SdkRuntime::app(BackgroundAgentManager::class)->refreshStatus($task->id);
         if ($agent !== null) {
             $lines[] = "Agent status: {$agent['status']}";
             if (! empty($agent['pid'])) {

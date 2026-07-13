@@ -31,7 +31,7 @@ class SettingsManager
         $apiKey = $this->runtimeOverrides['api_key']
             ?? $providerConfig['api_key']
             ?? $settings['api_key']
-            ?? config('haocode.api_key')
+            ?? \HaoCode\Support\Runtime\SdkRuntime::config('haocode.api_key')
             ?: getenv('ANTHROPIC_API_KEY')
             ?: '';
 
@@ -48,7 +48,7 @@ class SettingsManager
         $model = $runtimeModel
             ?? $providerConfig['model']
             ?? $settingsModel
-            ?? config('haocode.model', self::DEFAULT_MODEL);
+            ?? \HaoCode\Support\Runtime\SdkRuntime::config('haocode.model', self::DEFAULT_MODEL);
 
         if (! is_string($model) || trim($model) === '') {
             $model = self::DEFAULT_MODEL;
@@ -68,7 +68,7 @@ class SettingsManager
         $baseUrl = $this->runtimeOverrides['api_base_url']
             ?? $this->getProviderConfig()['api_base_url']
             ?? $settings['api_base_url']
-            ?? config('haocode.api_base_url', self::DEFAULT_BASE_URL);
+            ?? \HaoCode\Support\Runtime\SdkRuntime::config('haocode.api_base_url', self::DEFAULT_BASE_URL);
 
         return is_string($baseUrl) && trim($baseUrl) !== ''
             ? $baseUrl
@@ -81,7 +81,7 @@ class SettingsManager
         $maxTokens = $this->runtimeOverrides['max_tokens']
             ?? $this->getProviderConfig()['max_tokens']
             ?? $settings['max_tokens']
-            ?? config('haocode.max_tokens', self::DEFAULT_MAX_TOKENS);
+            ?? \HaoCode\Support\Runtime\SdkRuntime::config('haocode.max_tokens', self::DEFAULT_MAX_TOKENS);
 
         return is_numeric($maxTokens) ? (int) $maxTokens : self::DEFAULT_MAX_TOKENS;
     }
@@ -92,7 +92,7 @@ class SettingsManager
         $contextWindow = $this->runtimeOverrides['context_window']
             ?? $this->getProviderConfig()['context_window']
             ?? $settings['context_window']
-            ?? config('haocode.context_window', 200000);
+            ?? \HaoCode\Support\Runtime\SdkRuntime::config('haocode.context_window', 200000);
 
         return is_numeric($contextWindow) && (int) $contextWindow > 0
             ? (int) $contextWindow
@@ -285,14 +285,17 @@ class SettingsManager
             );
         }
 
-        if (config('haocode.approval_policy') !== null || config('haocode.sandbox_mode') !== null) {
+        if (\HaoCode\Support\Runtime\SdkRuntime::config('haocode.approval_policy') !== null
+            || \HaoCode\Support\Runtime\SdkRuntime::config('haocode.sandbox_mode') !== null) {
             return $this->permissionModeFromModernConfig(
-                config('haocode.approval_policy'),
-                config('haocode.sandbox_mode'),
+                \HaoCode\Support\Runtime\SdkRuntime::config('haocode.approval_policy'),
+                \HaoCode\Support\Runtime\SdkRuntime::config('haocode.sandbox_mode'),
             );
         }
 
-        return $this->normalizePermissionModeValue(config('haocode.permission_mode', PermissionMode::Default->value));
+        return $this->normalizePermissionModeValue(
+            \HaoCode\Support\Runtime\SdkRuntime::config('haocode.permission_mode', PermissionMode::Default->value),
+        );
     }
 
     public function getApprovalPolicy(): string
@@ -322,7 +325,9 @@ class SettingsManager
             return $this->approvalPolicyFromPermissionMode($this->getPermissionMode());
         }
 
-        $configApprovalPolicy = $this->normalizeApprovalPolicy(config('haocode.approval_policy'));
+        $configApprovalPolicy = $this->normalizeApprovalPolicy(
+            \HaoCode\Support\Runtime\SdkRuntime::config('haocode.approval_policy'),
+        );
         if ($configApprovalPolicy !== null) {
             return $configApprovalPolicy;
         }
@@ -357,7 +362,9 @@ class SettingsManager
             return $this->sandboxModeFromPermissionMode($this->getPermissionMode());
         }
 
-        $configSandboxMode = $this->normalizeSandboxMode(config('haocode.sandbox_mode'));
+        $configSandboxMode = $this->normalizeSandboxMode(
+            \HaoCode\Support\Runtime\SdkRuntime::config('haocode.sandbox_mode'),
+        );
         if ($configSandboxMode !== null) {
             return $configSandboxMode;
         }
@@ -445,7 +452,10 @@ class SettingsManager
 
     public function getSessionPath(): string
     {
-        return config('haocode.session_path', storage_path('app/haocode/sessions'));
+        return \HaoCode\Support\Runtime\SdkRuntime::config(
+            'haocode.session_path',
+            \HaoCode\Support\Runtime\SdkRuntime::storagePath('app/haocode/sessions'),
+        );
     }
 
     public function getOutputStyle(): ?string
@@ -632,7 +642,7 @@ class SettingsManager
             return $this->cachedSettings;
         }
 
-        $globalPath = config('haocode.global_settings_path')
+        $globalPath = \HaoCode\Support\Runtime\SdkRuntime::config('haocode.global_settings_path')
             ?? ($_SERVER['HOME'] ?? getenv('HOME') ?: sys_get_temp_dir()).'/.haocode/settings.json';
         $projectPath = ($this->workingDirectory ?? getcwd()).'/.haocode/settings.json';
         $global = $this->loadSettingsFile($globalPath);
@@ -701,8 +711,8 @@ class SettingsManager
             $settingsProvider = $this->normalizeProviderName(
                 $settings['model_provider']
                     ?? $settings['active_provider']
-                    ?? config('haocode.model_provider')
-                    ?? config('haocode.active_provider')
+                    ?? \HaoCode\Support\Runtime\SdkRuntime::config('haocode.model_provider')
+                    ?? \HaoCode\Support\Runtime\SdkRuntime::config('haocode.active_provider')
                     ?? null,
             );
             if ($settingsProvider !== null && array_key_exists($settingsProvider, $providers)) {

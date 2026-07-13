@@ -290,10 +290,44 @@ The local backend creates an isolated temp directory. With `sync: 'upload-cwd'`,
 it copies text files from `cwd` into `remoteCwd`, skipping `.git`,
 `node_modules`, `vendor`, caches, binaries, and files over 1MB.
 
+`SandboxConfig::local(mode: 'full')` provides workspace isolation, not operating
+system process isolation: `Bash` still runs as a normal host process with the
+sandbox directory as its working directory. Do not use it for untrusted commands.
+
 | Sync | Behavior |
 |------|----------|
 | `none` | Start with an empty sandbox at `remoteCwd` |
 | `upload-cwd` | Copy a safe text snapshot of `cwd` into `remoteCwd` |
+
+### Native local backend
+
+Use `SandboxConfig::native()` when an agent may generate shell commands. It uses
+the host operating system's local isolation primitive and refuses to run if that
+engine is missing:
+
+- macOS: Seatbelt via `/usr/bin/sandbox-exec`
+- Linux: bubblewrap (`bwrap` must be installed)
+
+```php
+$config = new HaoCodeConfig(
+    cwd: __DIR__,
+    sandbox: SandboxConfig::native(
+        sync: 'upload-cwd',
+        remoteCwd: '/workspace',
+        network: 'blocked',
+        cleanup: 'always',
+    ),
+    allowedTools: ['Read', 'Write', 'Glob', 'Grep', 'Bash'],
+);
+```
+
+The backend allows writes only under its temporary root, starts commands with a
+sanitized environment, and blocks network access by default. Set
+`network: 'allow-all'` only for tasks that require network access. `engine` may
+be set to `seatbelt` or `bubblewrap` to require a specific engine; the default
+`auto` selects the native engine for the current platform. This backend does not
+yet provide Tokimo's Linux micro-VM boundary, PTY transport, or packaged rootfs;
+use AgentRun when a remote/container boundary is required.
 
 ### Alibaba Cloud AgentRun backend
 

@@ -154,7 +154,7 @@ PROMPT;
         }
 
         try {
-            $path = config('haocode.session_path');
+            $path = \HaoCode\Support\Runtime\SdkRuntime::config('haocode.session_path');
         } catch (\Throwable) {
             return null;
         }
@@ -169,7 +169,7 @@ PROMPT;
         }
 
         try {
-            $path = storage_path('app/haocode/sessions');
+            $path = \HaoCode\Support\Runtime\SdkRuntime::storagePath('app/haocode/sessions');
         } catch (\Throwable) {
             return null;
         }

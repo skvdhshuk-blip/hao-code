@@ -30,7 +30,7 @@ class TaskListTool extends BaseTool
 
     public function call(array $input, ToolUseContext $context): ToolResult
     {
-        $manager = app(TaskManager::class);
+        $manager = \HaoCode\Support\Runtime\SdkRuntime::app(TaskManager::class);
         $tasks = $manager->list($input['status'] ?? null);
 
         if (empty($tasks)) {
@@ -38,7 +38,7 @@ class TaskListTool extends BaseTool
         }
 
         $lines = ["Tasks (" . count($tasks) . "):"];
-        $backgroundAgents = app(BackgroundAgentManager::class);
+        $backgroundAgents = \HaoCode\Support\Runtime\SdkRuntime::app(BackgroundAgentManager::class);
         foreach ($tasks as $task) {
             $age = time() - $task->createdAt;
             $status = $task->status;

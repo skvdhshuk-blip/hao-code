@@ -57,7 +57,7 @@ DESC;
     public function call(array $input, ToolUseContext $context): ToolResult
     {
         /** @var SettingsManager $settings */
-        $settings = $this->settings ?? app(SettingsManager::class);
+        $settings = $this->settings ?? \HaoCode\Support\Runtime\SdkRuntime::app(SettingsManager::class);
         $key = $input['key'] ?? null;
         $value = $input['value'] ?? null;
 

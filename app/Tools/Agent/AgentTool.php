@@ -339,8 +339,8 @@ DESC;
 
         $lastResponse = $this->runBackgroundTurn($subLoop, $taskId, $initialPrompt);
         $idleSince = time();
-        $idleTimeout = max(30, (int) config('haocode.background_agent_idle_timeout', 300));
-        $pollMicros = max(100_000, ((int) config('haocode.background_agent_poll_interval_ms', 250)) * 1000);
+        $idleTimeout = max(30, (int) \HaoCode\Support\Runtime\SdkRuntime::config('haocode.background_agent_idle_timeout', 300));
+        $pollMicros = max(100_000, ((int) \HaoCode\Support\Runtime\SdkRuntime::config('haocode.background_agent_poll_interval_ms', 250)) * 1000);
 
         while (true) {
             if ($this->backgroundAgents()->isStopRequested($taskId)) {
@@ -474,11 +474,11 @@ DESC;
 
     private function backgroundAgents(): BackgroundAgentManager
     {
-        return $this->backgroundAgentManager ?? app(BackgroundAgentManager::class);
+        return $this->backgroundAgentManager ?? \HaoCode\Support\Runtime\SdkRuntime::app(BackgroundAgentManager::class);
     }
 
     private function tasks(): TaskManager
     {
-        return $this->taskManager ?? app(TaskManager::class);
+        return $this->taskManager ?? \HaoCode\Support\Runtime\SdkRuntime::app(TaskManager::class);
     }
 }

@@ -100,6 +100,46 @@ final class SdkRuntime
         return $abstract === null ? $app : $app->make($abstract);
     }
 
+    public static function config(null|string|array $key = null, mixed $default = null): mixed
+    {
+        $app = self::boot();
+        if (is_array($key)) {
+            foreach ($key as $configKey => $value) {
+                $app->setConfig((string) $configKey, $value);
+            }
+
+            return null;
+        }
+
+        return $app->config($key, $default);
+    }
+
+    public static function environment(string $key, mixed $default = null): mixed
+    {
+        $value = $_ENV[$key] ?? $_SERVER[$key] ?? getenv($key);
+        if ($value === false || $value === null) {
+            return $default;
+        }
+
+        return match (strtolower((string) $value)) {
+            'true', '(true)' => true,
+            'false', '(false)' => false,
+            'empty', '(empty)' => '',
+            'null', '(null)' => null,
+            default => $value,
+        };
+    }
+
+    public static function storagePath(string $path = ''): string
+    {
+        return self::boot()->storagePath($path);
+    }
+
+    public static function resourcePath(string $path = ''): string
+    {
+        return self::boot()->resourcePath($path);
+    }
+
     public static function reset(): void
     {
         self::$container = null;
@@ -123,6 +163,7 @@ final class SdkRuntime
     {
         $path = $app->configPath('haocode.php');
         if (file_exists($path)) {
+            $defaultSessionPath = $app->storagePath('app/haocode/sessions');
             /** @var array<string, mixed> $config */
             $config = require $path;
             $app->mergeConfig('haocode', $config);
@@ -183,11 +224,11 @@ final class SdkRuntime
                 model: $settings->getModel(),
                 baseUrl: $settings->getBaseUrl(),
                 maxTokens: $settings->getMaxTokens(),
-                thinkingEnabled: (bool) env('HAOCODE_THINKING', false),
-                thinkingBudget: (int) env('HAOCODE_THINKING_BUDGET', 10000),
+                thinkingEnabled: (bool) self::environment('HAOCODE_THINKING', false),
+                thinkingBudget: (int) self::environment('HAOCODE_THINKING_BUDGET', 10000),
                 settingsManager: $settings,
-                idleTimeoutSeconds: (int) config('haocode.api_stream_idle_timeout', 60),
-                streamPollTimeoutSeconds: (float) config('haocode.api_stream_poll_timeout', 1.0),
+                idleTimeoutSeconds: (int) self::config('haocode.api_stream_idle_timeout', 60),
+                streamPollTimeoutSeconds: (float) self::config('haocode.api_stream_poll_timeout', 1.0),
             );
         });
         $app->singleton(MessageHistory::class);

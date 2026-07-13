@@ -28,6 +28,7 @@ use HaoCode\Sdk\HumanInterrupt;
 use HaoCode\Sdk\HumanInterruptException;
 use HaoCode\Sdk\Message;
 use HaoCode\Sdk\QueryResult;
+use HaoCode\Sdk\Sandbox\SandboxConfig;
 use HaoCode\Sdk\SdkSkill;
 use HaoCode\Sdk\SdkTool;
 use HaoCode\Sdk\StructuredResult;
@@ -50,6 +51,7 @@ $classes = [
     HumanInterruptException::class,
     Conversation::class,
     QueryResult::class,
+    SandboxConfig::class,
     Message::class,
     SdkTool::class,
     SdkSkill::class,

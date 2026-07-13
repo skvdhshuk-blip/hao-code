@@ -82,7 +82,7 @@ DESC;
     public function call(array $input, ToolUseContext $context): ToolResult
     {
         /** @var SkillLoader $loader */
-        $loader = $this->skillLoader ?? app(SkillLoader::class);
+        $loader = $this->skillLoader ?? \HaoCode\Support\Runtime\SdkRuntime::app(SkillLoader::class);
         $skillName = ltrim((string) ($input['skill'] ?? ''), '/');
         $args = $input['args'] ?? '';
         $action = $input['action'] ?? ($skillName === '' ? 'list' : 'run');

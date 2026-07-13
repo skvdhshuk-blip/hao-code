@@ -36,7 +36,7 @@ class TaskUpdateTool extends BaseTool
 
     public function call(array $input, ToolUseContext $context): ToolResult
     {
-        $manager = app(TaskManager::class);
+        $manager = \HaoCode\Support\Runtime\SdkRuntime::app(TaskManager::class);
         $task = $manager->update(
             id: $input['id'],
             status: $input['status'],

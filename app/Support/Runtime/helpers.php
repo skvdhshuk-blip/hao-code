@@ -29,19 +29,7 @@ if (! function_exists('config')) {
 if (! function_exists('env')) {
     function env(string $key, mixed $default = null): mixed
     {
-        $value = $_ENV[$key] ?? $_SERVER[$key] ?? getenv($key);
-
-        if ($value === false || $value === null) {
-            return $default;
-        }
-
-        return match (strtolower((string) $value)) {
-            'true', '(true)' => true,
-            'false', '(false)' => false,
-            'empty', '(empty)' => '',
-            'null', '(null)' => null,
-            default => $value,
-        };
+        return SdkRuntime::environment($key, $default);
     }
 }
 

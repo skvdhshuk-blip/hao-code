@@ -31,17 +31,17 @@ class TaskStopTool extends BaseTool
 
     public function call(array $input, ToolUseContext $context): ToolResult
     {
-        $backgroundAgentManager = app(BackgroundAgentManager::class);
+        $backgroundAgentManager = \HaoCode\Support\Runtime\SdkRuntime::app(BackgroundAgentManager::class);
         $agent = $backgroundAgentManager->refreshStatus($input['id']);
 
         if ($agent !== null && !in_array($agent['status'] ?? '', ['completed', 'error', 'dead'], true)) {
             $backgroundAgentManager->requestStop($input['id']);
-            app(TaskManager::class)->update($input['id'], 'in_progress', 'Stop requested by user.');
+            \HaoCode\Support\Runtime\SdkRuntime::app(TaskManager::class)->update($input['id'], 'in_progress', 'Stop requested by user.');
 
             return ToolResult::success("Stop requested for background agent {$input['id']}.");
         }
 
-        $manager = app(TaskManager::class);
+        $manager = \HaoCode\Support\Runtime\SdkRuntime::app(TaskManager::class);
         $task = $manager->stop($input['id']);
 
         if (!$task) {

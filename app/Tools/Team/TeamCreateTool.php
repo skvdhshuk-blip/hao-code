@@ -333,8 +333,8 @@ PREAMBLE;
 
         $lastResponse = $this->runTurn($subLoop, $agentId, $prompt);
         $idleSince = time();
-        $idleTimeout = max(30, (int) config('haocode.background_agent_idle_timeout', 300));
-        $pollMicros = max(100_000, ((int) config('haocode.background_agent_poll_interval_ms', 250)) * 1000);
+        $idleTimeout = max(30, (int) \HaoCode\Support\Runtime\SdkRuntime::config('haocode.background_agent_idle_timeout', 300));
+        $pollMicros = max(100_000, ((int) \HaoCode\Support\Runtime\SdkRuntime::config('haocode.background_agent_poll_interval_ms', 250)) * 1000);
 
         while (true) {
             if ($this->backgroundAgentManager->isStopRequested($agentId)) {

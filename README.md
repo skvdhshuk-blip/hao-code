@@ -116,6 +116,26 @@ $result = HaoCode::query('Review this project and write notes to notes.md', new 
 ));
 ```
 
+`local()` isolates the workspace path but executes `mode: 'full'` commands as a
+normal host process. For agent-generated commands, use the native backend:
+
+```php
+$config = new HaoCodeConfig(
+    cwd: __DIR__,
+    sandbox: SandboxConfig::native(
+        sync: 'upload-cwd',
+        network: 'blocked', // opt in with "allow-all" when the task needs it
+    ),
+    allowedTools: ['Read', 'Write', 'Grep', 'Glob', 'Bash'],
+);
+```
+
+The native backend uses macOS Seatbelt or Linux bubblewrap, exposes only the
+sandbox workspace for writes, removes inherited secrets from the command
+environment, and blocks networking by default. It fails closed when the native
+engine is unavailable. Linux hosts must install `bubblewrap`; macOS uses the
+system `/usr/bin/sandbox-exec` executable.
+
 ### Alibaba Cloud AgentRun
 
 `SandboxConfig::agentRun()` uses Alibaba Cloud AgentRun as a remote temporary

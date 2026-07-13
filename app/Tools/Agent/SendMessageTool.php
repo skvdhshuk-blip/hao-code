@@ -111,7 +111,7 @@ DESC;
         ToolUseContext $context,
     ): ToolResult {
         /** @var TeamManager $teamManager */
-        $teamManager = app(TeamManager::class);
+        $teamManager = \HaoCode\Support\Runtime\SdkRuntime::app(TeamManager::class);
         $team = $teamManager->get($teamName);
 
         if ($team === null) {
