@@ -20,6 +20,10 @@ class ToolOrchestrator
     private ?ToolResultStorage $toolResultStorage = null;
     /** @var array<string, int> raw file_path → successful Read count (this session) */
     private array $readCountsByFile = [];
+    /** @var string[]|null Tool names allowed by active skills; null means unrestricted. */
+    private ?array $activeSkillAllowedTools = null;
+    private ?string $activeSkillModelOverride = null;
+    private string $activeSkillContext = 'inline';
 
     public function __construct(
         private readonly ToolRegistry $toolRegistry,
@@ -41,6 +45,29 @@ class ToolOrchestrator
     public function setPermissionPromptHandler(callable $handler): void
     {
         $this->permissionPromptHandler = $handler;
+    }
+
+    public function resetSkillScope(): void
+    {
+        $this->activeSkillAllowedTools = null;
+        $this->activeSkillModelOverride = null;
+        $this->activeSkillContext = 'inline';
+    }
+
+    /** @return string[]|null */
+    public function getActiveSkillAllowedTools(): ?array
+    {
+        return $this->activeSkillAllowedTools;
+    }
+
+    public function getActiveSkillModelOverride(): ?string
+    {
+        return $this->activeSkillModelOverride;
+    }
+
+    public function getActiveSkillContext(): string
+    {
+        return $this->activeSkillContext;
     }
 
     /**
@@ -275,6 +302,14 @@ class ToolOrchestrator
             ];
         }
 
+        if (! $this->isAllowedByActiveSkillScope($toolName)) {
+            return [
+                'tool_use_id' => $toolUseId,
+                'content' => "Tool {$toolName} is not allowed by the active skill scope.",
+                'is_error' => true,
+            ];
+        }
+
         // Stage 1: Schema validation
         try {
             $input = $tool->inputSchema()->validate($input);
@@ -349,6 +384,7 @@ class ToolOrchestrator
         // Execute the tool
         try {
             $result = $tool->call($input, $context);
+            $this->activateSkillScope($toolName, $result);
 
             // PostToolUse hooks (success path)
             $postHookResult = $this->hookExecutor->execute('PostToolUse', [
@@ -424,6 +460,49 @@ class ToolOrchestrator
         }
 
         return $result->toApiFormat($toolUseId);
+    }
+
+    private function isAllowedByActiveSkillScope(string $toolName): bool
+    {
+        if ($this->activeSkillAllowedTools === null || $toolName === 'Skill') {
+            return true;
+        }
+
+        return in_array($toolName, $this->activeSkillAllowedTools, true);
+    }
+
+    private function activateSkillScope(string $toolName, ToolResult $result): void
+    {
+        if ($toolName !== 'Skill' || $result->isError || $result->metadata === null) {
+            return;
+        }
+
+        $allowedTools = $result->metadata['allowed_tools'] ?? [];
+        $context = $result->metadata['context'] ?? 'inline';
+        if ($context !== 'fork' && is_array($allowedTools) && $allowedTools !== []) {
+            $normalized = array_values(array_unique(array_filter(array_map(
+                static function (mixed $name): string {
+                    $name = trim((string) $name);
+                    $patternStart = strpos($name, '(');
+
+                    return $patternStart === false ? $name : substr($name, 0, $patternStart);
+                },
+                $allowedTools,
+            ))));
+
+            $this->activeSkillAllowedTools = $this->activeSkillAllowedTools === null
+                ? $normalized
+                : array_values(array_intersect($this->activeSkillAllowedTools, $normalized));
+        }
+
+        $modelOverride = $result->metadata['model_override'] ?? null;
+        if ($context !== 'fork' && is_string($modelOverride) && trim($modelOverride) !== '') {
+            $this->activeSkillModelOverride = trim($modelOverride);
+        }
+
+        if (is_string($context) && in_array($context, ['inline', 'fork'], true)) {
+            $this->activeSkillContext = $context;
+        }
     }
 
     /**

@@ -281,6 +281,24 @@ class HaoCodeConfig
          * @api
          */
         public readonly ?string $memoryStoragePath = null,
+
+        /**
+         * Additional directories containing <name>/SKILL.md packages.
+         * Directories are loaded only when explicitly configured.
+         *
+         * @api
+         *
+         * @var string[]
+         */
+        public readonly array $skillDirectories = [],
+
+        /**
+         * Recursively discover nested SKILL.md packages in all skill sources.
+         * Disabled by default; shallow packages win same-name collisions.
+         *
+         * @api
+         */
+        public readonly bool $recursiveSkillDiscovery = false,
     ) {}
 
     /**

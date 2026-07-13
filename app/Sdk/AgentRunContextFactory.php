@@ -56,7 +56,11 @@ final class AgentRunContextFactory
             $settings->set('memory_storage_path', $config->memoryStoragePath);
         }
 
-        $skillLoader = new SkillLoader($projectDirectory);
+        $skillLoader = new SkillLoader(
+            $projectDirectory,
+            $config->skillDirectories,
+            $config->recursiveSkillDiscovery,
+        );
         foreach ($config->skills as $skill) {
             $skillLoader->registerSkillDefinition($skill->toDefinition());
         }

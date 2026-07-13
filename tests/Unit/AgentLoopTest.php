@@ -1524,6 +1524,96 @@ class AgentLoopTest extends TestCase
         }
     }
 
+    public function test_skill_scope_filters_next_turn_tools_applies_model_and_restores_it_after_run(): void
+    {
+        $settings = new \HaoCode\Services\Settings\SettingsManager('/tmp');
+        $settings->set('model', 'parent-model');
+        $settings->set('permission_mode', 'bypass_permissions');
+        $skillLoader = new \HaoCode\Tools\Skill\SkillLoader('/tmp');
+        $skills = new \ReflectionProperty($skillLoader, 'skills');
+        $skills->setValue($skillLoader, []);
+        $skillLoader->registerSkillDefinition(new \HaoCode\Tools\Skill\SkillDefinition(
+            name: 'scoped',
+            description: 'Scoped skill',
+            whenToUse: null,
+            prompt: 'Use Read only.',
+            allowedTools: ['Read'],
+            model: 'skill-model',
+        ));
+        $runContext = new \HaoCode\Services\Agent\AgentRunContext(
+            '/tmp',
+            '/tmp',
+            $settings,
+            $skillLoader,
+            new \HaoCode\Services\Agent\CancellationToken,
+        );
+
+        $registry = new ToolRegistry;
+        $registry->register(new \HaoCode\Tools\Skill\SkillTool($skillLoader));
+        $registry->register($this->makeTool('Read', fn () => ToolResult::success('read')));
+        $registry->register($this->makeTool('Bash', fn () => ToolResult::success('bash')));
+
+        $permissionChecker = new \HaoCode\Services\Permissions\PermissionChecker(
+            $settings,
+            new \HaoCode\Services\Permissions\DenialTracker,
+        );
+        $hookExecutor = $this->createMock(HookExecutor::class);
+        $hookExecutor->method('execute')->willReturn(new HookResult(true));
+        $orchestrator = new ToolOrchestrator($registry, $permissionChecker, $hookExecutor);
+        $queryCount = 0;
+        $queryEngine = $this->createMock(QueryEngine::class);
+        $queryEngine->expects($this->exactly(2))->method('query')->willReturnCallback(
+            function (
+                array $systemPrompt,
+                array $messages,
+                ?callable $onTextDelta = null,
+                ?callable $onToolBlockComplete = null,
+                ?callable $onThinkingDelta = null,
+                ?callable $shouldAbort = null,
+                ?array $toolsOverride = null,
+            ) use (&$queryCount, $settings): StreamProcessor {
+                $queryCount++;
+                $names = array_column($toolsOverride ?? [], 'name');
+                if ($queryCount === 1) {
+                    $this->assertContains('Bash', $names);
+
+                    return $this->makeValidToolUseProcessor('Skill', 'skill-scope-1', ['skill' => 'scoped']);
+                }
+
+                $this->assertSame('skill-model', $settings->getModel());
+                $this->assertContains('Skill', $names);
+                $this->assertContains('Read', $names);
+                $this->assertNotContains('Bash', $names);
+
+                return $this->makePlainTextProcessor('done');
+            },
+        );
+
+        $contextBuilder = $this->createMock(ContextBuilder::class);
+        $contextBuilder->method('buildSystemPrompt')->willReturn([]);
+        $sessionManager = $this->createMock(SessionManager::class);
+        $sessionManager->method('getSessionId')->willReturn('skill-scope-session');
+        $compactor = $this->createMock(ContextCompactor::class);
+        $compactor->method('shouldAutoCompact')->willReturn(false);
+
+        $loop = new AgentLoop(
+            queryEngine: $queryEngine,
+            toolOrchestrator: $orchestrator,
+            contextBuilder: $contextBuilder,
+            messageHistory: new MessageHistory,
+            permissionChecker: $permissionChecker,
+            sessionManager: $sessionManager,
+            contextCompactor: $compactor,
+            costTracker: new CostTracker(999.0, 9999.0),
+            toolRegistry: $registry,
+            hookExecutor: $hookExecutor,
+            runContext: $runContext,
+        );
+
+        $this->assertSame('done', $loop->run('use scoped'));
+        $this->assertSame('parent-model', $settings->getModel());
+    }
+
     private function makeValidToolUseProcessor(string $toolName, string $toolId, array $input): StreamProcessor
     {
         $processor = new StreamProcessor;

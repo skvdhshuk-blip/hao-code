@@ -242,12 +242,27 @@ $skill = new SdkSkill(
     description: 'Review code for common security risks.',
     prompt: 'Check $ARGUMENTS for injection, auth bypass, secrets, and unsafe IO.',
     allowedTools: ['Read', 'Grep'],
+    context: 'inline', // use 'fork' for an isolated child agent
 );
 
 $result = HaoCode::query('Use security-review on app/Auth.php', new HaoCodeConfig(
     skills: [$skill],
 ));
 ```
+
+To use an existing Claude Skill catalog without copying it, opt in explicitly:
+
+```php
+$result = HaoCode::query('Use the matching skill for this task', new HaoCodeConfig(
+    skillDirectories: [getenv('HOME').'/.claude/skills'],
+    recursiveSkillDiscovery: true,
+));
+```
+
+Skill-specific tool restrictions and model overrides are enforced during the
+active skill scope. Standalone skill shell directives are forwarded to the
+normal `Bash` tool, so the configured permission checks and hooks still apply.
+Additional directories are never loaded implicitly.
 
 ## Credentials And Budgets
 

@@ -107,6 +107,8 @@ class AgentLoop
         ?callable $onTurnStart = null,
         ?callable $onThinkingDelta = null,
     ): string {
+        $originalModel = $this->runContext?->settings->getModel();
+        $this->toolOrchestrator->resetSkillScope();
         $agentSpan = $this->tracer?->startSpan(
             name: 'agent.run',
             openInferenceKind: PhoenixTracer::KIND_AGENT,
@@ -129,6 +131,10 @@ class AgentLoop
             $this->tracer?->recordException($agentSpan, $e);
             throw $e;
         } finally {
+            if ($originalModel !== null && $this->toolOrchestrator->getActiveSkillModelOverride() !== null) {
+                $this->runContext?->settings->set('model', $originalModel);
+            }
+            $this->toolOrchestrator->resetSkillScope();
             $this->cancellationToken->close();
             $agentScope?->detach();
             $agentSpan?->end();
@@ -196,10 +202,11 @@ class AgentLoop
 
             // 2. Build the request from the turn-stable system prompt and current history.
             $messages = $this->messageHistory->getMessagesForApi();
+            $activeTools = $this->getActiveSkillApiTools();
             $estimatedTokens = ContextBudget::estimateTokens(
                 $systemPrompt,
                 $messages,
-                $this->toolRegistry->toApiTools(),
+                $activeTools,
             );
             if ($estimatedTokens > $this->maxEstimatedInputTokens) {
                 $this->contextCompactor->compact($this->messageHistory);
@@ -207,7 +214,7 @@ class AgentLoop
                 $estimatedTokens = ContextBudget::estimateTokens(
                     $systemPrompt,
                     $messages,
-                    $this->toolRegistry->toApiTools(),
+                    $activeTools,
                 );
                 if ($estimatedTokens > $this->maxEstimatedInputTokens) {
                     $this->contextCompactor->emergencyCompact($this->messageHistory);
@@ -215,7 +222,7 @@ class AgentLoop
                     $estimatedTokens = ContextBudget::estimateTokens(
                         $systemPrompt,
                         $messages,
-                        $this->toolRegistry->toApiTools(),
+                        $activeTools,
                     );
                     if ($estimatedTokens > $this->maxEstimatedInputTokens) {
                         throw new \RuntimeException(
@@ -250,6 +257,7 @@ class AgentLoop
                     onToolBlockComplete: fn (array $block, int $index) => $this->aborted ? null : $streamingExecutor->onToolBlockReady($block, $index),
                     onThinkingDelta: $onThinkingDelta,
                     shouldAbort: fn (): bool => $this->cancellationToken->isCancelled(),
+                    toolsOverride: $activeTools,
                 );
 
                 if ($this->aborted) {
@@ -378,6 +386,11 @@ class AgentLoop
                 // 7. Collect tool results (early-forked safe tools + queued unsafe tools)
                 $toolResults = $streamingExecutor->collectResults();
 
+                $modelOverride = $this->toolOrchestrator->getActiveSkillModelOverride();
+                if ($modelOverride !== null) {
+                    $this->runContext?->settings->set('model', $modelOverride);
+                }
+
                 // 7b. Enforce per-message aggregate budget for large results
                 $storage = $this->toolOrchestrator->getToolResultStorage();
                 if ($storage !== null) {
@@ -422,6 +435,23 @@ class AgentLoop
         }
 
         return $this->finalizeAfterTurnLimit($systemPrompt, $onTextDelta, $onThinkingDelta);
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    private function getActiveSkillApiTools(): array
+    {
+        $tools = $this->toolRegistry->toApiTools();
+        $allowedTools = $this->toolOrchestrator->getActiveSkillAllowedTools();
+        if ($allowedTools === null) {
+            return $tools;
+        }
+
+        $allowedTools[] = 'Skill';
+
+        return array_values(array_filter(
+            $tools,
+            static fn (array $tool): bool => in_array((string) ($tool['name'] ?? ''), $allowedTools, true),
+        ));
     }
 
     private function finalizeAfterTurnLimit(

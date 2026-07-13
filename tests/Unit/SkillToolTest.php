@@ -40,7 +40,7 @@ class SkillToolTest extends TestCase
             prompt: $prompt,
             allowedTools: $overrides['allowedTools'] ?? [],
             model: $overrides['model'] ?? null,
-            context: 'inline',
+            context: $overrides['context'] ?? 'inline',
             userInvocable: true,
             argumentHint: $overrides['argumentHint'] ?? null,
             skillDir: '/skills/dir',
@@ -118,16 +118,42 @@ class SkillToolTest extends TestCase
 
     // ─── expandPrompt — shell command substitution ────────────────────────
 
-    public function test_inline_shell_command_executed(): void
+    public function test_inline_shell_command_is_rendered_as_normal_bash_tool_directive(): void
     {
-        $skill = $this->makeSkill('echo', 'Result: !`echo hello`');
+        $skill = $this->makeSkill('echo', "Before\n!`echo hello`\nAfter");
         $loader = $this->makeLoader(['echo' => $skill]);
         app()->instance(SkillLoader::class, $loader);
 
         $tool = new SkillTool;
         $result = $tool->call(['skill' => 'echo'], $this->context);
 
-        $this->assertStringContainsString('Result: hello', $result->output);
+        $this->assertStringContainsString('<skill_shell_directive>', $result->output);
+        $this->assertStringContainsString('echo hello', $result->output);
+    }
+
+    public function test_inline_shell_syntax_does_not_match_ordinary_markdown_code_spans(): void
+    {
+        $prompt = 'Do not use `panic!` in production and avoid `unwrap()`.';
+        $skill = $this->makeSkill('rust', $prompt);
+        $loader = $this->makeLoader(['rust' => $skill]);
+        $tool = new SkillTool($loader);
+
+        $result = $tool->call(['skill' => 'rust'], $this->context);
+
+        $this->assertStringEndsWith($prompt, $result->output);
+    }
+
+    public function test_inline_shell_command_is_not_executed_while_loading_skill(): void
+    {
+        $target = sys_get_temp_dir().'/haocode-skill-shell-'.bin2hex(random_bytes(4));
+        $skill = $this->makeSkill('shell', '!`touch '.escapeshellarg($target).'`');
+        $loader = $this->makeLoader(['shell' => $skill]);
+        $tool = new SkillTool($loader);
+
+        $result = $tool->call(['skill' => 'shell'], $this->context);
+
+        $this->assertFileDoesNotExist($target);
+        $this->assertStringContainsString('touch', $result->output);
     }
 
     // ─── leading slash stripped ───────────────────────────────────────────
@@ -187,6 +213,48 @@ class SkillToolTest extends TestCase
         $this->assertStringContainsString('No skills available', $result->output);
     }
 
+    public function test_list_action_accepts_no_skill_field(): void
+    {
+        $skill = $this->makeSkill('review', 'Review code');
+        $loader = $this->makeLoader(['review' => $skill]);
+        $tool = new SkillTool($loader);
+
+        $validated = $tool->inputSchema()->validate(['action' => 'list']);
+        $result = $tool->call($validated, $this->context);
+
+        $this->assertStringContainsString('/review', $result->output);
+    }
+
+    public function test_search_filters_by_name_and_description(): void
+    {
+        $loader = $this->makeLoader([
+            'mysql-standards' => $this->makeSkill('mysql-standards', 'Prompt', ['description' => 'Check database schemas']),
+            'humanizer' => $this->makeSkill('humanizer', 'Prompt', ['description' => 'Rewrite Chinese prose']),
+        ]);
+        $tool = new SkillTool($loader);
+
+        $result = $tool->call(['action' => 'search', 'query' => 'database'], $this->context);
+
+        $this->assertStringContainsString('/mysql-standards', $result->output);
+        $this->assertStringNotContainsString('/humanizer', $result->output);
+    }
+
+    public function test_list_results_are_paginated(): void
+    {
+        $skills = [];
+        for ($i = 1; $i <= 30; $i++) {
+            $name = sprintf('skill-%02d', $i);
+            $skills[$name] = $this->makeSkill($name, 'Prompt');
+        }
+        $tool = new SkillTool($this->makeLoader($skills));
+
+        $result = $tool->call(['action' => 'list', 'page' => 2, 'per_page' => 10], $this->context);
+
+        $this->assertStringContainsString('page 2/3', $result->output);
+        $this->assertStringContainsString('/skill-11', $result->output);
+        $this->assertStringNotContainsString('/skill-01 ', $result->output);
+    }
+
     // ─── result metadata ──────────────────────────────────────────────────
 
     public function test_successful_run_includes_skill_name_in_metadata(): void
@@ -200,6 +268,8 @@ class SkillToolTest extends TestCase
 
         $this->assertSame('build', $result->metadata['skill']);
         $this->assertSame(['Bash'], $result->metadata['allowed_tools']);
+        $this->assertSame('/skills/dir', $result->metadata['skill_dir']);
+        $this->assertStringContainsString('directory="/skills/dir"', $result->output);
     }
 
     // ─── isReadOnly ───────────────────────────────────────────────────────
@@ -207,5 +277,55 @@ class SkillToolTest extends TestCase
     public function test_is_not_read_only(): void
     {
         $this->assertFalse((new SkillTool)->isReadOnly([]));
+    }
+
+    public function test_inline_skill_is_read_only_but_forked_skill_is_not(): void
+    {
+        $loader = $this->makeLoader([
+            'inline' => $this->makeSkill('inline', 'Prompt'),
+            'forked' => $this->makeSkill('forked', 'Prompt', ['context' => 'fork']),
+        ]);
+        $tool = new SkillTool($loader);
+
+        $this->assertTrue($tool->isReadOnly(['skill' => 'inline']));
+        $this->assertFalse($tool->isReadOnly(['skill' => 'forked']));
+    }
+
+    public function test_is_not_concurrency_safe_because_shell_directives_may_run(): void
+    {
+        $this->assertFalse((new SkillTool)->isConcurrencySafe([]));
+    }
+
+    public function test_fork_context_runs_with_configured_fork_runner(): void
+    {
+        $skill = $this->makeSkill('research', 'Inspect $ARGUMENTS', ['context' => 'fork']);
+        $loader = $this->makeLoader(['research' => $skill]);
+        $receivedPrompt = null;
+        $tool = new SkillTool(
+            skillLoader: $loader,
+            forkRunner: function (string $prompt) use (&$receivedPrompt): string {
+                $receivedPrompt = $prompt;
+
+                return 'child result';
+            },
+        );
+
+        $result = $tool->call(['skill' => 'research', 'args' => 'repository'], $this->context);
+
+        $this->assertFalse($result->isError);
+        $this->assertStringEndsWith('Inspect repository', (string) $receivedPrompt);
+        $this->assertSame('child result', $result->output);
+        $this->assertSame('fork', $result->metadata['context']);
+    }
+
+    public function test_fork_context_fails_explicitly_without_runner(): void
+    {
+        $skill = $this->makeSkill('research', 'Inspect repository', ['context' => 'fork']);
+        $loader = $this->makeLoader(['research' => $skill]);
+
+        $result = (new SkillTool($loader))->call(['skill' => 'research'], $this->context);
+
+        $this->assertTrue($result->isError);
+        $this->assertStringContainsString('no fork runner', $result->output);
     }
 }

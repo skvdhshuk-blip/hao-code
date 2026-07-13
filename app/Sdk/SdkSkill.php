@@ -63,7 +63,19 @@ class SdkSkill
          * @api
          */
         public readonly ?string $model = null,
-    ) {}
+
+        /**
+         * Execution context: "inline" injects instructions into the current
+         * agent; "fork" runs the skill in an isolated child agent.
+         *
+         * @api
+         */
+        public readonly string $context = 'inline',
+    ) {
+        if (!in_array($this->context, ['inline', 'fork'], true)) {
+            throw new \InvalidArgumentException('Skill context must be "inline" or "fork".');
+        }
+    }
 
     /**
      * Convert to internal SkillDefinition.
@@ -79,6 +91,7 @@ class SdkSkill
             prompt: $this->prompt,
             allowedTools: $this->allowedTools,
             model: $this->model,
+            context: $this->context,
         );
     }
 }

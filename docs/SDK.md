@@ -245,6 +245,8 @@ configured output tokens and a safety margin before sending a request.
 | `disallowedTools` | `string[]` | `[]` | Tools to deny (takes precedence over allowed) |
 | `tools` | `SdkTool[]` | `[]` | Custom tools to register |
 | `skills` | `SdkSkill[]` | `[]` | Custom skills to register |
+| `skillDirectories` | `string[]` | `[]` | Additional explicit directories containing `<name>/SKILL.md` packages |
+| `recursiveSkillDiscovery` | `bool` | `false` | Recursively discover nested Skill packages; shallow same-name packages win |
 
 ## Sandbox Runtime
 
@@ -501,6 +503,7 @@ $skill = new SdkSkill(
     prompt: 'Review $ARGUMENTS for injection, XSS, auth bypass, and other OWASP Top 10 issues.',
     allowedTools: ['Read', 'Grep'],  // optional: restrict tools during skill
     model: 'opus',                    // optional: model override
+    context: 'inline',                // optional: inline or isolated fork
 );
 
 $result = HaoCode::query('Review auth.php for security', new HaoCodeConfig(
@@ -517,7 +520,31 @@ $result = HaoCode::query('Review auth.php for security', new HaoCodeConfig(
 | `$ARGUMENTS` support | Yes | No |
 | Appears in system prompt | Yes (Available skills list) | Yes (API tools list) |
 | Can restrict tools | Yes (`allowedTools`) | No |
+| Isolated execution | Yes (`context: 'fork'`) | No |
 | Returns | Expanded prompt text | `handle()` return string |
+
+File-based skills are loaded from `~/.haocode/skills` and
+`<project>/.haocode/skills`. Additional catalogs must be opted in explicitly:
+
+```php
+$config = new HaoCodeConfig(
+    cwd: __DIR__,
+    skillDirectories: [getenv('HOME').'/.claude/skills'],
+    recursiveSkillDiscovery: true,
+);
+```
+
+The system prompt keeps an exact-name index for large catalogs while budgeting
+descriptions. The `Skill` tool supports paginated `list` and filtered `search`
+actions. Once a skill is invoked, its resolved absolute directory is included
+in the tool result so relative references are read from the correct package.
+
+`allowedTools` is enforced for the rest of the current user turn. Multiple
+inline skills use the intersection of their tool sets. A skill model override
+applies for the rest of that turn and is restored afterward. Forked skills
+apply their tool and model settings only inside the child agent.
+Standalone `!` shell directives in a skill are converted into normal `Bash`
+tool requests; they do not bypass tool permissions, hooks, or skill tool scope.
 
 ---
 

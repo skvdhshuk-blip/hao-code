@@ -124,7 +124,7 @@
         "internal": false,
         "methods": {
             "__construct": {
-                "signature": "public function __construct(?string $apiKey = null, ?string $model = null, ?string $baseUrl = null, ?string $providerType = null, ?int $maxTokens = null, ?string $cwd = null, int $maxTurns = 50, ?float $maxBudgetUsd = null, string $permissionMode = \"bypass_permissions\", array $allowedTools = [\"*\"], array $disallowedTools = [], ?string $systemPrompt = null, ?string $appendSystemPrompt = null, bool $thinkingEnabled = false, int $thinkingBudget = 10000, mixed $onText = null, mixed $onThinking = null, mixed $onToolStart = null, mixed $onToolComplete = null, mixed $onTurnStart = null, bool $ephemeral = false, array $tools = [], array $skills = [], ?HaoCode\\Sdk\\AbortController $abortController = null, ?string $sessionId = null, bool $continueSession = false, ?array $responseSchema = null, ?HaoCode\\Sdk\\CredentialPool $credentialPool = null, ?HaoCode\\Sdk\\Sandbox\\SandboxConfig $sandbox = null, string $memorySummaryLevel = \"l0\", ?string $memoryStoragePath = null)",
+                "signature": "public function __construct(?string $apiKey = null, ?string $model = null, ?string $baseUrl = null, ?string $providerType = null, ?int $maxTokens = null, ?string $cwd = null, int $maxTurns = 50, ?float $maxBudgetUsd = null, string $permissionMode = \"bypass_permissions\", array $allowedTools = [\"*\"], array $disallowedTools = [], ?string $systemPrompt = null, ?string $appendSystemPrompt = null, bool $thinkingEnabled = false, int $thinkingBudget = 10000, mixed $onText = null, mixed $onThinking = null, mixed $onToolStart = null, mixed $onToolComplete = null, mixed $onTurnStart = null, bool $ephemeral = false, array $tools = [], array $skills = [], ?HaoCode\\Sdk\\AbortController $abortController = null, ?string $sessionId = null, bool $continueSession = false, ?array $responseSchema = null, ?HaoCode\\Sdk\\CredentialPool $credentialPool = null, ?HaoCode\\Sdk\\Sandbox\\SandboxConfig $sandbox = null, string $memorySummaryLevel = \"l0\", ?string $memoryStoragePath = null, array $skillDirectories = [], bool $recursiveSkillDiscovery = false)",
                 "api": false,
                 "internal": false
             },
@@ -260,6 +260,11 @@
                 "api": true,
                 "internal": false
             },
+            "recursiveSkillDiscovery": {
+                "signature": "public readonly bool $recursiveSkillDiscovery",
+                "api": true,
+                "internal": false
+            },
             "responseSchema": {
                 "signature": "public readonly ?array $responseSchema",
                 "api": true,
@@ -272,6 +277,11 @@
             },
             "sessionId": {
                 "signature": "public readonly ?string $sessionId",
+                "api": true,
+                "internal": false
+            },
+            "skillDirectories": {
+                "signature": "public readonly array $skillDirectories",
                 "api": true,
                 "internal": false
             },
@@ -484,7 +494,7 @@
         "internal": false,
         "methods": {
             "__construct": {
-                "signature": "public function __construct(string $name, string $description, string $prompt, array $allowedTools = [], ?string $model = null)",
+                "signature": "public function __construct(string $name, string $description, string $prompt, array $allowedTools = [], ?string $model = null, string $context = \"inline\")",
                 "api": false,
                 "internal": false
             },
@@ -497,6 +507,11 @@
         "properties": {
             "allowedTools": {
                 "signature": "public readonly array $allowedTools",
+                "api": true,
+                "internal": false
+            },
+            "context": {
+                "signature": "public readonly string $context",
                 "api": true,
                 "internal": false
             },

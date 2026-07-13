@@ -316,10 +316,12 @@ PROMPT;
 
 - Discovery: the list above is the skills available in this session (name + description). Skill bodies live on disk under `~/.haocode/skills/<name>/SKILL.md` or `<project>/.haocode/skills/<name>/SKILL.md`.
 - Trigger: if the user names a skill (`/name` or plain text) OR the task clearly matches a skill's description, invoke it via the Skill tool for that turn. Multiple matches → use them all. Do not carry skills across turns unless re-mentioned.
-- Missing/blocked: if a named skill isn't in the list, say so briefly and continue with the best fallback.
+- Exact names: when the user names a skill, invoke that exact name even if its description was omitted by the listing budget. Do not infer that an unshown name is missing.
+- Discovery: for an implicit match that is not obvious from the displayed descriptions, call the Skill tool with action="search" and a short intent query before falling back.
+- Missing/blocked: only report a named skill as missing after an exact Skill invocation or search confirms it is unavailable.
 - Progressive disclosure:
   1) After deciding to use a skill, invoke it via the Skill tool and read its SKILL.md body completely before taking task actions.
-  2) When SKILL.md references relative paths (e.g. `scripts/foo.sh`, `references/api.md`), resolve them under the skill directory (`${HAOCODE_SKILL_DIR}`).
+  2) The Skill tool result includes a `<skill_context directory="...">` header. Resolve relative paths (e.g. `scripts/foo.sh`, `references/api.md`) against that exact directory; never guess `~/.haocode` or `.claude`.
   3) If SKILL.md points to `references/`, use its routing instructions to identify the specific files needed for this request — don't bulk-load.
   4) If `scripts/` exist, prefer running or patching them over retyping large code blocks.
   5) If `assets/` or templates exist, reuse them instead of recreating from scratch.

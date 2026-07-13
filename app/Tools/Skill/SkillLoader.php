@@ -2,6 +2,9 @@
 
 namespace HaoCode\Tools\Skill;
 
+use Symfony\Component\Yaml\Exception\ParseException;
+use Symfony\Component\Yaml\Yaml;
+
 /**
  * Loads skill definitions from markdown files with YAML frontmatter.
  *
@@ -17,6 +20,9 @@ class SkillLoader
 
     public function __construct(
         private readonly ?string $workingDirectory = null,
+        /** @var string[] */
+        private readonly array $additionalDirectories = [],
+        private readonly bool $recursive = false,
     ) {}
 
     /**
@@ -31,12 +37,14 @@ class SkillLoader
 
         $this->skills = [];
 
-        // Load from multiple sources
-        $dirs = $this->getSkillDirectories();
-
-        foreach ($dirs as $dir) {
+        foreach ($this->getSkillDirectories() as $dir) {
             if (!is_dir($dir)) continue;
-            $this->loadFromDirectory($dir);
+            $this->loadFromDirectory($dir, false);
+        }
+
+        foreach ($this->getLegacyCommandDirectories() as $dir) {
+            if (! is_dir($dir)) continue;
+            $this->loadFromDirectory($dir, true);
         }
 
         return $this->skills;
@@ -85,8 +93,16 @@ class SkillLoader
         }
 
         $header = "Available skills (slash commands):\n";
+        $nameIndex = 'Exact name index: '.implode(', ', array_map(
+            static fn (string $name): string => '/'.$name,
+            array_keys($skills),
+        ))."\n\nDescriptions:\n";
+        $maxIndexChars = max(0, min(3000, intdiv($maxChars, 2)));
+        if (mb_strlen($nameIndex) > $maxIndexChars) {
+            $nameIndex = mb_substr($nameIndex, 0, max(0, $maxIndexChars - 25))."… (index truncated)\n\n";
+        }
         $lines = [];
-        $used = mb_strlen($header);
+        $used = mb_strlen($header.$nameIndex);
         $total = count($skills);
         $omitted = 0;
 
@@ -102,14 +118,14 @@ class SkillLoader
             $used += $cost;
         }
 
-        $body = $header . implode("\n", $lines);
+        $body = $header.$nameIndex.implode("\n", $lines);
 
         if ($omitted > 0) {
             $noun = $omitted === 1 ? 'skill was' : 'skills were';
             $body .= "\n\n"
                 . "Warning: skills listing budget exceeded. {$omitted} additional {$noun} "
-                . "not shown above. Ask the user for the exact skill name, or invoke "
-                . "the Skill tool with action=\"list\" to discover the full catalog.";
+                . "not shown above. Exact names remain callable. Use the Skill tool with "
+                . "action=\"search\" and query=<intent> to inspect matching descriptions.";
         }
 
         return $body;
@@ -169,25 +185,79 @@ class SkillLoader
         return [
             "{$home}/.haocode/skills",
             $cwd . '/.haocode/skills',
-            $cwd . '/.haocode/commands', // legacy
+            ...$this->additionalDirectories,
         ];
     }
 
-    private function loadFromDirectory(string $dir): void
+    private function getLegacyCommandDirectories(): array
     {
-        // New format: <name>/SKILL.md
-        foreach (glob($dir . '/*/SKILL.md') as $file) {
+        $cwd = $this->workingDirectory ?? getcwd();
+
+        return [$cwd . '/.haocode/commands'];
+    }
+
+    private function loadFromDirectory(string $dir, bool $loadLegacyMarkdown = true): void
+    {
+        $files = $this->recursive
+            ? $this->discoverRecursively($dir)
+            : (glob(rtrim($dir, '/').'/*/SKILL.md') ?: []);
+        usort($files, static function (string $left, string $right) use ($dir): int {
+            $leftDepth = substr_count(ltrim(substr($left, strlen(rtrim($dir, '/'))), '/'), '/');
+            $rightDepth = substr_count(ltrim(substr($right, strlen(rtrim($dir, '/'))), '/'), '/');
+
+            return $leftDepth <=> $rightDepth ?: strcmp($left, $right);
+        });
+
+        $seenInDirectory = [];
+        foreach ($files as $file) {
             $name = basename(dirname($file));
+            if (isset($seenInDirectory[$name])) {
+                continue;
+            }
+            $seenInDirectory[$name] = true;
             $this->registerSkill($name, $file);
         }
 
-        // Legacy format: <name>.md
-        foreach (glob($dir . '/*.md') as $file) {
+        if (! $loadLegacyMarkdown) {
+            return;
+        }
+
+        foreach (glob(rtrim($dir, '/').'/*.md') ?: [] as $file) {
             $name = basename($file, '.md');
             if (!isset($this->skills[$name])) {
                 $this->registerSkill($name, $file);
             }
         }
+    }
+
+    /** @return string[] */
+    private function discoverRecursively(string $root): array
+    {
+        $queue = [rtrim($root, '/')];
+        $visited = [];
+        $files = [];
+
+        while ($queue !== []) {
+            $directory = array_shift($queue);
+            $real = realpath($directory) ?: $directory;
+            if (isset($visited[$real]) || ! is_dir($directory)) {
+                continue;
+            }
+            $visited[$real] = true;
+
+            $skillFile = $directory.'/SKILL.md';
+            if (is_file($skillFile)) {
+                $files[] = $skillFile;
+            }
+
+            foreach (new \FilesystemIterator($directory, \FilesystemIterator::SKIP_DOTS) as $item) {
+                if ($item->isDir()) {
+                    $queue[] = $item->getPathname();
+                }
+            }
+        }
+
+        return array_values(array_unique($files));
     }
 
     private function registerSkill(string $name, string $file): void
@@ -215,14 +285,16 @@ class SkillLoader
 
         return new SkillDefinition(
             name: $name,
-            description: $frontmatter['description'] ?? $this->firstLine($body),
-            whenToUse: $frontmatter['when_to_use'] ?? null,
+            description: $this->stringValue($frontmatter['description'] ?? null) ?? $this->firstLine($body),
+            whenToUse: $this->stringValue($frontmatter['when_to_use'] ?? $frontmatter['when-to-use'] ?? null),
             prompt: $promptInline,
-            allowedTools: $this->parseList($frontmatter['allowed-tools'] ?? ''),
-            model: $frontmatter['model'] ?? null,
-            context: $frontmatter['context'] ?? 'inline',
-            userInvocable: ($frontmatter['user-invocable'] ?? 'true') !== 'false',
-            argumentHint: $frontmatter['argument-hint'] ?? null,
+            allowedTools: $this->parseList($frontmatter['allowed-tools'] ?? []),
+            model: $this->stringValue($frontmatter['model'] ?? null),
+            context: in_array($frontmatter['context'] ?? 'inline', ['inline', 'fork'], true)
+                ? $frontmatter['context'] ?? 'inline'
+                : 'inline',
+            userInvocable: $this->boolValue($frontmatter['user-invocable'] ?? true),
+            argumentHint: $this->stringValue($frontmatter['argument-hint'] ?? null),
             skillDir: $dir,
             promptPath: $sourcePath,
         );
@@ -230,23 +302,93 @@ class SkillLoader
 
     private function parseYaml(string $yaml): array
     {
-        $result = [];
-        foreach (explode("\n", $yaml) as $line) {
-            $line = trim($line);
-            if (empty($line) || str_starts_with($line, '#')) continue;
-            if (preg_match('/^(\w[\w-]*):\s*(.*)$/', $line, $m)) {
-                $key = $m[1];
-                $value = trim($m[2], '"\' ');
-                $result[$key] = $value;
-            }
+        try {
+            $parsed = Yaml::parse($yaml);
+
+            return is_array($parsed) ? $parsed : [];
+        } catch (ParseException) {
+            return $this->parseLegacyYaml($yaml);
         }
+    }
+
+    /**
+     * Tolerant fallback for existing Claude skills with slightly invalid YAML.
+     * Supports top-level scalars, block strings, and simple dash lists.
+     */
+    private function parseLegacyYaml(string $yaml): array
+    {
+        $result = [];
+        $lines = explode("\n", $yaml);
+        $count = count($lines);
+
+        for ($index = 0; $index < $count; $index++) {
+            $line = $lines[$index];
+            if (trim($line) === '' || str_starts_with(ltrim($line), '#')) {
+                continue;
+            }
+            if (preg_match('/^(\w[\w-]*):\s*(.*)$/', $line, $match) !== 1) {
+                continue;
+            }
+
+            $key = $match[1];
+            $value = trim($match[2]);
+            if ($value === '|' || $value === '>') {
+                $parts = [];
+                while ($index + 1 < $count && preg_match('/^[ \t]+/', $lines[$index + 1]) === 1) {
+                    $parts[] = trim($lines[++$index]);
+                }
+                $result[$key] = trim(implode($value === '|' ? "\n" : ' ', $parts));
+                continue;
+            }
+
+            if ($value === '') {
+                $items = [];
+                while ($index + 1 < $count && preg_match('/^[ \t]+-\s*(.*)$/', $lines[$index + 1], $item) === 1) {
+                    $items[] = trim($item[1], " \t\n\r\0\x0B\"'");
+                    $index++;
+                }
+                $result[$key] = $items;
+                continue;
+            }
+
+            $result[$key] = trim($value, "\"'");
+        }
+
         return $result;
     }
 
-    private function parseList(string $value): array
+    private function parseList(mixed $value): array
     {
-        if (empty($value)) return [];
-        return array_map('trim', explode(',', $value));
+        if (is_array($value)) {
+            return array_values(array_filter(array_map(
+                static fn (mixed $item): string => trim((string) $item),
+                $value,
+            )));
+        }
+
+        if (! is_string($value) || trim($value) === '') {
+            return [];
+        }
+
+        $parts = str_contains($value, ',')
+            ? explode(',', $value)
+            : preg_split('/\s+/', trim($value));
+
+        return array_values(array_filter(array_map('trim', $parts ?: [])));
+    }
+
+    private function stringValue(mixed $value): ?string
+    {
+        return is_string($value) && trim($value) !== '' ? trim($value) : null;
+    }
+
+    private function boolValue(mixed $value): bool
+    {
+        if (is_bool($value)) {
+            return $value;
+        }
+
+        return ! in_array(strtolower(trim((string) $value)), ['false', '0', 'no', 'off'], true);
     }
 
     private function firstLine(string $text): string

@@ -18,8 +18,10 @@ use HaoCode\Services\Session\SessionManager;
 use HaoCode\Services\Settings\SettingsManager;
 use HaoCode\Services\Telemetry\PhoenixTracer;
 use HaoCode\Tools\Config\ConfigTool;
+use HaoCode\Tools\Skill\SkillDefinition;
 use HaoCode\Tools\Skill\SkillTool;
 use HaoCode\Tools\ToolRegistry;
+use HaoCode\Tools\ToolUseContext;
 
 class AgentLoopFactory
 {
@@ -74,7 +76,44 @@ class AgentLoopFactory
             $permissionChecker = new PermissionChecker($settings, new DenialTracker());
             $hookExecutor = new HookExecutor($runContext->projectDirectory);
             if ($toolFilter === null || $toolFilter('Skill')) {
-                $toolRegistry->register(new SkillTool($runContext->skillLoader));
+                $toolRegistry->register(new SkillTool(
+                    skillLoader: $runContext->skillLoader,
+                    forkRunner: function (string $prompt, SkillDefinition $skill, ToolUseContext $context): string {
+                        if ($context->runContext === null) {
+                            throw new \RuntimeException('Forked skills require an active agent run context.');
+                        }
+
+                        $childContext = $context->runContext->fork($context->workingDirectory);
+                        if ($skill->model !== null && trim($skill->model) !== '') {
+                            $childContext->settings->set('model', trim($skill->model));
+                        }
+
+                        $allowedTools = array_values(array_unique(array_filter(array_map(
+                            static function (mixed $name): string {
+                                $name = trim((string) $name);
+                                $patternStart = strpos($name, '(');
+
+                                return $patternStart === false ? $name : substr($name, 0, $patternStart);
+                            },
+                            $skill->allowedTools,
+                        ))));
+                        $filter = $allowedTools === []
+                            ? null
+                            : static fn (string $name): bool => in_array($name, $allowedTools, true);
+
+                        $loop = $this->createIsolated(
+                            toolFilter: $filter,
+                            workingDirectory: $context->workingDirectory,
+                            streamingClient: $context->provider,
+                            runContext: $childContext,
+                            ephemeral: true,
+                            afterFork: true,
+                        );
+                        $loop->setMaxTurns(20);
+
+                        return $loop->run($prompt);
+                    },
+                ));
             }
             if ($toolFilter === null || $toolFilter('Config')) {
                 $toolRegistry->register(new ConfigTool($settings));

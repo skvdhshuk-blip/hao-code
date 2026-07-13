@@ -50,7 +50,7 @@ class SkillLoaderTest extends TestCase
 
         $loadDir = $ref->getMethod('loadFromDirectory');
         $loadDir->setAccessible(true);
-        $loadDir->invoke($loader, $this->skillsDir);
+        $loadDir->invoke($loader, $this->skillsDir, true);
 
         // Mark skills as cached so loadSkills() returns the injected value
         // (skills was already set to [] above, then populated by loadFromDirectory)
@@ -106,6 +106,39 @@ class SkillLoaderTest extends TestCase
         $content = "---\nallowed-tools: Read,Write,Bash\n---\n\nPrompt";
         $skill = $this->parseSkillFile('my-skill', $content);
         $this->assertSame(['Read', 'Write', 'Bash'], $skill->allowedTools);
+    }
+
+    public function test_parse_multiline_description_with_symfony_yaml(): void
+    {
+        $content = "---\ndescription: |\n  First line.\n  Second line.\n---\n\nPrompt";
+        $skill = $this->parseSkillFile('my-skill', $content);
+
+        $this->assertSame("First line.\nSecond line.", $skill->description);
+    }
+
+    public function test_parse_allowed_tools_from_yaml_list(): void
+    {
+        $content = "---\nallowed-tools:\n  - Read\n  - Write\n  - Bash(cargo:*)\n---\n\nPrompt";
+        $skill = $this->parseSkillFile('my-skill', $content);
+
+        $this->assertSame(['Read', 'Write', 'Bash(cargo:*)'], $skill->allowedTools);
+    }
+
+    public function test_parse_allowed_tools_from_space_separated_claude_format(): void
+    {
+        $content = "---\nallowed-tools: Bash(cargo:*) Read Write\n---\n\nPrompt";
+        $skill = $this->parseSkillFile('my-skill', $content);
+
+        $this->assertSame(['Bash(cargo:*)', 'Read', 'Write'], $skill->allowedTools);
+    }
+
+    public function test_invalid_yaml_falls_back_to_tolerant_block_parser(): void
+    {
+        $content = "---\ndescription: |\n  Valid first line\n  invalid continuation: value\nallowed-tools:\n  - Read\n---\n\nPrompt";
+        $skill = $this->parseSkillFile('my-skill', $content);
+
+        $this->assertStringContainsString('Valid first line', $skill->description);
+        $this->assertSame(['Read'], $skill->allowedTools);
     }
 
     public function test_parse_skill_user_invocable_defaults_to_true(): void
@@ -180,6 +213,60 @@ class SkillLoaderTest extends TestCase
         $this->assertNull($loader->findSkill('no-such-skill'));
     }
 
+    public function test_skill_directory_does_not_treat_root_readme_as_legacy_skill(): void
+    {
+        file_put_contents($this->skillsDir.'/README.md', 'Catalog documentation');
+        $this->writeSkillFile('review', 'Review code', true);
+        $loader = new SkillLoader;
+        $reflection = new \ReflectionClass($loader);
+        $skills = $reflection->getProperty('skills');
+        $skills->setValue($loader, []);
+        $reflection->getMethod('loadFromDirectory')->invoke($loader, $this->skillsDir, false);
+
+        $this->assertNotNull($loader->findSkill('review'));
+        $this->assertNull($loader->findSkill('README'));
+    }
+
+    public function test_additional_skill_directory_is_loaded_explicitly(): void
+    {
+        $this->writeSkillFile('claude-skill', 'Imported skill', true);
+        $project = $this->tmpDir.'/project';
+        mkdir($project, 0755, true);
+
+        $loader = new SkillLoader($project, [$this->skillsDir]);
+
+        $this->assertNotNull($loader->findSkill('claude-skill'));
+    }
+
+    public function test_nested_skills_require_recursive_discovery(): void
+    {
+        $nested = $this->skillsDir.'/group/nested';
+        mkdir($nested, 0755, true);
+        file_put_contents($nested.'/SKILL.md', 'Nested prompt');
+        $project = $this->tmpDir.'/project';
+        mkdir($project, 0755, true);
+
+        $shallow = new SkillLoader($project, [$this->skillsDir], false);
+        $recursive = new SkillLoader($project, [$this->skillsDir], true);
+
+        $this->assertNull($shallow->findSkill('nested'));
+        $this->assertNotNull($recursive->findSkill('nested'));
+    }
+
+    public function test_recursive_discovery_prefers_shallow_same_name_skill(): void
+    {
+        $this->writeSkillFile('review', "---\ndescription: Shallow\n---\nPrompt", true);
+        $nested = $this->skillsDir.'/group/review';
+        mkdir($nested, 0755, true);
+        file_put_contents($nested.'/SKILL.md', "---\ndescription: Nested\n---\nPrompt");
+        $project = $this->tmpDir.'/project';
+        mkdir($project, 0755, true);
+
+        $skill = (new SkillLoader($project, [$this->skillsDir], true))->findSkill('review');
+
+        $this->assertSame('Shallow', $skill?->description);
+    }
+
     // ─── getSkillDescriptions ─────────────────────────────────────────────
 
     public function test_get_skill_descriptions_returns_empty_when_no_skills(): void
@@ -228,6 +315,20 @@ class SkillLoaderTest extends TestCase
             '/\d+ additional skill[s]? (was|were) not shown/',
             $desc,
         );
+    }
+
+    public function test_get_skill_descriptions_keeps_late_exact_names_when_descriptions_are_omitted(): void
+    {
+        for ($i = 0; $i < 60; $i++) {
+            $this->writeSkillFile(sprintf('skill-%02d', $i), "---\ndescription: ".str_repeat('long ', 20)."\n---\nPrompt");
+        }
+        $loader = $this->makeLoader();
+
+        $desc = $loader->getSkillDescriptions(4000);
+
+        $this->assertStringContainsString('/skill-59', $desc);
+        $this->assertStringContainsString('Exact name index', $desc);
+        $this->assertStringContainsString('action="search"', $desc);
     }
 
     public function test_get_skill_descriptions_truncates_per_entry_at_250_chars(): void

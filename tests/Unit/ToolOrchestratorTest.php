@@ -674,4 +674,63 @@ class ToolOrchestratorTest extends TestCase
             $this->assertStringNotContainsString('[hint]', $r['content']);
         }
     }
+
+    public function test_skill_scope_blocks_disallowed_sibling_tool(): void
+    {
+        $registry = new ToolRegistry;
+        $registry->register($this->makeTool('Skill', fn () => ToolResult::success('loaded', [
+            'allowed_tools' => ['Read'],
+            'model_override' => 'skill-model',
+            'context' => 'inline',
+        ])));
+        $registry->register($this->makeTool('Read', fn () => ToolResult::success('read')));
+        $registry->register($this->makeTool('Bash', fn () => ToolResult::success('must not run')));
+        $orchestrator = $this->makeOrchestrator($registry);
+
+        $results = $orchestrator->executeTools([
+            ['id' => 'skill-1', 'name' => 'Skill', 'input' => []],
+            ['id' => 'bash-1', 'name' => 'Bash', 'input' => []],
+        ], $this->context());
+
+        $this->assertFalse($results[0]['is_error']);
+        $this->assertTrue($results[1]['is_error']);
+        $this->assertStringContainsString('active skill scope', $results[1]['content']);
+        $this->assertSame(['Read'], $orchestrator->getActiveSkillAllowedTools());
+        $this->assertSame('skill-model', $orchestrator->getActiveSkillModelOverride());
+    }
+
+    public function test_multiple_skill_scopes_intersect_allowed_tools(): void
+    {
+        $registry = new ToolRegistry;
+        $skillResults = [
+            ToolResult::success('one', ['allowed_tools' => ['Read', 'Grep']]),
+            ToolResult::success('two', ['allowed_tools' => ['Read', 'Bash']]),
+        ];
+        $registry->register($this->makeTool('Skill', function () use (&$skillResults) {
+            return array_shift($skillResults);
+        }));
+        $orchestrator = $this->makeOrchestrator($registry);
+
+        $orchestrator->executeToolBlock(['id' => 's1', 'name' => 'Skill', 'input' => []], $this->context());
+        $orchestrator->executeToolBlock(['id' => 's2', 'name' => 'Skill', 'input' => []], $this->context());
+
+        $this->assertSame(['Read'], $orchestrator->getActiveSkillAllowedTools());
+    }
+
+    public function test_forked_skill_does_not_restrict_parent_tool_scope(): void
+    {
+        $registry = new ToolRegistry;
+        $registry->register($this->makeTool('Skill', fn () => ToolResult::success('child result', [
+            'allowed_tools' => ['Read'],
+            'model_override' => 'child-model',
+            'context' => 'fork',
+        ])));
+        $orchestrator = $this->makeOrchestrator($registry);
+
+        $orchestrator->executeToolBlock(['id' => 'fork-1', 'name' => 'Skill', 'input' => []], $this->context());
+
+        $this->assertNull($orchestrator->getActiveSkillAllowedTools());
+        $this->assertNull($orchestrator->getActiveSkillModelOverride());
+        $this->assertSame('fork', $orchestrator->getActiveSkillContext());
+    }
 }

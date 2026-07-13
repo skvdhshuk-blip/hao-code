@@ -86,6 +86,35 @@ class AgentRunContextFactoryTest extends TestCase
         $this->assertSame('parent-explicit-key', $child->settings->getApiKey());
     }
 
+    public function test_additional_recursive_skill_directories_are_propagated_to_run_context(): void
+    {
+        $projectDirectory = $this->makeProjectDirectory('skill-directory-project');
+        $skillDirectory = $projectDirectory.'/claude-skills/group/imported';
+        mkdir($skillDirectory, 0755, true);
+        file_put_contents($skillDirectory.'/SKILL.md', "---\ndescription: Imported skill\n---\nPrompt");
+
+        $context = AgentRunContextFactory::make(new HaoCodeConfig(
+            cwd: $projectDirectory,
+            skillDirectories: [$projectDirectory.'/claude-skills'],
+            recursiveSkillDiscovery: true,
+        ));
+
+        $this->assertSame('Imported skill', $context->skillLoader->findSkill('imported')?->description);
+    }
+
+    public function test_sdk_skill_rejects_an_unknown_execution_context(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Skill context must be "inline" or "fork".');
+
+        new \HaoCode\Sdk\SdkSkill(
+            name: 'invalid-context',
+            description: 'Invalid context fixture',
+            prompt: 'Fixture prompt',
+            context: 'background',
+        );
+    }
+
     private function makeProjectDirectory(string $name): string
     {
         $directory = sys_get_temp_dir().'/haocode_run_context_'.uniqid($name.'_', true);
