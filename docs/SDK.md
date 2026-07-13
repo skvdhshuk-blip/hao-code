@@ -2,7 +2,7 @@
 
 Use hao-code as a framework-free PHP library to embed an AI coding agent in your application.
 
-This document describes the current `v2.0.0` source release.
+This document describes the current `v1.8.0` source release.
 
 ```bash
 composer require sk-wang/hao-code
@@ -332,7 +332,7 @@ setting `apiKey`, `model`, or another connection option does not change them.
 This differs from `v1.7.0`, where an explicitly constructed config defaulted to
 all tools, permission bypass, and durable storage. Existing trusted callers must
 set `allowedTools: ['*']`, `permissionMode: 'bypass_permissions'`, and
-`ephemeral: false` explicitly when migrating to `v2.0.0`.
+`ephemeral: false` explicitly when migrating to `v1.8.0`.
 
 ## Sandbox Runtime
 

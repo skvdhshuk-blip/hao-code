@@ -123,7 +123,7 @@ unattended full agent must state all three explicitly, for example
 `ephemeral: false`. Do this only inside a trust boundary appropriate for the
 tools being exposed.
 
-> **v2.0.0 breaking change:** `v1.7.0` constructed `HaoCodeConfig` with all
+> **v1.8.0 behavior change:** `v1.7.0` constructed `HaoCodeConfig` with all
 > tools, permission bypass, and durable storage by default. Existing trusted
 > callers that need the old behavior must now opt in to those three settings
 > explicitly.
@@ -444,7 +444,7 @@ $config = new HaoCodeConfig(
 
 ## Version
 
-The current release is `v2.0.0`. It makes `HaoCodeConfig` safe by default and
+The current release is `v1.8.0`. It makes `HaoCodeConfig` safe by default and
 requires tools, permission bypass, and durable storage to be enabled explicitly.
 It also preserves durable session continuation and requires the original config
 when resuming a human-interrupt checkpoint so tool and sandbox boundaries cannot
