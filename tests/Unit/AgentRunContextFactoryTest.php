@@ -91,6 +91,7 @@ class AgentRunContextFactoryTest extends TestCase
         $projectDirectory = $this->makeProjectDirectory('hitl-context');
         $context = AgentRunContextFactory::make(new HaoCodeConfig(
             cwd: $projectDirectory,
+            ephemeral: false,
             interruptOn: ['Bash' => true],
             enableAskUser: true,
         ));

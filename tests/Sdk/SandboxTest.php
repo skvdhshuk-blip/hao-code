@@ -159,7 +159,10 @@ class SandboxTest extends TestCase
 
     public function test_config_filters_host_only_tools_when_sandbox_enabled(): void
     {
-        $config = new HaoCodeConfig(sandbox: SandboxConfig::local());
+        $config = new HaoCodeConfig(
+            allowedTools: ['*'],
+            sandbox: SandboxConfig::local(),
+        );
         $filter = $config->toolFilter();
 
         $this->assertNotNull($filter);
@@ -171,7 +174,10 @@ class SandboxTest extends TestCase
         $this->assertFalse($filter('apply_patch'));
         $this->assertSame('/workspace', $config->effectiveWorkingDirectory());
 
-        $full = new HaoCodeConfig(sandbox: SandboxConfig::local(mode: 'full'));
+        $full = new HaoCodeConfig(
+            allowedTools: ['*'],
+            sandbox: SandboxConfig::local(mode: 'full'),
+        );
         $this->assertTrue(($full->toolFilter())('Bash'));
     }
 

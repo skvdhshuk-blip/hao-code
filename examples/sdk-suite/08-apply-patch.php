@@ -13,7 +13,13 @@ mkdir($workdir, 0755, true);
 $result = HaoCode::query(
     "Use apply_patch to create {$workdir}/hello.txt with content \"Hello, ApplyPatch!\".\n".
     "Envelope:\n*** Begin Patch\n*** Add File: {$workdir}/hello.txt\nHello, ApplyPatch!\n*** End Patch",
-    new HaoCodeConfig(apiKey: getenv('ANTHROPIC_API_KEY'), cwd: $workdir, maxTurns: 3, allowedTools: ['apply_patch'])
+    new HaoCodeConfig(
+        apiKey: getenv('ANTHROPIC_API_KEY'),
+        cwd: $workdir,
+        maxTurns: 3,
+        permissionMode: 'bypass_permissions',
+        allowedTools: ['apply_patch'],
+    )
 );
 echo $result."\n";
 if (file_exists("{$workdir}/hello.txt")) {

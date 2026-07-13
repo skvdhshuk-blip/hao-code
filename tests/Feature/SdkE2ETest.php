@@ -170,6 +170,7 @@ class SdkE2ETest extends TestCase
 
         $result = HaoCode::query('Create hello.txt', new HaoCodeConfig(
             allowedTools: ['Write'],
+            permissionMode: 'bypass_permissions',
         ));
 
         $this->assertStringContainsString('File created', $result->text);
@@ -373,8 +374,22 @@ class SdkE2ETest extends TestCase
         $config = HaoCodeConfig::make('test-key', 'claude-haiku');
         $this->assertSame('test-key', $config->apiKey);
         $this->assertSame('claude-haiku', $config->model);
-        $this->assertSame(['*'], $config->allowedTools);
+        $this->assertSame([], $config->allowedTools);
+        $this->assertSame('default', $config->permissionMode);
+        $this->assertTrue($config->ephemeral);
         $this->assertSame(50, $config->maxTurns);
+    }
+
+    public function test_config_with_only_api_key_keeps_safe_query_defaults(): void
+    {
+        $config = new HaoCodeConfig(apiKey: 'test-key');
+
+        $this->assertSame([], $config->allowedTools);
+        $this->assertSame('default', $config->permissionMode);
+        $this->assertTrue($config->ephemeral);
+        $filter = $config->toolFilter();
+        $this->assertNotNull($filter);
+        $this->assertFalse($filter('Bash'));
     }
 
     // ──────────────────────────────────────────────────────────────
@@ -968,6 +983,8 @@ class SdkE2ETest extends TestCase
         chdir($this->projectDir);
 
         $result = HaoCode::query('Export all users to a file', new HaoCodeConfig(
+            allowedTools: ['Write'],
+            permissionMode: 'bypass_permissions',
             tools: [$dbTool],
         ));
 
@@ -1005,6 +1022,7 @@ class SdkE2ETest extends TestCase
         $typeCounter = [];
         foreach (HaoCode::stream('Find all text files', new HaoCodeConfig(
             allowedTools: ['Glob', 'Bash'],
+            permissionMode: 'bypass_permissions',
         )) as $msg) {
             $typeCounter[$msg->type] = ($typeCounter[$msg->type] ?? 0) + 1;
         }
@@ -1084,6 +1102,7 @@ class SdkE2ETest extends TestCase
         chdir($this->projectDir);
 
         $conv = HaoCode::conversation(new HaoCodeConfig(
+            permissionMode: 'bypass_permissions',
             tools: [$statefulTool],
         ));
 
@@ -1214,7 +1233,7 @@ class SdkE2ETest extends TestCase
 
         chdir($this->projectDir);
 
-        $conv = HaoCode::conversation();
+        $conv = HaoCode::conversation(new HaoCodeConfig(ephemeral: false));
 
         $conv->send('First');
         $this->assertIsFloat($conv->getCost());
@@ -1252,6 +1271,7 @@ class SdkE2ETest extends TestCase
         chdir($this->projectDir);
 
         $result = HaoCode::query('Review auth.php for security', new HaoCodeConfig(
+            allowedTools: ['Skill'],
             skills: [
                 new SdkSkill(
                     name: 'security-review',
@@ -1309,6 +1329,7 @@ class SdkE2ETest extends TestCase
         chdir($this->projectDir);
 
         $result = HaoCode::query('Deploy the app', new HaoCodeConfig(
+            allowedTools: ['Skill'],
             skills: [
                 new SdkSkill(
                     name: 'test-suite',
@@ -1379,6 +1400,7 @@ class SdkE2ETest extends TestCase
         chdir($this->projectDir);
 
         $result = HaoCode::query('Run a full health check', new HaoCodeConfig(
+            allowedTools: ['Skill'],
             skills: [
                 new SdkSkill(
                     name: 'health-check',
@@ -1449,6 +1471,7 @@ class SdkE2ETest extends TestCase
         chdir($this->projectDir);
 
         $conv = HaoCode::conversation(new HaoCodeConfig(
+            allowedTools: ['Skill'],
             skills: [
                 new SdkSkill(
                     name: 'release-guard',
@@ -1512,7 +1535,7 @@ JSON),
 
         $seedResult = HaoCode::query(
             'Remember that the project codename is ORBIT.',
-            new HaoCodeConfig(allowedTools: []),
+            new HaoCodeConfig(allowedTools: [], ephemeral: false),
         );
         $this->assertNotNull($seedResult->sessionId);
         $this->assertFileExists($this->sessionDir.'/'.$seedResult->sessionId.'.jsonl');
@@ -1537,6 +1560,7 @@ JSON),
         $result = $conv->send('What is the project codename?');
 
         $this->assertStringContainsString('ORBIT', $result->text);
+        $this->assertSame($seedResult->sessionId, $result->sessionId);
         $this->assertSame(1, $result->turnsUsed);
 
         $conv->close();
@@ -1558,6 +1582,7 @@ JSON),
         chdir($this->tempRoot);
         HaoCode::query('Remember that this workspace is alpha.', new HaoCodeConfig(
             cwd: $this->projectDir,
+            ephemeral: false,
         ));
 
         sleep(1);
@@ -1569,6 +1594,7 @@ JSON),
         chdir($this->tempRoot);
         HaoCode::query('Remember that this workspace is beta.', new HaoCodeConfig(
             cwd: $otherProjectDir,
+            ephemeral: false,
         ));
 
         $this->bootWithMock([
@@ -1622,6 +1648,7 @@ JSON),
         HaoCode::query('Edit the file without reading it', new HaoCodeConfig(
             cwd: $this->projectDir,
             allowedTools: ['Edit'],
+            permissionMode: 'bypass_permissions',
             ephemeral: true,
         ));
 
@@ -1722,6 +1749,7 @@ JSON),
         $first = HaoCode::query('First question', new HaoCodeConfig(
             cwd: $this->projectDir,
             allowedTools: [],
+            ephemeral: false,
         ));
         $this->assertNotNull($first->sessionId);
 
@@ -1750,7 +1778,11 @@ JSON),
             },
         ]);
         chdir($this->projectDir);
-        $config = new HaoCodeConfig(allowedTools: ['Write'], interruptOn: ['Write' => true]);
+        $config = new HaoCodeConfig(
+            allowedTools: ['Write'],
+            ephemeral: false,
+            interruptOn: ['Write' => true],
+        );
 
         try {
             HaoCode::query('Write the approved file', $config);
@@ -1793,6 +1825,7 @@ JSON),
 
         $messages = iterator_to_array(HaoCode::stream('Run it', new HaoCodeConfig(
             allowedTools: ['Bash'],
+            ephemeral: false,
             interruptOn: ['Bash' => true],
         )));
 
@@ -1810,7 +1843,11 @@ JSON),
             MockAnthropicSse::textResponse('Stream resume completed.'),
         ]);
         chdir($this->projectDir);
-        $config = new HaoCodeConfig(allowedTools: ['Write'], interruptOn: ['Write' => true]);
+        $config = new HaoCodeConfig(
+            allowedTools: ['Write'],
+            ephemeral: false,
+            interruptOn: ['Write' => true],
+        );
         $initial = iterator_to_array(HaoCode::stream('Write the file', $config));
         $interrupt = array_values(array_filter(
             $initial,
@@ -1855,6 +1892,7 @@ JSON),
         $config = new HaoCodeConfig(
             allowedTools: ['Lookup', 'Write'],
             tools: [$lookup],
+            ephemeral: false,
             interruptOn: ['Write' => true],
         );
 
@@ -1893,7 +1931,7 @@ JSON),
             },
         ], $requests);
         chdir($this->projectDir);
-        $config = new HaoCodeConfig(enableAskUser: true);
+        $config = new HaoCodeConfig(ephemeral: false, enableAskUser: true);
         try {
             HaoCode::query('Ask me first', $config);
             $this->fail('Expected AskUser interrupt.');
@@ -1927,7 +1965,11 @@ JSON),
             MockAnthropicSse::textResponse('Edited write completed.'),
         ]);
         chdir($this->projectDir);
-        $config = new HaoCodeConfig(allowedTools: ['Write'], interruptOn: ['Write' => true]);
+        $config = new HaoCodeConfig(
+            allowedTools: ['Write'],
+            ephemeral: false,
+            interruptOn: ['Write' => true],
+        );
         try {
             HaoCode::query('Write a file', $config);
             $this->fail('Expected interrupt.');
@@ -1956,7 +1998,11 @@ JSON),
             },
         ]);
         chdir($this->projectDir);
-        $config = new HaoCodeConfig(allowedTools: ['Write'], interruptOn: ['Write' => true]);
+        $config = new HaoCodeConfig(
+            allowedTools: ['Write'],
+            ephemeral: false,
+            interruptOn: ['Write' => true],
+        );
         try {
             HaoCode::query('Write a file', $config);
             $this->fail('Expected interrupt.');
@@ -1986,7 +2032,11 @@ JSON),
             'properties' => ['status' => ['type' => 'string']],
             'required' => ['status'],
         ];
-        $config = new HaoCodeConfig(allowedTools: ['Write'], interruptOn: ['Write' => true]);
+        $config = new HaoCodeConfig(
+            allowedTools: ['Write'],
+            ephemeral: false,
+            interruptOn: ['Write' => true],
+        );
         try {
             HaoCode::structured('Write then report', $schema, $config);
             $this->fail('Expected interrupt.');
@@ -2026,6 +2076,8 @@ JSON),
         chdir($this->projectDir);
         $config = new HaoCodeConfig(
             allowedTools: ['Agent', 'Write'],
+            permissionMode: 'bypass_permissions',
+            ephemeral: false,
             interruptOn: ['Write' => true],
         );
         try {
@@ -2060,6 +2112,7 @@ JSON),
         chdir($this->projectDir);
         $config = new HaoCodeConfig(
             allowedTools: ['Agent', 'Write'],
+            ephemeral: false,
             interruptOn: ['Agent' => true, 'Write' => true],
         );
         try {

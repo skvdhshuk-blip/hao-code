@@ -491,6 +491,7 @@ PROMPT,
             maxTurns: 8,
             maxBudgetUsd: 2.0,
             permissionMode: 'bypass_permissions',
+            ephemeral: false,
             appendSystemPrompt: $appendSystemPrompt,
             allowedTools: [
                 'Write',

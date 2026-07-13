@@ -195,6 +195,7 @@ echo "── Example 2: Streaming code review ──\n\n";
 foreach (HaoCode::stream(
     'Review the recent code changes using the code-review skill.',
     new HaoCodeConfig(
+        allowedTools: ['Skill'],
         tools: [new CodingStandardsTool(), new GitDiffSummaryTool()],
         skills: [$reviewSkill],
         maxTurns: 10,

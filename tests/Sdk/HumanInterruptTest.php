@@ -2,6 +2,7 @@
 
 namespace Tests\Sdk;
 
+use HaoCode\Sdk\HaoCode;
 use HaoCode\Sdk\HaoCodeConfig;
 use HaoCode\Sdk\HumanActionRequest;
 use HaoCode\Sdk\HumanDecision;
@@ -53,8 +54,24 @@ final class HumanInterruptTest extends TestCase
     public function test_interrupt_configuration_rejects_unknown_decisions(): void
     {
         $this->expectException(\InvalidArgumentException::class);
-        new HaoCodeConfig(interruptOn: [
+        new HaoCodeConfig(ephemeral: false, interruptOn: [
             'Write' => ['allowedDecisions' => ['approve', 'replace-tool']],
         ]);
+    }
+
+    public function test_resume_interrupt_requires_the_original_config(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('HaoCodeConfig is required to resume an interrupt');
+
+        HaoCode::resumeInterrupt('session-1', 'interrupt-1', []);
+    }
+
+    public function test_stream_resume_interrupt_requires_the_original_config(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('HaoCodeConfig is required to resume an interrupt');
+
+        iterator_to_array(HaoCode::streamResumeInterrupt('session-1', 'interrupt-1', []));
     }
 }

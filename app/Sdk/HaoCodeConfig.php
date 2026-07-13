@@ -75,20 +75,22 @@ class HaoCodeConfig
 
         /**
          * Permission mode: 'default', 'plan', 'accept_edits', 'bypass_permissions'.
-         * Default: 'bypass_permissions' (SDK consumers handle their own safety).
+         * Default: 'default'. Use 'bypass_permissions' only when the caller
+         * explicitly accepts responsibility for tool execution.
          *
          * @api
          */
-        public readonly string $permissionMode = 'bypass_permissions',
+        public readonly string $permissionMode = 'default',
 
         /**
-         * Tools to allow. ['*'] = all (default). Use tool names like ['Bash', 'Read', 'Write'].
+         * Tools to allow. No tools are exposed by default. Use tool names like
+         * ['Bash', 'Read', 'Write'], or ['*'] to explicitly allow all tools.
          *
          * @api
          *
          * @var string[]
          */
-        public readonly array $allowedTools = ['*'],
+        public readonly array $allowedTools = [],
 
         /**
          * Tools to deny. Takes precedence over allowedTools.
@@ -183,12 +185,13 @@ class HaoCodeConfig
         public readonly mixed $onTurnStart = null,
 
         /**
-         * Disable session and tool-result persistence for this run.
-         * The basic no-config HaoCode::query() path enables this automatically.
+         * Disable session and tool-result persistence for this run. Enabled by
+         * default; durable conversations and human-in-the-loop flows must set
+         * this to false explicitly.
          *
          * @api
          */
-        public readonly bool $ephemeral = false,
+        public readonly bool $ephemeral = true,
 
         /**
          * Custom tools to register (instances of SdkTool).

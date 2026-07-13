@@ -2,9 +2,19 @@
 
 A framework-free PHP Agent SDK for Anthropic, OpenAI Responses, and OpenAI Chat Completions-compatible APIs.
 
-`hao-code` lets PHP applications embed an AI coding agent with tools, skills, streaming output, multi-turn sessions, structured JSON results, cost tracking, abort control, credential pools, and isolated runtime storage.
+`hao-code` lets PHP applications embed an AI coding agent with tools, skills,
+streaming output, multi-turn sessions, structured JSON results, durable human
+approval, agent teams, cost tracking, abort control, credential pools, and
+isolated runtime storage.
 
 For the complete SDK reference, see [docs/SDK.md](docs/SDK.md).
+
+## Requirements
+
+- PHP `^8.1`
+- Composer; Symfony `^6.4`, `^7.0`, or `^8.0` components are installed as package dependencies
+- Optional `pcntl` and `posix` extensions for background agents and agent teams
+- macOS `/usr/bin/sandbox-exec` or Linux `bubblewrap` when using the native local sandbox
 
 ## Install
 
@@ -28,6 +38,7 @@ Then create `example.php`:
 require __DIR__.'/vendor/autoload.php';
 
 use HaoCode\Sdk\HaoCode;
+use HaoCode\Sdk\HaoCodeConfig;
 
 $result = HaoCode::query('Reply with exactly: HaoCode works');
 
@@ -40,23 +51,31 @@ php example.php
 
 The basic `query()` call does not expose file or shell tools and does not write
 a session file. Hao Code reads real process environment variables; it does not load `.env` files by itself.
-Applications that already load `.env` may pass the key explicitly with
-`new HaoCodeConfig(apiKey: getenv('ANTHROPIC_API_KEY'))`.
+Applications that already load `.env` may pass the key explicitly. Constructing
+`HaoCodeConfig` does not increase authority: its defaults are `allowedTools: []`,
+`permissionMode: 'default'`, and `ephemeral: true`. Supplying only connection
+settings therefore remains text-only and non-persistent:
+
+```php
+$config = new HaoCodeConfig(
+    apiKey: getenv('ANTHROPIC_API_KEY') ?: '',
+);
+```
 
 ## What It Provides
 
 | Area | Capability |
 | --- | --- |
-| Agent execution | One-shot queries, streaming responses, multi-turn conversations, session resume, continue latest session |
+| Agent execution | One-shot queries, streaming responses, multi-turn conversations, session resume, durable human approval |
 | Providers | Anthropic, OpenAI Responses API, OpenAI Chat Completions-compatible gateways |
-| Tools | Built-in file, search, patch, shell, web, MCP, task, memory, and planning tools, plus custom PHP tools |
-| Sandbox | Optional temporary filesystem for `Read`, `Write`, `Glob`, `Grep`, and sandboxed `Bash` |
+| Tools | Built-in file, search, patch, shell, web, MCP, task, team, memory, and planning tools, plus custom PHP tools |
+| Sandbox | Local workspace, OS-native local isolation, or Alibaba Cloud AgentRun for sandbox-scoped file and shell tools |
 | Skills | Prompt-packaged domain guidance through `SdkSkill` |
 | Structured output | JSON schema guided responses via `HaoCode::structured()` |
 | Runtime control | Working directory, allowed tools, denied tools, permission mode, max turns, max tokens, thinking options |
 | Operations | Cost budget, usage metadata, abort controller, callbacks for text/tool/turn events |
 | State | Session IDs, conversation handles, memory summary levels, custom memory storage path |
-| Reliability | Credential pools, rate-limit tracking, provider abstraction, SDK-only runtime without Laravel dependency |
+| Reliability | Credential-pool failover on rate limits, provider abstraction, SDK-only runtime without framework dependencies |
 
 ## Main APIs
 
@@ -67,6 +86,8 @@ Applications that already load `.env` may pass the key explicitly with
 | Multi-turn conversation | `HaoCode::conversation()` |
 | Resume a session | `HaoCode::resume()` |
 | Continue latest session | `HaoCode::continueLatest()` |
+| Resume human approval | `HaoCode::resumeInterrupt()` |
+| Stream approval resume | `HaoCode::streamResumeInterrupt()` |
 | Structured JSON result | `HaoCode::structured()` |
 
 ## Configuration
@@ -84,22 +105,38 @@ $config = new HaoCodeConfig(
     maxTokens: 4096,
     cwd: __DIR__,
     maxTurns: 30,
-    permissionMode: 'bypass_permissions',
+    permissionMode: 'default',
     allowedTools: ['Read', 'Grep', 'Glob'],
     disallowedTools: ['Bash'],
 );
 ```
 
-If no explicit config is provided, the SDK reads environment and settings values such as `ANTHROPIC_API_KEY`, `HAOCODE_MODEL`, `HAOCODE_API_BASE_URL`, and `HAOCODE_MAX_TOKENS`.
+If no explicit config is provided, the SDK reads environment and settings
+values such as `ANTHROPIC_API_KEY`, `HAOCODE_MODEL`, `HAOCODE_API_BASE_URL`, and
+`HAOCODE_MAX_TOKENS`. `OPENAI_API_KEY` is not an automatic fallback; pass it as
+`apiKey` or put it in the selected provider entry in
+`~/.haocode/settings.json`.
+
+Tools, permission bypass, and durable storage are independent opt-ins. An
+unattended full agent must state all three explicitly, for example
+`allowedTools: ['*']`, `permissionMode: 'bypass_permissions'`, and
+`ephemeral: false`. Do this only inside a trust boundary appropriate for the
+tools being exposed.
+
+> **v2.0.0 breaking change:** `v1.7.0` constructed `HaoCodeConfig` with all
+> tools, permission bypass, and durable storage by default. Existing trusted
+> callers that need the old behavior must now opt in to those three settings
+> explicitly.
 
 ## Sandbox Runtime
 
 Use a sandbox when the agent needs file or shell tools but must not mutate the
 PHP host project directory. Sandbox mode replaces `Read`, `Write`, `Glob`, and
 `Grep` with sandbox-scoped tools. Set `mode: 'full'` to also replace `Bash` with
-a sandbox-scoped shell. Host-only tools such as `Edit`, `apply_patch`,
-`NotebookEdit`, `Lsp`, worktree tools, and sub-agent messaging are disabled while
-sandbox mode is active.
+a sandbox-scoped shell. Sandbox configuration disables `Edit`, `apply_patch`,
+`NotebookEdit`, worktree tools, `Agent`, and `SendMessage`. Other host-only tools,
+including `LSP`, task/team tools, and cron tools, are not sandbox replacements;
+use an explicit `allowedTools` list as shown below and omit them unless needed.
 
 ```php
 use HaoCode\Sdk\HaoCode;
@@ -113,6 +150,7 @@ $result = HaoCode::query('Review this project and write notes to notes.md', new 
         sync: 'upload-cwd',  // copy cwd snapshot into /workspace
     ),
     allowedTools: ['Read', 'Write', 'Grep', 'Glob'],
+    permissionMode: 'bypass_permissions', // isolated workspace, unattended run
 ));
 ```
 
@@ -127,6 +165,7 @@ $config = new HaoCodeConfig(
         network: 'blocked', // opt in with "allow-all" when the task needs it
     ),
     allowedTools: ['Read', 'Write', 'Grep', 'Glob', 'Bash'],
+    permissionMode: 'bypass_permissions', // native sandbox contains mutations
 );
 ```
 
@@ -164,6 +203,7 @@ $config = new HaoCodeConfig(
         remoteCwd: '/tmp',
     ),
     allowedTools: ['Read', 'Write', 'Bash'],
+    permissionMode: 'bypass_permissions', // remote sandbox contains mutations
 );
 ```
 
@@ -193,7 +233,11 @@ foreach (HaoCode::stream('Explain PHP Fibers in three sentences') as $message) {
 Use a conversation handle when later prompts should keep the same message history and session:
 
 ```php
-$conversation = HaoCode::conversation(new HaoCodeConfig(cwd: __DIR__));
+$conversation = HaoCode::conversation(new HaoCodeConfig(
+    cwd: __DIR__,
+    allowedTools: ['Read', 'Glob', 'Grep'],
+    ephemeral: false,
+));
 
 $conversation->send('Read the service layer and remember the architecture.');
 $result = $conversation->send('Now review the newest changes.');
@@ -205,7 +249,9 @@ echo $conversation->getSessionId();
 ## Human approval
 
 Human-in-the-loop runs are durable and non-blocking: the SDK pauses, returns a
-serializable interrupt, and the host resumes it in a later HTTP request or worker job.
+serializable interrupt, and the host resumes it in a later HTTP request or worker
+job. Pass the original `HaoCodeConfig` back to `resumeInterrupt()` so the SDK can
+restore the same tool and sandbox boundary.
 
 ```php
 use HaoCode\Sdk\HaoCode;
@@ -215,6 +261,8 @@ use HaoCode\Sdk\HumanInterruptException;
 
 $config = new HaoCodeConfig(
     cwd: __DIR__,
+    allowedTools: ['Read', 'Write', 'Bash'],
+    ephemeral: false,
     interruptOn: ['Bash' => true, 'Write' => true],
     enableAskUser: true,
 );
@@ -235,6 +283,9 @@ try {
 `edit` changes only tool arguments, `reject` returns error feedback to the model,
 and `respond` supplies a successful tool result. Hard permission denials cannot
 be overridden. HITL cannot be combined with `ephemeral: true`.
+Streaming hosts resume the same checkpoint with `HaoCode::streamResumeInterrupt()`;
+it yields normal stream messages and exactly one final `result`, unless another
+`interrupt` pauses the run again.
 
 ## Structured Output
 
@@ -278,6 +329,7 @@ $lookupOrder = new class extends SdkTool {
 };
 
 $result = HaoCode::query('Check order A123', new HaoCodeConfig(
+    allowedTools: ['LookupOrder'],
     tools: [$lookupOrder],
 ));
 ```
@@ -300,6 +352,7 @@ $skill = new SdkSkill(
 );
 
 $result = HaoCode::query('Use security-review on app/Auth.php', new HaoCodeConfig(
+    allowedTools: ['Skill', 'Read', 'Grep'],
     skills: [$skill],
 ));
 ```
@@ -308,6 +361,7 @@ To use an existing Claude Skill catalog without copying it, opt in explicitly:
 
 ```php
 $result = HaoCode::query('Use the matching skill for this task', new HaoCodeConfig(
+    allowedTools: ['Skill', 'Read', 'Grep'],
     skillDirectories: [getenv('HOME').'/.claude/skills'],
     recursiveSkillDiscovery: true,
 ));
@@ -359,7 +413,9 @@ $config = new HaoCodeConfig(
 
 ## Storage And Memory
 
-Runtime data is stored under `~/.haocode/storage` by default when installed through Composer. Set `HAOCODE_STORAGE_PATH` for an application-specific runtime directory.
+Runtime data is stored under `~/.haocode/storage` by default when installed
+through Composer. Set `HAOCODE_STORAGE_PATH` for an application-specific
+runtime directory.
 
 Session memory can be customized with `memorySummaryLevel` and `memoryStoragePath`:
 
@@ -388,7 +444,11 @@ $config = new HaoCodeConfig(
 
 ## Version
 
-`v1.0.0` is the first SDK-only release.
+The current release is `v2.0.0`. It makes `HaoCodeConfig` safe by default and
+requires tools, permission bypass, and durable storage to be enabled explicitly.
+It also preserves durable session continuation and requires the original config
+when resuming a human-interrupt checkpoint so tool and sandbox boundaries cannot
+silently change.
 
 ## License
 

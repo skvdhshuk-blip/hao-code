@@ -17,6 +17,7 @@ $config = new HaoCodeConfig(
     apiKey: $apiKey,
     cwd: sys_get_temp_dir(),
     allowedTools: ['Write'],
+    ephemeral: false,
     interruptOn: ['Write' => true],
 );
 

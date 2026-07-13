@@ -255,7 +255,7 @@ class HaoCode
      */
     public static function resume(string $sessionId, ?HaoCodeConfig $config = null): Conversation
     {
-        $config ??= new HaoCodeConfig;
+        $config ??= new HaoCodeConfig(ephemeral: false);
 
         /** @var AgentLoopFactory $factory */
         $factory = \HaoCode\Support\Runtime\SdkRuntime::app(AgentLoopFactory::class);
@@ -275,6 +275,7 @@ class HaoCode
      * Resolve a durable interrupt and continue the original session.
      *
      * @param array<int, HumanDecision|array<string, mixed>> $decisions
+     * @param HaoCodeConfig|null $config Required at runtime to restore the original tool boundary.
      * @api
      */
     public static function resumeInterrupt(
@@ -283,13 +284,19 @@ class HaoCode
         array $decisions,
         ?HaoCodeConfig $config = null,
     ): QueryResult|StructuredResult {
+        if ($config === null) {
+            throw new \InvalidArgumentException(
+                'HaoCodeConfig is required to resume an interrupt so the original tool and sandbox boundary can be restored.',
+            );
+        }
+
         /** @var SessionManager $sessionManager */
         $sessionManager = \HaoCode\Support\Runtime\SdkRuntime::app(SessionManager::class);
         $state = $sessionManager->getInterruptState($sessionId, $interruptId);
         $checkpoint = is_array($state['checkpoint'] ?? null) ? $state['checkpoint'] : [];
         $pendingInterrupt = HumanInterrupt::fromArray($state['interrupt'] ?? []);
         $parentLink = $sessionManager->findInterruptParentLink($sessionId, $interruptId);
-        $conversation = self::resume($sessionId, $config ?? new HaoCodeConfig);
+        $conversation = self::resume($sessionId, $config);
         try {
             try {
                 $result = $conversation->resumeInterrupt($interruptId, $decisions);
@@ -337,6 +344,7 @@ class HaoCode
      * Streaming counterpart of {@see resumeInterrupt()}.
      *
      * @param array<int, HumanDecision|array<string, mixed>> $decisions
+     * @param HaoCodeConfig|null $config Required at runtime to restore the original tool boundary.
      * @return \Generator<int, Message>
      * @api
      */
@@ -346,12 +354,18 @@ class HaoCode
         array $decisions,
         ?HaoCodeConfig $config = null,
     ): \Generator {
+        if ($config === null) {
+            throw new \InvalidArgumentException(
+                'HaoCodeConfig is required to resume an interrupt so the original tool and sandbox boundary can be restored.',
+            );
+        }
+
         /** @var SessionManager $sessionManager */
         $sessionManager = \HaoCode\Support\Runtime\SdkRuntime::app(SessionManager::class);
         $state = $sessionManager->getInterruptState($sessionId, $interruptId);
         $pendingInterrupt = HumanInterrupt::fromArray($state['interrupt'] ?? []);
         $parentLink = $sessionManager->findInterruptParentLink($sessionId, $interruptId);
-        $conversation = self::resume($sessionId, $config ?? new HaoCodeConfig);
+        $conversation = self::resume($sessionId, $config);
         try {
             $final = null;
             foreach ($conversation->streamResumeInterrupt($interruptId, $decisions) as $message) {
