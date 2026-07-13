@@ -47,6 +47,13 @@ class TeamAwaitTool extends BaseTool
             if ($result === null) {
                 return ToolResult::error("Team not found: {$input['name']}");
             }
+            foreach ($result['members'] as $member) {
+                if (is_array($member['pending_interrupt'] ?? null)) {
+                    throw new \HaoCode\Sdk\HumanInterruptException(
+                        \HaoCode\Sdk\HumanInterrupt::fromArray($member['pending_interrupt']),
+                    );
+                }
+            }
             if (($result['summary']['pending'] ?? 0) === 0 || $context->isAborted()) {
                 break;
             }

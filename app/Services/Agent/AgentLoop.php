@@ -2,6 +2,9 @@
 
 namespace HaoCode\Services\Agent;
 
+use HaoCode\Sdk\HumanInterrupt;
+use HaoCode\Sdk\HumanInterruptException;
+use HaoCode\Sdk\HumanActionRequest;
 use HaoCode\Services\Compact\ContextCompactor;
 use HaoCode\Services\Cost\CostTracker;
 use HaoCode\Services\Hooks\HookExecutor;
@@ -44,6 +47,10 @@ class AgentLoop
     private CancellationToken $cancellationToken;
 
     private ?ToolUseContext $toolUseContext = null;
+
+    private ?string $interruptSourceAgentId = null;
+
+    private ?string $interruptSourceTeam = null;
 
     public function __construct(
         private readonly QueryEngine $queryEngine,
@@ -142,11 +149,47 @@ class AgentLoop
     }
 
     /**
+     * Resolve a durable interrupt and continue the model loop without adding a new user message.
+     *
+     * @param array<int, HumanDecision|array<string, mixed>> $decisions
+     * @internal
+     */
+    public function resumeInterrupt(
+        string $interruptId,
+        array $decisions,
+        ?callable $onTextDelta = null,
+        ?callable $onToolStart = null,
+        ?callable $onToolComplete = null,
+        ?callable $onTurnStart = null,
+        ?callable $onThinkingDelta = null,
+    ): string {
+        $context = $this->toolUseContext ??= new ToolUseContext(
+            workingDirectory: $this->workingDirectory ?? (getcwd() ?: '/'),
+            sessionId: $this->sessionManager->getSessionId(),
+            shouldAbort: fn (): bool => $this->cancellationToken->isCancelled(),
+            runContext: $this->runContext,
+            provider: $this->provider,
+        );
+        $resolution = (new HumanInterruptCoordinator($this->sessionManager, $this->toolOrchestrator))->resolve(
+            $interruptId,
+            $decisions,
+            $context,
+            $onToolStart,
+            $onToolComplete,
+        );
+        $this->interruptSourceAgentId = $resolution['interrupt']->sourceAgentId;
+        $this->interruptSourceTeam = $resolution['interrupt']->sourceTeam;
+        $this->messageHistory->addToolResultMessage($resolution['results']);
+
+        return $this->runInternal(null, $onTextDelta, $onToolStart, $onToolComplete, $onTurnStart, $onThinkingDelta);
+    }
+
+    /**
      * Original run body, preserved verbatim behind the tracer wrapper in
      * {@see run()} so span lifecycle stays isolated from the agent logic.
      */
     private function runInternal(
-        string|array $userInput,
+        string|array|null $userInput,
         ?callable $onTextDelta,
         ?callable $onToolStart,
         ?callable $onToolComplete,
@@ -155,11 +198,13 @@ class AgentLoop
     ): string {
         $this->aborted = false;
         $this->cancellationToken->reset();
-        $this->messageHistory->addUserMessage($userInput);
-        $this->sessionManager->recordEntry([
-            'type' => 'user_message',
-            'content' => is_string($userInput) ? $userInput : '[multi-content message with images]',
-        ]);
+        if ($userInput !== null) {
+            $this->messageHistory->addUserMessage($userInput);
+            $this->sessionManager->recordEntry([
+                'type' => 'user_message',
+                'content' => is_string($userInput) ? $userInput : '[multi-content message with images]',
+            ]);
+        }
 
         // Fire SessionStart hook on the very first user turn
         if (! $this->sessionStarted) {
@@ -238,6 +283,7 @@ class AgentLoop
                 toolOrchestrator: $this->toolOrchestrator,
                 toolRegistry: $this->toolRegistry,
                 cancellationToken: $this->cancellationToken,
+                disableEarlyExecution: $this->toolOrchestrator->hasHumanInterruptsConfigured(),
             );
             $context = $this->toolUseContext ??= new ToolUseContext(
                 workingDirectory: $this->workingDirectory ?? getcwd(),
@@ -377,6 +423,98 @@ class AgentLoop
 
                 $this->messageHistory->addAssistantMessage($assistantMessage);
 
+                if ($this->toolOrchestrator->hasHumanInterruptsConfigured()) {
+                    $blocks = array_map(static fn (ToolCall $call): array => $call->toArray(), $toolCalls);
+                    $review = $this->toolOrchestrator->prepareHumanReview($blocks, $context);
+                    $toolResults = $review['results'];
+
+                    foreach ($review['prepared'] as $index => $block) {
+                        if (isset($review['actions'][$index])) {
+                            continue;
+                        }
+                        try {
+                            $toolResults[$index] = $this->toolOrchestrator->executePreparedToolBlock(
+                                $block,
+                                $context,
+                                $onToolStart,
+                                $onToolComplete,
+                            );
+                        } catch (HumanInterruptException $childInterrupt) {
+                            foreach ($blocks as $siblingIndex => $sibling) {
+                                if ($siblingIndex === $index || isset($toolResults[$siblingIndex])) {
+                                    continue;
+                                }
+                                $toolResults[$siblingIndex] = [
+                                    'tool_use_id' => $sibling['id'],
+                                    'content' => 'Deferred because a child agent requires human input; retry after the child resumes.',
+                                    'is_error' => true,
+                                ];
+                            }
+                            $parentAction = new HumanActionRequest(
+                                id: (string) $block['id'],
+                                toolName: (string) $block['name'],
+                                input: $block['input'] ?? [],
+                                description: 'Continue with the resumed child agent result',
+                                allowedDecisions: ['respond', 'reject'],
+                                agentId: $this->runContext?->agentId,
+                            );
+                            $parentInterrupt = new HumanInterrupt(
+                                id: 'int_'.bin2hex(random_bytes(12)),
+                                sessionId: $this->sessionManager->getSessionId(),
+                                actions: [$parentAction],
+                                createdAt: date('c'),
+                                sourceAgentId: $this->runContext?->agentId ?? $this->interruptSourceAgentId,
+                                sourceTeam: $this->runContext?->teamName ?? $this->interruptSourceTeam,
+                            );
+                            $this->sessionManager->recordPendingInterrupt($parentInterrupt->toArray(), [
+                                'assistant_message' => $assistantMessage,
+                                'blocks' => [$index => $block],
+                                'results' => $toolResults,
+                                'allowed_tools' => array_keys($this->toolRegistry->getAllTools()),
+                                'interrupt_on' => $this->toolOrchestrator->getInterruptOn(),
+                                'enable_ask_user' => $this->toolOrchestrator->isAskUserEnabled(),
+                                'permission_interrupts' => $this->toolOrchestrator->arePermissionInterruptsEnabled(),
+                                'operation' => $this->runContext?->responseSchema !== null ? 'structured' : 'query',
+                                'response_schema' => $this->runContext?->responseSchema,
+                            ]);
+                            $this->sessionManager->recordInterruptParentLink(
+                                $childInterrupt->interrupt->sessionId,
+                                $childInterrupt->interrupt->id,
+                                $parentInterrupt->sessionId,
+                                $parentInterrupt->id,
+                                $parentAction->id,
+                            );
+                            throw $childInterrupt;
+                        }
+                    }
+
+                    if ($review['actions'] !== []) {
+                        $interrupt = new HumanInterrupt(
+                            id: 'int_'.bin2hex(random_bytes(12)),
+                            sessionId: $this->sessionManager->getSessionId(),
+                            actions: array_values($review['actions']),
+                            createdAt: date('c'),
+                            sourceAgentId: $this->runContext?->agentId ?? $this->interruptSourceAgentId,
+                            sourceTeam: $this->runContext?->teamName ?? $this->interruptSourceTeam,
+                        );
+                        $this->sessionManager->recordPendingInterrupt($interrupt->toArray(), [
+                            'assistant_message' => $assistantMessage,
+                            'blocks' => $review['prepared'],
+                            'results' => $toolResults,
+                            'allowed_tools' => array_keys($this->toolRegistry->getAllTools()),
+                            'interrupt_on' => $this->toolOrchestrator->getInterruptOn(),
+                            'enable_ask_user' => $this->toolOrchestrator->isAskUserEnabled(),
+                            'permission_interrupts' => $this->toolOrchestrator->arePermissionInterruptsEnabled(),
+                            'operation' => $this->runContext?->responseSchema !== null ? 'structured' : 'query',
+                            'response_schema' => $this->runContext?->responseSchema,
+                        ]);
+                        throw new HumanInterruptException($interrupt);
+                    }
+
+                    ksort($toolResults);
+                    $toolResults = array_values($toolResults);
+                } else {
+
                 // Kimi's SSE stream can omit the trailing content_block_stop for the last tool_use block.
                 // Reconcile against the finalized assistant message so every tool_use gets a matching tool_result.
                 foreach ($toolCalls as $index => $toolCall) {
@@ -385,6 +523,7 @@ class AgentLoop
 
                 // 7. Collect tool results (early-forked safe tools + queued unsafe tools)
                 $toolResults = $streamingExecutor->collectResults();
+                }
 
                 $modelOverride = $this->toolOrchestrator->getActiveSkillModelOverride();
                 if ($modelOverride !== null) {
@@ -408,7 +547,7 @@ class AgentLoop
                     $this->autoTitleGenerated = true;
                     if (is_string($userInput)) {
                         $rawTitle = $userInput;
-                    } else {
+                    } elseif (is_array($userInput)) {
                         // Array of content blocks (e.g. text + image): extract text parts.
                         // Each block is normally an array like ['type'=>'text','text'=>'...'],
                         // but guard against bare strings that may appear in mixed inputs.
@@ -417,6 +556,8 @@ class AgentLoop
                             fn ($t) => is_string($t) && $t !== '',
                         );
                         $rawTitle = implode(' ', $texts);
+                    } else {
+                        $rawTitle = '';
                     }
                     $firstInput = mb_substr($rawTitle, 0, 80);
                     $title = preg_replace('/\s+/', ' ', trim($firstInput));
@@ -441,7 +582,7 @@ class AgentLoop
     private function getActiveSkillApiTools(): array
     {
         $tools = $this->toolRegistry->toApiTools();
-        $allowedTools = $this->toolOrchestrator->getActiveSkillAllowedTools();
+        $allowedTools = $this->toolOrchestrator->getAdvertisedAllowedTools();
         if ($allowedTools === null) {
             return $tools;
         }

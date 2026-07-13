@@ -2,7 +2,6 @@
 
 namespace HaoCode\Services\Agent;
 
-use HaoCode\Services\Buddy\BuddyManager;
 use HaoCode\Services\Git\GitContext;
 use HaoCode\Services\Memory\SessionMemory;
 use HaoCode\Services\OutputStyle\OutputStyleLoader;
@@ -35,7 +34,6 @@ class ContextBuilder
         private readonly ?OutputStyleLoader $outputStyleLoader = null,
         private readonly ?string $workingDirectory = null,
         private readonly bool $textOnly = false,
-        private readonly ?BuddyManager $buddyManager = null,
     ) {}
 
     public function buildSystemPrompt(): array
@@ -84,12 +82,6 @@ class ContextBuilder
         }
 
         $prompt .= $this->getHaoCodeConventions();
-
-        // Inject companion intro if hatched
-        $companionIntro = $this->buddyManager?->getCompanionIntroText();
-        if ($companionIntro) {
-            $prompt .= "\n\n# Companion\n\n" . $companionIntro;
-        }
 
         // Append git context (current diff, branch info)
         $gitContext = $this->gitContext->getDiffContext();

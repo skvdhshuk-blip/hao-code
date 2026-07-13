@@ -1,6 +1,6 @@
 # SDK Demo Suite
 
-11 standalone demos covering the main HaoCode SDK capabilities.
+12 standalone demos covering the main HaoCode SDK capabilities.
 
 ## Prerequisites
 
@@ -12,7 +12,7 @@ composer install          # from repo root
 
 | Demo | Required Env | Optional Env |
 |------|-------------|--------------|
-| 01–08, 15 | `ANTHROPIC_API_KEY` | — |
+| 01–08, 10, 15 | `ANTHROPIC_API_KEY` | — |
 | 07 | `ANTHROPIC_API_KEY` | `ANTHROPIC_API_KEY_2` (second key for pool) |
 | 09 | — (npx + @modelcontextprotocol/server-filesystem) | — |
 | 13 | — | — |
@@ -33,6 +33,7 @@ All demos print `[skip]` to stderr and exit 0 when required env is absent.
 | 07 | `07-credential-pool.php` | `CredentialPool` multi-key round-robin | ANTHROPIC |
 | 08 | `08-apply-patch.php` | `apply_patch` envelope format | ANTHROPIC |
 | 09 | `09-mcp-client.php` | MCP client connecting to filesystem server | npx |
+| 10 | `10-human-interrupt.php` | Durable tool approval and resume | ANTHROPIC |
 | 13 | `13-execpolicy.php` | YAML policy + `PolicyMatcher` deny example | — |
 | 15 | `15-provider-matrix.php` | Cross-provider alignment (anthropic/openai/openai_chat) | ANTHROPIC |
 

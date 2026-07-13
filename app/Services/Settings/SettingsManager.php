@@ -16,17 +16,6 @@ class SettingsManager
 
     private const DEFAULT_SANDBOX_MODE = 'workspace-write';
 
-    private const DEFAULT_STREAM_MODE = 'final';
-
-    private const DEFAULT_STATUSLINE = [
-        'enabled' => true,
-        'layout' => 'expanded',
-        'path_levels' => 2,
-        'show_tools' => true,
-        'show_agents' => true,
-        'show_todos' => true,
-    ];
-
     private ?array $cachedSettings = null;
 
     private array $runtimeOverrides = [];
@@ -466,188 +455,6 @@ class SettingsManager
             ?? null;
     }
 
-    public function isStreamOutputEnabled(): bool
-    {
-        return $this->getStreamMode() === 'coalesced';
-    }
-
-    public function getStreamMode(): string
-    {
-        $settings = $this->loadProjectSettings();
-
-        if (array_key_exists('stream_mode', $this->runtimeOverrides)) {
-            $mode = $this->normalizeStreamMode($this->runtimeOverrides['stream_mode']);
-            if ($mode !== null) {
-                return $mode;
-            }
-        }
-
-        if (array_key_exists('stream_output', $this->runtimeOverrides)) {
-            return $this->streamModeFromLegacyToggle($this->runtimeOverrides['stream_output']);
-        }
-
-        if (array_key_exists('stream_mode', $settings)) {
-            $mode = $this->normalizeStreamMode($settings['stream_mode']);
-            if ($mode !== null) {
-                return $mode;
-            }
-        }
-
-        if (array_key_exists('stream_output', $settings)) {
-            return $this->streamModeFromLegacyToggle($settings['stream_output']);
-        }
-
-        $configStreamMode = $this->normalizeStreamMode(config('haocode.stream_mode'));
-        if ($configStreamMode !== null) {
-            return $configStreamMode;
-        }
-
-        return $this->streamModeFromLegacyToggle(config('haocode.stream_output', false));
-    }
-
-    public function getTheme(): string
-    {
-        return $this->runtimeOverrides['theme']
-            ?? $this->loadProjectSettings()['theme']
-            ?? 'dark';
-    }
-
-    public function isStatuslineEnabled(): bool
-    {
-        return (bool) $this->getStatuslineConfig()['enabled'];
-    }
-
-    public function setStatuslineEnabled(bool $enabled): void
-    {
-        $this->modifyProjectSettings(function (array &$settings) use ($enabled) {
-            $settings['statusline'] ??= [];
-            $settings['statusline']['enabled'] = $enabled;
-        });
-    }
-
-    /**
-     * @return array{
-     *   enabled: bool,
-     *   layout: string,
-     *   path_levels: int,
-     *   show_tools: bool,
-     *   show_agents: bool,
-     *   show_todos: bool
-     * }
-     */
-    public function getStatuslineConfig(): array
-    {
-        $settings = $this->loadProjectSettings();
-        $statusline = is_array($settings['statusline'] ?? null) ? $settings['statusline'] : [];
-
-        return [
-            'enabled' => (bool) (
-                $this->runtimeOverrides['statusline_enabled']
-                ?? $statusline['enabled']
-                ?? self::DEFAULT_STATUSLINE['enabled']
-            ),
-            'layout' => $this->normalizeStatuslineLayout(
-                $this->runtimeOverrides['statusline_layout']
-                ?? $statusline['layout']
-                ?? self::DEFAULT_STATUSLINE['layout']
-            ),
-            'path_levels' => $this->normalizeStatuslinePathLevels(
-                $this->runtimeOverrides['statusline_path_levels']
-                ?? $statusline['path_levels']
-                ?? self::DEFAULT_STATUSLINE['path_levels']
-            ),
-            'show_tools' => $this->normalizeStatuslineToggle(
-                $this->runtimeOverrides['statusline_show_tools']
-                ?? $statusline['show_tools']
-                ?? self::DEFAULT_STATUSLINE['show_tools'],
-                self::DEFAULT_STATUSLINE['show_tools'],
-            ),
-            'show_agents' => $this->normalizeStatuslineToggle(
-                $this->runtimeOverrides['statusline_show_agents']
-                ?? $statusline['show_agents']
-                ?? self::DEFAULT_STATUSLINE['show_agents'],
-                self::DEFAULT_STATUSLINE['show_agents'],
-            ),
-            'show_todos' => $this->normalizeStatuslineToggle(
-                $this->runtimeOverrides['statusline_show_todos']
-                ?? $statusline['show_todos']
-                ?? self::DEFAULT_STATUSLINE['show_todos'],
-                self::DEFAULT_STATUSLINE['show_todos'],
-            ),
-        ];
-    }
-
-    public function getStatuslineLayout(): string
-    {
-        return $this->getStatuslineConfig()['layout'];
-    }
-
-    public function getStatuslinePathLevels(): int
-    {
-        return $this->getStatuslineConfig()['path_levels'];
-    }
-
-    public function shouldShowStatuslineTools(): bool
-    {
-        return $this->getStatuslineConfig()['show_tools'];
-    }
-
-    public function shouldShowStatuslineAgents(): bool
-    {
-        return $this->getStatuslineConfig()['show_agents'];
-    }
-
-    public function shouldShowStatuslineTodos(): bool
-    {
-        return $this->getStatuslineConfig()['show_todos'];
-    }
-
-    public function setStatuslineLayout(string $layout): void
-    {
-        $layout = $this->normalizeStatuslineLayout($layout);
-
-        $this->modifyProjectSettings(function (array &$settings) use ($layout) {
-            $settings['statusline'] ??= [];
-            $settings['statusline']['layout'] = $layout;
-        });
-    }
-
-    public function setStatuslinePathLevels(int $levels): void
-    {
-        $levels = $this->normalizeStatuslinePathLevels($levels);
-
-        $this->modifyProjectSettings(function (array &$settings) use ($levels) {
-            $settings['statusline'] ??= [];
-            $settings['statusline']['path_levels'] = $levels;
-        });
-    }
-
-    public function setStatuslineSectionVisibility(string $section, bool $enabled): void
-    {
-        $key = match ($section) {
-            'tools' => 'show_tools',
-            'agents' => 'show_agents',
-            'todos' => 'show_todos',
-            default => null,
-        };
-
-        if ($key === null) {
-            throw new \InvalidArgumentException("Unknown statusline section: {$section}");
-        }
-
-        $this->modifyProjectSettings(function (array &$settings) use ($key, $enabled) {
-            $settings['statusline'] ??= [];
-            $settings['statusline'][$key] = $enabled;
-        });
-    }
-
-    public function resetStatuslineConfig(): void
-    {
-        $this->modifyProjectSettings(function (array &$settings) {
-            unset($settings['statusline']);
-        });
-    }
-
     /**
      * Set a runtime override for a config key.
      */
@@ -666,22 +473,12 @@ class SettingsManager
             'approval_policy',
             'sandbox_mode',
             'output_style',
-            'stream_output',
-            'stream_mode',
-            'theme',
-            'statusline_enabled',
-            'statusline_layout',
-            'statusline_path_levels',
-            'statusline_show_tools',
-            'statusline_show_agents',
-            'statusline_show_todos',
             'append_system_prompt',
             'system_prompt',
             'memory_summary_level',
             'memory_storage_path',
             'thinking_enabled',
             'thinking_budget',
-            'vim_mode',
             'effort_level',
         ];
         if (! in_array($key, $allowedKeys, true)) {
@@ -701,14 +498,6 @@ class SettingsManager
 
         if ($key === 'approval_policy' || $key === 'sandbox_mode') {
             unset($this->runtimeOverrides['permission_mode']);
-        }
-
-        if ($key === 'stream_output') {
-            unset($this->runtimeOverrides['stream_mode']);
-        }
-
-        if ($key === 'stream_mode') {
-            unset($this->runtimeOverrides['stream_output']);
         }
 
         $this->runtimeOverrides[$key] = $value;
@@ -793,18 +582,11 @@ class SettingsManager
         return $this->runtimeOverrides['effort_level'] ?? 'auto';
     }
 
-    public function isVimMode(): bool
-    {
-        return (bool) ($this->runtimeOverrides['vim_mode'] ?? false);
-    }
-
     /**
      * Get all current settings as a flat array.
      */
     public function all(): array
     {
-        $statusline = $this->getStatuslineConfig();
-
         return [
             'model' => $this->getModel(),
             'model_identifier' => $this->getResolvedModelIdentifier(),
@@ -814,19 +596,10 @@ class SettingsManager
             'max_tokens' => $this->getMaxTokens(),
             'context_window' => $this->getContextWindow(),
             'permission_mode' => $this->getPermissionMode()->value,
-            'theme' => $this->getTheme(),
             'output_style' => $this->getOutputStyle(),
-            'stream_output' => $this->isStreamOutputEnabled(),
-            'statusline_enabled' => $statusline['enabled'],
-            'statusline_layout' => $statusline['layout'],
-            'statusline_path_levels' => $statusline['path_levels'],
-            'statusline_show_tools' => $statusline['show_tools'],
-            'statusline_show_agents' => $statusline['show_agents'],
-            'statusline_show_todos' => $statusline['show_todos'],
             'thinking_enabled' => $this->isThinkingEnabled(),
             'thinking_budget' => $this->getThinkingBudget(),
             'effort_level' => $this->getEffortLevel(),
-            'vim_mode' => $this->isVimMode(),
             'api_key_set' => ! empty($this->getApiKey()),
         ];
     }
@@ -999,13 +772,6 @@ class SettingsManager
         };
     }
 
-    private function streamModeFromLegacyToggle(mixed $value): string
-    {
-        return $this->normalizeStatuslineToggle($value, false)
-            ? 'coalesced'
-            : self::DEFAULT_STREAM_MODE;
-    }
-
     private function normalizeApprovalPolicy(mixed $value): ?string
     {
         if (! is_string($value)) {
@@ -1026,19 +792,6 @@ class SettingsManager
 
         return match (strtolower(trim($value))) {
             'read-only', 'workspace-write', 'danger-full-access' => strtolower(trim($value)),
-            default => null,
-        };
-    }
-
-    private function normalizeStreamMode(mixed $value): ?string
-    {
-        if (! is_string($value)) {
-            return null;
-        }
-
-        return match (strtolower(trim($value))) {
-            'final', 'off', 'disabled' => 'final',
-            'coalesced', 'stream', 'streaming', 'live', 'on', 'enabled' => 'coalesced',
             default => null,
         };
     }
@@ -1264,48 +1017,4 @@ class SettingsManager
         $this->cachedSettings = null;
     }
 
-    private function normalizeStatuslineLayout(mixed $layout): string
-    {
-        if (! is_string($layout)) {
-            return self::DEFAULT_STATUSLINE['layout'];
-        }
-
-        $normalized = strtolower(trim($layout));
-
-        return in_array($normalized, ['expanded', 'compact'], true)
-            ? $normalized
-            : self::DEFAULT_STATUSLINE['layout'];
-    }
-
-    private function normalizeStatuslinePathLevels(mixed $levels): int
-    {
-        if (! is_int($levels) && ! is_numeric($levels)) {
-            return self::DEFAULT_STATUSLINE['path_levels'];
-        }
-
-        return max(1, min(3, (int) $levels));
-    }
-
-    private function normalizeStatuslineToggle(mixed $value, bool $default): bool
-    {
-        if (is_bool($value)) {
-            return $value;
-        }
-
-        if (is_string($value)) {
-            $normalized = strtolower(trim($value));
-            if (in_array($normalized, ['1', 'true', 'yes', 'on'], true)) {
-                return true;
-            }
-            if (in_array($normalized, ['0', 'false', 'no', 'off'], true)) {
-                return false;
-            }
-        }
-
-        if (is_int($value)) {
-            return $value !== 0;
-        }
-
-        return $default;
-    }
 }

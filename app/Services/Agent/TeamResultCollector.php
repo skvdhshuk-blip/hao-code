@@ -41,6 +41,8 @@ final class TeamResultCollector
                 'outcome' => $outcome,
                 'result' => $result,
                 'error' => $error,
+                'pending_interrupt' => $agent['pending_interrupt'] ?? null,
+                'child_session_id' => $agent['child_session_id'] ?? null,
             ];
         }
 

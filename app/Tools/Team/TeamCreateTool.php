@@ -177,7 +177,7 @@ DESC;
             );
 
             // Fork the background agent process
-            $result = $this->forkMember($agentId, $fullPrompt, $agentDef, $context, $readOnly, $maxTurns);
+            $result = $this->forkMember($agentId, $name, $fullPrompt, $agentDef, $context, $readOnly, $maxTurns);
             if ($result['success']) {
                 $spawned[] = ['role' => $member['role'], 'agent_id' => $agentId, 'pid' => $result['pid']];
                 $this->backgroundAgentManager->attachProcess($agentId, $result['pid']);
@@ -265,6 +265,7 @@ PREAMBLE;
      */
     private function forkMember(
         string $agentId,
+        string $teamName,
         string $prompt,
         AgentDefinition $agentDef,
         ToolUseContext $context,
@@ -285,7 +286,9 @@ PREAMBLE;
         if ($pid === 0) {
             // Child process: run the background agent
             try {
-                $this->executeBackgroundAgent($agentId, $prompt, $agentDef, $context, $readOnly, $maxTurns);
+                $this->executeBackgroundAgent($agentId, $teamName, $prompt, $agentDef, $context, $readOnly, $maxTurns);
+            } catch (\HaoCode\Sdk\HumanInterruptException) {
+                // Durable child interrupt is surfaced by TeamAwait/TeamCollect.
             } catch (\Throwable $e) {
                 $this->backgroundAgentManager->markError($agentId, $e->getMessage());
                 $this->taskManager->update($agentId, 'completed', 'Agent error: ' . $e->getMessage());
@@ -298,6 +301,7 @@ PREAMBLE;
 
     private function executeBackgroundAgent(
         string $agentId,
+        string $teamName,
         string $prompt,
         AgentDefinition $agentDef,
         ToolUseContext $context,
@@ -312,12 +316,13 @@ PREAMBLE;
             runContext: $context->runContext?->fork(
                 $context->workingDirectory,
                 $readOnly || $agentDef->readOnly,
+                $agentDef->interruptOn,
+                $agentId,
+                $teamName,
             ),
             afterFork: true,
             readOnly: $readOnly || $agentDef->readOnly,
         );
-        $subLoop->setPermissionPromptHandler(fn () => true);
-
         $effectiveMaxTurns = $maxTurns ?? $agentDef->maxTurns;
         if ($effectiveMaxTurns !== null) {
             $subLoop->setMaxTurns($effectiveMaxTurns);
@@ -368,7 +373,13 @@ PREAMBLE;
     private function runTurn(object $subLoop, string $agentId, string $prompt): ?string
     {
         $this->backgroundAgentManager->markRunning($agentId);
-        $response = $subLoop->run(userInput: $prompt, onTextDelta: null);
+        try {
+            $response = $subLoop->run(userInput: $prompt, onTextDelta: null);
+        } catch (\HaoCode\Sdk\HumanInterruptException $e) {
+            $this->backgroundAgentManager->markWaitingForInput($agentId, $e->interrupt);
+            $this->taskManager->update($agentId, 'in_progress', 'Waiting for human input.');
+            throw $e;
+        }
 
         if ($response === '(aborted)') {
             return null;

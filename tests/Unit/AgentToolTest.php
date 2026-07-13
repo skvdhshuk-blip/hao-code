@@ -116,8 +116,6 @@ class AgentToolTest extends TestCase
     {
         $subLoop = $this->createMock(AgentLoop::class);
         $subLoop->expects($this->once())
-            ->method('setPermissionPromptHandler');
-        $subLoop->expects($this->once())
             ->method('run')
             ->with($this->callback(function (string $prompt): bool {
                 return str_contains($prompt, 'file search specialist')

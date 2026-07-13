@@ -50,7 +50,6 @@ final class SdkRunFactory
             throw $e;
         }
 
-        $loop->setPermissionPromptHandler(fn () => true);
         $loop->setMaxTurns($config->maxTurns);
 
         if ($config->maxBudgetUsd !== null) {

@@ -35,6 +35,14 @@ class TeamCollectTool extends BaseTool
             return ToolResult::error("Team not found: {$input['name']}");
         }
 
+        foreach ($result['members'] as $member) {
+            if (is_array($member['pending_interrupt'] ?? null)) {
+                throw new \HaoCode\Sdk\HumanInterruptException(
+                    \HaoCode\Sdk\HumanInterrupt::fromArray($member['pending_interrupt']),
+                );
+            }
+        }
+
         return ToolResult::success(
             (string) json_encode($result, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
             $result['summary'],

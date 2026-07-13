@@ -21,6 +21,7 @@ class AgentDefinition
      * @param bool $background Always run in background
      * @param bool $omitClaudeMd Skip CLAUDE.md in context
      * @param int|null $maxTurns Maximum agent turns
+     * @param array<string, mixed>|null $interruptOn null inherits the parent; an array fully overrides it
      */
     public function __construct(
         public readonly string $agentType,
@@ -34,6 +35,7 @@ class AgentDefinition
         public readonly bool $background = false,
         public readonly bool $omitClaudeMd = false,
         public readonly ?int $maxTurns = null,
+        public readonly ?array $interruptOn = null,
     ) {}
 
     /**

@@ -6,6 +6,7 @@ use HaoCode\Services\Hooks\HookExecutor;
 use HaoCode\Services\Permissions\PermissionChecker;
 use HaoCode\Services\Telemetry\PhoenixTracer;
 use HaoCode\Services\ToolResult\ToolResultStorage;
+use HaoCode\Sdk\HumanActionRequest;
 use HaoCode\Tools\ToolRegistry;
 use HaoCode\Tools\ToolUseContext;
 use HaoCode\Tools\ToolResult;
@@ -24,6 +25,16 @@ class ToolOrchestrator
     private ?array $activeSkillAllowedTools = null;
     private ?string $activeSkillModelOverride = null;
     private string $activeSkillContext = 'inline';
+
+    /** @var array<string, bool|array<string, mixed>> */
+    private array $interruptOn = [];
+
+    private bool $enableAskUser = false;
+
+    private bool $enablePermissionInterrupts = false;
+
+    /** @var string[]|null */
+    private ?array $resumeAllowedTools = null;
 
     public function __construct(
         private readonly ToolRegistry $toolRegistry,
@@ -47,6 +58,89 @@ class ToolOrchestrator
         $this->permissionPromptHandler = $handler;
     }
 
+    /** @internal */
+    public function configureHumanInterrupts(array $interruptOn, bool $enableAskUser): void
+    {
+        $this->interruptOn = $interruptOn;
+        $this->enableAskUser = $enableAskUser;
+    }
+
+    /** @internal */
+    public function getInterruptOn(): array
+    {
+        return $this->interruptOn;
+    }
+
+    /** @internal */
+    public function isAskUserEnabled(): bool
+    {
+        return $this->enableAskUser;
+    }
+
+    /** @internal */
+    public function hasHumanInterruptsConfigured(): bool
+    {
+        return $this->interruptOn !== [] || $this->enableAskUser || $this->enablePermissionInterrupts;
+    }
+
+    /** @internal */
+    public function enablePermissionInterrupts(bool $enabled): void
+    {
+        $this->enablePermissionInterrupts = $enabled;
+    }
+
+    /** @internal */
+    public function arePermissionInterruptsEnabled(): bool
+    {
+        return $this->enablePermissionInterrupts;
+    }
+
+    /** @internal */
+    public function setResumeAllowedTools(?array $toolNames): void
+    {
+        $this->resumeAllowedTools = $toolNames === null ? null : array_values(array_unique($toolNames));
+    }
+
+    /**
+     * Validate, normalize, hook and permission-check a complete assistant tool batch
+     * before any gated action is executed.
+     *
+     * @return array{prepared: array<int, array>, results: array<int, array>, actions: array<int, HumanActionRequest>}
+     * @internal
+     */
+    public function prepareHumanReview(array $blocks, ToolUseContext $context, bool $suppressConfiguredGate = false): array
+    {
+        $prepared = [];
+        $results = [];
+        $actions = [];
+
+        foreach ($blocks as $index => $block) {
+            $outcome = $this->prepareOneForHumanReview($block, $context, $suppressConfiguredGate);
+            if (isset($outcome['result'])) {
+                $results[$index] = $outcome['result'];
+            } else {
+                $prepared[$index] = $outcome['block'];
+                if (isset($outcome['action'])) {
+                    $actions[$index] = $outcome['action'];
+                }
+            }
+        }
+
+        return compact('prepared', 'results', 'actions');
+    }
+
+    /** @internal */
+    public function executePreparedToolBlock(
+        array $block,
+        ToolUseContext $context,
+        ?callable $onStart = null,
+        ?callable $onComplete = null,
+    ): array {
+        $block['_haocode_prepared'] = true;
+
+        return $this->executeSingleTool($block, $context, $onStart, $onComplete);
+    }
+
     public function resetSkillScope(): void
     {
         $this->activeSkillAllowedTools = null;
@@ -58,6 +152,19 @@ class ToolOrchestrator
     public function getActiveSkillAllowedTools(): ?array
     {
         return $this->activeSkillAllowedTools;
+    }
+
+    /** @return string[]|null @internal */
+    public function getAdvertisedAllowedTools(): ?array
+    {
+        if ($this->resumeAllowedTools === null) {
+            return $this->activeSkillAllowedTools;
+        }
+        if ($this->activeSkillAllowedTools === null) {
+            return $this->resumeAllowedTools;
+        }
+
+        return array_values(array_intersect($this->resumeAllowedTools, $this->activeSkillAllowedTools));
     }
 
     public function getActiveSkillModelOverride(): ?string
@@ -269,6 +376,8 @@ class ToolOrchestrator
             }
 
             return $apiResult;
+        } catch (\HaoCode\Sdk\HumanInterruptException $e) {
+            throw $e;
         } catch (\Throwable $e) {
             $this->tracer?->recordException($toolSpan, $e);
             throw $e;
@@ -291,6 +400,7 @@ class ToolOrchestrator
         $toolUseId = $block['id'];
         $toolName = $block['name'];
         $input = $block['input'] ?? [];
+        $isPrepared = ($block['_haocode_prepared'] ?? false) === true;
 
         $tool = $this->toolRegistry->getTool($toolName);
 
@@ -310,6 +420,7 @@ class ToolOrchestrator
             ];
         }
 
+        if (! $isPrepared) {
         // Stage 1: Schema validation
         try {
             $input = $tool->inputSchema()->validate($input);
@@ -376,6 +487,7 @@ class ToolOrchestrator
                 ];
             }
         }
+        }
 
         if ($onStart) {
             $onStart($toolName, $input);
@@ -401,6 +513,8 @@ class ToolOrchestrator
                     metadata: $result->metadata,
                 );
             }
+        } catch (\HaoCode\Sdk\HumanInterruptException $e) {
+            throw $e;
         } catch (\Throwable $e) {
             $result = ToolResult::error("Tool execution error: " . $e->getMessage());
 
@@ -462,8 +576,102 @@ class ToolOrchestrator
         return $result->toApiFormat($toolUseId);
     }
 
+    /** @return array{block?: array, result?: array, action?: HumanActionRequest} */
+    private function prepareOneForHumanReview(array $block, ToolUseContext $context, bool $suppressConfiguredGate): array
+    {
+        $toolUseId = (string) ($block['id'] ?? '');
+        $toolName = (string) ($block['name'] ?? '');
+        $input = is_array($block['input'] ?? null) ? $block['input'] : [];
+        $tool = $this->toolRegistry->getTool($toolName);
+
+        $error = static fn (string $message): array => ['result' => [
+            'tool_use_id' => $toolUseId,
+            'content' => $message,
+            'is_error' => true,
+        ]];
+
+        if ($tool === null || ! $tool->isEnabled()) {
+            return $error("Unknown tool: {$toolName}");
+        }
+        if (! $this->isAllowedByActiveSkillScope($toolName)) {
+            return $error("Tool {$toolName} is not allowed by the active skill scope.");
+        }
+
+        try {
+            $input = $tool->inputSchema()->validate($input);
+        } catch (\InvalidArgumentException $e) {
+            return $error('<tool_use_error>InputValidationError: '.$e->getMessage().'</tool_use_error>');
+        }
+
+        $validationError = $tool->validateInput($input, $context);
+        if ($validationError !== null) {
+            return $error('<tool_use_error>Validation: '.$validationError.'</tool_use_error>');
+        }
+
+        $input = $tool->backfillObservableInput($input, $context);
+        $hookResult = $this->hookExecutor->execute('PreToolUse', ['tool' => $toolName, 'input' => $input]);
+        if (! $hookResult->allowed) {
+            return $error('Blocked by hook: '.$hookResult->output);
+        }
+        if ($hookResult->modifiedInput !== null) {
+            $input = $hookResult->modifiedInput;
+        }
+
+        $decision = $this->permissionChecker->check($tool, $input, $context);
+        if (! $decision->allowed && ! $decision->needsPrompt) {
+            return $error('Permission denied: '.($decision->reason ?? 'Not allowed'));
+        }
+
+        $configured = $this->interruptOn[$toolName] ?? false;
+        $shouldInterrupt = ! $suppressConfiguredGate && (
+            $decision->needsPrompt
+            || $configured !== false
+            || ($toolName === 'AskUserQuestion' && $this->enableAskUser)
+        );
+
+        $preparedBlock = $block;
+        $preparedBlock['input'] = $input;
+
+        if (! $shouldInterrupt) {
+            return ['block' => $preparedBlock];
+        }
+
+        $allowed = ['approve', 'edit', 'reject', 'respond'];
+        $description = $decision->reason ?? "Approve {$toolName}";
+        if (is_array($configured)) {
+            if (is_array($configured['allowedDecisions'] ?? null)) {
+                $allowed = array_values(array_intersect($allowed, $configured['allowedDecisions']));
+            }
+            if (is_string($configured['description'] ?? null) && trim($configured['description']) !== '') {
+                $description = trim($configured['description']);
+            }
+        }
+        if ($toolName === 'AskUserQuestion') {
+            $allowed = ['respond', 'reject'];
+            $description = 'Answer the agent question';
+        }
+        if ($allowed === []) {
+            return $error("No valid human decisions configured for {$toolName}.");
+        }
+
+        return [
+            'block' => $preparedBlock,
+            'action' => new HumanActionRequest(
+                id: $toolUseId,
+                toolName: $toolName,
+                input: $input,
+                description: $description,
+                allowedDecisions: $allowed,
+                agentId: $context->runContext?->agentId,
+            ),
+        ];
+    }
+
     private function isAllowedByActiveSkillScope(string $toolName): bool
     {
+        if ($this->resumeAllowedTools !== null && ! in_array($toolName, $this->resumeAllowedTools, true)) {
+            return false;
+        }
         if ($this->activeSkillAllowedTools === null || $toolName === 'Skill') {
             return true;
         }

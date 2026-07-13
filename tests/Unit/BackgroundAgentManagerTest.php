@@ -3,6 +3,8 @@
 namespace Tests\Unit;
 
 use HaoCode\Services\Agent\BackgroundAgentManager;
+use HaoCode\Sdk\HumanActionRequest;
+use HaoCode\Sdk\HumanInterrupt;
 use PHPUnit\Framework\TestCase;
 
 class BackgroundAgentManagerTest extends TestCase
@@ -106,5 +108,24 @@ class BackgroundAgentManagerTest extends TestCase
 
         $this->assertSame('error', $agent['status']);
         $this->assertSame(1234, $agent['pid']);
+    }
+
+    public function test_waiting_for_input_persists_child_session_and_interrupt(): void
+    {
+        $this->manager->create('agent_demo', 'Inspect repo', 'Explore');
+        $interrupt = new HumanInterrupt(
+            'int-child',
+            'session-child',
+            [new HumanActionRequest('call-1', 'Bash', [], 'Review')],
+            date('c'),
+            'agent_demo',
+        );
+
+        $this->manager->markWaitingForInput('agent_demo', $interrupt);
+        $agent = $this->manager->refreshStatus('agent_demo');
+
+        $this->assertSame('waiting_for_input', $agent['status']);
+        $this->assertSame('session-child', $agent['child_session_id']);
+        $this->assertSame('int-child', $agent['pending_interrupt']['id']);
     }
 }

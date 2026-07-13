@@ -225,7 +225,6 @@ class SupportOpsAgentExampleTest extends TestCase
             'haocode.api_base_url' => 'https://mock.anthropic.test',
             'haocode.model' => 'claude-test',
             'haocode.max_tokens' => 4096,
-            'haocode.stream_output' => false,
             'haocode.permission_mode' => 'bypass_permissions',
             'haocode.global_settings_path' => $this->homeDir.'/.haocode/settings.json',
             'haocode.session_path' => $this->sessionDir,

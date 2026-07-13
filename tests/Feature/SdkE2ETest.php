@@ -10,6 +10,8 @@ use HaoCode\Sdk\Credential;
 use HaoCode\Sdk\CredentialPool;
 use HaoCode\Sdk\HaoCode;
 use HaoCode\Sdk\HaoCodeConfig;
+use HaoCode\Sdk\HumanDecision;
+use HaoCode\Sdk\HumanInterruptException;
 use HaoCode\Sdk\Message;
 use HaoCode\Sdk\QueryResult;
 use HaoCode\Sdk\SdkSkill;
@@ -1735,6 +1737,354 @@ JSON),
     }
 
     // ══════════════════════════════════════════════════════════════
+    public function test_query_interrupt_can_be_approved_and_resumed_across_a_new_conversation(): void
+    {
+        $this->bootWithMock([
+            MockAnthropicSse::toolUseResponse('toolu_hitl_write', 'Write', [
+                'file_path' => 'approved.txt',
+                'content' => 'approved',
+            ]),
+            function (array $payload): MockResponse {
+                $this->assertStringContainsString('approved.txt', (string) MockAnthropicSse::lastToolResultText($payload));
+                return MockAnthropicSse::textResponse('Human-approved write completed.');
+            },
+        ]);
+        chdir($this->projectDir);
+        $config = new HaoCodeConfig(allowedTools: ['Write'], interruptOn: ['Write' => true]);
+
+        try {
+            HaoCode::query('Write the approved file', $config);
+            $this->fail('Expected a durable human interrupt.');
+        } catch (HumanInterruptException $e) {
+            $interrupt = $e->interrupt;
+        }
+
+        $this->assertFileDoesNotExist($this->projectDir.'/approved.txt');
+        $result = HaoCode::resumeInterrupt(
+            $interrupt->sessionId,
+            $interrupt->id,
+            [HumanDecision::approve('toolu_hitl_write')],
+            $config,
+        );
+
+        $this->assertFileExists($this->projectDir.'/approved.txt');
+        $this->assertSame('approved', file_get_contents($this->projectDir.'/approved.txt'));
+        $this->assertStringContainsString('completed', $result->text);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('already resolved');
+        HaoCode::resumeInterrupt(
+            $interrupt->sessionId,
+            $interrupt->id,
+            [HumanDecision::approve('toolu_hitl_write')],
+            $config,
+        );
+    }
+
+    public function test_stream_emits_interrupt_without_fake_result(): void
+    {
+        $this->bootWithMock([
+            MockAnthropicSse::toolUseResponse('toolu_hitl_bash', 'Bash', [
+                'command' => 'echo guarded',
+                'description' => 'Guarded command',
+            ]),
+        ]);
+        chdir($this->projectDir);
+
+        $messages = iterator_to_array(HaoCode::stream('Run it', new HaoCodeConfig(
+            allowedTools: ['Bash'],
+            interruptOn: ['Bash' => true],
+        )));
+
+        $this->assertCount(1, array_filter($messages, fn (Message $message): bool => $message->isInterrupt()));
+        $this->assertCount(0, array_filter($messages, fn (Message $message): bool => $message->isResult()));
+    }
+
+    public function test_stream_interrupt_can_resume_to_one_real_result(): void
+    {
+        $this->bootWithMock([
+            MockAnthropicSse::toolUseResponse('stream-write', 'Write', [
+                'file_path' => 'stream-resume.txt',
+                'content' => 'ok',
+            ]),
+            MockAnthropicSse::textResponse('Stream resume completed.'),
+        ]);
+        chdir($this->projectDir);
+        $config = new HaoCodeConfig(allowedTools: ['Write'], interruptOn: ['Write' => true]);
+        $initial = iterator_to_array(HaoCode::stream('Write the file', $config));
+        $interrupt = array_values(array_filter(
+            $initial,
+            fn (Message $message): bool => $message->isInterrupt(),
+        ))[0]->interrupt;
+
+        $resumed = iterator_to_array(HaoCode::streamResumeInterrupt(
+            $interrupt->sessionId,
+            $interrupt->id,
+            [HumanDecision::approve('stream-write')],
+            $config,
+        ));
+        $results = array_values(array_filter($resumed, fn (Message $message): bool => $message->isResult()));
+
+        $this->assertCount(1, $results);
+        $this->assertSame('Stream resume completed.', $results[0]->text);
+    }
+
+    public function test_multi_tool_interrupt_executes_unguarded_sibling_once_and_checkpoints_its_result(): void
+    {
+        $executions = 0;
+        $lookup = new class($executions) extends SdkTool {
+            public function __construct(private int &$executions) {}
+            public function name(): string { return 'Lookup'; }
+            public function description(): string { return 'Return a stable lookup value.'; }
+            public function parameters(): array { return []; }
+            public function handle(array $input): string { $this->executions++; return 'lookup-value'; }
+        };
+        $this->bootWithMock([
+            MockAnthropicSse::multiToolUseResponse([
+                ['id' => 'lookup-1', 'name' => 'Lookup', 'input' => []],
+                ['id' => 'write-1', 'name' => 'Write', 'input' => ['file_path' => 'batch.txt', 'content' => 'batch']],
+            ]),
+            function (array $payload): MockResponse {
+                $results = (string) MockAnthropicSse::lastToolResultText($payload);
+                $this->assertStringContainsString('lookup-value', $results);
+                $this->assertStringContainsString('batch.txt', $results);
+                return MockAnthropicSse::textResponse('Batch resumed.');
+            },
+        ]);
+        chdir($this->projectDir);
+        $config = new HaoCodeConfig(
+            allowedTools: ['Lookup', 'Write'],
+            tools: [$lookup],
+            interruptOn: ['Write' => true],
+        );
+
+        try {
+            HaoCode::query('Lookup then write', $config);
+            $this->fail('Expected interrupt.');
+        } catch (HumanInterruptException $e) {
+            $interrupt = $e->interrupt;
+        }
+        $this->assertSame(1, $executions);
+        $result = HaoCode::resumeInterrupt(
+            $interrupt->sessionId,
+            $interrupt->id,
+            [HumanDecision::approve('write-1')],
+            $config,
+        );
+        $this->assertSame(1, $executions);
+        $this->assertSame('Batch resumed.', $result->text);
+    }
+
+    public function test_ask_user_validates_answers_before_claiming_checkpoint(): void
+    {
+        $requests = [];
+        $this->bootWithMock([
+            MockAnthropicSse::toolUseResponse('ask-1', 'AskUserQuestion', [
+                'questions' => [[
+                    'question' => 'Choose environment',
+                    'type' => 'multiple_choice',
+                    'options' => ['staging', 'production'],
+                    'required' => true,
+                ]],
+            ]),
+            function (array $payload): MockResponse {
+                $this->assertStringContainsString('staging', (string) MockAnthropicSse::lastToolResultText($payload));
+                return MockAnthropicSse::textResponse('Environment selected: staging.');
+            },
+        ], $requests);
+        chdir($this->projectDir);
+        $config = new HaoCodeConfig(enableAskUser: true);
+        try {
+            HaoCode::query('Ask me first', $config);
+            $this->fail('Expected AskUser interrupt.');
+        } catch (HumanInterruptException $e) {
+            $interrupt = $e->interrupt;
+        }
+        $this->assertSame(['respond', 'reject'], $interrupt->actions[0]->allowedDecisions);
+
+        try {
+            HaoCode::resumeInterrupt($interrupt->sessionId, $interrupt->id, [
+                HumanDecision::respond('ask-1', ['status' => 'answered', 'answers' => ['invalid']]),
+            ], $config);
+            $this->fail('Expected answer validation failure.');
+        } catch (\InvalidArgumentException $e) {
+            $this->assertStringContainsString('allowed options', $e->getMessage());
+        }
+
+        $result = HaoCode::resumeInterrupt($interrupt->sessionId, $interrupt->id, [
+            HumanDecision::respond('ask-1', ['status' => 'answered', 'answers' => ['staging']]),
+        ], $config);
+        $this->assertSame('Environment selected: staging.', $result->text);
+    }
+
+    public function test_edit_decision_revalidates_and_executes_only_the_edited_input(): void
+    {
+        $this->bootWithMock([
+            MockAnthropicSse::toolUseResponse('edit-write', 'Write', [
+                'file_path' => 'original.txt',
+                'content' => 'original',
+            ]),
+            MockAnthropicSse::textResponse('Edited write completed.'),
+        ]);
+        chdir($this->projectDir);
+        $config = new HaoCodeConfig(allowedTools: ['Write'], interruptOn: ['Write' => true]);
+        try {
+            HaoCode::query('Write a file', $config);
+            $this->fail('Expected interrupt.');
+        } catch (HumanInterruptException $e) {
+            $interrupt = $e->interrupt;
+        }
+
+        HaoCode::resumeInterrupt($interrupt->sessionId, $interrupt->id, [
+            HumanDecision::edit('edit-write', ['file_path' => 'edited.txt', 'content' => 'edited']),
+        ], $config);
+
+        $this->assertFileDoesNotExist($this->projectDir.'/original.txt');
+        $this->assertSame('edited', file_get_contents($this->projectDir.'/edited.txt'));
+    }
+
+    public function test_reject_decision_skips_tool_and_returns_feedback_to_model(): void
+    {
+        $this->bootWithMock([
+            MockAnthropicSse::toolUseResponse('reject-write', 'Write', [
+                'file_path' => 'rejected.txt',
+                'content' => 'no',
+            ]),
+            function (array $payload): MockResponse {
+                $this->assertStringContainsString('not authorized', (string) MockAnthropicSse::lastToolResultText($payload));
+                return MockAnthropicSse::textResponse('Request was rejected.');
+            },
+        ]);
+        chdir($this->projectDir);
+        $config = new HaoCodeConfig(allowedTools: ['Write'], interruptOn: ['Write' => true]);
+        try {
+            HaoCode::query('Write a file', $config);
+            $this->fail('Expected interrupt.');
+        } catch (HumanInterruptException $e) {
+            $interrupt = $e->interrupt;
+        }
+
+        $result = HaoCode::resumeInterrupt($interrupt->sessionId, $interrupt->id, [
+            HumanDecision::reject('reject-write', 'not authorized'),
+        ], $config);
+        $this->assertFileDoesNotExist($this->projectDir.'/rejected.txt');
+        $this->assertSame('Request was rejected.', $result->text);
+    }
+
+    public function test_structured_operation_resumes_as_structured_result(): void
+    {
+        $this->bootWithMock([
+            MockAnthropicSse::toolUseResponse('structured-write', 'Write', [
+                'file_path' => 'structured.txt',
+                'content' => 'done',
+            ]),
+            MockAnthropicSse::textResponse('{"status":"done"}'),
+        ]);
+        chdir($this->projectDir);
+        $schema = [
+            'type' => 'object',
+            'properties' => ['status' => ['type' => 'string']],
+            'required' => ['status'],
+        ];
+        $config = new HaoCodeConfig(allowedTools: ['Write'], interruptOn: ['Write' => true]);
+        try {
+            HaoCode::structured('Write then report', $schema, $config);
+            $this->fail('Expected interrupt.');
+        } catch (HumanInterruptException $e) {
+            $interrupt = $e->interrupt;
+        }
+
+        $result = HaoCode::resumeInterrupt($interrupt->sessionId, $interrupt->id, [
+            HumanDecision::approve('structured-write'),
+        ], $config);
+
+        $this->assertInstanceOf(StructuredResult::class, $result);
+        $this->assertSame('done', $result->status);
+    }
+
+    public function test_foreground_sub_agent_interrupt_cascades_back_to_parent_query(): void
+    {
+        $this->bootWithMock([
+            MockAnthropicSse::toolUseResponse('parent-agent', 'Agent', [
+                'description' => 'Write child file',
+                'prompt' => 'Write child.txt with the word child.',
+                'subagent_type' => 'general-purpose',
+            ]),
+            MockAnthropicSse::toolUseResponse('child-write', 'Write', [
+                'file_path' => 'child.txt',
+                'content' => 'child',
+            ]),
+            MockAnthropicSse::textResponse('Child completed the requested work.'),
+            function (array $payload): MockResponse {
+                $this->assertStringContainsString(
+                    'Child completed the requested work.',
+                    (string) MockAnthropicSse::lastToolResultText($payload),
+                );
+                return MockAnthropicSse::textResponse('Parent received the child result.');
+            },
+        ]);
+        chdir($this->projectDir);
+        $config = new HaoCodeConfig(
+            allowedTools: ['Agent', 'Write'],
+            interruptOn: ['Write' => true],
+        );
+        try {
+            HaoCode::query('Delegate the write to a child agent', $config);
+            $this->fail('Expected child interrupt.');
+        } catch (HumanInterruptException $e) {
+            $interrupt = $e->interrupt;
+        }
+
+        $result = HaoCode::resumeInterrupt($interrupt->sessionId, $interrupt->id, [
+            HumanDecision::approve('child-write'),
+        ], $config);
+
+        $this->assertFileExists($this->projectDir.'/child.txt');
+        $this->assertSame('Parent received the child result.', $result->text);
+    }
+
+    public function test_approved_agent_gate_can_pause_again_for_a_child_interrupt_without_reexecution(): void
+    {
+        $this->bootWithMock([
+            MockAnthropicSse::toolUseResponse('gated-agent', 'Agent', [
+                'description' => 'Run gated child',
+                'prompt' => 'Write gated-child.txt with the word child.',
+            ]),
+            MockAnthropicSse::toolUseResponse('gated-child-write', 'Write', [
+                'file_path' => 'gated-child.txt',
+                'content' => 'child',
+            ]),
+            MockAnthropicSse::textResponse('Gated child completed.'),
+            MockAnthropicSse::textResponse('Gated parent completed.'),
+        ]);
+        chdir($this->projectDir);
+        $config = new HaoCodeConfig(
+            allowedTools: ['Agent', 'Write'],
+            interruptOn: ['Agent' => true, 'Write' => true],
+        );
+        try {
+            HaoCode::query('Run a gated child', $config);
+            $this->fail('Expected parent agent gate.');
+        } catch (HumanInterruptException $e) {
+            $parentInterrupt = $e->interrupt;
+        }
+        try {
+            HaoCode::resumeInterrupt($parentInterrupt->sessionId, $parentInterrupt->id, [
+                HumanDecision::approve('gated-agent'),
+            ], $config);
+            $this->fail('Expected child write gate.');
+        } catch (HumanInterruptException $e) {
+            $childInterrupt = $e->interrupt;
+        }
+
+        $result = HaoCode::resumeInterrupt($childInterrupt->sessionId, $childInterrupt->id, [
+            HumanDecision::approve('gated-child-write'),
+        ], $config);
+
+        $this->assertSame('child', file_get_contents($this->projectDir.'/gated-child.txt'));
+        $this->assertSame('Gated parent completed.', $result->text);
+    }
+
     //  Infrastructure
     // ══════════════════════════════════════════════════════════════
 
@@ -1752,7 +2102,6 @@ JSON),
             'haocode.api_base_url' => 'https://mock.anthropic.test',
             'haocode.model' => 'claude-test',
             'haocode.max_tokens' => 4096,
-            'haocode.stream_output' => false,
             'haocode.permission_mode' => 'bypass_permissions',
             'haocode.global_settings_path' => $this->homeDir.'/.haocode/settings.json',
             'haocode.session_path' => $this->sessionDir,

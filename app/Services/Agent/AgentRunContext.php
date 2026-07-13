@@ -18,9 +18,20 @@ final readonly class AgentRunContext
         public SettingsManager $settings,
         public SkillLoader $skillLoader,
         public CancellationToken $cancellationToken,
+        public array $interruptOn = [],
+        public bool $enableAskUser = false,
+        public ?string $agentId = null,
+        public ?string $teamName = null,
+        public ?array $responseSchema = null,
     ) {}
 
-    public function fork(?string $workingDirectory = null, bool $readOnly = false): self
+    public function fork(
+        ?string $workingDirectory = null,
+        bool $readOnly = false,
+        ?array $interruptOn = null,
+        ?string $agentId = null,
+        ?string $teamName = null,
+    ): self
     {
         $settings = clone $this->settings;
         if ($readOnly) {
@@ -33,6 +44,11 @@ final readonly class AgentRunContext
             $settings,
             clone $this->skillLoader,
             $this->cancellationToken->fork(),
+            $interruptOn ?? $this->interruptOn,
+            $this->enableAskUser,
+            $agentId ?? $this->agentId,
+            $teamName ?? $this->teamName,
+            $this->responseSchema,
         );
     }
 }

@@ -151,6 +151,26 @@ class SessionManagerTest extends TestCase
         $this->assertSame($assistantMessage, $entries[0]['message']);
     }
 
+    public function test_interrupt_claim_is_single_use_and_fail_closed(): void
+    {
+        $manager = new SessionManager;
+        $interrupt = [
+            'id' => 'int-1',
+            'session_id' => $manager->getSessionId(),
+            'actions' => [],
+            'created_at' => date('c'),
+        ];
+        $manager->recordPendingInterrupt($interrupt, ['blocks' => [], 'results' => []]);
+
+        $claim = $manager->claimInterrupt($manager->getSessionId(), 'int-1', []);
+        $this->assertSame('interrupt_resolving', $claim['type']);
+        $this->assertSame('interrupt_resolving', $manager->getInterruptState($manager->getSessionId(), 'int-1')['type']);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('already resolving');
+        $manager->claimInterrupt($manager->getSessionId(), 'int-1', []);
+    }
+
     // ─── setTitle records entry ───────────────────────────────────────────
 
     public function test_set_title_records_session_title_entry(): void

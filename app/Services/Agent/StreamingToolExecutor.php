@@ -44,6 +44,7 @@ class StreamingToolExecutor
         private readonly ToolOrchestrator $toolOrchestrator,
         private readonly ToolRegistry $toolRegistry,
         private readonly ?CancellationToken $cancellationToken = null,
+        private readonly bool $disableEarlyExecution = false,
     ) {}
 
     public function setContext(ToolUseContext $context, ?callable $onStart, ?callable $onComplete): void
@@ -65,7 +66,7 @@ class StreamingToolExecutor
             return;
         }
 
-        if (($block['input_json_error'] ?? null) !== null) {
+        if ($this->disableEarlyExecution || ($block['input_json_error'] ?? null) !== null) {
             $this->queuedBlocks[$index] = $block;
             return;
         }

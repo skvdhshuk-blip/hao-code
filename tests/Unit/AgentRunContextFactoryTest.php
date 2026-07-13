@@ -86,6 +86,26 @@ class AgentRunContextFactoryTest extends TestCase
         $this->assertSame('parent-explicit-key', $child->settings->getApiKey());
     }
 
+    public function test_hitl_configuration_is_inherited_and_can_be_fully_overridden(): void
+    {
+        $projectDirectory = $this->makeProjectDirectory('hitl-context');
+        $context = AgentRunContextFactory::make(new HaoCodeConfig(
+            cwd: $projectDirectory,
+            interruptOn: ['Bash' => true],
+            enableAskUser: true,
+        ));
+
+        $inherited = $context->fork(agentId: 'child-1', teamName: 'reviewers');
+        $overridden = $context->fork(interruptOn: [], agentId: 'child-2');
+
+        $this->assertSame(['Bash' => true], $inherited->interruptOn);
+        $this->assertTrue($inherited->enableAskUser);
+        $this->assertSame('child-1', $inherited->agentId);
+        $this->assertSame('reviewers', $inherited->teamName);
+        $this->assertSame([], $overridden->interruptOn);
+        $this->assertTrue($overridden->enableAskUser, 'AskUser is a host safety capability and remains inherited.');
+    }
+
     public function test_additional_recursive_skill_directories_are_propagated_to_run_context(): void
     {
         $projectDirectory = $this->makeProjectDirectory('skill-directory-project');

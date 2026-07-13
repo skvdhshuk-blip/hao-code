@@ -240,7 +240,7 @@ class ContextBuilderTest extends TestCase
         $result = $this->makeBuilder(['settings' => $settings])->buildSystemPrompt();
 
         $this->assertStringContainsString('You are a startup override.', $result[0]['text']);
-        $this->assertStringNotContainsString('You are Hao Code, an interactive CLI agent powered by Anthropic', $result[0]['text']);
+        $this->assertStringNotContainsString('You are Hao Code, an embedded PHP agent SDK', $result[0]['text']);
     }
 
     public function test_session_memory_is_included_when_non_empty(): void

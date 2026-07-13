@@ -71,6 +71,11 @@ final class AgentRunContextFactory
             $settings,
             $skillLoader,
             new CancellationToken(),
+            $config->interruptOn,
+            $config->enableAskUser,
+            null,
+            null,
+            $config->responseSchema,
         );
     }
 }

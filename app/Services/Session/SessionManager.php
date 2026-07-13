@@ -145,7 +145,7 @@ class SessionManager
             JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
         )."\n";
 
-        file_put_contents($this->getFilePath(), $line, FILE_APPEND);
+        file_put_contents($this->getFilePath(), $line, FILE_APPEND | LOCK_EX);
     }
 
     /**
@@ -158,6 +158,193 @@ class SessionManager
             'message' => $assistantMessage,
             'tool_results' => $toolResults,
         ]);
+    }
+
+    /**
+     * Persist a pending human interrupt and the minimum checkpoint required to resume it.
+     *
+     * @internal
+     */
+    public function recordPendingInterrupt(array $interrupt, array $checkpoint): void
+    {
+        if (! $this->persistenceEnabled) {
+            throw new \RuntimeException('Human-in-the-loop requires a durable session.');
+        }
+
+        $this->recordEntry([
+            'type' => 'interrupt_pending',
+            'interrupt' => $interrupt,
+            'checkpoint' => $checkpoint,
+        ]);
+    }
+
+    /** @internal */
+    public function recordChildWaitInterrupt(array $interrupt, array $checkpoint): void
+    {
+        $interruptId = (string) ($interrupt['id'] ?? '');
+        $handle = @fopen($this->getFilePath(), 'c+');
+        if ($handle === false) {
+            throw new \RuntimeException("Session not found: {$this->sessionId}");
+        }
+        try {
+            if (! flock($handle, LOCK_EX)) {
+                throw new \RuntimeException('Could not lock session interrupt checkpoint.');
+            }
+            $latest = $this->findLatestInterruptEntry($handle, $interruptId);
+            if (($latest['type'] ?? null) !== 'interrupt_resolving') {
+                $state = str_replace('interrupt_', '', (string) ($latest['type'] ?? 'missing'));
+                throw new \RuntimeException("Interrupt {$interruptId} cannot wait for a child from state {$state}.");
+            }
+            $this->appendJsonLine($handle, [
+                'timestamp' => date('c'),
+                'session_id' => $this->sessionId,
+                'cwd' => $latest['cwd'] ?? $this->currentWorkingDirectory ?? (getcwd() ?: null),
+                'type' => 'interrupt_pending',
+                'interrupt' => $interrupt,
+                'checkpoint' => $checkpoint,
+            ]);
+        } finally {
+            flock($handle, LOCK_UN);
+            fclose($handle);
+        }
+    }
+
+    /**
+     * Atomically move a pending interrupt to resolving and return its checkpoint.
+     * Once claimed, it is never automatically retried because tool side effects may
+     * already have occurred before a process failure.
+     *
+     * @internal
+     */
+    public function claimInterrupt(string $sessionId, string $interruptId, array $decisions): array
+    {
+        if (! $this->persistenceEnabled) {
+            throw new \RuntimeException('Human-in-the-loop requires a durable session.');
+        }
+
+        if (! is_dir($this->sessionPath)) {
+            throw new \RuntimeException("Session not found: {$sessionId}");
+        }
+
+        $path = $this->sessionPath.'/'.$sessionId.'.jsonl';
+        $handle = @fopen($path, 'c+');
+        if ($handle === false) {
+            throw new \RuntimeException("Session not found: {$sessionId}");
+        }
+
+        try {
+            if (! flock($handle, LOCK_EX)) {
+                throw new \RuntimeException('Could not lock session interrupt checkpoint.');
+            }
+
+            $latest = $this->findLatestInterruptEntry($handle, $interruptId);
+
+            if ($latest === null) {
+                throw new \RuntimeException("Interrupt not found: {$interruptId}");
+            }
+            if (($latest['type'] ?? null) !== 'interrupt_pending') {
+                $state = str_replace('interrupt_', '', (string) ($latest['type'] ?? 'unknown'));
+                throw new \RuntimeException("Interrupt {$interruptId} is already {$state}; automatic retry is disabled.");
+            }
+
+            $entry = [
+                'timestamp' => date('c'),
+                'session_id' => $sessionId,
+                'cwd' => $latest['cwd'] ?? $this->currentWorkingDirectory ?? (getcwd() ?: null),
+                'type' => 'interrupt_resolving',
+                'interrupt' => $latest['interrupt'],
+                'checkpoint' => $latest['checkpoint'],
+                'decisions' => $decisions,
+            ];
+            $this->appendJsonLine($handle, $entry);
+
+            return $entry;
+        } finally {
+            flock($handle, LOCK_UN);
+            fclose($handle);
+        }
+    }
+
+    /** @internal */
+    public function getInterruptState(string $sessionId, string $interruptId): array
+    {
+        $latest = null;
+        foreach ($this->loadSession($sessionId) as $entry) {
+            if (in_array($entry['type'] ?? null, ['interrupt_pending', 'interrupt_resolving', 'interrupt_resolved'], true)
+                && ($entry['interrupt']['id'] ?? null) === $interruptId) {
+                $latest = $entry;
+            }
+        }
+        if ($latest === null) {
+            throw new \RuntimeException("Interrupt not found: {$interruptId}");
+        }
+
+        return $latest;
+    }
+
+    /** @internal */
+    public function recordInterruptParentLink(
+        string $childSessionId,
+        string $childInterruptId,
+        string $parentSessionId,
+        string $parentInterruptId,
+        string $parentActionId,
+    ): void {
+        $this->appendEntryToSession($childSessionId, [
+            'type' => 'interrupt_parent',
+            'interrupt' => ['id' => $childInterruptId],
+            'parent_session_id' => $parentSessionId,
+            'parent_interrupt_id' => $parentInterruptId,
+            'parent_action_id' => $parentActionId,
+        ]);
+    }
+
+    /** @internal */
+    public function findInterruptParentLink(string $sessionId, string $interruptId): ?array
+    {
+        $latest = null;
+        foreach ($this->loadSession($sessionId) as $entry) {
+            if (($entry['type'] ?? null) === 'interrupt_parent'
+                && ($entry['interrupt']['id'] ?? null) === $interruptId) {
+                $latest = $entry;
+            }
+        }
+
+        return $latest;
+    }
+
+    /** @internal */
+    public function resolveInterrupt(string $interruptId, array $toolResults): void
+    {
+        $path = $this->getFilePath();
+        $handle = @fopen($path, 'c+');
+        if ($handle === false) {
+            throw new \RuntimeException("Session not found: {$this->sessionId}");
+        }
+
+        try {
+            if (! flock($handle, LOCK_EX)) {
+                throw new \RuntimeException('Could not lock session interrupt checkpoint.');
+            }
+            $latest = $this->findLatestInterruptEntry($handle, $interruptId);
+            if (($latest['type'] ?? null) !== 'interrupt_resolving') {
+                $state = str_replace('interrupt_', '', (string) ($latest['type'] ?? 'missing'));
+                throw new \RuntimeException("Interrupt {$interruptId} cannot resolve from state {$state}.");
+            }
+
+            $entry = [
+                'timestamp' => date('c'),
+                'session_id' => $this->sessionId,
+                'cwd' => $latest['cwd'] ?? $this->currentWorkingDirectory ?? (getcwd() ?: null),
+                'type' => 'interrupt_resolved',
+                'interrupt' => $latest['interrupt'],
+                'tool_results' => $toolResults,
+            ];
+            $this->appendJsonLine($handle, $entry);
+        } finally {
+            flock($handle, LOCK_UN);
+            fclose($handle);
+        }
     }
 
     public function recordUserMessage(string $text): void
@@ -208,6 +395,58 @@ class SessionManager
     private function getFilePath(): string
     {
         return $this->sessionPath.'/'.$this->sessionId.'.jsonl';
+    }
+
+    /** @param resource $handle */
+    private function findLatestInterruptEntry($handle, string $interruptId): ?array
+    {
+        rewind($handle);
+        $latest = null;
+        while (($line = fgets($handle)) !== false) {
+            $entry = json_decode($line, true);
+            if (is_array($entry)
+                && in_array($entry['type'] ?? null, ['interrupt_pending', 'interrupt_resolving', 'interrupt_resolved'], true)
+                && ($entry['interrupt']['id'] ?? null) === $interruptId) {
+                $latest = $entry;
+            }
+        }
+
+        return $latest;
+    }
+
+    /** @param resource $handle */
+    private function appendJsonLine($handle, array $entry): void
+    {
+        $encoded = json_encode($entry, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if ($encoded === false) {
+            throw new \RuntimeException('Could not serialize session interrupt checkpoint.');
+        }
+        fseek($handle, 0, SEEK_END);
+        if (fwrite($handle, $encoded."\n") === false || ! fflush($handle)) {
+            throw new \RuntimeException('Could not persist session interrupt checkpoint.');
+        }
+    }
+
+    private function appendEntryToSession(string $sessionId, array $entry): void
+    {
+        $path = $this->sessionPath.'/'.$sessionId.'.jsonl';
+        $handle = @fopen($path, 'c+');
+        if ($handle === false) {
+            throw new \RuntimeException("Session not found: {$sessionId}");
+        }
+        try {
+            if (! flock($handle, LOCK_EX)) {
+                throw new \RuntimeException('Could not lock session interrupt checkpoint.');
+            }
+            $this->appendJsonLine($handle, array_merge([
+                'timestamp' => date('c'),
+                'session_id' => $sessionId,
+                'cwd' => $this->currentWorkingDirectory ?? (getcwd() ?: null),
+            ], $entry));
+        } finally {
+            flock($handle, LOCK_UN);
+            fclose($handle);
+        }
     }
 
     public function findMostRecentSessionId(?string $cwd = null): ?string

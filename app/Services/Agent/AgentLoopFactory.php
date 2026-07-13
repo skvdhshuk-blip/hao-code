@@ -5,7 +5,6 @@ namespace HaoCode\Services\Agent;
 use HaoCode\Services\Api\LlmProvider;
 use HaoCode\Services\Api\ForkSafeProvider;
 use HaoCode\Services\Api\StreamingClient;
-use HaoCode\Services\Buddy\BuddyManager;
 use HaoCode\Services\Compact\ContextCompactor;
 use HaoCode\Services\Cost\CostTracker;
 use HaoCode\Services\Git\GitContext;
@@ -18,6 +17,7 @@ use HaoCode\Services\Session\SessionManager;
 use HaoCode\Services\Settings\SettingsManager;
 use HaoCode\Services\Telemetry\PhoenixTracer;
 use HaoCode\Tools\Config\ConfigTool;
+use HaoCode\Tools\AskUserQuestion\AskUserQuestionTool;
 use HaoCode\Tools\Skill\SkillDefinition;
 use HaoCode\Tools\Skill\SkillTool;
 use HaoCode\Tools\ToolRegistry;
@@ -71,6 +71,10 @@ class AgentLoopFactory
             $toolRegistry->register($tool);
         }
 
+        if ($runContext?->enableAskUser) {
+            $toolRegistry->register(new AskUserQuestionTool);
+        }
+
         if ($runContext !== null) {
             $settings = $runContext->settings;
             $permissionChecker = new PermissionChecker($settings, new DenialTracker());
@@ -106,7 +110,7 @@ class AgentLoopFactory
                             workingDirectory: $context->workingDirectory,
                             streamingClient: $context->provider,
                             runContext: $childContext,
-                            ephemeral: true,
+                            ephemeral: ! ($childContext->interruptOn !== [] || $childContext->enableAskUser),
                             afterFork: true,
                         );
                         $loop->setMaxTurns(20);
@@ -127,7 +131,6 @@ class AgentLoopFactory
                 outputStyleLoader: new OutputStyleLoader($runContext->projectDirectory),
                 workingDirectory: $runContext->projectDirectory,
                 textOnly: $toolRegistry->getAllTools() === [],
-                buddyManager: $this->container->make(BuddyManager::class),
             );
         } else {
             $settings = $this->container->make(SettingsManager::class);
@@ -153,6 +156,12 @@ class AgentLoopFactory
             hookExecutor: $hookExecutor,
             tracer: $tracer,
         );
+        if ($runContext !== null) {
+            $toolOrchestrator->configureHumanInterrupts($runContext->interruptOn, $runContext->enableAskUser);
+            $toolOrchestrator->enablePermissionInterrupts(
+                ! $ephemeral && $runContext->settings->getPermissionMode() !== \HaoCode\Services\Permissions\PermissionMode::BypassPermissions,
+            );
+        }
 
         $loop = new AgentLoop(
             queryEngine: $queryEngine,

@@ -487,6 +487,75 @@ class ToolOrchestratorTest extends TestCase
         $this->assertFalse($handlerCalled, 'Permission prompt handler must NOT be called for hard-deny decisions');
     }
 
+    public function test_human_review_batches_gated_actions_and_keeps_hook_modified_input(): void
+    {
+        $registry = new ToolRegistry;
+        $executed = [];
+        $registry->register($this->makeTool('Write', function (array $input) use (&$executed) {
+            $executed[] = $input;
+            return ToolResult::success('written');
+        }));
+        $registry->register($this->makeTool('Read', fn () => ToolResult::success('read'), true));
+
+        $hooks = $this->createMock(HookExecutor::class);
+        $hooks->method('execute')->willReturnCallback(static function (string $event, array $data = []): HookResult {
+            if ($event === 'PreToolUse' && ($data['tool'] ?? null) === 'Write') {
+                return new HookResult(true, ['path' => '/normalized']);
+            }
+            return new HookResult(true);
+        });
+        $orchestrator = $this->makeOrchestrator($registry, null, $hooks);
+        $orchestrator->configureHumanInterrupts([
+            'Write' => ['allowedDecisions' => ['approve', 'edit', 'reject'], 'description' => 'Review write'],
+        ], false);
+
+        $review = $orchestrator->prepareHumanReview([
+            ['id' => 'write-1', 'name' => 'Write', 'input' => ['path' => 'raw']],
+            ['id' => 'read-1', 'name' => 'Read', 'input' => []],
+        ], $this->context());
+
+        $this->assertCount(1, $review['actions']);
+        $this->assertSame('/normalized', $review['actions'][0]->input['path']);
+        $this->assertSame('Review write', $review['actions'][0]->description);
+        $this->assertSame([], $executed, 'Preparation must not execute a gated tool.');
+        $read = $orchestrator->executePreparedToolBlock($review['prepared'][1], $this->context());
+        $this->assertSame('read', $read['content']);
+    }
+
+    public function test_human_review_never_turns_hard_deny_into_an_action(): void
+    {
+        $registry = new ToolRegistry;
+        $registry->register($this->makeTool('Bash', fn () => ToolResult::success('must not run')));
+        $checker = $this->createMock(PermissionChecker::class);
+        $checker->method('check')->willReturn(PermissionDecision::deny('policy deny'));
+        $orchestrator = $this->makeOrchestrator($registry, $checker);
+        $orchestrator->configureHumanInterrupts(['Bash' => true], false);
+
+        $review = $orchestrator->prepareHumanReview([
+            ['id' => 'bash-1', 'name' => 'Bash', 'input' => ['command' => 'rm -rf /']],
+        ], $this->context());
+
+        $this->assertSame([], $review['actions']);
+        $this->assertTrue($review['results'][0]['is_error']);
+        $this->assertStringContainsString('policy deny', $review['results'][0]['content']);
+    }
+
+    public function test_permission_ask_becomes_human_action_without_callback(): void
+    {
+        $registry = new ToolRegistry;
+        $registry->register($this->makeTool('Bash', fn () => ToolResult::success('ok')));
+        $checker = $this->createMock(PermissionChecker::class);
+        $checker->method('check')->willReturn(PermissionDecision::ask('dangerous command'));
+        $orchestrator = $this->makeOrchestrator($registry, $checker);
+        $orchestrator->enablePermissionInterrupts(true);
+
+        $review = $orchestrator->prepareHumanReview([
+            ['id' => 'bash-1', 'name' => 'Bash', 'input' => ['command' => 'php script.php']],
+        ], $this->context());
+
+        $this->assertSame('dangerous command', $review['actions'][0]->description);
+    }
+
     public function test_ask_decision_does_call_permission_prompt_handler(): void
     {
         // PermissionDecision::ask() (needsPrompt=true) should still prompt the user

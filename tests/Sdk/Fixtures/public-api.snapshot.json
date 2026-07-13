@@ -67,6 +67,11 @@
                 "api": true,
                 "internal": false
             },
+            "resumeInterrupt": {
+                "signature": "public function resumeInterrupt(string $interruptId, array $decisions) : HaoCode\\Sdk\\QueryResult",
+                "api": true,
+                "internal": false
+            },
             "send": {
                 "signature": "public function send(string $prompt) : HaoCode\\Sdk\\QueryResult",
                 "api": true,
@@ -74,6 +79,11 @@
             },
             "stream": {
                 "signature": "public function stream(string $prompt) : Generator",
+                "api": true,
+                "internal": false
+            },
+            "streamResumeInterrupt": {
+                "signature": "public function streamResumeInterrupt(string $interruptId, array $decisions) : Generator",
                 "api": true,
                 "internal": false
             }
@@ -105,8 +115,18 @@
                 "api": true,
                 "internal": false
             },
+            "resumeInterrupt": {
+                "signature": "public static function resumeInterrupt(string $sessionId, string $interruptId, array $decisions, ?HaoCode\\Sdk\\HaoCodeConfig $config = null) : HaoCode\\Sdk\\QueryResult|HaoCode\\Sdk\\StructuredResult",
+                "api": true,
+                "internal": false
+            },
             "stream": {
                 "signature": "public static function stream(string $prompt, ?HaoCode\\Sdk\\HaoCodeConfig $config = null) : Generator",
+                "api": true,
+                "internal": false
+            },
+            "streamResumeInterrupt": {
+                "signature": "public static function streamResumeInterrupt(string $sessionId, string $interruptId, array $decisions, ?HaoCode\\Sdk\\HaoCodeConfig $config = null) : Generator",
                 "api": true,
                 "internal": false
             },
@@ -124,7 +144,7 @@
         "internal": false,
         "methods": {
             "__construct": {
-                "signature": "public function __construct(?string $apiKey = null, ?string $model = null, ?string $baseUrl = null, ?string $providerType = null, ?int $maxTokens = null, ?string $cwd = null, int $maxTurns = 50, ?float $maxBudgetUsd = null, string $permissionMode = \"bypass_permissions\", array $allowedTools = [\"*\"], array $disallowedTools = [], ?string $systemPrompt = null, ?string $appendSystemPrompt = null, bool $thinkingEnabled = false, int $thinkingBudget = 10000, mixed $onText = null, mixed $onThinking = null, mixed $onToolStart = null, mixed $onToolComplete = null, mixed $onTurnStart = null, bool $ephemeral = false, array $tools = [], array $skills = [], ?HaoCode\\Sdk\\AbortController $abortController = null, ?string $sessionId = null, bool $continueSession = false, ?array $responseSchema = null, ?HaoCode\\Sdk\\CredentialPool $credentialPool = null, ?HaoCode\\Sdk\\Sandbox\\SandboxConfig $sandbox = null, string $memorySummaryLevel = \"l0\", ?string $memoryStoragePath = null, array $skillDirectories = [], bool $recursiveSkillDiscovery = false)",
+                "signature": "public function __construct(?string $apiKey = null, ?string $model = null, ?string $baseUrl = null, ?string $providerType = null, ?int $maxTokens = null, ?string $cwd = null, int $maxTurns = 50, ?float $maxBudgetUsd = null, string $permissionMode = \"bypass_permissions\", array $allowedTools = [\"*\"], array $disallowedTools = [], ?string $systemPrompt = null, ?string $appendSystemPrompt = null, bool $thinkingEnabled = false, int $thinkingBudget = 10000, mixed $onText = null, mixed $onThinking = null, mixed $onToolStart = null, mixed $onToolComplete = null, mixed $onTurnStart = null, bool $ephemeral = false, array $tools = [], array $skills = [], ?HaoCode\\Sdk\\AbortController $abortController = null, ?string $sessionId = null, bool $continueSession = false, ?array $responseSchema = null, ?HaoCode\\Sdk\\CredentialPool $credentialPool = null, ?HaoCode\\Sdk\\Sandbox\\SandboxConfig $sandbox = null, string $memorySummaryLevel = \"l0\", ?string $memoryStoragePath = null, array $skillDirectories = [], bool $recursiveSkillDiscovery = false, array $interruptOn = [], bool $enableAskUser = false)",
                 "api": false,
                 "internal": false
             },
@@ -142,6 +162,11 @@
                 "signature": "public function toolFilter() : ?callable",
                 "api": true,
                 "internal": false
+            },
+            "withResponseSchema": {
+                "signature": "public function withResponseSchema(array $schema) : self",
+                "api": false,
+                "internal": true
             }
         },
         "properties": {
@@ -190,8 +215,18 @@
                 "api": true,
                 "internal": false
             },
+            "enableAskUser": {
+                "signature": "public readonly bool $enableAskUser",
+                "api": true,
+                "internal": false
+            },
             "ephemeral": {
                 "signature": "public readonly bool $ephemeral",
+                "api": true,
+                "internal": false
+            },
+            "interruptOn": {
+                "signature": "public readonly array $interruptOn",
                 "api": true,
                 "internal": false
             },
@@ -330,6 +365,202 @@
         },
         "properties": []
     },
+    "HaoCode\\Sdk\\HumanActionRequest": {
+        "kind": "class",
+        "api": true,
+        "internal": false,
+        "methods": {
+            "__construct": {
+                "signature": "public function __construct(string $id, string $toolName, array $input, string $description, array $allowedDecisions = [\"approve\",\"edit\",\"reject\",\"respond\"], ?string $agentId = null)",
+                "api": true,
+                "internal": false
+            },
+            "fromArray": {
+                "signature": "public static function fromArray(array $value) : self",
+                "api": true,
+                "internal": false
+            },
+            "toArray": {
+                "signature": "public function toArray() : array",
+                "api": true,
+                "internal": false
+            }
+        },
+        "properties": {
+            "agentId": {
+                "signature": "public readonly ?string $agentId",
+                "api": true,
+                "internal": false
+            },
+            "allowedDecisions": {
+                "signature": "public readonly array $allowedDecisions",
+                "api": true,
+                "internal": false
+            },
+            "description": {
+                "signature": "public readonly string $description",
+                "api": true,
+                "internal": false
+            },
+            "id": {
+                "signature": "public readonly string $id",
+                "api": true,
+                "internal": false
+            },
+            "input": {
+                "signature": "public readonly array $input",
+                "api": true,
+                "internal": false
+            },
+            "toolName": {
+                "signature": "public readonly string $toolName",
+                "api": true,
+                "internal": false
+            }
+        }
+    },
+    "HaoCode\\Sdk\\HumanDecision": {
+        "kind": "class",
+        "api": true,
+        "internal": false,
+        "methods": {
+            "__construct": {
+                "signature": "public function __construct(string $actionId, string $type, ?array $editedInput = null, ?string $message = null, mixed $response = null)",
+                "api": true,
+                "internal": false
+            },
+            "approve": {
+                "signature": "public static function approve(string $actionId) : self",
+                "api": true,
+                "internal": false
+            },
+            "edit": {
+                "signature": "public static function edit(string $actionId, array $input) : self",
+                "api": true,
+                "internal": false
+            },
+            "fromArray": {
+                "signature": "public static function fromArray(array $value) : self",
+                "api": true,
+                "internal": false
+            },
+            "reject": {
+                "signature": "public static function reject(string $actionId, ?string $message = null) : self",
+                "api": true,
+                "internal": false
+            },
+            "respond": {
+                "signature": "public static function respond(string $actionId, mixed $response) : self",
+                "api": true,
+                "internal": false
+            },
+            "toArray": {
+                "signature": "public function toArray() : array",
+                "api": true,
+                "internal": false
+            }
+        },
+        "properties": {
+            "actionId": {
+                "signature": "public readonly string $actionId",
+                "api": true,
+                "internal": false
+            },
+            "editedInput": {
+                "signature": "public readonly ?array $editedInput",
+                "api": true,
+                "internal": false
+            },
+            "message": {
+                "signature": "public readonly ?string $message",
+                "api": true,
+                "internal": false
+            },
+            "response": {
+                "signature": "public readonly mixed $response",
+                "api": true,
+                "internal": false
+            },
+            "type": {
+                "signature": "public readonly string $type",
+                "api": true,
+                "internal": false
+            }
+        }
+    },
+    "HaoCode\\Sdk\\HumanInterrupt": {
+        "kind": "class",
+        "api": true,
+        "internal": false,
+        "methods": {
+            "__construct": {
+                "signature": "public function __construct(string $id, string $sessionId, array $actions, string $createdAt, ?string $sourceAgentId = null, ?string $sourceTeam = null)",
+                "api": true,
+                "internal": false
+            },
+            "fromArray": {
+                "signature": "public static function fromArray(array $value) : self",
+                "api": true,
+                "internal": false
+            },
+            "toArray": {
+                "signature": "public function toArray() : array",
+                "api": true,
+                "internal": false
+            }
+        },
+        "properties": {
+            "actions": {
+                "signature": "public readonly array $actions",
+                "api": true,
+                "internal": false
+            },
+            "createdAt": {
+                "signature": "public readonly string $createdAt",
+                "api": true,
+                "internal": false
+            },
+            "id": {
+                "signature": "public readonly string $id",
+                "api": true,
+                "internal": false
+            },
+            "sessionId": {
+                "signature": "public readonly string $sessionId",
+                "api": true,
+                "internal": false
+            },
+            "sourceAgentId": {
+                "signature": "public readonly ?string $sourceAgentId",
+                "api": true,
+                "internal": false
+            },
+            "sourceTeam": {
+                "signature": "public readonly ?string $sourceTeam",
+                "api": true,
+                "internal": false
+            }
+        }
+    },
+    "HaoCode\\Sdk\\HumanInterruptException": {
+        "kind": "class",
+        "api": true,
+        "internal": false,
+        "methods": {
+            "__construct": {
+                "signature": "public function __construct(HaoCode\\Sdk\\HumanInterrupt $interrupt)",
+                "api": true,
+                "internal": false
+            }
+        },
+        "properties": {
+            "interrupt": {
+                "signature": "public readonly HaoCode\\Sdk\\HumanInterrupt $interrupt",
+                "api": true,
+                "internal": false
+            }
+        }
+    },
     "HaoCode\\Sdk\\Message": {
         "kind": "class",
         "api": true,
@@ -340,8 +571,18 @@
                 "api": true,
                 "internal": false
             },
+            "interrupt": {
+                "signature": "public static function interrupt(HaoCode\\Sdk\\HumanInterrupt $interrupt) : self",
+                "api": true,
+                "internal": false
+            },
             "isError": {
                 "signature": "public function isError() : bool",
+                "api": true,
+                "internal": false
+            },
+            "isInterrupt": {
+                "signature": "public function isInterrupt() : bool",
                 "api": true,
                 "internal": false
             },
@@ -384,6 +625,11 @@
             },
             "error": {
                 "signature": "public readonly ?string $error",
+                "api": true,
+                "internal": false
+            },
+            "interrupt": {
+                "signature": "public readonly ?HaoCode\\Sdk\\HumanInterrupt $interrupt",
                 "api": true,
                 "internal": false
             },

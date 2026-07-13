@@ -12,6 +12,7 @@ namespace HaoCode\Sdk;
  * - turn: a new agent turn started
  * - result: final result with usage/cost
  * - error: an error occurred
+ * - interrupt: generation paused for a durable human decision
  *
  * @api
  */
@@ -41,6 +42,8 @@ class Message
         public readonly ?float $cost = null,
         /** @api */
         public readonly ?string $error = null,
+        /** @api */
+        public readonly ?HumanInterrupt $interrupt = null,
     ) {}
 
     /** @api */
@@ -80,6 +83,12 @@ class Message
     }
 
     /** @api */
+    public static function interrupt(HumanInterrupt $interrupt): self
+    {
+        return new self(type: 'interrupt', sessionId: $interrupt->sessionId, interrupt: $interrupt);
+    }
+
+    /** @api */
     public function isResult(): bool
     {
         return $this->type === 'result';
@@ -89,5 +98,11 @@ class Message
     public function isError(): bool
     {
         return $this->type === 'error';
+    }
+
+    /** @api */
+    public function isInterrupt(): bool
+    {
+        return $this->type === 'interrupt';
     }
 }

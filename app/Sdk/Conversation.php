@@ -163,6 +163,11 @@ class Conversation
             yield $queue->dequeue();
         }
 
+        if ($thrownException instanceof HumanInterruptException) {
+            yield Message::interrupt($thrownException->interrupt);
+
+            return;
+        }
         if ($thrownException !== null) {
             yield Message::error($thrownException->getMessage());
 
@@ -180,6 +185,123 @@ class Conversation
             cost: $this->loop->getEstimatedCost(),
             sessionId: $this->config->ephemeral ? null : $this->loop->getSessionManager()->getSessionId(),
         );
+    }
+
+    /**
+     * Resolve an interrupt and continue this conversation.
+     *
+     * @param array<int, HumanDecision|array<string, mixed>> $decisions
+     * @api
+     */
+    public function resumeInterrupt(string $interruptId, array $decisions): QueryResult
+    {
+        if ($this->closed) {
+            throw new \RuntimeException('Conversation has been closed.');
+        }
+
+        $response = $this->loop->resumeInterrupt(
+            interruptId: $interruptId,
+            decisions: $decisions,
+            onTextDelta: $this->config->onText,
+            onToolStart: $this->config->onToolStart,
+            onToolComplete: $this->config->onToolComplete,
+            onTurnStart: $this->config->onTurnStart,
+            onThinkingDelta: $this->config->onThinking,
+        );
+
+        return new QueryResult(
+            text: $response,
+            usage: [
+                'input_tokens' => $this->loop->getTotalInputTokens(),
+                'output_tokens' => $this->loop->getTotalOutputTokens(),
+                'cache_creation_tokens' => $this->loop->getCacheCreationTokens(),
+                'cache_read_tokens' => $this->loop->getCacheReadTokens(),
+            ],
+            cost: $this->loop->getEstimatedCost(),
+            sessionId: $this->loop->getSessionManager()->getSessionId(),
+            turnsUsed: $this->turnCount,
+        );
+    }
+
+    /**
+     * Streaming counterpart of {@see resumeInterrupt()}.
+     *
+     * @param array<int, HumanDecision|array<string, mixed>> $decisions
+     * @return \Generator<int, Message>
+     * @api
+     */
+    public function streamResumeInterrupt(string $interruptId, array $decisions): \Generator
+    {
+        if ($this->closed) {
+            throw new \RuntimeException('Conversation has been closed.');
+        }
+
+        $queue = new \SplQueue;
+        $response = null;
+        $thrown = null;
+        $fiber = new \Fiber(function () use ($interruptId, $decisions, $queue, &$response, &$thrown): void {
+            try {
+                $response = $this->loop->resumeInterrupt(
+                    $interruptId,
+                    $decisions,
+                    function (string $delta) use ($queue): void {
+                        $queue->enqueue(Message::text($delta));
+                        if ($this->config->onText) {
+                            ($this->config->onText)($delta);
+                        }
+                        \Fiber::getCurrent()?->suspend();
+                    },
+                    function (string $name, array $input) use ($queue): void {
+                        $queue->enqueue(Message::toolStart($name, $input));
+                        if ($this->config->onToolStart) {
+                            ($this->config->onToolStart)($name, $input);
+                        }
+                        \Fiber::getCurrent()?->suspend();
+                    },
+                    function (string $name, $result) use ($queue): void {
+                        $queue->enqueue(Message::toolResult($name, $result->output, $result->isError));
+                        if ($this->config->onToolComplete) {
+                            ($this->config->onToolComplete)($name, $result);
+                        }
+                        \Fiber::getCurrent()?->suspend();
+                    },
+                    function (int $turn) use ($queue): void {
+                        $queue->enqueue(Message::turn($turn));
+                        if ($this->config->onTurnStart) {
+                            ($this->config->onTurnStart)($turn);
+                        }
+                        \Fiber::getCurrent()?->suspend();
+                    },
+                    $this->config->onThinking,
+                );
+            } catch (\Throwable $e) {
+                $thrown = $e;
+            }
+        });
+        $fiber->start();
+        while (! $fiber->isTerminated()) {
+            while (! $queue->isEmpty()) {
+                yield $queue->dequeue();
+            }
+            $fiber->resume();
+        }
+        while (! $queue->isEmpty()) {
+            yield $queue->dequeue();
+        }
+        if ($thrown instanceof HumanInterruptException) {
+            yield Message::interrupt($thrown->interrupt);
+            return;
+        }
+        if ($thrown !== null) {
+            yield Message::error($thrown->getMessage());
+            return;
+        }
+        yield Message::result($response ?? '', [
+            'input_tokens' => $this->loop->getTotalInputTokens(),
+            'output_tokens' => $this->loop->getTotalOutputTokens(),
+            'cache_creation_tokens' => $this->loop->getCacheCreationTokens(),
+            'cache_read_tokens' => $this->loop->getCacheReadTokens(),
+        ], $this->loop->getEstimatedCost(), $this->loop->getSessionManager()->getSessionId());
     }
 
     /**
@@ -209,6 +331,10 @@ class Conversation
                 if (! empty($entry['tool_results'])) {
                     $history->addToolResultMessage($entry['tool_results']);
                 }
+            } elseif ($type === 'interrupt_pending' && isset($entry['checkpoint']['assistant_message'])) {
+                $history->addAssistantMessage($entry['checkpoint']['assistant_message']);
+            } elseif ($type === 'interrupt_resolved' && ! empty($entry['tool_results'])) {
+                $history->addToolResultMessage($entry['tool_results']);
             }
         }
 

@@ -206,6 +206,11 @@ class HaoCode
                 yield $queue->dequeue();
             }
 
+            if ($thrownException instanceof HumanInterruptException) {
+                yield Message::interrupt($thrownException->interrupt);
+
+                return;
+            }
             if ($thrownException !== null) {
                 yield Message::error($thrownException->getMessage());
 
@@ -267,6 +272,137 @@ class HaoCode
     }
 
     /**
+     * Resolve a durable interrupt and continue the original session.
+     *
+     * @param array<int, HumanDecision|array<string, mixed>> $decisions
+     * @api
+     */
+    public static function resumeInterrupt(
+        string $sessionId,
+        string $interruptId,
+        array $decisions,
+        ?HaoCodeConfig $config = null,
+    ): QueryResult|StructuredResult {
+        /** @var SessionManager $sessionManager */
+        $sessionManager = app(SessionManager::class);
+        $state = $sessionManager->getInterruptState($sessionId, $interruptId);
+        $checkpoint = is_array($state['checkpoint'] ?? null) ? $state['checkpoint'] : [];
+        $pendingInterrupt = HumanInterrupt::fromArray($state['interrupt'] ?? []);
+        $parentLink = $sessionManager->findInterruptParentLink($sessionId, $interruptId);
+        $conversation = self::resume($sessionId, $config ?? new HaoCodeConfig);
+        try {
+            try {
+                $result = $conversation->resumeInterrupt($interruptId, $decisions);
+            } catch (HumanInterruptException $e) {
+                if ($parentLink !== null) {
+                    $sessionManager->recordInterruptParentLink(
+                        $e->interrupt->sessionId,
+                        $e->interrupt->id,
+                        (string) $parentLink['parent_session_id'],
+                        (string) $parentLink['parent_interrupt_id'],
+                        (string) $parentLink['parent_action_id'],
+                    );
+                }
+                if ($pendingInterrupt->sourceAgentId !== null) {
+                    app(\HaoCode\Services\Agent\BackgroundAgentManager::class)
+                        ->markWaitingForInput($pendingInterrupt->sourceAgentId, $e->interrupt);
+                }
+                throw $e;
+            }
+            if ($pendingInterrupt->sourceAgentId !== null) {
+                app(\HaoCode\Services\Agent\BackgroundAgentManager::class)
+                    ->markCompleted($pendingInterrupt->sourceAgentId, $result->text);
+                app(\HaoCode\Services\Task\TaskManager::class)
+                    ->update($pendingInterrupt->sourceAgentId, 'completed', $result->text);
+            }
+            if ($parentLink !== null) {
+                return self::resumeInterrupt(
+                    (string) $parentLink['parent_session_id'],
+                    (string) $parentLink['parent_interrupt_id'],
+                    [HumanDecision::respond((string) $parentLink['parent_action_id'], $result->text)],
+                    $config,
+                );
+            }
+            if (($checkpoint['operation'] ?? null) === 'structured') {
+                return self::parseStructuredResult($result);
+            }
+
+            return $result;
+        } finally {
+            $conversation->close();
+        }
+    }
+
+    /**
+     * Streaming counterpart of {@see resumeInterrupt()}.
+     *
+     * @param array<int, HumanDecision|array<string, mixed>> $decisions
+     * @return \Generator<int, Message>
+     * @api
+     */
+    public static function streamResumeInterrupt(
+        string $sessionId,
+        string $interruptId,
+        array $decisions,
+        ?HaoCodeConfig $config = null,
+    ): \Generator {
+        /** @var SessionManager $sessionManager */
+        $sessionManager = app(SessionManager::class);
+        $state = $sessionManager->getInterruptState($sessionId, $interruptId);
+        $pendingInterrupt = HumanInterrupt::fromArray($state['interrupt'] ?? []);
+        $parentLink = $sessionManager->findInterruptParentLink($sessionId, $interruptId);
+        $conversation = self::resume($sessionId, $config ?? new HaoCodeConfig);
+        try {
+            $final = null;
+            foreach ($conversation->streamResumeInterrupt($interruptId, $decisions) as $message) {
+                if ($message->isInterrupt()) {
+                    if ($parentLink !== null && $message->interrupt !== null) {
+                        $sessionManager->recordInterruptParentLink(
+                            $message->interrupt->sessionId,
+                            $message->interrupt->id,
+                            (string) $parentLink['parent_session_id'],
+                            (string) $parentLink['parent_interrupt_id'],
+                            (string) $parentLink['parent_action_id'],
+                        );
+                    }
+                    if ($pendingInterrupt->sourceAgentId !== null && $message->interrupt !== null) {
+                        app(\HaoCode\Services\Agent\BackgroundAgentManager::class)
+                            ->markWaitingForInput($pendingInterrupt->sourceAgentId, $message->interrupt);
+                    }
+                    yield $message;
+                    return;
+                }
+                if ($message->isResult()) {
+                    $final = $message;
+                    continue;
+                }
+                yield $message;
+            }
+            if ($final === null) {
+                return;
+            }
+            if ($pendingInterrupt->sourceAgentId !== null) {
+                app(\HaoCode\Services\Agent\BackgroundAgentManager::class)
+                    ->markCompleted($pendingInterrupt->sourceAgentId, $final->text);
+                app(\HaoCode\Services\Task\TaskManager::class)
+                    ->update($pendingInterrupt->sourceAgentId, 'completed', $final->text ?? '');
+            }
+            if ($parentLink !== null) {
+                yield from self::streamResumeInterrupt(
+                    (string) $parentLink['parent_session_id'],
+                    (string) $parentLink['parent_interrupt_id'],
+                    [HumanDecision::respond((string) $parentLink['parent_action_id'], $final->text)],
+                    $config,
+                );
+                return;
+            }
+            yield $final;
+        } finally {
+            $conversation->close();
+        }
+    }
+
+    /**
      * Continue the most recent session in the working directory.
      *
      * @api
@@ -323,7 +459,14 @@ class HaoCode
             "No markdown fences, no explanation, no extra text — just the raw JSON.\n\n".
             "Schema:\n".$schemaJson;
 
+        $config = ($config ?? new HaoCodeConfig)->withResponseSchema($effectiveSchema);
         $queryResult = self::query($structuredPrompt, $config);
+
+        return self::parseStructuredResult($queryResult);
+    }
+
+    private static function parseStructuredResult(QueryResult $queryResult): StructuredResult
+    {
         $text = trim($queryResult->text);
 
         // Strip markdown code fences if present

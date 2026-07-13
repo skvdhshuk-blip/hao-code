@@ -299,7 +299,50 @@ class HaoCodeConfig
          * @api
          */
         public readonly bool $recursiveSkillDiscovery = false,
-    ) {}
+
+        /**
+         * Tools that pause before execution for a human decision.
+         * Values may be true, false, or an array with allowedDecisions and description.
+         *
+         * @api
+         */
+        public readonly array $interruptOn = [],
+
+        /**
+         * Register AskUserQuestion as an SDK interrupt tool.
+         *
+         * @api
+         */
+        public readonly bool $enableAskUser = false,
+    ) {
+        if ($this->ephemeral && ($this->interruptOn !== [] || $this->enableAskUser)) {
+            throw new \InvalidArgumentException('Human-in-the-loop requires a durable session; ephemeral must be false.');
+        }
+        $decisionTypes = ['approve', 'edit', 'reject', 'respond'];
+        foreach ($this->interruptOn as $toolName => $review) {
+            if (! is_string($toolName) || trim($toolName) === '') {
+                throw new \InvalidArgumentException('interruptOn keys must be non-empty exact tool names.');
+            }
+            if (! is_bool($review) && ! is_array($review)) {
+                throw new \InvalidArgumentException("interruptOn.{$toolName} must be true, false, or a review configuration array.");
+            }
+            if (! is_array($review)) {
+                continue;
+            }
+            if (isset($review['description']) && ! is_string($review['description'])) {
+                throw new \InvalidArgumentException("interruptOn.{$toolName}.description must be a string.");
+            }
+            if (isset($review['allowedDecisions'])) {
+                if (! is_array($review['allowedDecisions'])
+                    || $review['allowedDecisions'] === []
+                    || array_diff($review['allowedDecisions'], $decisionTypes) !== []) {
+                    throw new \InvalidArgumentException(
+                        "interruptOn.{$toolName}.allowedDecisions must contain approve, edit, reject, or respond.",
+                    );
+                }
+            }
+        }
+    }
 
     /**
      * Create a minimal config for quick queries.
@@ -371,5 +414,14 @@ class HaoCodeConfig
     public function effectiveWorkingDirectory(): ?string
     {
         return $this->sandbox?->remoteCwd ?? $this->cwd;
+    }
+
+    /** @internal */
+    public function withResponseSchema(array $schema): self
+    {
+        $values = get_object_vars($this);
+        $values['responseSchema'] = $schema;
+
+        return new self(...$values);
     }
 }

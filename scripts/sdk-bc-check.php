@@ -22,6 +22,10 @@ use HaoCode\Sdk\Conversation;
 use HaoCode\Sdk\HaoCode;
 use HaoCode\Sdk\HaoCodeConfig;
 use HaoCode\Sdk\HaoCodeSdkServiceProvider;
+use HaoCode\Sdk\HumanActionRequest;
+use HaoCode\Sdk\HumanDecision;
+use HaoCode\Sdk\HumanInterrupt;
+use HaoCode\Sdk\HumanInterruptException;
 use HaoCode\Sdk\Message;
 use HaoCode\Sdk\QueryResult;
 use HaoCode\Sdk\SdkSkill;
@@ -40,6 +44,10 @@ if (! in_array($mode, ['--write', '--verify'], true)) {
 $classes = [
     HaoCode::class,
     HaoCodeConfig::class,
+    HumanActionRequest::class,
+    HumanDecision::class,
+    HumanInterrupt::class,
+    HumanInterruptException::class,
     Conversation::class,
     QueryResult::class,
     Message::class,

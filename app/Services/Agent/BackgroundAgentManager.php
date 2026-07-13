@@ -97,6 +97,18 @@ class BackgroundAgentManager
         });
     }
 
+    public function markWaitingForInput(string $id, \HaoCode\Sdk\HumanInterrupt $interrupt): ?array
+    {
+        return $this->mutateState($id, function (array $state) use ($interrupt) {
+            $state['status'] = 'waiting_for_input';
+            $state['child_session_id'] = $interrupt->sessionId;
+            $state['pending_interrupt'] = $interrupt->toArray();
+            $state['error'] = null;
+
+            return $state;
+        });
+    }
+
     public function recordResult(string $id, string $result): ?array
     {
         return $this->mutateState($id, function (array $state) use ($result) {

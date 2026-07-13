@@ -9,7 +9,6 @@ use HaoCode\Services\Agent\MessageHistory;
 use HaoCode\Services\Agent\QueryEngine;
 use HaoCode\Services\Agent\ToolOrchestrator;
 use HaoCode\Services\Api\StreamingClient;
-use HaoCode\Services\Buddy\BuddyManager;
 use HaoCode\Services\Compact\ContextCompactor;
 use HaoCode\Services\Cost\CostTracker;
 use HaoCode\Services\Git\GitContext;
@@ -17,7 +16,6 @@ use HaoCode\Services\Hooks\HookExecutor;
 use HaoCode\Services\Mcp\McpConnectionManager;
 use HaoCode\Services\Mcp\McpServerConfigManager;
 use HaoCode\Services\Memory\SessionMemory;
-use HaoCode\Services\Notification\Notifier;
 use HaoCode\Services\OutputStyle\OutputStyleLoader;
 use HaoCode\Services\Permissions\DenialTracker;
 use HaoCode\Services\Permissions\PermissionChecker;
@@ -27,10 +25,8 @@ use HaoCode\Services\Session\SessionTitleService;
 use HaoCode\Services\Settings\SettingsManager;
 use HaoCode\Services\Telemetry\PhoenixTracer;
 use HaoCode\Support\Container\Container;
-use HaoCode\Support\Terminal\PromptHudState;
 use HaoCode\Tools\Agent\AgentTool;
 use HaoCode\Tools\Agent\SendMessageTool;
-use HaoCode\Tools\AskUserQuestion\AskUserQuestionTool;
 use HaoCode\Tools\Bash\BashTool;
 use HaoCode\Tools\Config\ConfigTool;
 use HaoCode\Tools\Cron\CronCreateTool;
@@ -135,8 +131,6 @@ final class SdkRuntime
 
     private static function registerCoreServices(Container $app): void
     {
-        $app->instance('Illuminate\Contracts\Console\Kernel', new NullConsoleKernel());
-
         $app->singleton(SettingsManager::class);
         $app->singleton(SessionManager::class);
         $app->singleton(PhoenixTracer::class, fn (Container $app) => PhoenixTracer::fromSettings($app->make(SettingsManager::class)));
@@ -163,11 +157,6 @@ final class SdkRuntime
         $app->singleton(HookExecutor::class);
         $app->singleton(OutputStyleLoader::class);
         $app->singleton(SessionMemory::class);
-        $app->singleton(PromptHudState::class);
-        $app->singleton(Notifier::class, fn (Container $app) => new Notifier(
-            channel: null,
-            hookExecutor: $app->make(HookExecutor::class),
-        ));
         $app->singleton(SkillLoader::class);
         $app->singleton(CostTracker::class);
         $app->singleton(\HaoCode\Services\FileHistory\FileHistoryManager::class);
@@ -185,7 +174,6 @@ final class SdkRuntime
             skillLoader: $app->make(SkillLoader::class),
             gitContext: $app->make(GitContext::class),
             outputStyleLoader: $app->make(OutputStyleLoader::class),
-            buddyManager: $app->make(BuddyManager::class),
         ));
         $app->singleton(StreamingClient::class, function (Container $app) {
             $settings = $app->make(SettingsManager::class);
@@ -233,7 +221,6 @@ final class SdkRuntime
                 GlobTool::class,
                 GrepTool::class,
                 TodoWriteTool::class,
-                AskUserQuestionTool::class,
                 WebFetchTool::class,
                 WebSearchTool::class,
                 AgentTool::class,

@@ -101,38 +101,10 @@ class ConfigToolTest extends TestCase
         $this->assertStringContainsString('Invalid permission mode', $error);
     }
 
-    public function test_validate_theme_accepts_known_values(): void
-    {
-        foreach (['dark', 'light', 'ansi'] as $theme) {
-            $this->assertNull($this->validateValue('theme', $theme));
-        }
-    }
-
-    public function test_validate_theme_rejects_unknown_values(): void
-    {
-        $error = $this->validateValue('theme', 'solarized');
-        $this->assertNotNull($error);
-        $this->assertStringContainsString('Invalid theme', $error);
-    }
-
     public function test_validate_output_style_accepts_arbitrary_values(): void
     {
         $this->assertNull($this->validateValue('output_style', 'terse'));
         $this->assertNull($this->validateValue('output_style', 'off'));
-    }
-
-    public function test_validate_stream_output_accepts_boolean_like_values(): void
-    {
-        foreach (['true', 'false', 'on', 'off', 'yes', 'no', '1', '0'] as $value) {
-            $this->assertNull($this->validateValue('stream_output', $value), "Value {$value} should be valid");
-        }
-    }
-
-    public function test_validate_stream_output_rejects_unknown_values(): void
-    {
-        $error = $this->validateValue('stream_output', 'maybe');
-        $this->assertNotNull($error);
-        $this->assertStringContainsString('Invalid stream_output', $error);
     }
 
     // unknown key
@@ -245,20 +217,6 @@ class ConfigToolTest extends TestCase
         $this->assertStringContainsString('Unknown provider', $result->output);
     }
 
-    public function test_call_set_stream_output_normalizes_to_boolean(): void
-    {
-        $settings = $this->createMock(SettingsManager::class);
-        $settings->expects($this->once())
-            ->method('set')
-            ->with('stream_output', true);
-        $tool = $this->makeToolWithSettings($settings);
-
-        $result = $tool->call(['key' => 'stream_output', 'value' => 'on'], $this->context);
-
-        $this->assertFalse($result->isError);
-        $this->assertStringContainsString('Set stream_output = true', $result->output);
-    }
-
     public function test_call_setting_active_provider_off_stores_null(): void
     {
         $settings = $this->createMock(SettingsManager::class);
@@ -295,20 +253,6 @@ class ConfigToolTest extends TestCase
 
         $this->assertTrue($result->isError);
         $this->assertStringContainsString('Invalid permission mode', $result->output);
-    }
-
-    public function test_call_set_theme_calls_settings_set(): void
-    {
-        $settings = $this->createMock(SettingsManager::class);
-        $settings->expects($this->once())
-            ->method('set')
-            ->with('theme', 'light');
-        $tool = $this->makeToolWithSettings($settings);
-
-        $result = $tool->call(['key' => 'theme', 'value' => 'light'], $this->context);
-
-        $this->assertFalse($result->isError);
-        $this->assertStringContainsString('Set theme = light', $result->output);
     }
 
     public function test_call_setting_output_style_off_stores_null(): void

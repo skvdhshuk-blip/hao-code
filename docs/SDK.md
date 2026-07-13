@@ -228,6 +228,8 @@ configured output tokens and a safety margin before sending a request.
 | `permissionMode` | `string` | `'bypass_permissions'` | `'default'`, `'plan'`, `'accept_edits'`, `'bypass_permissions'` |
 | `sandbox` | `?SandboxConfig` | `null` | Optional temporary filesystem/shell runtime for tools |
 | `credentialPool` | `?CredentialPool` | `null` | Rotate provider credentials and retry rate-limited keys |
+| `interruptOn` | `array` | `[]` | Exact tool names to pause before execution; values are `true`, `false`, or review configuration arrays |
+| `enableAskUser` | `bool` | `false` | Register `AskUserQuestion` as a serializable host interrupt |
 
 ### Prompts
 
@@ -560,6 +562,7 @@ tool requests; they do not bypass tool permissions, hooks, or skill tool scope.
 | `tool_result` | `$msg->toolName`, `$msg->toolOutput`, `$msg->toolIsError` | Tool completed |
 | `result` | `$msg->text`, `$msg->usage`, `$msg->cost`, `$msg->sessionId` | Final result |
 | `error` | `$msg->error` | An error occurred |
+| `interrupt` | `$msg->interrupt`, `$msg->sessionId` | Generation paused for human input; no `result` follows in that stream |
 
 ```php
 foreach (HaoCode::stream('Refactor the auth module', new HaoCodeConfig(
@@ -586,6 +589,67 @@ foreach (HaoCode::stream('Refactor the auth module', new HaoCodeConfig(
     }
 }
 ```
+
+### Durable human-in-the-loop
+
+HITL never reads stdin and does not call a blocking PHP approval callback. A
+non-streaming call throws `HumanInterruptException`; a streaming call yields one
+`interrupt` message and ends. The host stores the interrupt ID and resumes it later:
+
+```php
+use HaoCode\Sdk\HaoCode;
+use HaoCode\Sdk\HaoCodeConfig;
+use HaoCode\Sdk\HumanDecision;
+use HaoCode\Sdk\HumanInterruptException;
+
+$config = new HaoCodeConfig(
+    cwd: __DIR__,
+    interruptOn: [
+        'Bash' => [
+            'allowedDecisions' => ['approve', 'edit', 'reject'],
+            'description' => 'Review shell command',
+        ],
+        'Write' => true,
+    ],
+    enableAskUser: true,
+);
+
+try {
+    HaoCode::query('Inspect the app and write report.md', $config);
+} catch (HumanInterruptException $e) {
+    $interrupt = $e->interrupt; // safe to serialize with toArray()
+
+    $result = HaoCode::resumeInterrupt(
+        sessionId: $interrupt->sessionId,
+        interruptId: $interrupt->id,
+        decisions: array_map(
+            fn ($action) => HumanDecision::approve($action->id),
+            $interrupt->actions,
+        ),
+        config: $config,
+    );
+}
+```
+
+Available decisions are:
+
+- `HumanDecision::approve($actionId)` executes the hook-normalized checkpoint input.
+- `HumanDecision::edit($actionId, $input)` revalidates new arguments without changing the tool name.
+- `HumanDecision::reject($actionId, $feedback)` skips execution and returns error feedback to the model.
+- `HumanDecision::respond($actionId, $value)` skips execution and returns the host value as a successful tool result.
+
+`AskUserQuestion` actions allow only `respond` and `reject`. A response is
+`['status' => 'answered', 'answers' => [...]]` or
+`['status' => 'cancelled', 'answers' => []]`. One answer entry is required per
+question; optional questions may use `null`. Hard deny rules and hooks remain
+authoritative. Sessions are claimed under a file lock; a `resolving` checkpoint
+is not automatically retried after a process crash because side effects may have
+already occurred.
+
+Foreground child-agent interrupts bubble directly. Background agents and team
+members enter `waiting_for_input`; `TeamAwait` and `TeamCollect` surface their
+pending interrupt. Resolve the child interrupt using its own `sessionId`, then
+collect the team again.
 
 ---
 

@@ -124,6 +124,7 @@ class AgentLoader
             background: (bool) ($frontmatter['background'] ?? false),
             omitClaudeMd: (bool) ($frontmatter['omitClaudeMd'] ?? false),
             maxTurns: isset($frontmatter['maxTurns']) ? (int) $frontmatter['maxTurns'] : null,
+            interruptOn: is_array($frontmatter['interruptOn'] ?? null) ? $frontmatter['interruptOn'] : null,
         );
     }
 
@@ -151,6 +152,7 @@ class AgentLoader
             background: (bool) ($data['background'] ?? false),
             omitClaudeMd: (bool) ($data['omitClaudeMd'] ?? false),
             maxTurns: isset($data['maxTurns']) ? (int) $data['maxTurns'] : null,
+            interruptOn: is_array($data['interruptOn'] ?? null) ? $data['interruptOn'] : null,
         );
     }
 

@@ -5,6 +5,9 @@ namespace Tests\Unit;
 use HaoCode\Services\Agent\BackgroundAgentManager;
 use HaoCode\Services\Agent\TeamManager;
 use HaoCode\Services\Agent\TeamResultCollector;
+use HaoCode\Sdk\HumanActionRequest;
+use HaoCode\Sdk\HumanInterrupt;
+use HaoCode\Sdk\HumanInterruptException;
 use HaoCode\Tools\Team\TeamAwaitTool;
 use HaoCode\Tools\Team\TeamCollectTool;
 use HaoCode\Tools\ToolUseContext;
@@ -67,6 +70,26 @@ class TeamResultToolsTest extends TestCase
         $this->assertLessThan(0.5, microtime(true) - $started);
         $this->assertFalse($payload['timed_out']);
         $this->assertSame(0, $payload['summary']['pending']);
+    }
+
+    public function test_collect_surfaces_a_waiting_member_interrupt(): void
+    {
+        $this->teams->create('research', [
+            ['role' => 'docs', 'agent_type' => 'Explore', 'prompt' => 'Read docs'],
+        ]);
+        $this->agents->create('research_docs', 'Read docs', 'Explore');
+        $interrupt = new HumanInterrupt(
+            'int-team',
+            'session-team-child',
+            [new HumanActionRequest('call-team', 'Write', [], 'Review write')],
+            date('c'),
+            'research_docs',
+            'research',
+        );
+        $this->agents->markWaitingForInput('research_docs', $interrupt);
+
+        $this->expectException(HumanInterruptException::class);
+        (new TeamCollectTool($this->collector))->call(['name' => 'research'], new ToolUseContext('/tmp', 'test'));
     }
 
     private function seedTeam(): void

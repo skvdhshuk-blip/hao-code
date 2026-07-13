@@ -7,7 +7,8 @@ use HaoCode\Tools\ToolInputSchema;
 use HaoCode\Tools\ToolResult;
 use HaoCode\Tools\ToolUseContext;
 
-class AskUserQuestionTool extends BaseTool
+/** @internal */
+final class AskUserQuestionTool extends BaseTool
 {
     public function name(): string
     {
@@ -16,11 +17,7 @@ class AskUserQuestionTool extends BaseTool
 
     public function description(): string
     {
-        return <<<DESC
-Use this tool when you need to ask the user questions during execution.
-Allows you to gather user preferences, clarify ambiguous instructions, or get decisions on implementation choices.
-Users can always select "Other" to provide custom text input.
-DESC;
+        return 'Pause and ask the host user one or more text or multiple-choice questions.';
     }
 
     public function inputSchema(): ToolInputSchema
@@ -30,59 +27,60 @@ DESC;
             'properties' => [
                 'questions' => [
                     'type' => 'array',
-                    'description' => 'Questions to ask the user (1-4 questions)',
                     'items' => [
                         'type' => 'object',
                         'properties' => [
-                            'question' => ['type' => 'string', 'description' => 'The complete question to ask'],
-                            'header' => ['type' => 'string', 'description' => 'Short label (max 12 chars)'],
-                            'options' => [
-                                'type' => 'array',
-                                'description' => 'Available choices (2-4 options)',
-                                'items' => [
-                                    'type' => 'object',
-                                    'properties' => [
-                                        'label' => ['type' => 'string'],
-                                        'description' => ['type' => 'string'],
-                                    ],
-                                    'required' => ['label'],
-                                ],
-                            ],
+                            'question' => ['type' => 'string'],
+                            'type' => ['type' => 'string', 'enum' => ['text', 'multiple_choice']],
+                            'options' => ['type' => 'array', 'items' => ['type' => 'string']],
+                            'required' => ['type' => 'boolean'],
+                            'multiple' => ['type' => 'boolean'],
                         ],
-                        'required' => ['question', 'header', 'options'],
+                        'required' => ['question', 'type'],
                     ],
-                    'minItems' => 1,
-                    'maxItems' => 4,
                 ],
             ],
             'required' => ['questions'],
-        ], [
-            'questions' => 'required|array|min:1|max:4',
-            'questions.*.question' => 'required|string',
-            'questions.*.header' => 'required|string|max:12',
-            'questions.*.options' => 'required|array|min:2|max:4',
-        ]);
+        ], ['questions' => ['required', 'array', 'min:1']]);
+    }
+
+    public function validateInput(array $input, ToolUseContext $context): ?string
+    {
+        foreach ($input['questions'] ?? [] as $index => $question) {
+            if (! is_array($question) || trim((string) ($question['question'] ?? '')) === '') {
+                return "Question {$index} must contain non-empty question text.";
+            }
+            $type = $question['type'] ?? null;
+            if (! in_array($type, ['text', 'multiple_choice'], true)) {
+                return "Question {$index} has an invalid type.";
+            }
+            if (isset($question['required']) && ! is_bool($question['required'])) {
+                return "Question {$index} required must be boolean.";
+            }
+            if (isset($question['multiple']) && ! is_bool($question['multiple'])) {
+                return "Question {$index} multiple must be boolean.";
+            }
+            if ($type === 'multiple_choice') {
+                $options = $question['options'] ?? null;
+                if (! is_array($options) || count($options) < 2) {
+                    return "Multiple-choice question {$index} requires at least two options.";
+                }
+                foreach ($options as $option) {
+                    if (! is_string($option) || trim($option) === '') {
+                        return "Multiple-choice question {$index} contains an empty option.";
+                    }
+                }
+            } elseif (isset($question['options'])) {
+                return "Text question {$index} cannot define multiple-choice options.";
+            }
+        }
+
+        return null;
     }
 
     public function call(array $input, ToolUseContext $context): ToolResult
     {
-        // This tool requires interactive terminal input
-        // For now, return the first option as default
-        $answers = [];
-        foreach ($input['questions'] as $q) {
-            $question = $q['question'];
-            $options = $q['options'] ?? [];
-            $firstOption = $options[0]['label'] ?? 'N/A';
-
-            $answers[$question] = $firstOption;
-        }
-
-        $output = "User answers (auto-selected first option - interactive mode needed for real prompts):\n";
-        foreach ($answers as $q => $a) {
-            $output .= "  Q: {$q}\n  A: {$a}\n\n";
-        }
-
-        return ToolResult::success($output);
+        return ToolResult::error('AskUserQuestion must be resolved through a human interrupt.');
     }
 
     public function isReadOnly(array $input): bool

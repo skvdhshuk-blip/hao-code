@@ -170,12 +170,10 @@ DESC;
                 runContext: $context->runContext?->fork(
                     $worktreePath ?? $context->workingDirectory,
                     $agentDef->readOnly,
+                    $agentDef->interruptOn,
                 ),
                 readOnly: $agentDef->readOnly,
             );
-            // Sub-agents don't prompt for permissions
-            $subLoop->setPermissionPromptHandler(fn() => true);
-
             if ($agentDef->maxTurns !== null) {
                 $subLoop->setMaxTurns($agentDef->maxTurns);
             }
@@ -190,6 +188,8 @@ DESC;
                 'outputTokens' => $subLoop->getTotalOutputTokens(),
                 'cost' => $subLoop->getEstimatedCost(),
             ]);
+        } catch (\HaoCode\Sdk\HumanInterruptException $e) {
+            throw $e;
         } catch (\Throwable $e) {
             return ToolResult::error("Sub-agent error: " . $e->getMessage());
         }
@@ -237,6 +237,8 @@ DESC;
         if ($pid === 0) {
             try {
                 $this->executeBackgroundAgent($taskId, $prompt, $systemPrompt, $agentDef, $context, $worktreePath);
+            } catch (\HaoCode\Sdk\HumanInterruptException) {
+                // The child checkpoint is durable; the controller will surface it.
             } catch (\Throwable $e) {
                 $this->backgroundAgents()->markError($taskId, $e->getMessage());
                 $this->tasks()->update($taskId, 'completed', 'Background agent error: ' . $e->getMessage());
@@ -321,12 +323,12 @@ DESC;
             runContext: $context->runContext?->fork(
                 $worktreePath ?? $context->workingDirectory,
                 $agentDef->readOnly,
+                $agentDef->interruptOn,
+                $taskId,
             ),
             afterFork: true,
             readOnly: $agentDef->readOnly,
         );
-        $subLoop->setPermissionPromptHandler(fn() => true);
-
         if ($agentDef->maxTurns !== null) {
             $subLoop->setMaxTurns($agentDef->maxTurns);
         }
@@ -387,7 +389,13 @@ DESC;
     private function runBackgroundTurn(object $subLoop, string $taskId, string $prompt): ?string
     {
         $this->backgroundAgents()->markRunning($taskId);
-        $response = $subLoop->run(userInput: $prompt, onTextDelta: null);
+        try {
+            $response = $subLoop->run(userInput: $prompt, onTextDelta: null);
+        } catch (\HaoCode\Sdk\HumanInterruptException $e) {
+            $this->backgroundAgents()->markWaitingForInput($taskId, $e->interrupt);
+            $this->tasks()->update($taskId, 'in_progress', 'Waiting for human input.');
+            throw $e;
+        }
 
         if ($response === '(aborted)') {
             return null;

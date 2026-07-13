@@ -138,6 +138,39 @@ class MockAnthropicSse
         ]);
     }
 
+    /** @param array<int, array{id: string, name: string, input: array<string, mixed>}> $calls */
+    public static function multiToolUseResponse(array $calls, string $messageId = 'msg_tools_1'): MockResponse
+    {
+        $events = [self::event('message_start', [
+            'message' => [
+                'id' => $messageId,
+                'model' => 'claude-test',
+                'usage' => ['input_tokens' => 64, 'output_tokens' => 0],
+            ],
+        ])];
+        foreach ($calls as $index => $call) {
+            $events[] = self::event('content_block_start', [
+                'index' => $index,
+                'content_block' => ['type' => 'tool_use', 'id' => $call['id'], 'name' => $call['name']],
+            ]);
+            $events[] = self::event('content_block_delta', [
+                'index' => $index,
+                'delta' => [
+                    'type' => 'input_json_delta',
+                    'partial_json' => json_encode($call['input'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE),
+                ],
+            ]);
+            $events[] = self::event('content_block_stop', ['index' => $index]);
+        }
+        $events[] = self::event('message_delta', [
+            'delta' => ['stop_reason' => 'tool_use'],
+            'usage' => ['output_tokens' => count($calls)],
+        ]);
+        $events[] = self::event('message_stop', []);
+
+        return self::response($events);
+    }
+
     public static function thinkingResponse(string $thinking, string $text): MockResponse
     {
         return self::response([

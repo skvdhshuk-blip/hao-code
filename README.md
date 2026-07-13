@@ -182,6 +182,40 @@ echo $result->text;
 echo $conversation->getSessionId();
 ```
 
+## Human approval
+
+Human-in-the-loop runs are durable and non-blocking: the SDK pauses, returns a
+serializable interrupt, and the host resumes it in a later HTTP request or worker job.
+
+```php
+use HaoCode\Sdk\HaoCode;
+use HaoCode\Sdk\HaoCodeConfig;
+use HaoCode\Sdk\HumanDecision;
+use HaoCode\Sdk\HumanInterruptException;
+
+$config = new HaoCodeConfig(
+    cwd: __DIR__,
+    interruptOn: ['Bash' => true, 'Write' => true],
+    enableAskUser: true,
+);
+
+try {
+    $result = HaoCode::query('Create report.txt', $config);
+} catch (HumanInterruptException $e) {
+    // Persist or return $e->interrupt->toArray() to your UI.
+    $result = HaoCode::resumeInterrupt(
+        $e->interrupt->sessionId,
+        $e->interrupt->id,
+        [HumanDecision::approve($e->interrupt->actions[0]->id)],
+        $config,
+    );
+}
+```
+
+`edit` changes only tool arguments, `reject` returns error feedback to the model,
+and `respond` supplies a successful tool result. Hard permission denials cannot
+be overridden. HITL cannot be combined with `ephemeral: true`.
+
 ## Structured Output
 
 Use `structured()` for machine-readable results:
