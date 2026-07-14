@@ -41,6 +41,27 @@ class McpClientTest extends TestCase
         $this->assertSame('http', $transport->getTransportType());
     }
 
+    public function test_sse_parser_accepts_data_without_space(): void
+    {
+        $transport = McpTransport::fromConfig([
+            'transport' => 'http',
+            'command' => null,
+            'args' => [],
+            'url' => 'https://example.com/mcp',
+            'env' => [],
+            'headers' => [],
+        ]);
+        $parse = new \ReflectionMethod($transport, 'parseSSEResponse');
+
+        $result = $parse->invoke(
+            $transport,
+            "data:{\"jsonrpc\":\"2.0\",\"id\":7,\"result\":{\"ok\":true}}\n\n",
+            7,
+        );
+
+        $this->assertSame(['ok' => true], $result);
+    }
+
     public function test_stdio_connect_fails_without_command(): void
     {
         $transport = McpTransport::fromConfig([

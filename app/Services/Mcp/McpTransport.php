@@ -28,7 +28,16 @@ final class McpTransport
     /** 4 MB read-buffer ceiling to prevent OOM from malicious servers */
     private const READ_BUFFER_MAX = 4 * 1024 * 1024;
 
+    /** Environment variables safe to pass to stdio servers by default. */
+    private const STDIO_ENV_ALLOWLIST = [
+        'PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL',
+        'TMPDIR', 'TMP', 'TEMP', 'LANG', 'LC_ALL',
+        'SystemRoot', 'ComSpec', 'PATHEXT',
+    ];
+
     private ?string $httpSessionId = null;
+
+    private ?string $protocolVersion = null;
 
     /** @var array<string, callable[]> Registered notification handlers by method */
     private array $notificationHandlers = [];
@@ -43,12 +52,13 @@ final class McpTransport
         private readonly ?string $url,
         private readonly array $env,
         private readonly array $headers,
+        private readonly ?string $workingDirectory,
     ) {}
 
     /**
      * Create a transport from a normalized server config array.
      *
-     * @param  array{transport: string, command: ?string, args: array, url: ?string, env: array, headers: array}  $config
+     * @param  array{transport: string, command: ?string, args: array, url: ?string, env: array, headers: array, cwd?: string}  $config
      */
     public static function fromConfig(array $config): self
     {
@@ -59,12 +69,22 @@ final class McpTransport
             url: $config['url'] ?? null,
             env: $config['env'] ?? [],
             headers: $config['headers'] ?? [],
+            workingDirectory: $config['cwd'] ?? null,
         );
     }
 
     public function getTransportType(): string
     {
         return $this->transport;
+    }
+
+    /**
+     * Set the protocol version negotiated during initialize.
+     * HTTP transports include it on every subsequent request.
+     */
+    public function setProtocolVersion(string $protocolVersion): void
+    {
+        $this->protocolVersion = $protocolVersion;
     }
 
     /**
@@ -216,12 +236,9 @@ final class McpTransport
             throw new McpConnectionException('Stdio transport requires a command');
         }
 
-        $cmd = $this->command;
-        if (! empty($this->args)) {
-            $cmd .= ' '.implode(' ', array_map('escapeshellarg', $this->args));
-        }
-
-        $env = array_merge(getenv(), $this->env);
+        // Array form bypasses shell interpolation and keeps command/arguments distinct.
+        $cmd = array_merge([$this->command], $this->args);
+        $env = $this->buildStdioEnvironment();
 
         $descriptorSpec = [
             0 => ['pipe', 'r'], // stdin
@@ -229,7 +246,7 @@ final class McpTransport
             2 => ['pipe', 'w'], // stderr (captured)
         ];
 
-        $this->process = proc_open($cmd, $descriptorSpec, $pipes, null, $env);
+        $this->process = proc_open($cmd, $descriptorSpec, $pipes, $this->workingDirectory, $env);
 
         if (! is_resource($this->process)) {
             // Omit $cmd to avoid leaking local filesystem paths in exception messages
@@ -411,6 +428,10 @@ final class McpTransport
             'Accept: application/json, text/event-stream',
         ], $this->buildHttpHeaders());
 
+        if ($this->protocolVersion !== null) {
+            $headers[] = 'MCP-Protocol-Version: '.$this->protocolVersion;
+        }
+
         if ($this->httpSessionId !== null) {
             $headers[] = 'Mcp-Session-Id: '.$this->httpSessionId;
         }
@@ -448,7 +469,7 @@ final class McpTransport
             throw McpConnectionException::application('MCP server authentication required (401)', 401);
         }
 
-        if ($httpCode === 404) {
+        if ($httpCode === 404 && $this->httpSessionId !== null) {
             // Session expired — retry once with a fresh session
             $this->httpSessionId = null;
             $headers = array_filter($headers, fn ($h) => ! str_starts_with($h, 'Mcp-Session-Id:'));
@@ -465,10 +486,12 @@ final class McpTransport
             $rawResponse = curl_exec($ch2);
             $httpCode = curl_getinfo($ch2, CURLINFO_HTTP_CODE);
             $headerSize = curl_getinfo($ch2, CURLINFO_HEADER_SIZE);
+            $curlError = curl_error($ch2);
             curl_close($ch2);
 
             if ($rawResponse === false || ($httpCode < 200 || $httpCode >= 300)) {
-                throw McpConnectionException::transport('MCP session expired and retry failed (404)', 404);
+                $reason = $rawResponse === false ? $curlError : "HTTP {$httpCode}";
+                throw McpConnectionException::transport("MCP session expired and retry failed: {$reason}", 404);
             }
 
             $responseHeaders = substr($rawResponse, 0, $headerSize);
@@ -519,7 +542,12 @@ final class McpTransport
 
         $headers = array_merge([
             'Content-Type: application/json',
+            'Accept: application/json, text/event-stream',
         ], $this->buildHttpHeaders());
+
+        if ($this->protocolVersion !== null) {
+            $headers[] = 'MCP-Protocol-Version: '.$this->protocolVersion;
+        }
 
         if ($this->httpSessionId !== null) {
             $headers[] = 'Mcp-Session-Id: '.$this->httpSessionId;
@@ -534,8 +562,17 @@ final class McpTransport
             CURLOPT_TIMEOUT => 5,
         ]);
 
-        curl_exec($ch);
+        $response = curl_exec($ch);
+        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+        $curlError = curl_error($ch);
         curl_close($ch);
+
+        if ($response === false) {
+            throw McpConnectionException::transport("HTTP notification failed: {$curlError}");
+        }
+        if ($httpCode < 200 || $httpCode >= 300) {
+            throw McpConnectionException::transport("MCP HTTP notification error {$httpCode}", $httpCode);
+        }
     }
 
     /**
@@ -559,12 +596,16 @@ final class McpTransport
         $events = preg_split('/\r?\n\r?\n/', $body);
 
         foreach ($events as $event) {
-            $data = '';
+            $dataLines = [];
             foreach (explode("\n", $event) as $line) {
-                if (str_starts_with($line, 'data: ')) {
-                    $data .= substr($line, 6);
+                $line = rtrim($line, "\r");
+                if (str_starts_with($line, 'data:')) {
+                    $value = substr($line, 5);
+                    $dataLines[] = str_starts_with($value, ' ') ? substr($value, 1) : $value;
                 }
             }
+
+            $data = implode("\n", $dataLines);
 
             if ($data === '') {
                 continue;
@@ -625,5 +666,24 @@ final class McpTransport
         }
 
         return round($bytes / 1024, 0).'KB';
+    }
+
+    /**
+     * Pass only process-launch essentials plus variables explicitly configured
+     * for this MCP server. Host credentials are not inherited implicitly.
+     *
+     * @return array<string, string>
+     */
+    private function buildStdioEnvironment(): array
+    {
+        $environment = [];
+        foreach (self::STDIO_ENV_ALLOWLIST as $name) {
+            $value = getenv($name);
+            if ($value !== false) {
+                $environment[$name] = $value;
+            }
+        }
+
+        return array_merge($environment, $this->env);
     }
 }

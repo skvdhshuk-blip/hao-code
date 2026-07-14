@@ -2,7 +2,7 @@
 
 Use hao-code as a framework-free PHP library to embed an AI coding agent in your application.
 
-This document describes the current `v1.8.0` source release.
+This document describes the current `v1.9.1` source release.
 
 ```bash
 composer require sk-wang/hao-code
@@ -35,6 +35,7 @@ in the selected provider entry in `~/.haocode/settings.json`.
 - [HaoCodeConfig Reference](#haocodeconfig-reference)
 - [Sandbox Runtime](#sandbox-runtime)
 - [QueryResult](#queryresult)
+- [MCP Tools](#mcp-tools)
 - [Custom Tools (SdkTool)](#custom-tools-sdktool)
 - [Custom Skills (SdkSkill)](#custom-skills-sdkskill)
 - [Streaming Messages](#streaming-messages)
@@ -639,6 +640,66 @@ $result->outputTokens();         // int
 ```
 
 ---
+
+## MCP Tools
+
+MCP server definitions are loaded from `~/.haocode/settings.json` and from the
+`.haocode/settings.json` under `HaoCodeConfig::cwd`. A project definition with
+the same name overrides its global definition.
+
+Context7 example:
+
+```json
+{
+  "mcp_servers": {
+    "context7": {
+      "transport": "http",
+      "url": "https://mcp.context7.com/mcp",
+      "enabled": true
+    }
+  }
+}
+```
+
+Server and tool punctuation is normalized to underscores in the Agent-facing
+name. Enable the tools needed by the run:
+
+```php
+use HaoCode\Sdk\HaoCode;
+use HaoCode\Sdk\HaoCodeConfig;
+
+$result = HaoCode::query('Look up the current Symfony Process API with Context7', new HaoCodeConfig(
+    cwd: __DIR__,
+    allowedTools: [
+        'mcp__context7__resolve_library_id',
+        'mcp__context7__query_docs',
+    ],
+));
+```
+
+MCP connections belong to the isolated SDK run and are closed with it. No MCP
+server is started or contacted when `allowedTools` does not enable an MCP tool.
+With a sandbox active, the wildcard `allowedTools: ['*']` does not implicitly
+enable host-side MCP servers; list each required `mcp__...` tool explicitly.
+For stdio servers, Hao Code passes only basic launch variables (`PATH`, `HOME`,
+temporary-directory and locale variables) plus the server's explicit `env` map.
+Configure required credentials explicitly:
+
+```json
+{
+  "mcp_servers": {
+    "private-server": {
+      "transport": "stdio",
+      "command": "node",
+      "args": ["server.js"],
+      "env": {"PRIVATE_SERVER_TOKEN": "replace-at-deploy-time"}
+    }
+  }
+}
+```
+
+Avoid committing real credentials in project settings; prefer a protected
+global settings file or generate the configuration during deployment.
 
 ## Custom Tools (SdkTool)
 

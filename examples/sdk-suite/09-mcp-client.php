@@ -20,7 +20,7 @@ $mgr = app(McpConnectionManager::class);
 $mgr->connectAll(fn ($n, $s) => print("  MCP {$n}: {$s}\n"));
 $tools = $mgr->discoverAllTools();
 echo "MCP tools (".count($tools)."):\n";
-foreach (array_slice($tools, 0, 5) as $t) echo "  - {$t['name']}\n";
+foreach (array_slice($tools, 0, 5) as $t) echo "  - {$t['qualifiedName']}\n";
 
 $mgr->disconnectAll();
 $cfg->removeServer('demo-fs', 'project');

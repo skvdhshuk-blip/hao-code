@@ -9,15 +9,15 @@ use HaoCode\Services\Mcp\McpConnectionException;
 use HaoCode\Services\Mcp\McpConnectionManager;
 use HaoCode\Services\Mcp\McpServerConfigManager;
 use HaoCode\Services\Mcp\McpTransport;
+use PHPUnit\Framework\Attributes\Group;
 use PHPUnit\Framework\TestCase;
 
 /**
  * Unit tests for MCP client gap-fill (PR B):
  * P0: roots/list, prompts, reconnect, notifications
  * P1: ping, logging, completion, list_changed, timeout, error classify, stderr
- *
- * @group mcp-client
  */
+#[Group('mcp-client')]
 class ClientTest extends TestCase
 {
     // ─── McpConnectionException error types ─────────────────────────────
@@ -123,6 +123,19 @@ class ClientTest extends TestCase
 
         $this->assertTrue($clientWith->supportsPrompts());
         $this->assertFalse($clientWithout->supportsPrompts());
+    }
+
+    public function test_empty_capability_objects_are_still_supported(): void
+    {
+        $client = $this->makeInitializedClient(capabilities: [
+            'tools' => [],
+            'resources' => [],
+            'prompts' => [],
+        ]);
+
+        $this->assertTrue($client->supportsTools());
+        $this->assertTrue($client->supportsResources());
+        $this->assertTrue($client->supportsPrompts());
     }
 
     // ─── McpClient: roots ───────────────────────────────────────────────
@@ -302,22 +315,16 @@ class ClientTest extends TestCase
         $this->assertStringNotContainsString('/Users/alice/projects/secret', $result);
     }
 
-    // ─── Filesystem server smoke test (skipped without npm) ─────────────
+    // ─── Filesystem server smoke test (explicit opt-in) ─────────────────
 
-    /**
-     * @group mcp-filesystem
-     */
+    #[Group('mcp-filesystem')]
     public function test_filesystem_server_initialize(): void
     {
-        $npx = trim((string) shell_exec('which npx 2>/dev/null'));
-        if (empty($npx)) {
-            $this->markTestSkipped('npx not available — skipping real filesystem MCP server smoke test');
-        }
-
-        // Check package is cached/installed (don't trigger a network download in CI)
-        $checkOutput = (string) shell_exec('npx --no-install @modelcontextprotocol/server-filesystem --help 2>&1');
-        if (str_contains($checkOutput, 'loader') || str_contains($checkOutput, 'ERR_') || str_contains($checkOutput, 'Cannot find')) {
-            $this->markTestSkipped('@modelcontextprotocol/server-filesystem not installed — skipping smoke test');
+        $serverCommand = getenv('HAOCODE_MCP_FILESYSTEM_COMMAND');
+        if (! is_string($serverCommand) || trim($serverCommand) === '') {
+            $this->markTestSkipped(
+                'Set HAOCODE_MCP_FILESYSTEM_COMMAND to an installed mcp-server-filesystem executable'
+            );
         }
 
         $tmpDir = sys_get_temp_dir().'/mcp-fs-test-'.bin2hex(random_bytes(4));
@@ -327,8 +334,8 @@ class ClientTest extends TestCase
         try {
             $transport = McpTransport::fromConfig([
                 'transport' => 'stdio',
-                'command' => $npx,
-                'args' => ['-y', '@modelcontextprotocol/server-filesystem', $tmpDir],
+                'command' => $serverCommand,
+                'args' => [$tmpDir],
                 'url' => null,
                 'env' => [],
                 'headers' => [],

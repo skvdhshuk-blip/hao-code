@@ -401,6 +401,42 @@ $result = HaoCode::structured('Classify: "payment failed"', [
 echo $result->category;
 ```
 
+## MCP Tools
+
+Define MCP servers in `<cwd>/.haocode/settings.json` (or globally in
+`~/.haocode/settings.json`). For example, Context7 uses Streamable HTTP:
+
+```json
+{
+  "mcp_servers": {
+    "context7": {
+      "transport": "http",
+      "url": "https://mcp.context7.com/mcp",
+      "enabled": true
+    }
+  }
+}
+```
+
+Enable the discovered, normalized tool names explicitly for the SDK run:
+
+```php
+$result = HaoCode::query('Use Context7 to find the current Symfony Process API', new HaoCodeConfig(
+    cwd: __DIR__,
+    allowedTools: [
+        'mcp__context7__resolve_library_id',
+        'mcp__context7__query_docs',
+    ],
+));
+```
+
+Hao Code connects only when the run allows MCP tools, registers them for that
+run, and disconnects when the run closes. Stdio servers inherit only basic
+process-launch variables such as `PATH` and `HOME`; pass required credentials
+through that server's explicit `env` map instead of relying on host inheritance.
+When a sandbox is active, `allowedTools: ['*']` does not enable host-side MCP
+servers; list the required `mcp__...` tools explicitly.
+
 ## Custom Tools
 
 Define domain-specific PHP tools by extending `SdkTool`:
@@ -541,7 +577,7 @@ $config = new HaoCodeConfig(
 
 ## Version
 
-The current release is `v1.8.0`. It makes `HaoCodeConfig` safe by default and
+The current release is `v1.9.1`. It makes `HaoCodeConfig` safe by default and
 requires tools, permission bypass, and durable storage to be enabled explicitly.
 It also preserves durable session continuation and requires the original config
 when resuming a human-interrupt checkpoint so tool and sandbox boundaries cannot

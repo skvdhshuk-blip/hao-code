@@ -4,6 +4,10 @@ namespace HaoCode\Services\Mcp;
 
 class McpServerConfigManager
 {
+    public function __construct(
+        private readonly ?string $workingDirectory = null,
+    ) {}
+
     /**
      * @return array{global: string, project: string}
      */
@@ -13,7 +17,7 @@ class McpServerConfigManager
 
         return [
             'global' => \HaoCode\Support\Runtime\SdkRuntime::config('haocode.global_settings_path') ?: $home.'/.haocode/settings.json',
-            'project' => getcwd().'/.haocode/settings.json',
+            'project' => rtrim($this->workingDirectory ?? (getcwd() ?: '/'), '/').'/.haocode/settings.json',
         ];
     }
 
@@ -28,7 +32,8 @@ class McpServerConfigManager
      *     args: array<int, string>,
      *     url: ?string,
      *     env: array<string, string>,
-     *     headers: array<string, string>
+     *     headers: array<string, string>,
+     *     cwd: string
      * }>
      */
     public function listServers(): array
@@ -57,7 +62,8 @@ class McpServerConfigManager
      *     args: array<int, string>,
      *     url: ?string,
      *     env: array<string, string>,
-     *     headers: array<string, string>
+     *     headers: array<string, string>,
+     *     cwd: string
      * }|null
      */
     public function getServer(string $name): ?array
@@ -187,11 +193,15 @@ class McpServerConfigManager
     private function writeSettingsFile(string $path, array $settings): void
     {
         $dir = dirname($path);
-        if (! is_dir($dir)) {
-            mkdir($dir, 0755, true);
+        if (! is_dir($dir) && ! mkdir($dir, 0755, true) && ! is_dir($dir)) {
+            throw new \RuntimeException("Failed to create MCP settings directory: {$dir}");
         }
 
-        file_put_contents($path, json_encode($settings, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
+        $json = json_encode($settings, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)."\n";
+        if (file_put_contents($path, $json, LOCK_EX) === false) {
+            throw new \RuntimeException("Failed to write MCP settings file: {$path}");
+        }
+        @chmod($path, 0600);
     }
 
     /**
@@ -206,7 +216,8 @@ class McpServerConfigManager
      *     args: array<int, string>,
      *     url: ?string,
      *     env: array<string, string>,
-     *     headers: array<string, string>
+     *     headers: array<string, string>,
+     *     cwd: string
      * }
      */
     private function normalizeServerDefinition(string $name, array $definition, string $scope, string $path): array
@@ -226,6 +237,7 @@ class McpServerConfigManager
             'url' => is_string($definition['url'] ?? null) ? $definition['url'] : null,
             'env' => $this->normalizeStringMap($definition['env'] ?? []),
             'headers' => $this->normalizeStringMap($definition['headers'] ?? []),
+            'cwd' => $this->workingDirectory ?? (getcwd() ?: '/'),
         ];
     }
 

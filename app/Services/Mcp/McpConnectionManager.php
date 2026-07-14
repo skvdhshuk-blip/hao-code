@@ -92,9 +92,14 @@ final class McpConnectionManager
             throw new McpConnectionException("MCP server '{$name}' is disabled");
         }
 
-        $client = $this->connectServer($server);
-        $this->clients[$name] = $client;
-        unset($this->failures[$name]);
+        try {
+            $client = $this->connectServer($server);
+            $this->clients[$name] = $client;
+            unset($this->failures[$name]);
+        } catch (McpConnectionException $e) {
+            $this->failures[$name] = $e;
+            throw $e;
+        }
 
         return $client;
     }
@@ -225,8 +230,9 @@ final class McpConnectionManager
                         'annotations' => $tool['annotations'] ?? [],
                     ];
                 }
-            } catch (McpConnectionException) {
-                // Skip servers that fail tool discovery
+                unset($this->failures[$serverName]);
+            } catch (McpConnectionException $e) {
+                $this->failures[$serverName] = $e;
             }
         }
 
@@ -253,8 +259,9 @@ final class McpConnectionManager
                     $resource['server'] = $serverName;
                     $allResources[] = $resource;
                 }
-            } catch (McpConnectionException) {
-                // Skip servers that fail resource discovery
+                unset($this->failures[$serverName]);
+            } catch (McpConnectionException $e) {
+                $this->failures[$serverName] = $e;
             }
         }
 
@@ -281,8 +288,9 @@ final class McpConnectionManager
                     $prompt['server'] = $serverName;
                     $allPrompts[] = $prompt;
                 }
-            } catch (McpConnectionException) {
-                // Skip servers that fail prompt discovery
+                unset($this->failures[$serverName]);
+            } catch (McpConnectionException $e) {
+                $this->failures[$serverName] = $e;
             }
         }
 
@@ -353,7 +361,7 @@ final class McpConnectionManager
     }
 
     /**
-     * @param  array{name: string, transport: string, command: ?string, args: array, url: ?string, env: array, headers: array}  $serverConfig
+     * @param  array{name: string, transport: string, command: ?string, args: array, url: ?string, env: array, headers: array, cwd?: string}  $serverConfig
      *
      * @throws McpConnectionException
      */

@@ -11,6 +11,16 @@ use OpenTelemetry\API\Trace\SpanInterface;
  */
 final class McpClient
 {
+    private const LATEST_PROTOCOL_VERSION = '2025-11-25';
+
+    private const SUPPORTED_PROTOCOL_VERSIONS = [
+        '2025-11-25',
+        '2025-06-18',
+        '2025-03-26',
+        '2024-11-05',
+        '2024-10-07',
+    ];
+
     private bool $initialized = false;
 
     /** @var array<string, mixed>|null Server capabilities from initialize response */
@@ -96,13 +106,13 @@ final class McpClient
             });
 
             $result = $this->transport->request('initialize', [
-                'protocolVersion' => '2024-11-05',
+                'protocolVersion' => self::LATEST_PROTOCOL_VERSION,
                 'capabilities' => [
                     'roots' => ['listChanged' => true],
                 ],
                 'clientInfo' => [
                     'name' => 'hao-code',
-                    'version' => '1.0.0',
+                    'version' => (string) \HaoCode\Support\Runtime\SdkRuntime::environment('HAO_CODE_VERSION', 'dev'),
                 ],
             ], $timeoutSeconds);
 
@@ -110,13 +120,16 @@ final class McpClient
                 throw new McpConnectionException("Invalid initialize response from {$this->serverName}");
             }
 
-            // Protocol version fail-fast: reject mismatched versions
+            // Accept protocol versions implemented by the current client.
             $serverVersion = $result['protocolVersion'] ?? null;
-            if ($serverVersion !== null && $serverVersion !== '2024-11-05') {
+            if (! is_string($serverVersion) || ! in_array($serverVersion, self::SUPPORTED_PROTOCOL_VERSIONS, true)) {
+                $received = is_scalar($serverVersion) ? (string) $serverVersion : 'missing';
                 throw McpConnectionException::protocol(
-                    "Protocol version mismatch: expected 2024-11-05, got {$serverVersion} from {$this->serverName}"
+                    "Unsupported protocol version {$received} from {$this->serverName}"
                 );
             }
+
+            $this->transport->setProtocolVersion($serverVersion);
 
             $this->capabilities = $result['capabilities'] ?? [];
             $this->serverInfo = $result['serverInfo'] ?? null;
@@ -139,6 +152,7 @@ final class McpClient
             });
         } catch (\Throwable $e) {
             $this->tracer?->recordException($span, $e);
+            $this->transport->close();
             throw $e;
         } finally {
             $span?->end();
@@ -150,7 +164,7 @@ final class McpClient
      */
     public function supportsTools(): bool
     {
-        return ! empty($this->capabilities['tools']);
+        return $this->capabilities !== null && array_key_exists('tools', $this->capabilities);
     }
 
     /**
@@ -158,7 +172,7 @@ final class McpClient
      */
     public function supportsResources(): bool
     {
-        return ! empty($this->capabilities['resources']);
+        return $this->capabilities !== null && array_key_exists('resources', $this->capabilities);
     }
 
     /**
@@ -166,7 +180,7 @@ final class McpClient
      */
     public function supportsPrompts(): bool
     {
-        return ! empty($this->capabilities['prompts']);
+        return $this->capabilities !== null && array_key_exists('prompts', $this->capabilities);
     }
 
     /**

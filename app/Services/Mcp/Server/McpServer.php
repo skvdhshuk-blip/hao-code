@@ -5,10 +5,10 @@ namespace HaoCode\Services\Mcp\Server;
 use HaoCode\Services\Telemetry\PhoenixTracer;
 
 /**
- * Minimal MCP server: stdio JSON-RPC 2.0 with LSP-style framing.
+ * Minimal MCP server: stdio JSON-RPC 2.0 with newline-delimited messages.
  *
  * Handles: initialize / tools/list / tools/call / prompts/list / prompts/get / shutdown / exit
- * Frame format: Content-Length: N\r\n\r\n<JSON>
+ * Frame format: one JSON-RPC message per line.
  * Hard limit: 1 MiB per frame.
  */
 class McpServer
@@ -135,53 +135,25 @@ class McpServer
 
     private function readFrame(): ?string
     {
-        $contentLength = null;
-
         while (true) {
             $line = $this->readLine();
             if ($line === null) {
                 return null;
             }
-            $line = rtrim($line, "\r\n");
+            $line = trim($line);
             if ($line === '') {
-                // blank line = end of headers
-                if ($contentLength === null) {
-                    continue;
-                }
-                break;
-            }
-            if (stripos($line, 'Content-Length:') === 0) {
-                $contentLength = (int) trim(substr($line, 15));
-                if ($contentLength > self::MAX_FRAME_BYTES) {
-                    fwrite(STDERR, "MCP frame exceeds 1 MiB limit; closing\n");
-                    $this->running = false;
-
-                    return null;
-                }
-            }
-        }
-
-        if ($contentLength === null || $contentLength <= 0) {
-            return null;
-        }
-
-        // Body may already be partially or fully in $this->readBuffer
-        while (strlen($this->readBuffer) < $contentLength) {
-            $chunk = fread(STDIN, $contentLength - strlen($this->readBuffer));
-            if ($chunk === false || $chunk === '') {
-                if (feof(STDIN)) {
-                    return null;
-                }
-
                 continue;
             }
-            $this->readBuffer .= $chunk;
+
+            if (strlen($line) > self::MAX_FRAME_BYTES) {
+                fwrite(STDERR, "MCP message exceeds 1 MiB limit; closing\n");
+                $this->running = false;
+
+                return null;
+            }
+
+            return $line;
         }
-
-        $body = substr($this->readBuffer, 0, $contentLength);
-        $this->readBuffer = substr($this->readBuffer, $contentLength);
-
-        return $body;
     }
 
     private function readLine(): ?string
@@ -203,6 +175,12 @@ class McpServer
                 continue;
             }
             $this->readBuffer .= $data;
+            if (strlen($this->readBuffer) > self::MAX_FRAME_BYTES) {
+                fwrite(STDERR, "MCP message exceeds 1 MiB limit; closing\n");
+                $this->running = false;
+
+                return null;
+            }
         }
     }
 
@@ -322,7 +300,7 @@ class McpServer
 
     private function writeFrame(string $json): void
     {
-        $len = strlen($json);
-        fwrite(STDOUT, "Content-Length: {$len}\r\n\r\n{$json}");
+        fwrite(STDOUT, $json."\n");
+        fflush(STDOUT);
     }
 }

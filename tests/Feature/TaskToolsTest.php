@@ -157,14 +157,17 @@ class TaskToolsTest extends TestCase
 
     public function test_get_tool_includes_background_agent_metadata(): void
     {
+        $pid = getmypid();
+        $this->assertNotFalse($pid);
+
         $task = $this->manager->createWithId('agent_demo', 'Repo agent', 'Running');
-        $this->backgroundAgentManager->create('agent_demo', 'Inspect repo', 'Explore', 'Repo agent', 4321);
+        $this->backgroundAgentManager->create('agent_demo', 'Inspect repo', 'Explore', 'Repo agent', $pid);
         $this->backgroundAgentManager->markRunning('agent_demo');
 
         $result = (new TaskGetTool)->call(['id' => $task->id], $this->context);
 
         $this->assertStringContainsString('Agent status: running', $result->output);
-        $this->assertStringContainsString('PID: 4321', $result->output);
+        $this->assertStringContainsString("PID: {$pid}", $result->output);
         $this->assertStringContainsString('Pending messages: 0', $result->output);
     }
 

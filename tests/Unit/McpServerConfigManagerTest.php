@@ -106,4 +106,28 @@ class McpServerConfigManagerTest extends TestCase
         $this->assertSame(1, $removed);
         $this->assertNull($manager->getServer('global-only'));
     }
+
+    public function test_explicit_working_directory_controls_project_settings_path(): void
+    {
+        $otherProject = $this->tmpDir.'/other-project';
+        mkdir($otherProject, 0755, true);
+        $manager = new McpServerConfigManager($otherProject);
+
+        $manager->addServer('other', [
+            'transport' => 'http',
+            'url' => 'https://example.test/mcp',
+        ]);
+
+        $this->assertFileExists($otherProject.'/.haocode/settings.json');
+        if (PHP_OS_FAMILY !== 'Windows') {
+            $this->assertSame(
+                0600,
+                fileperms($otherProject.'/.haocode/settings.json') & 0777,
+            );
+        }
+
+        @unlink($otherProject.'/.haocode/settings.json');
+        @rmdir($otherProject.'/.haocode');
+        @rmdir($otherProject);
+    }
 }

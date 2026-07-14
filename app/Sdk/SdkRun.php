@@ -3,6 +3,7 @@
 namespace HaoCode\Sdk;
 
 use HaoCode\Services\Agent\AgentLoop;
+use HaoCode\Services\Mcp\McpConnectionManager;
 use HaoCode\Sdk\Sandbox\SandboxRuntime;
 
 /** @internal */
@@ -13,6 +14,7 @@ final class SdkRun
     public function __construct(
         public readonly AgentLoop $loop,
         private readonly ?SandboxRuntime $sandboxRuntime = null,
+        private readonly ?McpConnectionManager $mcpConnectionManager = null,
     ) {}
 
     public function close(): void
@@ -21,7 +23,14 @@ final class SdkRun
             return;
         }
 
-        $this->sandboxRuntime?->close();
-        $this->closed = true;
+        try {
+            $this->sandboxRuntime?->close();
+        } finally {
+            try {
+                $this->mcpConnectionManager?->disconnectAll();
+            } finally {
+                $this->closed = true;
+            }
+        }
     }
 }
