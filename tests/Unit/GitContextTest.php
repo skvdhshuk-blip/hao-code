@@ -107,6 +107,18 @@ class GitContextTest extends TestCase
         $this->assertSame('', $ctx->getDiffContext());
     }
 
+    public function test_get_diff_context_empty_in_real_non_git_directory(): void
+    {
+        $directory = sys_get_temp_dir().'/haocode_non_git_'.uniqid('', true);
+        mkdir($directory, 0755, true);
+
+        try {
+            $this->assertSame('', (new GitContext($directory))->getDiffContext());
+        } finally {
+            rmdir($directory);
+        }
+    }
+
     public function test_get_diff_context_reports_untracked_files_as_dirty(): void
     {
         $directory = sys_get_temp_dir().'/haocode_git_context_'.uniqid('', true);
@@ -130,6 +142,125 @@ class GitContextTest extends TestCase
             }
             rmdir($directory.'/.git');
             rmdir($directory);
+        }
+    }
+
+    public function test_untracked_only_changes_do_not_build_expensive_diff(): void
+    {
+        $directory = $this->createGitRepository('untracked_only');
+        file_put_contents($directory.'/untracked.txt', 'local work');
+
+        try {
+            $context = $this->getMockBuilder(GitContext::class)
+                ->setConstructorArgs([$directory])
+                ->onlyMethods(['getWorkingTreeDiff'])
+                ->getMock();
+            $context->expects($this->never())->method('getWorkingTreeDiff');
+
+            $result = $context->getDiffContext();
+
+            $this->assertStringContainsString('?? untracked.txt', $result);
+        } finally {
+            $this->removeDirectory($directory);
+        }
+    }
+
+    public function test_tracked_working_tree_states_still_build_diff(): void
+    {
+        $directory = $this->createGitRepository('tracked_states');
+        file_put_contents($directory.'/modified.txt', 'original');
+        file_put_contents($directory.'/staged.txt', 'original');
+        file_put_contents($directory.'/rename-before.txt', 'original');
+        file_put_contents($directory.'/deleted.txt', 'original');
+        exec('git -C '.escapeshellarg($directory).' add .');
+        exec('git -C '.escapeshellarg($directory).' commit -qm fixture');
+
+        file_put_contents($directory.'/modified.txt', 'modified');
+        file_put_contents($directory.'/staged.txt', 'staged');
+        exec('git -C '.escapeshellarg($directory).' add staged.txt');
+        exec('git -C '.escapeshellarg($directory).' mv rename-before.txt rename-after.txt');
+        unlink($directory.'/deleted.txt');
+
+        try {
+            $context = $this->getMockBuilder(GitContext::class)
+                ->setConstructorArgs([$directory])
+                ->onlyMethods(['getWorkingTreeDiff'])
+                ->getMock();
+            $context->expects($this->once())
+                ->method('getWorkingTreeDiff')
+                ->willReturn('tracked diff sentinel');
+
+            $result = $context->getDiffContext();
+
+            $this->assertStringContainsString('modified.txt', $result);
+            $this->assertStringContainsString('staged.txt', $result);
+            $this->assertStringContainsString('rename-before.txt -> rename-after.txt', $result);
+            $this->assertStringContainsString('deleted.txt', $result);
+            $this->assertStringContainsString('tracked diff sentinel', $result);
+        } finally {
+            $this->removeDirectory($directory);
+        }
+    }
+
+    public function test_conflicted_file_still_builds_diff(): void
+    {
+        $directory = $this->createGitRepository('conflict');
+        file_put_contents($directory.'/conflict.txt', "base\n");
+        exec('git -C '.escapeshellarg($directory).' add conflict.txt');
+        exec('git -C '.escapeshellarg($directory).' commit -qm base');
+        exec('git -C '.escapeshellarg($directory).' checkout -qb feature');
+        file_put_contents($directory.'/conflict.txt', "feature\n");
+        exec('git -C '.escapeshellarg($directory).' commit -qam feature');
+        exec('git -C '.escapeshellarg($directory).' checkout -q main');
+        file_put_contents($directory.'/conflict.txt', "main\n");
+        exec('git -C '.escapeshellarg($directory).' commit -qam main');
+        exec('git -C '.escapeshellarg($directory).' merge feature >/dev/null 2>&1');
+
+        try {
+            $context = $this->getMockBuilder(GitContext::class)
+                ->setConstructorArgs([$directory])
+                ->onlyMethods(['getWorkingTreeDiff'])
+                ->getMock();
+            $context->expects($this->once())
+                ->method('getWorkingTreeDiff')
+                ->willReturn('conflict diff sentinel');
+
+            $result = $context->getDiffContext();
+
+            $this->assertStringContainsString('UU conflict.txt', $result);
+            $this->assertStringContainsString('conflict diff sentinel', $result);
+        } finally {
+            $this->removeDirectory($directory);
+        }
+    }
+
+    public function test_tracked_changes_are_detected_when_status_exceeds_display_limit(): void
+    {
+        $directory = $this->createGitRepository('large_status');
+        file_put_contents($directory.'/tracked.txt', 'original');
+        exec('git -C '.escapeshellarg($directory).' add tracked.txt');
+        exec('git -C '.escapeshellarg($directory).' commit -qm fixture');
+
+        for ($index = 0; $index < 101; $index++) {
+            file_put_contents($directory.'/untracked-'.str_pad((string) $index, 3, '0', STR_PAD_LEFT).'.txt', 'fixture');
+        }
+        file_put_contents($directory.'/tracked.txt', 'modified');
+
+        try {
+            $context = $this->getMockBuilder(GitContext::class)
+                ->setConstructorArgs([$directory])
+                ->onlyMethods(['getWorkingTreeDiff'])
+                ->getMock();
+            $context->expects($this->once())
+                ->method('getWorkingTreeDiff')
+                ->willReturn('large status diff sentinel');
+
+            $result = $context->getDiffContext();
+
+            $this->assertStringContainsString('large status diff sentinel', $result);
+            $this->assertStringNotContainsString('untracked-100.txt', $result);
+        } finally {
+            $this->removeDirectory($directory);
         }
     }
 
@@ -178,5 +309,92 @@ class GitContextTest extends TestCase
         $branch = $ctx->getDefaultBranch();
         $this->assertIsString($branch);
         // May be empty if remote HEAD isn't set
+    }
+
+    public function test_snapshot_cache_is_scoped_and_refreshes_after_it_ends(): void
+    {
+        $directory = sys_get_temp_dir().'/haocode_git_snapshot_'.uniqid('', true);
+        mkdir($directory, 0755, true);
+        exec('git -C '.escapeshellarg($directory).' init -q -b main');
+        exec('git -C '.escapeshellarg($directory).' config user.email test@example.com');
+        exec('git -C '.escapeshellarg($directory).' config user.name Test');
+        file_put_contents($directory.'/tracked.txt', 'fixture');
+        exec('git -C '.escapeshellarg($directory).' add tracked.txt');
+        exec('git -C '.escapeshellarg($directory).' commit -qm initial');
+
+        try {
+            $context = new GitContext($directory);
+            $context->beginSnapshot();
+            $this->assertSame('main', $context->getCurrentBranch());
+
+            exec('git -C '.escapeshellarg($directory).' checkout -qb changed');
+
+            $this->assertSame('main', $context->getCurrentBranch());
+            $context->endSnapshot();
+            $this->assertSame('changed', $context->getCurrentBranch());
+        } finally {
+            $iterator = new \RecursiveIteratorIterator(
+                new \RecursiveDirectoryIterator($directory, \FilesystemIterator::SKIP_DOTS),
+                \RecursiveIteratorIterator::CHILD_FIRST,
+            );
+            foreach ($iterator as $item) {
+                $item->isDir() ? rmdir($item->getPathname()) : unlink($item->getPathname());
+            }
+            rmdir($directory);
+        }
+    }
+
+    public function test_nested_snapshot_remains_cached_until_outer_snapshot_ends(): void
+    {
+        $directory = $this->createGitRepository('nested_snapshot');
+
+        try {
+            $context = new GitContext($directory);
+            $context->beginSnapshot();
+            $context->beginSnapshot();
+            $this->assertSame('main', $context->getCurrentBranch());
+
+            exec('git -C '.escapeshellarg($directory).' checkout -qb changed');
+
+            $context->endSnapshot();
+            $this->assertSame('main', $context->getCurrentBranch());
+            $context->endSnapshot();
+            $this->assertSame('changed', $context->getCurrentBranch());
+
+            // Extra cleanup calls must be harmless and must not re-enable caching.
+            $context->endSnapshot();
+            exec('git -C '.escapeshellarg($directory).' checkout -qb refreshed');
+            $this->assertSame('refreshed', $context->getCurrentBranch());
+        } finally {
+            $this->removeDirectory($directory);
+        }
+    }
+
+    private function createGitRepository(string $suffix): string
+    {
+        $directory = sys_get_temp_dir().'/haocode_git_'.$suffix.'_'.uniqid('', true);
+        mkdir($directory, 0755, true);
+        exec('git -C '.escapeshellarg($directory).' init -q -b main');
+        exec('git -C '.escapeshellarg($directory).' config user.email test@example.com');
+        exec('git -C '.escapeshellarg($directory).' config user.name Test');
+        exec('git -C '.escapeshellarg($directory).' commit --allow-empty -qm initial');
+
+        return $directory;
+    }
+
+    private function removeDirectory(string $directory): void
+    {
+        if (! is_dir($directory)) {
+            return;
+        }
+
+        $iterator = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($directory, \FilesystemIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::CHILD_FIRST,
+        );
+        foreach ($iterator as $item) {
+            $item->isDir() ? rmdir($item->getPathname()) : unlink($item->getPathname());
+        }
+        rmdir($directory);
     }
 }

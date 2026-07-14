@@ -130,4 +130,29 @@ class McpServerConfigManagerTest extends TestCase
         @rmdir($otherProject.'/.haocode');
         @rmdir($otherProject);
     }
+
+    public function test_oauth_config_keeps_only_supported_non_secret_settings(): void
+    {
+        $manager = new McpServerConfigManager;
+        $manager->addServer('oauth-server', [
+            'transport' => 'http',
+            'url' => 'https://example.test/mcp',
+            'oauth' => [
+                'token_endpoint' => 'https://auth.example.test/token',
+                'client_id' => 'hao-code',
+                'client_secret_env' => 'MCP_CLIENT_SECRET',
+                'access_token_env' => 'MCP_ACCESS_TOKEN',
+                'unexpected_secret' => 'must-not-be-normalized',
+            ],
+        ]);
+
+        $server = $manager->getServer('oauth-server');
+
+        $this->assertSame([
+            'token_endpoint' => 'https://auth.example.test/token',
+            'client_id' => 'hao-code',
+            'client_secret_env' => 'MCP_CLIENT_SECRET',
+            'access_token_env' => 'MCP_ACCESS_TOKEN',
+        ], $server['oauth']);
+    }
 }

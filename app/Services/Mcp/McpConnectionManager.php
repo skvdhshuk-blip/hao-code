@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace HaoCode\Services\Mcp;
 
 use HaoCode\Services\Telemetry\PhoenixTracer;
@@ -80,7 +82,11 @@ final class McpConnectionManager
     public function connectByName(string $name): McpClient
     {
         if (isset($this->clients[$name])) {
-            return $this->clients[$name];
+            if ($this->clients[$name]->isConnected()) {
+                return $this->clients[$name];
+            }
+
+            return $this->reconnect($name);
         }
 
         $server = $this->configManager->getServer($name);
@@ -194,6 +200,30 @@ final class McpConnectionManager
     public function getFailures(): array
     {
         return $this->failures;
+    }
+
+    /**
+     * Cooperatively process pending server-initiated MCP messages.
+     *
+     * The timeout is shared across all connected clients rather than applied to
+     * each client independently.
+     */
+    public function poll(float $timeoutSeconds = 0.0): void
+    {
+        $deadline = microtime(true) + max(0.0, $timeoutSeconds);
+
+        foreach ($this->clients as $serverName => $client) {
+            $remaining = $timeoutSeconds > 0.0
+                ? max(0.0, $deadline - microtime(true))
+                : 0.0;
+
+            try {
+                $client->poll($remaining);
+                unset($this->failures[$serverName]);
+            } catch (McpConnectionException $exception) {
+                $this->failures[$serverName] = $exception;
+            }
+        }
     }
 
     /**
@@ -361,7 +391,7 @@ final class McpConnectionManager
     }
 
     /**
-     * @param  array{name: string, transport: string, command: ?string, args: array, url: ?string, env: array, headers: array, cwd?: string}  $serverConfig
+     * @param  array{name: string, transport: string, command: ?string, args: array, url: ?string, env: array, headers: array, oauth?: array<string, string>, cwd?: string}  $serverConfig
      *
      * @throws McpConnectionException
      */

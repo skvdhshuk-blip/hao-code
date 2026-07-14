@@ -9,6 +9,9 @@ isolated runtime storage.
 
 For the complete SDK reference, see [docs/SDK.md](docs/SDK.md).
 
+Looking for a ready-to-use desktop application powered by HaoCode? See
+[Hao Work](https://github.com/skvdhshuk-blip/hao-work).
+
 ## Requirements
 
 - PHP `^8.1`
@@ -436,6 +439,37 @@ process-launch variables such as `PATH` and `HOME`; pass required credentials
 through that server's explicit `env` map instead of relying on host inheritance.
 When a sandbox is active, `allowedTools: ['*']` does not enable host-side MCP
 servers; list the required `mcp__...` tools explicitly.
+
+The `http` transport implements MCP Streamable HTTP `2025-11-25`: JSON and
+incremental SSE responses, server-initiated requests and notifications, the
+optional GET event stream, `Last-Event-ID` resumption, session re-initialization
+after HTTP 404, and best-effort DELETE on close. Static Bearer headers remain
+supported. For headless OAuth client-credentials or refresh-token flows, keep
+secrets in environment variables and reference only their names:
+
+```json
+{
+  "mcp_servers": {
+    "private-api": {
+      "transport": "http",
+      "url": "https://mcp.example.com/mcp",
+      "oauth": {
+        "token_endpoint": "https://auth.example.com/oauth/token",
+        "client_id": "hao-code",
+        "client_secret_env": "PRIVATE_MCP_CLIENT_SECRET",
+        "refresh_token_env": "PRIVATE_MCP_REFRESH_TOKEN",
+        "scope": "mcp:tools"
+      }
+    }
+  }
+}
+```
+
+`access_token_env` can provide an existing access token. On HTTP 401 Hao Code
+refreshes it once when the OAuth configuration contains enough credentials.
+Interactive browser authorization and dynamic client registration are not
+performed by the framework-free SDK; obtain those credentials in the host
+application and expose them through the configured environment variables.
 
 ## Custom Tools
 

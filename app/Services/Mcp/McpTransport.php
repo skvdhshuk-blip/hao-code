@@ -1,6 +1,12 @@
 <?php
 
+declare(strict_types=1);
+
 namespace HaoCode\Services\Mcp;
+
+use Symfony\Component\HttpClient\HttpClient;
+use Symfony\Contracts\HttpClient\HttpClientInterface;
+use Symfony\Contracts\HttpClient\ResponseInterface;
 
 /**
  * Transport layer for communicating with an MCP server via JSON-RPC 2.0.
@@ -28,6 +34,10 @@ final class McpTransport
     /** 4 MB read-buffer ceiling to prevent OOM from malicious servers */
     private const READ_BUFFER_MAX = 4 * 1024 * 1024;
 
+    private const SERVER_STREAM_TIMEOUT_SECONDS = 30;
+
+    private const SERVER_STREAM_MAX_DURATION_SECONDS = 86400;
+
     /** Environment variables safe to pass to stdio servers by default. */
     private const STDIO_ENV_ALLOWLIST = [
         'PATH', 'HOME', 'USER', 'LOGNAME', 'SHELL',
@@ -38,6 +48,24 @@ final class McpTransport
     private ?string $httpSessionId = null;
 
     private ?string $protocolVersion = null;
+
+    private HttpClientInterface $httpClient;
+
+    private ?McpOAuthTokenProvider $oauthTokenProvider;
+
+    private ?ResponseInterface $serverEventStream = null;
+
+    private ?McpSseDecoder $serverEventDecoder = null;
+
+    private ?string $serverLastEventId = null;
+
+    private int $serverRetryMilliseconds = 1000;
+
+    private float $serverReconnectAt = 0.0;
+
+    private bool $serverEventStreamSupported = true;
+
+    private bool $httpSessionExpired = false;
 
     /** @var array<string, callable[]> Registered notification handlers by method */
     private array $notificationHandlers = [];
@@ -53,14 +81,21 @@ final class McpTransport
         private readonly array $env,
         private readonly array $headers,
         private readonly ?string $workingDirectory,
-    ) {}
+        ?HttpClientInterface $httpClient,
+        array $oauth,
+    ) {
+        $this->httpClient = $httpClient ?? HttpClient::create();
+        $this->oauthTokenProvider = $oauth !== []
+            ? new McpOAuthTokenProvider($oauth, $this->httpClient)
+            : null;
+    }
 
     /**
      * Create a transport from a normalized server config array.
      *
-     * @param  array{transport: string, command: ?string, args: array, url: ?string, env: array, headers: array, cwd?: string}  $config
+     * @param  array{transport: string, command: ?string, args: array, url: ?string, env: array, headers: array, cwd?: string, oauth?: array<string, string>}  $config
      */
-    public static function fromConfig(array $config): self
+    public static function fromConfig(array $config, ?HttpClientInterface $httpClient = null): self
     {
         return new self(
             transport: $config['transport'],
@@ -70,6 +105,8 @@ final class McpTransport
             env: $config['env'] ?? [],
             headers: $config['headers'] ?? [],
             workingDirectory: $config['cwd'] ?? null,
+            httpClient: $httpClient,
+            oauth: $config['oauth'] ?? [],
         );
     }
 
@@ -113,7 +150,7 @@ final class McpTransport
     {
         match ($this->transport) {
             'stdio' => $this->connectStdio(),
-            'http', 'sse' => null, // HTTP transports are stateless per-request
+            'http', 'sse' => $this->resetHttpSession(),
             default => throw new McpConnectionException("Unsupported transport: {$this->transport}"),
         };
     }
@@ -127,6 +164,10 @@ final class McpTransport
      */
     public function request(string $method, array $params = [], int $timeoutSeconds = 60): mixed
     {
+        if ($this->httpSessionExpired) {
+            throw new McpSessionExpiredException;
+        }
+
         $id = $this->nextId++;
         $message = [
             'jsonrpc' => '2.0',
@@ -189,6 +230,11 @@ final class McpTransport
      */
     public function close(): void
     {
+        if (($this->transport === 'http' || $this->transport === 'sse') && $this->httpSessionId !== null) {
+            $this->closeHttpSession();
+        }
+        $this->cancelServerEventStream();
+
         if ($this->stdin !== null) {
             @fclose($this->stdin);
             $this->stdin = null;
@@ -216,6 +262,9 @@ final class McpTransport
             $this->process = null;
         }
         $this->readBuffer = '';
+        $this->httpSessionId = null;
+        $this->protocolVersion = null;
+        $this->httpSessionExpired = false;
     }
 
     public function isConnected(): bool
@@ -224,8 +273,55 @@ final class McpTransport
             return $this->process !== null && proc_get_status($this->process)['running'];
         }
 
-        // HTTP transports are always "connected" as long as we have a URL
-        return $this->url !== null;
+        return $this->url !== null && ! $this->httpSessionExpired;
+    }
+
+    /**
+     * Start the optional server-initiated GET event stream.
+     */
+    public function startServerEventStream(): void
+    {
+        if (($this->transport !== 'http' && $this->transport !== 'sse') || ! $this->serverEventStreamSupported) {
+            return;
+        }
+
+        $this->openServerEventStream();
+    }
+
+    /**
+     * Cooperatively process server-initiated messages without blocking the caller.
+     */
+    public function poll(float $timeoutSeconds = 0.0): void
+    {
+        if ($this->httpSessionExpired) {
+            throw new McpSessionExpiredException;
+        }
+
+        if ($this->serverEventStream === null) {
+            if ($this->serverEventStreamSupported && microtime(true) >= $this->serverReconnectAt) {
+                $this->openServerEventStream();
+            }
+
+            return;
+        }
+
+        $deadline = microtime(true) + max(0.0, $timeoutSeconds);
+        $this->pumpServerEventStream($deadline);
+    }
+
+    /**
+     * Clear transport-level state before a required MCP re-initialization.
+     */
+    public function resetHttpSession(): void
+    {
+        $this->cancelServerEventStream();
+        $this->httpSessionId = null;
+        $this->protocolVersion = null;
+        $this->httpSessionExpired = false;
+        $this->serverLastEventId = null;
+        $this->serverRetryMilliseconds = 1000;
+        $this->serverReconnectAt = 0.0;
+        $this->serverEventStreamSupported = true;
     }
 
     // ─── stdio transport ────────────────────────────────────────────────
@@ -385,24 +481,23 @@ final class McpTransport
         if (isset($this->requestHandlers[$method])) {
             try {
                 $result = ($this->requestHandlers[$method])($params);
-                $this->writeStdio([
+                $this->sendInboundResponse([
                     'jsonrpc' => '2.0',
                     'id' => $id,
                     'result' => $result,
                 ]);
             } catch (\Throwable $e) {
-                $this->writeStdio([
+                $this->sendInboundResponse([
                     'jsonrpc' => '2.0',
                     'id' => $id,
                     'error' => [
                         'code' => -32603,
-                        'message' => $e->getMessage(),
+                        'message' => 'Client request handler failed',
                     ],
                 ]);
             }
         } else {
-            // Method not found
-            $this->writeStdio([
+            $this->sendInboundResponse([
                 'jsonrpc' => '2.0',
                 'id' => $id,
                 'error' => [
@@ -413,115 +508,223 @@ final class McpTransport
         }
     }
 
-    // ─── HTTP transport (streamable HTTP / SSE) ─────────────────────────
+    /** @param array<string, mixed> $message */
+    private function sendInboundResponse(array $message): void
+    {
+        match ($this->transport) {
+            'stdio' => $this->writeStdio($message),
+            'http', 'sse' => $this->sendHttpOneWay($message),
+            default => null,
+        };
+    }
 
+    // ─── HTTP transport (Streamable HTTP / legacy SSE response) ─────────
+
+    /** @param array<string, mixed> $message */
     private function sendHttp(array $message, int $timeoutSeconds): mixed
     {
-        if ($this->url === null) {
-            throw new McpConnectionException('HTTP transport requires a URL');
+        $this->assertHttpReady();
+        $deadline = microtime(true) + $timeoutSeconds;
+        $response = $this->createHttpRequest('POST', $message, $timeoutSeconds);
+        $status = $this->prepareHttpResponse($response, true, $message, $timeoutSeconds);
+
+        if ($status < 200 || $status >= 300) {
+            $body = $this->responsePreview($response);
+            throw McpConnectionException::transport("MCP HTTP error {$status}: {$body}", $status);
         }
 
-        $json = json_encode($message, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-
-        $headers = array_merge([
-            'Content-Type: application/json',
-            'Accept: application/json, text/event-stream',
-        ], $this->buildHttpHeaders());
-
-        if ($this->protocolVersion !== null) {
-            $headers[] = 'MCP-Protocol-Version: '.$this->protocolVersion;
+        $contentType = $this->responseContentType($response);
+        if ($contentType === 'text/event-stream') {
+            return $this->consumeSseRequest($response, $message['id'], $deadline);
+        }
+        if ($contentType !== 'application/json') {
+            throw McpConnectionException::protocol(
+                'MCP HTTP response has unsupported Content-Type: '.($contentType ?: 'missing')
+            );
         }
 
-        if ($this->httpSessionId !== null) {
-            $headers[] = 'Mcp-Session-Id: '.$this->httpSessionId;
+        return $this->decodeJsonRpcResponse($response->getContent(false), $message['id']);
+    }
+
+    /** @param array<string, mixed> $message */
+    private function sendHttpNotification(array $message): void
+    {
+        $this->sendHttpOneWay($message);
+    }
+
+    /** @param array<string, mixed> $message */
+    private function sendHttpOneWay(array $message): void
+    {
+        $this->assertHttpReady();
+        $response = $this->createHttpRequest('POST', $message, 5);
+        $status = $this->prepareHttpResponse($response, true, $message, 5);
+
+        if ($status === 202 || $status === 204) {
+            return;
+        }
+        if ($status >= 200 && $status < 300 && $response->getContent(false) === '') {
+            return;
         }
 
-        $ch = curl_init($this->url);
-        curl_setopt_array($ch, [
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => $json,
-            CURLOPT_HTTPHEADER => $headers,
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT => $timeoutSeconds,
-            CURLOPT_CONNECTTIMEOUT => 10,
-            CURLOPT_HEADER => true,
-        ]);
+        throw McpConnectionException::transport("MCP HTTP one-way message returned {$status}", $status);
+    }
 
-        $rawResponse = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $headerSize = curl_getinfo($ch, CURLINFO_HEADER_SIZE);
-        $curlError = curl_error($ch);
-        curl_close($ch);
-
-        if ($rawResponse === false) {
-            throw McpConnectionException::transport("HTTP request failed: {$curlError}");
+    /**
+     * @param array<string, mixed>|null $message
+     */
+    private function createHttpRequest(
+        string $method,
+        ?array $message,
+        int $timeoutSeconds,
+        ?string $lastEventId = null,
+        ?int $maxDurationSeconds = null,
+    ): ResponseInterface {
+        $options = [
+            'headers' => $this->buildHttpHeaders($message !== null),
+            'timeout' => max(1, $timeoutSeconds),
+            'max_duration' => max(1, $maxDurationSeconds ?? $timeoutSeconds),
+            'buffer' => false,
+        ];
+        if ($message !== null) {
+            $options['json'] = $message;
+        }
+        if ($lastEventId !== null) {
+            $options['headers']['Last-Event-ID'] = $lastEventId;
         }
 
-        $responseHeaders = substr($rawResponse, 0, $headerSize);
-        $responseBody = substr($rawResponse, $headerSize);
+        try {
+            return $this->httpClient->request($method, (string) $this->url, $options);
+        } catch (\Throwable $exception) {
+            throw McpConnectionException::transport('MCP HTTP request failed: '.$exception->getMessage());
+        }
+    }
 
-        // Extract session ID from response headers
-        if (preg_match('/^Mcp-Session-Id:\s*(.+)$/mi', $responseHeaders, $m)) {
-            $this->httpSessionId = trim($m[1]);
+    /**
+     * Resolve headers/status and retry once after a configured OAuth refresh.
+     *
+     * @param array<string, mixed>|null $message
+     */
+    private function prepareHttpResponse(
+        ResponseInterface &$response,
+        bool $allowOAuthRetry,
+        ?array $message,
+        int $timeoutSeconds,
+        string $method = 'POST',
+        ?string $lastEventId = null,
+        ?int $maxDurationSeconds = null,
+    ): int {
+        try {
+            $status = $response->getStatusCode();
+            $headers = $response->getHeaders(false);
+        } catch (\Throwable $exception) {
+            throw McpConnectionException::transport('MCP HTTP response failed: '.$exception->getMessage());
         }
 
-        if ($httpCode === 401) {
+        if ($status === 401
+            && $allowOAuthRetry
+            && ! $this->hasHeader($this->headers, 'Authorization')
+            && $this->oauthTokenProvider?->refreshAfterUnauthorized()) {
+            $response->cancel();
+            $response = $this->createHttpRequest(
+                $method,
+                $message,
+                $timeoutSeconds,
+                $lastEventId,
+                $maxDurationSeconds,
+            );
+
+            return $this->prepareHttpResponse(
+                $response,
+                false,
+                $message,
+                $timeoutSeconds,
+                $method,
+                $lastEventId,
+                $maxDurationSeconds,
+            );
+        }
+
+        if ($status === 401) {
             throw McpConnectionException::application('MCP server authentication required (401)', 401);
         }
 
-        if ($httpCode === 404 && $this->httpSessionId !== null) {
-            // Session expired — retry once with a fresh session
-            $this->httpSessionId = null;
-            $headers = array_filter($headers, fn ($h) => ! str_starts_with($h, 'Mcp-Session-Id:'));
-            $ch2 = curl_init($this->url);
-            curl_setopt_array($ch2, [
-                CURLOPT_POST => true,
-                CURLOPT_POSTFIELDS => $json,
-                CURLOPT_HTTPHEADER => array_values($headers),
-                CURLOPT_RETURNTRANSFER => true,
-                CURLOPT_TIMEOUT => $timeoutSeconds,
-                CURLOPT_CONNECTTIMEOUT => 10,
-                CURLOPT_HEADER => true,
-            ]);
-            $rawResponse = curl_exec($ch2);
-            $httpCode = curl_getinfo($ch2, CURLINFO_HTTP_CODE);
-            $headerSize = curl_getinfo($ch2, CURLINFO_HEADER_SIZE);
-            $curlError = curl_error($ch2);
-            curl_close($ch2);
+        if ($status === 404 && $this->httpSessionId !== null) {
+            $this->markHttpSessionExpired();
+            throw new McpSessionExpiredException;
+        }
 
-            if ($rawResponse === false || ($httpCode < 200 || $httpCode >= 300)) {
-                $reason = $rawResponse === false ? $curlError : "HTTP {$httpCode}";
-                throw McpConnectionException::transport("MCP session expired and retry failed: {$reason}", 404);
+        if (isset($headers['mcp-session-id'][0])) {
+            $this->acceptSessionId($headers['mcp-session-id'][0]);
+        }
+
+        return $status;
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function buildHttpHeaders(bool $hasBody): array
+    {
+        $headers = $this->headers;
+        $headers['Accept'] = $hasBody
+            ? 'application/json, text/event-stream'
+            : 'text/event-stream';
+        if ($hasBody) {
+            $headers['Content-Type'] = 'application/json';
+        }
+        if ($this->protocolVersion !== null) {
+            $headers['MCP-Protocol-Version'] = $this->protocolVersion;
+        }
+        if ($this->httpSessionId !== null) {
+            $headers['Mcp-Session-Id'] = $this->httpSessionId;
+        }
+        if (! $this->hasHeader($headers, 'Authorization')) {
+            $authorization = $this->oauthTokenProvider?->authorizationHeader();
+            if ($authorization !== null) {
+                $headers['Authorization'] = $authorization;
             }
+        }
 
-            $responseHeaders = substr($rawResponse, 0, $headerSize);
-            $responseBody = substr($rawResponse, $headerSize);
+        return $headers;
+    }
 
-            if (preg_match('/^Mcp-Session-Id:\s*(.+)$/mi', $responseHeaders, $m)) {
-                $this->httpSessionId = trim($m[1]);
+    /** @param array<string, string> $headers */
+    private function hasHeader(array $headers, string $name): bool
+    {
+        foreach (array_keys($headers) as $headerName) {
+            if (strcasecmp((string) $headerName, $name) === 0) {
+                return true;
             }
         }
 
-        if ($httpCode < 200 || $httpCode >= 300) {
-            throw McpConnectionException::transport("MCP HTTP error {$httpCode}: ".substr($responseBody, 0, 500));
-        }
+        return false;
+    }
 
-        // Check if response is SSE (text/event-stream)
-        $contentType = '';
-        if (preg_match('/^Content-Type:\s*([^\r\n;]+)/mi', $responseHeaders, $m)) {
-            $contentType = trim($m[1]);
-        }
+    private function responseContentType(ResponseInterface $response): string
+    {
+        $contentType = strtolower($response->getHeaders(false)['content-type'][0] ?? '');
 
-        if ($contentType === 'text/event-stream') {
-            return $this->parseSSEResponse($responseBody, $message['id']);
-        }
+        return trim(explode(';', $contentType, 2)[0]);
+    }
 
-        // Standard JSON response
-        $decoded = json_decode($responseBody, true);
-        if (! is_array($decoded)) {
+    private function responsePreview(ResponseInterface $response): string
+    {
+        try {
+            return substr($response->getContent(false), 0, 500);
+        } catch (\Throwable) {
+            return '';
+        }
+    }
+
+    private function decodeJsonRpcResponse(string $body, int|string $expectedId): mixed
+    {
+        $decoded = json_decode($body, true);
+        if (! is_array($decoded) || ! array_key_exists('id', $decoded)) {
             throw McpConnectionException::protocol('Invalid JSON response from MCP server');
         }
-
+        if ((string) $decoded['id'] !== (string) $expectedId) {
+            throw McpConnectionException::protocol('MCP response ID did not match the request');
+        }
         if (isset($decoded['error'])) {
             throw McpConnectionException::application(
                 'MCP error: '.($decoded['error']['message'] ?? 'Unknown error'),
@@ -532,110 +735,309 @@ final class McpTransport
         return $decoded['result'] ?? null;
     }
 
-    private function sendHttpNotification(array $message): void
+    private function consumeSseRequest(
+        ResponseInterface $response,
+        int|string $expectedId,
+        float $deadline,
+    ): mixed {
+        $decoder = new McpSseDecoder(self::READ_BUFFER_MAX);
+        $lastEventId = null;
+        $retryMilliseconds = 1000;
+
+        while (microtime(true) < $deadline) {
+            $ended = false;
+            $responses = [$response];
+            if ($this->serverEventStream !== null) {
+                $responses[] = $this->serverEventStream;
+            }
+
+            try {
+                foreach ($this->httpClient->stream($responses, min(1.0, max(0.001, $deadline - microtime(true)))) as $streamResponse => $chunk) {
+                    if ($chunk->isTimeout()) {
+                        break;
+                    }
+                    if ($chunk->isFirst()) {
+                        continue;
+                    }
+
+                    if ($streamResponse === $this->serverEventStream) {
+                        $this->consumeServerStreamChunk($chunk->isLast() ? '' : $chunk->getContent(), $chunk->isLast());
+
+                        continue;
+                    }
+
+                    $events = $decoder->push($chunk->isLast() ? '' : $chunk->getContent(), $chunk->isLast());
+                    foreach ($events as $event) {
+                        if ($event['id'] !== null) {
+                            $lastEventId = $event['id'];
+                        }
+                        if ($event['retry'] !== null) {
+                            $retryMilliseconds = $event['retry'];
+                        }
+                        $result = $this->routeSseEvent($event, $expectedId);
+                        if ($result['matched']) {
+                            $response->cancel();
+
+                            return $result['result'];
+                        }
+                    }
+
+                    if ($chunk->isLast()) {
+                        $ended = true;
+                        break;
+                    }
+                }
+            } catch (McpConnectionException $exception) {
+                throw $exception;
+            } catch (\Throwable $exception) {
+                $ended = true;
+            }
+
+            if (! $ended) {
+                continue;
+            }
+            if ($lastEventId === null) {
+                throw McpConnectionException::protocol('MCP SSE stream ended before a matching response');
+            }
+
+            $this->waitForRetry($retryMilliseconds, $deadline);
+            $response = $this->createHttpRequest(
+                'GET',
+                null,
+                max(1, (int) ceil($deadline - microtime(true))),
+                $lastEventId,
+            );
+            $status = $this->prepareHttpResponse(
+                $response,
+                true,
+                null,
+                max(1, (int) ceil($deadline - microtime(true))),
+                'GET',
+                $lastEventId,
+            );
+            if ($status !== 200 || $this->responseContentType($response) !== 'text/event-stream') {
+                throw McpConnectionException::transport("MCP SSE resume failed with HTTP {$status}", $status);
+            }
+        }
+
+        $this->sendCancellation($expectedId);
+        throw McpConnectionException::transport('MCP Streamable HTTP request timed out');
+    }
+
+    /**
+     * @param array{data: string, id: ?string, retry: ?int, event: ?string} $event
+     * @return array{matched: bool, result: mixed}
+     */
+    private function routeSseEvent(array $event, int|string|null $expectedId): array
     {
-        if ($this->url === null) {
+        if ($event['data'] === '') {
+            return ['matched' => false, 'result' => null];
+        }
+
+        $message = json_decode($event['data'], true);
+        if (! is_array($message)) {
+            throw McpConnectionException::protocol('MCP SSE event contained invalid JSON');
+        }
+        if (isset($message['method']) && array_key_exists('id', $message)) {
+            $this->handleInboundRequest($message);
+
+            return ['matched' => false, 'result' => null];
+        }
+        if (isset($message['method'])) {
+            $this->dispatchNotification($message);
+
+            return ['matched' => false, 'result' => null];
+        }
+        if ($expectedId === null || ! array_key_exists('id', $message) || (string) $message['id'] !== (string) $expectedId) {
+            return ['matched' => false, 'result' => null];
+        }
+        if (isset($message['error'])) {
+            throw McpConnectionException::application(
+                'MCP error: '.($message['error']['message'] ?? 'Unknown error'),
+                (int) ($message['error']['code'] ?? 0),
+            );
+        }
+
+        return ['matched' => true, 'result' => $message['result'] ?? null];
+    }
+
+    private function openServerEventStream(): void
+    {
+        if ($this->url === null || $this->serverEventStream !== null || ! $this->serverEventStreamSupported) {
             return;
         }
 
-        $json = json_encode($message, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        try {
+            $response = $this->createHttpRequest(
+                'GET',
+                null,
+                self::SERVER_STREAM_TIMEOUT_SECONDS,
+                $this->serverLastEventId,
+                self::SERVER_STREAM_MAX_DURATION_SECONDS,
+            );
+            $status = $this->prepareHttpResponse(
+                $response,
+                true,
+                null,
+                self::SERVER_STREAM_TIMEOUT_SECONDS,
+                'GET',
+                $this->serverLastEventId,
+                self::SERVER_STREAM_MAX_DURATION_SECONDS,
+            );
+        } catch (McpSessionExpiredException $exception) {
+            throw $exception;
+        } catch (\Throwable) {
+            if (isset($response)) {
+                $response->cancel();
+            }
+            $this->scheduleServerReconnect();
 
-        $headers = array_merge([
-            'Content-Type: application/json',
-            'Accept: application/json, text/event-stream',
-        ], $this->buildHttpHeaders());
-
-        if ($this->protocolVersion !== null) {
-            $headers[] = 'MCP-Protocol-Version: '.$this->protocolVersion;
+            return;
         }
 
-        if ($this->httpSessionId !== null) {
-            $headers[] = 'Mcp-Session-Id: '.$this->httpSessionId;
+        if ($status === 405) {
+            $response->cancel();
+            $this->serverEventStreamSupported = false;
+
+            return;
+        }
+        if ($status !== 200 || $this->responseContentType($response) !== 'text/event-stream') {
+            $response->cancel();
+            $this->scheduleServerReconnect();
+
+            return;
         }
 
-        $ch = curl_init($this->url);
-        curl_setopt_array($ch, [
-            CURLOPT_POST => true,
-            CURLOPT_POSTFIELDS => $json,
-            CURLOPT_HTTPHEADER => $headers,
-            CURLOPT_RETURNTRANSFER => true,
-            CURLOPT_TIMEOUT => 5,
-        ]);
-
-        $response = curl_exec($ch);
-        $httpCode = curl_getinfo($ch, CURLINFO_HTTP_CODE);
-        $curlError = curl_error($ch);
-        curl_close($ch);
-
-        if ($response === false) {
-            throw McpConnectionException::transport("HTTP notification failed: {$curlError}");
-        }
-        if ($httpCode < 200 || $httpCode >= 300) {
-            throw McpConnectionException::transport("MCP HTTP notification error {$httpCode}", $httpCode);
-        }
+        $this->serverEventStream = $response;
+        $this->serverEventDecoder = new McpSseDecoder(self::READ_BUFFER_MAX);
     }
 
-    /**
-     * @return array<int, string>
-     */
-    private function buildHttpHeaders(): array
+    private function pumpServerEventStream(float $deadline): void
     {
-        $result = [];
-        foreach ($this->headers as $key => $value) {
-            $result[] = "{$key}: {$value}";
+        if ($this->serverEventStream === null) {
+            return;
         }
 
-        return $result;
+        try {
+            foreach ($this->httpClient->stream($this->serverEventStream, max(0.001, $deadline - microtime(true))) as $chunk) {
+                if ($chunk->isTimeout()) {
+                    break;
+                }
+                $this->consumeServerStreamChunk($chunk->isLast() ? '' : $chunk->getContent(), $chunk->isLast());
+                if ($chunk->isLast() || microtime(true) >= $deadline) {
+                    break;
+                }
+            }
+        } catch (McpConnectionException $exception) {
+            $this->cancelServerEventStream();
+            throw $exception;
+        } catch (\Throwable) {
+            $this->cancelServerEventStream();
+            $this->scheduleServerReconnect();
+        }
+    }
+
+    private function consumeServerStreamChunk(string $content, bool $endOfStream): void
+    {
+        if ($this->serverEventDecoder === null) {
+            return;
+        }
+
+        foreach ($this->serverEventDecoder->push($content, $endOfStream) as $event) {
+            if ($event['id'] !== null) {
+                $this->serverLastEventId = $event['id'];
+            }
+            if ($event['retry'] !== null) {
+                $this->serverRetryMilliseconds = $event['retry'];
+            }
+            $this->routeSseEvent($event, null);
+        }
+
+        if ($endOfStream) {
+            $this->cancelServerEventStream();
+            $this->scheduleServerReconnect();
+        }
+    }
+
+    private function scheduleServerReconnect(): void
+    {
+        $this->serverReconnectAt = microtime(true) + ($this->serverRetryMilliseconds / 1000);
+    }
+
+    private function cancelServerEventStream(): void
+    {
+        $this->serverEventStream?->cancel();
+        $this->serverEventStream = null;
+        $this->serverEventDecoder = null;
+    }
+
+    private function closeHttpSession(): void
+    {
+        try {
+            $response = $this->createHttpRequest('DELETE', null, 5);
+            $status = $this->prepareHttpResponse($response, true, null, 5, 'DELETE');
+            if (($status < 200 || $status >= 300) && $status !== 405) {
+                throw McpConnectionException::transport("MCP session DELETE returned {$status}", $status);
+            }
+        } catch (\Throwable) {
+            // Session shutdown is best-effort and must not hide the caller's result.
+        }
+    }
+
+    private function markHttpSessionExpired(): void
+    {
+        $this->httpSessionExpired = true;
+        $this->cancelServerEventStream();
+    }
+
+    private function acceptSessionId(string $sessionId): void
+    {
+        if ($sessionId === '' || preg_match('/[^\x21-\x7E]/', $sessionId) === 1) {
+            throw McpConnectionException::protocol('MCP server returned an invalid session ID');
+        }
+
+        $this->httpSessionId = $sessionId;
+    }
+
+    private function waitForRetry(int $milliseconds, float $deadline): void
+    {
+        $remainingMicroseconds = max(0, (int) (($deadline - microtime(true)) * 1_000_000));
+        usleep(min($remainingMicroseconds, max(0, $milliseconds) * 1000));
+    }
+
+    private function sendCancellation(int|string $requestId): void
+    {
+        try {
+            $this->sendHttpOneWay([
+                'jsonrpc' => '2.0',
+                'method' => 'notifications/cancelled',
+                'params' => ['requestId' => $requestId, 'reason' => 'Client request timed out'],
+            ]);
+        } catch (\Throwable) {
+            // The timeout remains the primary failure.
+        }
+    }
+
+    private function assertHttpReady(): void
+    {
+        if ($this->url === null) {
+            throw new McpConnectionException('HTTP transport requires a URL');
+        }
+        if ($this->httpSessionExpired) {
+            throw new McpSessionExpiredException;
+        }
     }
 
     /**
-     * Parse an SSE (text/event-stream) response body and extract the JSON-RPC result.
+     * Retained for compatibility with focused parser tests.
      */
     private function parseSSEResponse(string $body, int $expectedId): mixed
     {
-        $events = preg_split('/\r?\n\r?\n/', $body);
-
-        foreach ($events as $event) {
-            $dataLines = [];
-            foreach (explode("\n", $event) as $line) {
-                $line = rtrim($line, "\r");
-                if (str_starts_with($line, 'data:')) {
-                    $value = substr($line, 5);
-                    $dataLines[] = str_starts_with($value, ' ') ? substr($value, 1) : $value;
-                }
-            }
-
-            $data = implode("\n", $dataLines);
-
-            if ($data === '') {
-                continue;
-            }
-
-            $decoded = json_decode($data, true);
-            if (! is_array($decoded)) {
-                continue;
-            }
-
-            // Dispatch notifications embedded in SSE stream
-            if (! isset($decoded['id']) && isset($decoded['method'])) {
-                $this->dispatchNotification($decoded);
-
-                continue;
-            }
-
-            if (! isset($decoded['id'])) {
-                continue;
-            }
-
-            if ($decoded['id'] === $expectedId) {
-                if (isset($decoded['error'])) {
-                    throw McpConnectionException::application(
-                        'MCP error: '.($decoded['error']['message'] ?? 'Unknown error'),
-                        (int) ($decoded['error']['code'] ?? 0),
-                    );
-                }
-
-                return $decoded['result'] ?? null;
+        $decoder = new McpSseDecoder(self::READ_BUFFER_MAX);
+        foreach ($decoder->push($body, true) as $event) {
+            $result = $this->routeSseEvent($event, $expectedId);
+            if ($result['matched']) {
+                return $result['result'];
             }
         }
 

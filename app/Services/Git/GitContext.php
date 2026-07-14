@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace HaoCode\Services\Git;
 
 /**
@@ -8,6 +10,11 @@ namespace HaoCode\Services\Git;
  */
 class GitContext
 {
+    private int $snapshotDepth = 0;
+
+    /** @var array<string, mixed> */
+    private array $snapshot = [];
+
     public function __construct(
         private readonly ?string $workingDirectory = null,
     ) {}
@@ -25,8 +32,9 @@ class GitContext
         $branch = $this->getCurrentBranch();
         $remote = $this->getRemoteUrl();
         $defaultBranch = $this->getDefaultBranch();
-        $diff = $this->getWorkingTreeDiff();
-        $status = $this->getWorkingTreeStatus();
+        $workingTree = $this->getWorkingTreeState();
+        $status = $workingTree['status'];
+        $diff = $workingTree['has_tracked_changes'] ? $this->getWorkingTreeDiff() : '';
         $recentCommits = $this->getRecentCommits();
 
         $context = "\n# Git Status\n- Branch: {$branch}"
@@ -55,8 +63,11 @@ class GitContext
      */
     public function isGitRepo(): bool
     {
-        exec($this->gitCommand('rev-parse --is-inside-work-tree'), $output, $exitCode);
-        return $exitCode === 0;
+        return $this->snapshotValue('is_git_repo', function (): bool {
+            exec($this->gitCommand('rev-parse --is-inside-work-tree'), $output, $exitCode);
+
+            return $exitCode === 0;
+        });
     }
 
     /**
@@ -64,8 +75,11 @@ class GitContext
      */
     public function getCurrentBranch(): string
     {
-        exec($this->gitCommand('rev-parse --abbrev-ref HEAD'), $output);
-        return trim($output[0] ?? 'unknown');
+        return $this->snapshotValue('current_branch', function (): string {
+            exec($this->gitCommand('rev-parse --abbrev-ref HEAD'), $output);
+
+            return trim($output[0] ?? 'unknown');
+        });
     }
 
     /**
@@ -83,8 +97,11 @@ class GitContext
      */
     public function getRemoteUrl(): string
     {
-        exec($this->gitCommand('config --get remote.origin.url'), $output);
-        return trim($output[0] ?? '');
+        return $this->snapshotValue('remote_url', function (): string {
+            exec($this->gitCommand('config --get remote.origin.url'), $output);
+
+            return trim($output[0] ?? '');
+        });
     }
 
     /**
@@ -92,12 +109,38 @@ class GitContext
      */
     public function getDefaultBranch(): string
     {
-        // Try to detect from remote HEAD
-        exec($this->gitCommand('symbolic-ref refs/remotes/origin/HEAD'), $output);
-        if (!empty($output[0])) {
-            return str_replace('refs/remotes/origin/', '', $output[0]);
+        return $this->snapshotValue('default_branch', function (): string {
+            // Try to detect from remote HEAD
+            exec($this->gitCommand('symbolic-ref refs/remotes/origin/HEAD'), $output);
+            if (! empty($output[0])) {
+                return str_replace('refs/remotes/origin/', '', $output[0]);
+            }
+
+            return '';
+        });
+    }
+
+    /**
+     * Cache repository metadata only while one prompt is being assembled.
+     */
+    public function beginSnapshot(): void
+    {
+        if ($this->snapshotDepth === 0) {
+            $this->snapshot = [];
         }
-        return '';
+        $this->snapshotDepth++;
+    }
+
+    public function endSnapshot(): void
+    {
+        if ($this->snapshotDepth === 0) {
+            return;
+        }
+
+        $this->snapshotDepth--;
+        if ($this->snapshotDepth === 0) {
+            $this->snapshot = [];
+        }
     }
 
     /**
@@ -135,18 +178,31 @@ class GitContext
      *
      * 输出采用 git status --short 格式，并限制行数和字符数，避免大型
      * 工作区状态无限进入模型上下文。
+     *
+     * @return array{status: string, has_tracked_changes: bool}
      */
-    private function getWorkingTreeStatus(): string
+    private function getWorkingTreeState(): array
     {
         exec($this->gitCommand('status --short'), $output, $exitCode);
         if ($exitCode !== 0 || $output === []) {
-            return '';
+            return ['status' => '', 'has_tracked_changes' => false];
+        }
+
+        $hasTrackedChanges = false;
+        foreach ($output as $line) {
+            if ($line !== '' && ! str_starts_with($line, '??')) {
+                $hasTrackedChanges = true;
+                break;
+            }
         }
 
         // 最多向模型展示前 100 条状态记录。
         $status = implode("\n", array_slice($output, 0, 100));
 
-        return mb_substr($status, 0, 5000);
+        return [
+            'status' => mb_substr($status, 0, 5000),
+            'has_tracked_changes' => $hasTrackedChanges,
+        ];
     }
 
     /**
@@ -189,5 +245,18 @@ class GitContext
         $workingDirectory = $this->workingDirectory ?? getcwd();
 
         return 'git -C '.escapeshellarg($workingDirectory).' '.$arguments.' 2>/dev/null';
+    }
+
+    private function snapshotValue(string $key, callable $resolver): mixed
+    {
+        if ($this->snapshotDepth === 0) {
+            return $resolver();
+        }
+
+        if (! array_key_exists($key, $this->snapshot)) {
+            $this->snapshot[$key] = $resolver();
+        }
+
+        return $this->snapshot[$key];
     }
 }

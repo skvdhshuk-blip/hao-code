@@ -94,6 +94,20 @@ class AgentLoopTest extends TestCase
         $this->assertSame('Hello there', $result);
     }
 
+    public function test_external_event_pump_runs_before_each_agent_turn(): void
+    {
+        $qe = $this->createMock(QueryEngine::class);
+        $qe->method('query')->willReturn($this->makePlainEndTurnProcessor('done'));
+        $pumps = 0;
+        $loop = $this->makeLoop($qe);
+        $loop->setEventPump(function () use (&$pumps): void {
+            $pumps++;
+        });
+
+        $this->assertSame('done', $loop->run('hi'));
+        $this->assertSame(1, $pumps);
+    }
+
     public function test_preflight_budget_rejects_oversized_first_request_before_sampling(): void
     {
         $queryEngine = $this->createMock(QueryEngine::class);

@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace HaoCode\Services\Mcp;
 
 use HaoCode\Services\Telemetry\PhoenixTracer;
@@ -43,6 +45,8 @@ final class McpClient
 
     /** @var array<array{uri: string, name?: string}> Workspace roots reported to the server */
     private array $roots = [];
+
+    private bool $protocolHandlersRegistered = false;
 
     public function __construct(
         private readonly McpTransport $transport,
@@ -100,10 +104,7 @@ final class McpClient
         try {
             $this->transport->connect($timeoutSeconds);
 
-            // Register roots/list reverse-request handler before initialize
-            $this->transport->onRequest('roots/list', function (array $params): array {
-                return ['roots' => $this->roots];
-            });
+            $this->registerProtocolHandlers();
 
             $result = $this->transport->request('initialize', [
                 'protocolVersion' => self::LATEST_PROTOCOL_VERSION,
@@ -139,17 +140,7 @@ final class McpClient
             $this->transport->notify('notifications/initialized');
 
             $this->initialized = true;
-
-            // Register list_changed notification handlers to auto-clear cache
-            $this->transport->onNotification('notifications/tools/list_changed', function (): void {
-                $this->toolsCache = null;
-            });
-            $this->transport->onNotification('notifications/resources/list_changed', function (): void {
-                $this->resourcesCache = null;
-            });
-            $this->transport->onNotification('notifications/prompts/list_changed', function (): void {
-                $this->promptsCache = null;
-            });
+            $this->transport->startServerEventStream();
         } catch (\Throwable $e) {
             $this->tracer?->recordException($span, $e);
             $this->transport->close();
@@ -204,7 +195,7 @@ final class McpClient
 
         $span = $this->startSpan('tools/list');
         try {
-            $result = $this->transport->request('tools/list', [], $timeoutSeconds);
+            $result = $this->requestWithSessionRecovery('tools/list', [], $timeoutSeconds);
 
             $tools = [];
             foreach (($result['tools'] ?? []) as $tool) {
@@ -244,7 +235,7 @@ final class McpClient
 
         $span = $this->startSpan('tools/call', ['tool.name' => $toolName]);
         try {
-            $result = $this->transport->request('tools/call', [
+            $result = $this->requestWithSessionRecovery('tools/call', [
                 'name' => $toolName,
                 'arguments' => (object) $arguments,
             ], $timeoutSeconds);
@@ -296,7 +287,7 @@ final class McpClient
 
         $span = $this->startSpan('resources/list');
         try {
-            $result = $this->transport->request('resources/list', [], $timeoutSeconds);
+            $result = $this->requestWithSessionRecovery('resources/list', [], $timeoutSeconds);
 
             $resources = [];
             foreach (($result['resources'] ?? []) as $resource) {
@@ -341,7 +332,7 @@ final class McpClient
 
         $span = $this->startSpan('resources/read', ['mcp.resource.uri' => $uri]);
         try {
-            $result = $this->transport->request('resources/read', [
+            $result = $this->requestWithSessionRecovery('resources/read', [
                 'uri' => $uri,
             ], $timeoutSeconds);
 
@@ -377,7 +368,7 @@ final class McpClient
 
         $span = $this->startSpan('prompts/list');
         try {
-            $result = $this->transport->request('prompts/list', [], $timeoutSeconds);
+            $result = $this->requestWithSessionRecovery('prompts/list', [], $timeoutSeconds);
 
             $prompts = [];
             foreach (($result['prompts'] ?? []) as $prompt) {
@@ -425,7 +416,7 @@ final class McpClient
                 $params['arguments'] = $arguments;
             }
 
-            $result = $this->transport->request('prompts/get', $params, $timeoutSeconds);
+            $result = $this->requestWithSessionRecovery('prompts/get', $params, $timeoutSeconds);
 
             return [
                 'description' => $result['description'] ?? null,
@@ -450,7 +441,7 @@ final class McpClient
 
         $span = $this->startSpan('ping');
         try {
-            $this->transport->request('ping', [], $timeoutSeconds);
+            $this->requestWithSessionRecovery('ping', [], $timeoutSeconds);
         } catch (\Throwable $e) {
             $this->tracer?->recordException($span, $e);
             throw $e;
@@ -472,7 +463,7 @@ final class McpClient
 
         $span = $this->startSpan('logging/setLevel', ['mcp.log.level' => $level]);
         try {
-            $this->transport->request('logging/setLevel', ['level' => $level], $timeoutSeconds);
+            $this->requestWithSessionRecovery('logging/setLevel', ['level' => $level], $timeoutSeconds);
         } catch (\Throwable $e) {
             $this->tracer?->recordException($span, $e);
             throw $e;
@@ -496,7 +487,7 @@ final class McpClient
 
         $span = $this->startSpan('completion/complete', ['mcp.completion.ref_type' => $ref['type'] ?? '']);
         try {
-            $result = $this->transport->request('completion/complete', [
+            $result = $this->requestWithSessionRecovery('completion/complete', [
                 'ref' => $ref,
                 'argument' => $argument,
             ], $timeoutSeconds);
@@ -541,10 +532,75 @@ final class McpClient
         return $this->initialized && $this->transport->isConnected();
     }
 
+    /**
+     * Cooperatively process pending messages from an independent Streamable HTTP GET stream.
+     */
+    public function poll(float $timeoutSeconds = 0.0): void
+    {
+        $this->ensureInitialized();
+        $this->transport->poll($timeoutSeconds);
+    }
+
     private function ensureInitialized(): void
     {
         if (! $this->initialized) {
             throw new McpConnectionException("MCP client for '{$this->serverName}' is not initialized. Call connect() first.");
+        }
+    }
+
+    private function registerProtocolHandlers(): void
+    {
+        if ($this->protocolHandlersRegistered) {
+            return;
+        }
+
+        $this->transport->onRequest('roots/list', function (array $params): array {
+            return ['roots' => $this->roots];
+        });
+        $this->transport->onNotification('notifications/tools/list_changed', function (): void {
+            $this->toolsCache = null;
+        });
+        $this->transport->onNotification('notifications/resources/list_changed', function (): void {
+            $this->resourcesCache = null;
+        });
+        $this->transport->onNotification('notifications/prompts/list_changed', function (): void {
+            $this->promptsCache = null;
+        });
+        $this->protocolHandlersRegistered = true;
+    }
+
+    /**
+     * @param array<string, mixed> $params
+     */
+    private function requestWithSessionRecovery(string $method, array $params, int $timeoutSeconds): mixed
+    {
+        $deadline = microtime(true) + $timeoutSeconds;
+
+        try {
+            $this->transport->poll();
+
+            return $this->transport->request($method, $params, $timeoutSeconds);
+        } catch (McpSessionExpiredException) {
+            $remaining = $deadline - microtime(true);
+            if ($remaining <= 0.0) {
+                throw McpConnectionException::transport(
+                    "MCP request timed out while recovering session: {$method}"
+                );
+            }
+
+            $this->initialized = false;
+            $this->clearCache();
+            $this->transport->resetHttpSession();
+            $this->connect(min(30, max(1, (int) ceil($remaining))));
+
+            $remaining = $deadline - microtime(true);
+            if ($remaining <= 0.0) {
+                throw McpConnectionException::transport(
+                    "MCP request timed out after recovering session: {$method}"
+                );
+            }
+
+            return $this->transport->request($method, $params, max(1, (int) ceil($remaining)));
         }
     }
 

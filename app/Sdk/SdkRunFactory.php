@@ -59,6 +59,11 @@ final class SdkRunFactory
         }
 
         $loop->setMaxTurns($config->maxTurns);
+        if ($mcpConnectionManager !== null) {
+            $loop->setEventPump(static function () use ($mcpConnectionManager): void {
+                $mcpConnectionManager->poll();
+            });
+        }
 
         if ($config->maxBudgetUsd !== null) {
             $loop->getCostTracker()->setThresholds(

@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace HaoCode\Services\Mcp;
 
 class McpServerConfigManager
@@ -33,6 +35,7 @@ class McpServerConfigManager
      *     url: ?string,
      *     env: array<string, string>,
      *     headers: array<string, string>,
+     *     oauth: array<string, string>,
      *     cwd: string
      * }>
      */
@@ -63,6 +66,7 @@ class McpServerConfigManager
      *     url: ?string,
      *     env: array<string, string>,
      *     headers: array<string, string>,
+     *     oauth: array<string, string>,
      *     cwd: string
      * }|null
      */
@@ -217,6 +221,7 @@ class McpServerConfigManager
      *     url: ?string,
      *     env: array<string, string>,
      *     headers: array<string, string>,
+     *     oauth: array<string, string>,
      *     cwd: string
      * }
      */
@@ -237,8 +242,43 @@ class McpServerConfigManager
             'url' => is_string($definition['url'] ?? null) ? $definition['url'] : null,
             'env' => $this->normalizeStringMap($definition['env'] ?? []),
             'headers' => $this->normalizeStringMap($definition['headers'] ?? []),
+            'oauth' => $this->normalizeOAuth($definition['oauth'] ?? []),
             'cwd' => $this->workingDirectory ?? (getcwd() ?: '/'),
         ];
+    }
+
+    /**
+     * @return array<string, string>
+     */
+    private function normalizeOAuth(mixed $value): array
+    {
+        if (! is_array($value)) {
+            return [];
+        }
+
+        $allowedKeys = [
+            'token_endpoint',
+            'client_id',
+            'client_id_env',
+            'client_secret_env',
+            'access_token_env',
+            'refresh_token_env',
+            'scope',
+            'token_endpoint_auth_method',
+        ];
+        $normalized = [];
+        foreach ($allowedKeys as $key) {
+            if (is_scalar($value[$key] ?? null) && (string) $value[$key] !== '') {
+                $normalized[$key] = (string) $value[$key];
+            }
+        }
+
+        if (isset($normalized['token_endpoint_auth_method'])
+            && ! in_array($normalized['token_endpoint_auth_method'], ['client_secret_basic', 'client_secret_post'], true)) {
+            unset($normalized['token_endpoint_auth_method']);
+        }
+
+        return $normalized;
     }
 
     /**

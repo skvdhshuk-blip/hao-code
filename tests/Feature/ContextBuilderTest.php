@@ -351,6 +351,47 @@ class ContextBuilderTest extends TestCase
         $this->assertStringNotContainsString('Branch:', $result[0]['text']);
     }
 
+    public function test_git_snapshot_is_released_when_prompt_building_fails(): void
+    {
+        $settings = $this->createMock(SettingsManager::class);
+        $settings->method('getSystemPrompt')->willReturn(null);
+        $settings->method('getAppendSystemPrompt')->willThrowException(new \RuntimeException('fixture failure'));
+
+        $gitContext = $this->createMock(GitContext::class);
+        $gitContext->expects($this->once())->method('beginSnapshot');
+        $gitContext->expects($this->once())->method('endSnapshot');
+
+        $builder = $this->makeBuilder([
+            'settings' => $settings,
+            'gitContext' => $gitContext,
+        ]);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('fixture failure');
+
+        $builder->buildSystemPrompt();
+    }
+
+    public function test_text_only_prompt_does_not_open_git_snapshot(): void
+    {
+        $gitContext = $this->createMock(GitContext::class);
+        $gitContext->expects($this->never())->method('beginSnapshot');
+        $gitContext->expects($this->never())->method('endSnapshot');
+
+        $builder = new ContextBuilder(
+            $this->makeSettings(),
+            new ToolRegistry(),
+            $this->makeSessionMemory(),
+            $this->makeSkillLoader(),
+            $gitContext,
+            null,
+            getcwd() ?: '/',
+            true,
+        );
+
+        $this->assertSame('text', $builder->buildSystemPrompt()[0]['type']);
+    }
+
     public function test_output_style_injected_when_set(): void
     {
         $settings = $this->makeSettings(['outputStyle' => 'terse']);

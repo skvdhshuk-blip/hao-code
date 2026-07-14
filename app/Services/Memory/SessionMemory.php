@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace HaoCode\Services\Memory;
 
 /**
@@ -15,6 +17,8 @@ class SessionMemory
     private ?array $memories = null;
     private string $path;
     private ?TieredSummarizer $summarizer = null;
+
+    private ?string $loadedFileSignature = null;
 
     public function __construct(?string $storagePath = null)
     {
@@ -294,12 +298,20 @@ class SessionMemory
             return;
         }
 
-        if (file_exists($this->path)) {
-            $data = json_decode(file_get_contents($this->path), true);
+        $signature = $this->fileSignature();
+        if ($this->memories !== null && $signature === $this->loadedFileSignature) {
+            return;
+        }
+
+        if ($signature !== null) {
+            $contents = file_get_contents($this->path);
+            $data = is_string($contents) ? json_decode($contents, true) : null;
             $this->memories = is_array($data) ? $data : [];
         } else {
             $this->memories = [];
         }
+
+        $this->loadedFileSignature = $signature;
     }
 
     private function save(): void
@@ -320,6 +332,7 @@ class SessionMemory
             if (! rename($temporaryPath, $this->path)) {
                 throw new \RuntimeException("Unable to replace memory file {$this->path}.");
             }
+            $this->loadedFileSignature = $this->fileSignature();
         } finally {
             if (file_exists($temporaryPath)) {
                 unlink($temporaryPath);
@@ -354,5 +367,30 @@ class SessionMemory
         if (! is_dir($dir) && ! mkdir($dir, 0755, true) && ! is_dir($dir)) {
             throw new \RuntimeException("Unable to create memory directory {$dir}.");
         }
+    }
+
+    private function fileSignature(): ?string
+    {
+        clearstatcache(true, $this->path);
+        $stat = @stat($this->path);
+        if ($stat === false) {
+            return null;
+        }
+
+        // PHP exposes filesystem timestamps with second precision and some
+        // platforms do not provide a useful inode. Include a fast content
+        // fingerprint so same-size writes in the same second are not missed.
+        static $hashAlgorithm = null;
+        $hashAlgorithm ??= in_array('xxh128', hash_algos(), true) ? 'xxh128' : 'sha256';
+        $contentHash = @hash_file($hashAlgorithm, $this->path);
+
+        return implode(':', [
+            (string) ($stat['dev'] ?? ''),
+            (string) ($stat['ino'] ?? ''),
+            (string) ($stat['size'] ?? ''),
+            (string) ($stat['mtime'] ?? ''),
+            (string) ($stat['ctime'] ?? ''),
+            $contentHash === false ? 'unreadable' : $contentHash,
+        ]);
     }
 }

@@ -1,5 +1,7 @@
 <?php
 
+declare(strict_types=1);
+
 namespace HaoCode\Services\Agent;
 
 use HaoCode\Services\Git\GitContext;
@@ -43,6 +45,17 @@ class ContextBuilder
             return $this->buildTextOnlySystemPrompt();
         }
 
+        $this->gitContext->beginSnapshot();
+
+        try {
+            return $this->buildAgentSystemPrompt();
+        } finally {
+            $this->gitContext->endSnapshot();
+        }
+    }
+
+    private function buildAgentSystemPrompt(): array
+    {
         $prompt = $this->truncateFragment($this->getDefaultSystemPrompt(), self::MAX_BASE_PROMPT_CHARS);
 
         $appendPrompt = $this->settings->getAppendSystemPrompt();

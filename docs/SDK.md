@@ -791,6 +791,45 @@ Configure required credentials explicitly:
 Avoid committing real credentials in project settings; prefer a protected
 global settings file or generate the configuration during deployment.
 
+### Streamable HTTP and OAuth
+
+The `http` client transport implements MCP Streamable HTTP `2025-11-25`. It
+parses SSE incrementally, handles JSON responses, responds to server-initiated
+requests, listens on the optional GET event stream, honors SSE `retry` and
+`Last-Event-ID`, re-initializes expired sessions before retrying a request, and
+sends a best-effort DELETE when the run closes. Servers that answer GET with
+HTTP 405 continue to work through request-scoped POST responses.
+
+Remote servers may use a static `Authorization` header or a headless OAuth
+client-credentials/refresh-token configuration. Secret values must stay in
+environment variables; settings contain only the variable names:
+
+```json
+{
+  "mcp_servers": {
+    "private-api": {
+      "transport": "http",
+      "url": "https://mcp.example.com/mcp",
+      "oauth": {
+        "token_endpoint": "https://auth.example.com/oauth/token",
+        "client_id": "hao-code",
+        "client_secret_env": "PRIVATE_MCP_CLIENT_SECRET",
+        "access_token_env": "PRIVATE_MCP_ACCESS_TOKEN",
+        "refresh_token_env": "PRIVATE_MCP_REFRESH_TOKEN",
+        "scope": "mcp:tools",
+        "token_endpoint_auth_method": "client_secret_basic"
+      }
+    }
+  }
+}
+```
+
+`token_endpoint_auth_method` accepts `client_secret_basic` (default) or
+`client_secret_post`. HTTP token endpoints are rejected except on loopback.
+OAuth tokens refreshed during a run are kept in memory. Interactive browser
+authorization and dynamic client registration remain the responsibility of the
+host application.
+
 ## Custom Tools (SdkTool)
 
 Define domain-specific tools the agent can call. Implement 4 methods:

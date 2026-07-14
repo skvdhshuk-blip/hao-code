@@ -55,6 +55,8 @@ class AgentLoop
 
     private ?string $interruptSourceTeam = null;
 
+    private ?\Closure $eventPump = null;
+
     public function __construct(
         private readonly QueryEngine $queryEngine,
         private readonly ToolOrchestrator $toolOrchestrator,
@@ -83,6 +85,16 @@ class AgentLoop
     public function setMaxTurns(int $maxTurns): void
     {
         $this->maxTurns = $maxTurns;
+    }
+
+    /**
+     * Register a non-blocking external event pump invoked between agent turns.
+     *
+     * @internal
+     */
+    public function setEventPump(?callable $eventPump): void
+    {
+        $this->eventPump = $eventPump === null ? null : \Closure::fromCallable($eventPump);
     }
 
     public function setWorkingDirectory(string $dir): void
@@ -232,6 +244,9 @@ class AgentLoop
         $systemPrompt = $this->contextBuilder->buildSystemPrompt();
 
         while ($turnCount < $this->maxTurns && ! $this->aborted) {
+            if ($this->eventPump !== null) {
+                ($this->eventPump)();
+            }
             $turnCount++;
 
             if ($turnCount > $this->lastRunTurns) {
