@@ -62,7 +62,7 @@ final class SandboxConfig
         if (! in_array($network, ['blocked', 'allow-all'], true)) {
             throw new \InvalidArgumentException("Unsupported native sandbox network policy: {$network}");
         }
-        if ($root !== null && rtrim($root, DIRECTORY_SEPARATOR) === '') {
+        if ($root !== null && self::isFilesystemRoot($root)) {
             throw new \InvalidArgumentException('The native sandbox root cannot be the filesystem root.');
         }
 
@@ -77,6 +77,69 @@ final class SandboxConfig
             options: [
                 'network' => $network,
                 'engine' => $engine,
+            ],
+        );
+    }
+
+    /**
+     * Create a Tokimo-backed cross-platform sandbox.
+     *
+     * The optional host runner is selected from the verified user cache by
+     * operating system and CPU architecture. The guest image artifacts also
+     * live outside the Composer package and are supplied through $baseRootfs.
+     *
+     * @api
+     */
+    public static function tokimo(
+        string $baseRootfs,
+        string $mode = 'full',
+        string $sync = 'upload-cwd',
+        string $remoteCwd = '/workspace',
+        string $cleanup = 'always',
+        ?string $root = null,
+        array $exclude = [],
+        ?string $binary = null,
+        ?string $vmDir = null,
+        int $memoryMb = 4096,
+        int $cpuCount = 4,
+        string $network = 'blocked',
+        int $startupTimeoutSeconds = 30,
+    ): self {
+        if (! in_array($network, ['blocked', 'allow-all'], true)) {
+            throw new \InvalidArgumentException("Unsupported Tokimo sandbox network policy: {$network}");
+        }
+        if ($memoryMb !== 0 && $memoryMb < 256) {
+            throw new \InvalidArgumentException('Tokimo sandbox memoryMb must be 0 or at least 256.');
+        }
+        if ($cpuCount < 0 || $cpuCount > 64) {
+            throw new \InvalidArgumentException('Tokimo sandbox cpuCount must be between 0 and 64.');
+        }
+        if ($startupTimeoutSeconds < 1) {
+            throw new \InvalidArgumentException('Tokimo sandbox startupTimeoutSeconds must be at least 1.');
+        }
+        if (! str_starts_with($remoteCwd, '/') || $remoteCwd === '/') {
+            throw new \InvalidArgumentException('Tokimo sandbox remoteCwd must be an absolute directory below the guest filesystem root.');
+        }
+        if ($root !== null && self::isFilesystemRoot($root)) {
+            throw new \InvalidArgumentException('The Tokimo sandbox workspace root cannot be the filesystem root.');
+        }
+
+        return new self(
+            provider: 'tokimo',
+            mode: $mode,
+            remoteCwd: $remoteCwd,
+            sync: $sync,
+            cleanup: $cleanup,
+            root: $root,
+            exclude: $exclude,
+            options: [
+                'baseRootfs' => $baseRootfs,
+                'binary' => $binary,
+                'vmDir' => $vmDir,
+                'memoryMb' => $memoryMb,
+                'cpuCount' => $cpuCount,
+                'network' => $network,
+                'startupTimeoutSeconds' => $startupTimeoutSeconds,
             ],
         );
     }
@@ -118,5 +181,14 @@ final class SandboxConfig
     public function enablesBash(): bool
     {
         return $this->mode === 'full';
+    }
+
+    private static function isFilesystemRoot(string $path): bool
+    {
+        $normalized = rtrim(str_replace('\\', '/', trim($path)), '/');
+
+        return $normalized === ''
+            || preg_match('/^[A-Za-z]:$/', $normalized) === 1
+            || preg_match('#^//[^/]+/[^/]+$#', $normalized) === 1;
     }
 }

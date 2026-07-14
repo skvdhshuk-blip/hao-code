@@ -19,6 +19,12 @@
 /storage/*.key
 /storage/pail
 /vendor
+/runtime/sandbox-runner/target
+/bin/haocode-sandbox-darwin-arm64
+/bin/haocode-sandbox-linux-amd64
+/bin/haocode-sandbox-linux-arm64
+/bin/haocode-sandbox-windows-amd64.exe
+/bin/haocode-sandbox-svc-windows-amd64.exe
 Homestead.json
 Homestead.yaml
 Thumbs.db

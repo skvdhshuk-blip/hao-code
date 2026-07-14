@@ -5,6 +5,7 @@ namespace HaoCode\Sdk\Sandbox;
 use HaoCode\Sdk\Sandbox\Backends\LocalSandboxBackend;
 use HaoCode\Sdk\Sandbox\Backends\AgentRunSandboxBackend;
 use HaoCode\Sdk\Sandbox\Backends\NativeSandboxBackend;
+use HaoCode\Sdk\Sandbox\Backends\TokimoSandboxBackend;
 
 /** @internal */
 final class SandboxManager
@@ -14,15 +15,25 @@ final class SandboxManager
         $backend = match ($config->provider) {
             'local' => new LocalSandboxBackend($config),
             'native' => new NativeSandboxBackend($config),
+            'tokimo' => new TokimoSandboxBackend($config),
             'agentrun' => new AgentRunSandboxBackend($config),
             default => throw new \InvalidArgumentException("Unsupported sandbox provider: {$config->provider}"),
         };
 
-        if ($config->sync === 'upload-cwd') {
-            if ($localCwd === null || $localCwd === '') {
-                throw new \InvalidArgumentException('sandbox sync upload-cwd requires HaoCodeConfig::cwd.');
+        try {
+            if ($config->sync === 'upload-cwd') {
+                if ($localCwd === null || $localCwd === '') {
+                    throw new \InvalidArgumentException('sandbox sync upload-cwd requires HaoCodeConfig::cwd.');
+                }
+                self::syncDirectory($backend, $localCwd, $config->remoteCwd, $config->exclude);
             }
-            self::syncDirectory($backend, $localCwd, $config->remoteCwd, $config->exclude);
+        } catch (\Throwable $exception) {
+            try {
+                $backend->close();
+            } catch (\Throwable) {
+                // Preserve the configuration or sync error that prevented creation.
+            }
+            throw $exception;
         }
 
         return new SandboxRuntime($config, $backend);

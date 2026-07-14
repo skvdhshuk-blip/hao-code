@@ -1,0 +1,12 @@
+[package]
+name = "haocode-sandbox-runner"
+version = "0.1.0"
+edition = "2024"
+license = "MIT"
+publish = false
+
+[dependencies]
+base64 = "0.22"
+serde = { version = "1", features = ["derive"] }
+serde_json = "1"
+tokimo-package-sandbox = { git = "https://github.com/tokimo-lab/tokimo-package-sandbox.git", rev = "cd088a117a5c62e66fefcceb5915bd81280a250d" }

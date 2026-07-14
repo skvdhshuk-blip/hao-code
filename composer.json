@@ -33,6 +33,9 @@
             "Tests\\": "tests/"
         }
     },
+    "bin": [
+        "bin/hao-code-sandbox"
+    ],
     "scripts": {
         "test": "phpunit",
         "test:live": "phpunit --group live",

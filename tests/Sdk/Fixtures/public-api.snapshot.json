@@ -763,6 +763,11 @@
                 "signature": "public static function native(string $mode = \"full\", string $sync = \"none\", string $remoteCwd = \"/workspace\", string $cleanup = \"always\", ?string $root = null, array $exclude = [], string $network = \"blocked\", string $engine = \"auto\") : self",
                 "api": true,
                 "internal": false
+            },
+            "tokimo": {
+                "signature": "public static function tokimo(string $baseRootfs, string $mode = \"full\", string $sync = \"upload-cwd\", string $remoteCwd = \"/workspace\", string $cleanup = \"always\", ?string $root = null, array $exclude = [], ?string $binary = null, ?string $vmDir = null, int $memoryMb = 4096, int $cpuCount = 4, string $network = \"blocked\", int $startupTimeoutSeconds = 30) : self",
+                "api": true,
+                "internal": false
             }
         },
         "properties": {

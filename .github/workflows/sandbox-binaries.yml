@@ -1,0 +1,140 @@
+name: sandbox binaries
+
+on:
+  workflow_dispatch:
+  release:
+    types: [published]
+  pull_request:
+    paths:
+      - '.github/workflows/sandbox-binaries.yml'
+      - 'runtime/sandbox-runner/**'
+  push:
+    branches: [main]
+    paths:
+      - '.github/workflows/sandbox-binaries.yml'
+      - 'runtime/sandbox-runner/**'
+
+permissions:
+  contents: read
+
+jobs:
+  build:
+    strategy:
+      fail-fast: false
+      matrix:
+        include:
+          - runner: macos-14
+            artifact: haocode-sandbox-darwin-arm64
+            rust_target: aarch64-apple-darwin
+            build_target: aarch64-apple-darwin
+            source: target/aarch64-apple-darwin/release/haocode-sandbox-runner
+          - runner: ubuntu-24.04
+            artifact: haocode-sandbox-linux-amd64
+            rust_target: x86_64-unknown-linux-gnu
+            build_target: x86_64-unknown-linux-gnu.2.28
+            source: target/x86_64-unknown-linux-gnu/release/haocode-sandbox-runner
+          - runner: ubuntu-24.04-arm
+            artifact: haocode-sandbox-linux-arm64
+            rust_target: aarch64-unknown-linux-gnu
+            build_target: aarch64-unknown-linux-gnu.2.28
+            source: target/aarch64-unknown-linux-gnu/release/haocode-sandbox-runner
+          - runner: windows-latest
+            artifact: haocode-sandbox-windows-amd64.exe
+            rust_target: x86_64-pc-windows-msvc
+            build_target: x86_64-pc-windows-msvc
+            source: target/x86_64-pc-windows-msvc/release/haocode-sandbox-runner.exe
+    runs-on: ${{ matrix.runner }}
+    defaults:
+      run:
+        working-directory: runtime/sandbox-runner
+
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          targets: ${{ matrix.rust_target }}
+
+      - uses: Swatinem/rust-cache@v2
+        with:
+          workspaces: runtime/sandbox-runner
+
+      - uses: mlugg/setup-zig@v2
+        if: runner.os == 'Linux'
+
+      - uses: taiki-e/install-action@v2
+        if: runner.os == 'Linux'
+        with:
+          tool: cargo-zigbuild
+
+      - name: Build runner
+        shell: bash
+        run: |
+          if [[ "${{ runner.os }}" == "Linux" ]]; then
+            cargo zigbuild --release --locked --target "${{ matrix.build_target }}"
+          else
+            cargo build --release --locked --target "${{ matrix.build_target }}"
+          fi
+
+      - name: Check out Tokimo service source
+        if: runner.os == 'Windows'
+        uses: actions/checkout@v4
+        with:
+          repository: tokimo-lab/tokimo-package-sandbox
+          ref: cd088a117a5c62e66fefcceb5915bd81280a250d
+          path: runtime/sandbox-runner/tokimo-source
+
+      - name: Build Windows service
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          Copy-Item 'tokimo-service.Cargo.lock' 'tokimo-source/Cargo.lock'
+          cargo build --release --locked --manifest-path tokimo-source/Cargo.toml --bin tokimo-sandbox-svc
+
+      - name: Sign macOS runner with Virtualization entitlement
+        if: runner.os == 'macOS'
+        run: codesign --force --sign - --entitlements macos.entitlements ${{ matrix.source }}
+
+      - name: Stage Unix runner
+        if: runner.os != 'Windows'
+        shell: bash
+        run: |
+          mkdir -p dist
+          cp "${{ matrix.source }}" "dist/${{ matrix.artifact }}"
+          chmod 0755 "dist/${{ matrix.artifact }}"
+          shasum -a 256 "dist/${{ matrix.artifact }}" > "dist/${{ matrix.artifact }}.sha256"
+
+      - name: Stage Windows runner
+        if: runner.os == 'Windows'
+        shell: pwsh
+        run: |
+          New-Item -ItemType Directory -Force dist | Out-Null
+          Copy-Item '${{ matrix.source }}' 'dist/${{ matrix.artifact }}'
+          Copy-Item 'tokimo-source/target/release/tokimo-sandbox-svc.exe' 'dist/haocode-sandbox-svc-windows-amd64.exe'
+          $hash = (Get-FileHash 'dist/${{ matrix.artifact }}' -Algorithm SHA256).Hash.ToLower()
+          "$hash  ${{ matrix.artifact }}" | Set-Content -NoNewline 'dist/${{ matrix.artifact }}.sha256'
+          $serviceHash = (Get-FileHash 'dist/haocode-sandbox-svc-windows-amd64.exe' -Algorithm SHA256).Hash.ToLower()
+          "$serviceHash  haocode-sandbox-svc-windows-amd64.exe" | Set-Content -NoNewline 'dist/haocode-sandbox-svc-windows-amd64.exe.sha256'
+
+      - uses: actions/upload-artifact@v4
+        with:
+          name: ${{ matrix.artifact }}
+          path: runtime/sandbox-runner/dist/*
+          if-no-files-found: error
+
+  publish:
+    if: github.event_name == 'release'
+    needs: build
+    runs-on: ubuntu-24.04
+    permissions:
+      contents: write
+    steps:
+      - uses: actions/download-artifact@v4
+        with:
+          path: release-assets
+          merge-multiple: true
+
+      - name: Upload native runners to the release
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: gh release upload "${{ github.event.release.tag_name }}" release-assets/* --clobber

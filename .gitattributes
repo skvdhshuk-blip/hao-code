@@ -7,5 +7,14 @@
 *.php diff=php
 
 /.github export-ignore
+/bin/README.md export-ignore
+/bin/SHA256SUMS export-ignore
+/bin/haocode-sandbox-darwin-arm64 export-ignore
+/bin/haocode-sandbox-linux-amd64 export-ignore
+/bin/haocode-sandbox-linux-arm64 export-ignore
+/bin/haocode-sandbox-windows-amd64.exe export-ignore
+/bin/haocode-sandbox-svc-windows-amd64.exe export-ignore
+/runtime/sandbox-runner export-ignore
+/scripts/verify-sandbox-binaries.php export-ignore
 CHANGELOG.md export-ignore
 .styleci.yml export-ignore

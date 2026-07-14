@@ -1,0 +1,97 @@
+#!/usr/bin/env php
+<?php
+
+declare(strict_types=1);
+
+$autoloaders = array_filter([
+    $GLOBALS['_composer_autoload_path'] ?? null,
+    dirname(__DIR__).'/vendor/autoload.php',
+    dirname(__DIR__, 3).'/autoload.php',
+]);
+foreach ($autoloaders as $autoloader) {
+    if (is_string($autoloader) && is_file($autoloader)) {
+        require_once $autoloader;
+        break;
+    }
+}
+if (! class_exists(\HaoCode\Sdk\Sandbox\SandboxBinaryInstaller::class)) {
+    fwrite(STDERR, "Unable to locate the Composer autoloader for hao-code.\n");
+    exit(1);
+}
+
+use HaoCode\Sdk\Sandbox\SandboxBinaryInstaller;
+use HaoCode\Sdk\Sandbox\SandboxBinaryResolver;
+
+$command = $argv[1] ?? 'help';
+$releaseTag = null;
+$releaseBase = null;
+$force = false;
+$withRuntime = false;
+foreach (array_slice($argv, 2) as $argument) {
+    if ($argument === '--force') {
+        $force = true;
+    } elseif ($argument === '--with-runtime') {
+        $withRuntime = true;
+    } elseif (str_starts_with($argument, '--release-tag=')) {
+        $releaseTag = substr($argument, strlen('--release-tag='));
+    } elseif (str_starts_with($argument, '--release-base=')) {
+        $releaseBase = substr($argument, strlen('--release-base='));
+    } else {
+        fwrite(STDERR, "Unknown option: {$argument}\n");
+        exit(2);
+    }
+}
+
+if ($command === 'install') {
+    try {
+        $developmentRunner = dirname(__DIR__).'/bin/'.SandboxBinaryInstaller::platformBinaryName();
+        if ($releaseTag === null && $releaseBase === null && is_file($developmentRunner)) {
+            $paths = [SandboxBinaryResolver::resolve()];
+        } else {
+            $paths = SandboxBinaryInstaller::install($releaseTag, $releaseBase, $force);
+        }
+        foreach ($paths as $path) {
+            fwrite(STDOUT, "Installed {$path}\n");
+        }
+        if ($withRuntime) {
+            putenv('HAOCODE_SANDBOX_BINARY='.$paths[0]);
+            $setup = [PHP_BINARY, dirname(__DIR__).'/scripts/sandbox-setup.php'];
+            if ($force) {
+                $setup[] = '--force';
+            }
+            $process = proc_open($setup, [STDIN, STDOUT, STDERR], $pipes, null, null, ['bypass_shell' => true]);
+            if (! is_resource($process) || proc_close($process) !== 0) {
+                throw new RuntimeException('Sandbox guest runtime setup failed.');
+            }
+        }
+        exit(0);
+    } catch (Throwable $exception) {
+        fwrite(STDERR, $exception->getMessage()."\n");
+        exit(1);
+    }
+}
+
+if ($command === 'status') {
+    try {
+        fwrite(STDOUT, 'Sandbox runner: '.SandboxBinaryResolver::resolve()."\n");
+        exit(0);
+    } catch (Throwable $exception) {
+        fwrite(STDOUT, "Sandbox runner: not installed\n{$exception->getMessage()}\n");
+        exit(1);
+    }
+}
+
+if (! in_array($command, ['help', '--help', '-h'], true)) {
+    fwrite(STDERR, "Unknown command: {$command}\n");
+    exit(2);
+}
+
+fwrite(STDOUT, <<<'HELP'
+Usage:
+  hao-code-sandbox install [--with-runtime] [--force] [--release-tag=vX.Y.Z] [--release-base=URL]
+  hao-code-sandbox status
+
+The install command downloads only the runner for this operating system and
+CPU. Add --with-runtime to also download the verified guest kernel/rootfs.
+HELP
+    ."\n");

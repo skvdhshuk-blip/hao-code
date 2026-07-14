@@ -94,10 +94,43 @@ Runnable examples:
 - Symfony components `^6.4`, `^7.0`, or `^8.0` installed by Composer
 - Optional `pcntl` and `posix` extensions for background agents and teams
 - macOS `/usr/bin/sandbox-exec` or Linux `bubblewrap` for `SandboxConfig::native()`
+- `zstd` and `tar` when installing the optional Tokimo kernel/rootfs
+- Linux `bubblewrap`, or KVM plus `cloud-hypervisor` and `virtiofsd`, for `SandboxConfig::tokimo()`
+- Windows Virtual Machine Platform plus the downloaded SYSTEM service for `SandboxConfig::tokimo()`
 - SQLite/PDO SQLite plus `pcntl` and `posix` only when embedding the optional cron daemon services
 
 The basic SDK, local filesystem sandbox, and remote AgentRun backend do not
 require the optional process or SQLite extensions.
+
+### Optional Tokimo sandbox installation
+
+`composer require sk-wang/hao-code` installs only the PHP SDK. It does not
+download Tokimo, native runners, or guest images. Install the optional sandbox
+now or later with the Composer bin command:
+
+```bash
+# Install only the native runner for the current OS/CPU:
+vendor/bin/hao-code-sandbox install
+
+# Recommended first-time setup: runner plus guest kernel/rootfs:
+vendor/bin/hao-code-sandbox install --with-runtime
+
+# Check which runner is currently available:
+vendor/bin/hao-code-sandbox status
+```
+
+No separate Tokimo installation is required. On macOS and Linux,
+`--with-runtime` may ask for `sudo` while extracting the rootfs to preserve its
+Linux uid/gid ownership. From a hao-code source checkout, use
+`bin/hao-code-sandbox` instead of `vendor/bin/hao-code-sandbox`.
+
+Composer does not execute dependency package scripts or provide a
+dependency-specific install flag. To install the SDK and complete sandbox in
+one shell command, use:
+
+```bash
+composer require sk-wang/hao-code && vendor/bin/hao-code-sandbox install --with-runtime
+```
 
 ---
 
@@ -415,7 +448,79 @@ sanitized environment, and blocks network access by default. Set
 be set to `seatbelt` or `bubblewrap` to require a specific engine; the default
 `auto` selects the native engine for the current platform. This backend does not
 yet provide Tokimo's Linux micro-VM boundary, PTY transport, or packaged rootfs;
-use AgentRun when a remote/container boundary is required.
+use the Tokimo or AgentRun backend when a stronger boundary is required.
+
+### Tokimo cross-platform backend
+
+`SandboxConfig::tokimo()` selects an optional native host runner. Supported
+targets are macOS arm64, Linux amd64 and arm64, and Windows amd64. The runner is
+not bundled with the Composer package; this keeps the default SDK install small.
+The same runner process owns a persistent sandbox for the entire SDK run, while
+PHP continues to expose the standard sandbox file and shell tool interfaces.
+
+Install only the runner, or the complete runtime, at any time after Composer
+installation:
+
+```bash
+# Install only the runner when baseRootfs is already available:
+vendor/bin/hao-code-sandbox install
+
+# Install the runner and the guest kernel/rootfs:
+vendor/bin/hao-code-sandbox install --with-runtime
+
+# Report whether the runner is installed:
+vendor/bin/hao-code-sandbox status
+
+# From a hao-code source checkout:
+bin/hao-code-sandbox install --with-runtime
+```
+
+The command downloads only the current OS/CPU release assets, verifies their
+SHA-256 checksums, and stores them in the user's cache. If the backend is used
+before installation, it fails with the command required to install it. The
+legacy `php scripts/sandbox-setup.php` entry point remains available and now
+installs the runner first when necessary.
+
+You do not need a separate Tokimo installation. On macOS and Linux, complete
+runtime setup may request `sudo` to preserve the guest rootfs ownership during
+extraction.
+
+Use the `baseRootfs` path printed by the `--with-runtime` command:
+
+```php
+use HaoCode\Sdk\Sandbox\SandboxConfig;
+
+$baseRootfs = getenv('HAOCODE_SANDBOX_ROOTFS');
+if (! is_string($baseRootfs) || $baseRootfs === '') {
+    throw new RuntimeException('Set HAOCODE_SANDBOX_ROOTFS to the setup output.');
+}
+
+$config = new HaoCodeConfig(
+    cwd: __DIR__,
+    sandbox: SandboxConfig::tokimo(
+        baseRootfs: $baseRootfs,
+        sync: 'upload-cwd',
+        remoteCwd: '/workspace',
+        memoryMb: 4096,
+        cpuCount: 4,
+        network: 'blocked',
+    ),
+    allowedTools: ['Read', 'Write', 'Glob', 'Grep', 'Bash'],
+    permissionMode: 'bypass_permissions',
+);
+```
+
+`network` accepts `blocked` (the default) or `allow-all`. `memoryMb: 0` and
+`cpuCount: 0` ask Tokimo to use its platform defaults. `binary` can override the
+cached runner, and `vmDir` can preserve VM runtime state in a caller-managed
+directory. On Linux, the backend uses a micro-VM when KVM and the VM helpers are
+available and otherwise falls back to bubblewrap. Install `cloud-hypervisor` and
+`virtiofsd` before running `sandbox-setup.php`; the script links them into the
+versioned runtime cache layout expected by Tokimo. Install `bubblewrap` when the
+fallback is required. On Windows, Tokimo's Hyper-V backend also requires the
+downloaded service to be installed once as
+administrator by running
+`haocode-sandbox-svc-windows-amd64.exe --install` from an elevated terminal.
 
 ### Alibaba Cloud AgentRun backend
 
