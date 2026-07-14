@@ -374,6 +374,20 @@ the PHP host project directory. Sandbox mode replaces `Read`, `Write`, `Glob`,
 and `Grep` with sandbox-scoped tools. Set `mode: 'full'` to also replace `Bash`
 with a sandbox-scoped shell.
 
+Choose the backend by the isolation boundary you need:
+
+| Backend | Hosts | Use it for |
+|---------|-------|------------|
+| `local()` | Any supported PHP host | File workspace isolation without untrusted `Bash`; shell commands still run as normal host processes |
+| `native()` | macOS and Linux | Lightweight local process isolation through Seatbelt or bubblewrap |
+| `tokimo()` | macOS arm64, Linux amd64/arm64, Windows amd64 | Recommended cross-platform boundary for agent-generated or untrusted shell commands; installed separately on demand |
+| `agentRun()` | Any host with AgentRun access | Remote cloud isolation when commands and files must stay off the PHP host |
+
+For a portable full sandbox, prefer `tokimo()`. Its runner and guest runtime are
+intentionally excluded from the default Composer install; run
+`vendor/bin/hao-code-sandbox install --with-runtime` before first use or at any
+later time. Use `local()` when only sandbox-scoped file tools are required.
+
 ```php
 use HaoCode\Sdk\HaoCode;
 use HaoCode\Sdk\HaoCodeConfig;
