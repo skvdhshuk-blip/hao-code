@@ -67,6 +67,36 @@ class OpenAiChatProviderTest extends TestCase
         $this->assertSame('Bash', $payload['tools'][0]['function']['name']);
     }
 
+    public function test_build_payload_places_all_tool_results_before_retry_text(): void
+    {
+        $provider = new OpenAiChatProvider(
+            apiKey: 'test',
+            model: 'deepseek-chat',
+            httpClient: new MockHttpClient([]),
+        );
+
+        $payload = $provider->buildPayload(
+            systemPrompt: [],
+            messages: [
+                ['role' => 'assistant', 'content' => [
+                    ['type' => 'tool_use', 'id' => 'call_1', 'name' => 'Read', 'input' => ['file_path' => 'a.php']],
+                    ['type' => 'tool_use', 'id' => 'call_2', 'name' => 'Read', 'input' => ['file_path' => 'b.php']],
+                ]],
+                ['role' => 'user', 'content' => [
+                    ['type' => 'tool_result', 'tool_use_id' => 'call_1', 'content' => 'first result'],
+                    ['type' => 'tool_result', 'tool_use_id' => 'call_2', 'content' => 'second result'],
+                    ['type' => 'text', 'text' => 'Retry with corrected input.'],
+                ]],
+            ],
+            tools: [],
+        );
+
+        $this->assertSame(['assistant', 'tool', 'tool', 'user'], array_column($payload['messages'], 'role'));
+        $this->assertSame('call_1', $payload['messages'][1]['tool_call_id']);
+        $this->assertSame('call_2', $payload['messages'][2]['tool_call_id']);
+        $this->assertSame('Retry with corrected input.', $payload['messages'][3]['content']);
+    }
+
     public function test_build_payload_emits_reasoning_effort_when_thinking_enabled(): void
     {
         $provider = new OpenAiChatProvider(

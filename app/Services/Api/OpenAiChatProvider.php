@@ -681,6 +681,10 @@ class OpenAiChatProvider implements ApiKeyAwareProvider
             }
         }
 
+        foreach ($trailingToolResults as $toolMessage) {
+            $out[] = $toolMessage;
+        }
+
         if ($parts !== []) {
             // Collapse a single text-only block to a plain string — many
             // proxies mishandle the array form for trivial messages.
@@ -689,10 +693,6 @@ class OpenAiChatProvider implements ApiKeyAwareProvider
             } else {
                 $out[] = ['role' => 'user', 'content' => $parts];
             }
-        }
-
-        foreach ($trailingToolResults as $toolMessage) {
-            $out[] = $toolMessage;
         }
     }
 
