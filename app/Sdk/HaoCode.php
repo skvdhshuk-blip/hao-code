@@ -89,6 +89,7 @@ class HaoCode
                 usage: self::extractUsage($loop),
                 cost: $loop->getEstimatedCost(),
                 sessionId: $config->ephemeral ? null : $loop->getSessionManager()->getSessionId(),
+                turnsUsed: $loop->getLastRunTurns(),
             );
         } finally {
             $run->close();

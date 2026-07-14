@@ -147,6 +147,61 @@ class AgentLoopTest extends TestCase
         $this->assertStringContainsString('Continue exactly from where you left off.', $messages[2]['content']);
     }
 
+    public function test_incomplete_response_retry_does_not_repeat_turn_start_callback(): void
+    {
+        $qe = $this->createMock(QueryEngine::class);
+        $qe->expects($this->exactly(2))
+            ->method('query')
+            ->willReturnOnConsecutiveCalls(
+                $this->makeIncompletePlainTextProcessor('部分结果'),
+                $this->makePlainTextProcessor('已完成'),
+            );
+
+        $turns = [];
+        $loop = $this->makeLoop($qe);
+        $loop->run('继续', onTurnStart: function (int $turn) use (&$turns): void {
+            $turns[] = $turn;
+        });
+
+        $this->assertSame([1], $turns);
+        $this->assertSame(1, $loop->getLastRunTurns());
+    }
+
+    public function test_empty_final_response_is_retried_before_returning(): void
+    {
+        $qe = $this->createMock(QueryEngine::class);
+        $qe->expects($this->exactly(2))
+            ->method('query')
+            ->willReturnOnConsecutiveCalls(
+                $this->makePlainTextProcessor(''),
+                $this->makePlainTextProcessor('已完成'),
+            );
+
+        $loop = $this->makeLoop($qe);
+
+        $this->assertSame('已完成', $loop->run('继续'));
+        $this->assertSame(1, $loop->getLastRunTurns());
+    }
+
+    public function test_repeated_empty_final_response_throws_instead_of_returning_empty_success(): void
+    {
+        $qe = $this->createMock(QueryEngine::class);
+        $qe->expects($this->exactly(3))
+            ->method('query')
+            ->willReturnOnConsecutiveCalls(
+                $this->makePlainTextProcessor(''),
+                $this->makePlainTextProcessor(''),
+                $this->makePlainTextProcessor(''),
+            );
+
+        $loop = $this->makeLoop($qe);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('empty final response');
+
+        $loop->run('继续');
+    }
+
     public function test_incomplete_progress_note_is_not_added_to_history_before_retry(): void
     {
         $qe = $this->createMock(QueryEngine::class);
@@ -283,6 +338,14 @@ class AgentLoopTest extends TestCase
         $processor = new StreamProcessor;
         $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('message_start', [
             'message' => ['id' => 'msg_1', 'usage' => ['input_tokens' => 42, 'output_tokens' => 7]],
+        ]));
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('content_block_start', [
+            'index' => 0,
+            'content_block' => ['type' => 'text', 'text' => ''],
+        ]));
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('content_block_delta', [
+            'index' => 0,
+            'delta' => ['type' => 'text_delta', 'text' => 'done'],
         ]));
         $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('message_delta', [
             'delta' => ['stop_reason' => 'end_turn'],
@@ -1834,6 +1897,14 @@ class AgentLoopTest extends TestCase
                     'cache_read_input_tokens' => 25,
                 ],
             ],
+        ]));
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('content_block_start', [
+            'index' => 0,
+            'content_block' => ['type' => 'text', 'text' => ''],
+        ]));
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('content_block_delta', [
+            'index' => 0,
+            'delta' => ['type' => 'text_delta', 'text' => 'done'],
         ]));
         $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('message_delta', [
             'delta' => ['stop_reason' => 'end_turn'],

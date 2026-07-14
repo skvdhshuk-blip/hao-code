@@ -176,6 +176,7 @@ class SdkE2ETest extends TestCase
         $this->assertStringContainsString('File created', $result->text);
         $this->assertFileExists($this->projectDir.'/hello.txt');
         $this->assertSame("Hello from SDK!\n", file_get_contents($this->projectDir.'/hello.txt'));
+        $this->assertSame(2, $result->turnsUsed);
     }
 
     // ──────────────────────────────────────────────────────────────
@@ -459,6 +460,7 @@ class SdkE2ETest extends TestCase
         $this->assertGreaterThanOrEqual(0, $result->inputTokens());
         $this->assertGreaterThanOrEqual(0, $result->outputTokens());
         $this->assertIsFloat($result->cost);
+        $this->assertSame(1, $result->turnsUsed);
         // Stringable
         $this->assertSame('Result with metadata.', (string) $result);
     }

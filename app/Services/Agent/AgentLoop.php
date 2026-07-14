@@ -40,6 +40,9 @@ class AgentLoop
     /** Tracks the most recent API call's input token count for auto-compact decisions. */
     private int $lastTurnInputTokens = 0;
 
+    /** Number of logical agent turns consumed by the most recent run. */
+    private int $lastRunTurns = 0;
+
     private bool $autoTitleGenerated = false;
 
     private ?string $workingDirectory = null;
@@ -222,6 +225,7 @@ class AgentLoop
         }
 
         $turnCount = 0;
+        $this->lastRunTurns = 0;
         $malformedToolInputRetries = [];
         $totalMalformedToolInputRetries = 0;
         $incompleteResponseRetries = 0;
@@ -230,8 +234,11 @@ class AgentLoop
         while ($turnCount < $this->maxTurns && ! $this->aborted) {
             $turnCount++;
 
-            if ($onTurnStart) {
-                $onTurnStart($turnCount);
+            if ($turnCount > $this->lastRunTurns) {
+                $this->lastRunTurns = $turnCount;
+                if ($onTurnStart) {
+                    $onTurnStart($turnCount);
+                }
             }
 
             // 1. Auto-compact if context is getting large.
@@ -363,6 +370,14 @@ class AgentLoop
                         $turnCount--;
 
                         continue;
+                    }
+
+                    if (! $this->assistantMessageHasVisibleContent($assistantMessage)) {
+                        $streamingExecutor->cleanup();
+
+                        throw new \RuntimeException(
+                            "Model returned an empty final response after {$incompleteResponseRetries} retries.",
+                        );
                     }
 
                     $incompleteResponseRetries = 0;
@@ -671,6 +686,11 @@ class AgentLoop
         return $this->lastTurnInputTokens;
     }
 
+    public function getLastRunTurns(): int
+    {
+        return $this->lastRunTurns;
+    }
+
     public function getTotalOutputTokens(): int
     {
         return $this->totalOutputTokens;
@@ -715,6 +735,7 @@ class AgentLoop
         $this->totalCacheCreationTokens = 0;
         $this->totalCacheReadTokens = 0;
         $this->lastTurnInputTokens = 0;
+        $this->lastRunTurns = 0;
         $this->costTracker->reset();
     }
 
@@ -989,6 +1010,10 @@ class AgentLoop
             return true;
         }
 
+        if (! $this->assistantMessageHasVisibleContent($assistantMessage)) {
+            return true;
+        }
+
         if ($processor->hasFinalMessageEvent()) {
             return false;
         }
@@ -1037,7 +1062,7 @@ class AgentLoop
         if ($stopReason === 'max_tokens') {
             $lines[] = 'Your previous response hit the output limit before you finished.';
         } else {
-            $lines[] = 'Your previous response ended before a final completion signal arrived.';
+            $lines[] = 'Your previous response ended without a usable final answer.';
         }
 
         $lines[] = 'Continue exactly from where you left off.';
