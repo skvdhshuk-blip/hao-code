@@ -26,6 +26,9 @@ class SessionMemoryTest extends TestCase
         if (file_exists($file)) {
             unlink($file);
         }
+        if (file_exists($file.'.lock')) {
+            unlink($file.'.lock');
+        }
         $dir = $this->tmpDir . '/.haocode';
         if (is_dir($dir)) {
             rmdir($dir);
@@ -194,10 +197,11 @@ class SessionMemoryTest extends TestCase
             ];
         }
 
-        $ref = new \ReflectionClass($this->memory);
-        $prop = $ref->getProperty('memories');
-        $prop->setAccessible(true);
-        $prop->setValue($this->memory, $data);
+        mkdir($this->tmpDir.'/.haocode', 0755, true);
+        file_put_contents(
+            $this->tmpDir.'/.haocode/memory.json',
+            json_encode($data, JSON_THROW_ON_ERROR),
+        );
 
         $this->memory->compact(maxEntries: 3);
         $list = $this->memory->list();

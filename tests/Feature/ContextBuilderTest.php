@@ -4,10 +4,11 @@ namespace Tests\Feature;
 
 use HaoCode\Services\Agent\ContextBuilder;
 use HaoCode\Services\Git\GitContext;
-use HaoCode\Services\Memory\SessionMemory;
 use HaoCode\Services\OutputStyle\OutputStyleLoader;
 use HaoCode\Services\Settings\SettingsManager;
+use HaoCode\Sdk\Memory\MemoryStoreInterface;
 use HaoCode\Tools\Skill\SkillLoader;
+use HaoCode\Tools\Memory\MemoryWriteTool;
 use HaoCode\Tools\ToolRegistry;
 use Tests\TestCase;
 
@@ -31,13 +32,14 @@ class ContextBuilderTest extends TestCase
         $m->method('getSystemPrompt')->willReturn($stubs['systemPrompt'] ?? null);
         $m->method('getAppendSystemPrompt')->willReturn($stubs['appendPrompt'] ?? null);
         $m->method('getOutputStyle')->willReturn($stubs['outputStyle'] ?? null);
+        $m->method('getMemorySummaryLevel')->willReturn($stubs['memorySummaryLevel'] ?? 'l0');
         return $m;
     }
 
-    private function makeSessionMemory(string $memories = ''): SessionMemory
+    private function makeSessionMemory(string $memories = ''): MemoryStoreInterface
     {
-        $m = $this->createMock(SessionMemory::class);
-        $m->method('forSystemPrompt')->willReturn($memories);
+        $m = $this->createMock(MemoryStoreInterface::class);
+        $m->method('all')->willReturn($memories === '' ? [] : ['fixture' => $memories]);
         return $m;
     }
 
@@ -201,7 +203,28 @@ class ContextBuilderTest extends TestCase
         $this->assertStringNotContainsString('# Skills', $text);
         $this->assertStringNotContainsString('# Git Status', $text);
         $this->assertStringNotContainsString('# Project Instructions', $text);
-        $this->assertStringNotContainsString('# Session Memory', $text);
+        $this->assertStringNotContainsString('# Long-Term Memory', $text);
+    }
+
+    public function test_text_only_prompt_includes_explicitly_configured_long_term_memory(): void
+    {
+        $builder = new ContextBuilder(
+            $this->makeSettings(),
+            new ToolRegistry(),
+            $this->makeSessionMemory('user prefers concise responses'),
+            $this->makeSkillLoader(),
+            $this->makeGitContext(),
+            null,
+            getcwd() ?: '/',
+            true,
+            true,
+        );
+
+        $text = $builder->buildSystemPrompt()[0]['text'];
+
+        $this->assertStringContainsString('# Long-Term Memory', $text);
+        $this->assertStringContainsString('user prefers concise responses', $text);
+        $this->assertStringNotContainsString('# Project Instructions', $text);
     }
 
     public function test_prompt_includes_truthful_validation_instructions(): void
@@ -247,14 +270,30 @@ class ContextBuilderTest extends TestCase
     {
         $sessionMemory = $this->makeSessionMemory("Remember: user prefers concise responses");
         $result = $this->makeBuilder(['sessionMemory' => $sessionMemory])->buildSystemPrompt();
-        $this->assertStringContainsString('# Session Memory', $result[0]['text']);
+        $this->assertStringContainsString('# Long-Term Memory', $result[0]['text']);
         $this->assertStringContainsString('user prefers concise responses', $result[0]['text']);
     }
 
     public function test_session_memory_section_absent_when_empty(): void
     {
         $result = $this->makeBuilder()->buildSystemPrompt();
-        $this->assertStringNotContainsString('# Session Memory', $result[0]['text']);
+        $this->assertStringNotContainsString('# Long-Term Memory', $result[0]['text']);
+    }
+
+    public function test_memory_write_tool_adds_explicit_update_policy(): void
+    {
+        $memoryStore = $this->makeSessionMemory();
+        $registry = new ToolRegistry();
+        $registry->register(new MemoryWriteTool($memoryStore));
+
+        $text = $this->makeBuilder([
+            'sessionMemory' => $memoryStore,
+            'toolRegistry' => $registry,
+        ])->buildSystemPrompt()[0]['text'];
+
+        $this->assertStringContainsString('# Long-Term Memory Update Policy', $text);
+        $this->assertStringContainsString('explicitly asks to remember', $text);
+        $this->assertStringContainsString('Never store credentials', $text);
     }
 
     public function test_skills_section_included_when_non_empty(): void

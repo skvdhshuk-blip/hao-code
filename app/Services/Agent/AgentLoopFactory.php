@@ -9,14 +9,17 @@ use HaoCode\Services\Compact\ContextCompactor;
 use HaoCode\Services\Cost\CostTracker;
 use HaoCode\Services\Git\GitContext;
 use HaoCode\Services\Hooks\HookExecutor;
-use HaoCode\Services\Memory\SessionMemory;
 use HaoCode\Services\OutputStyle\OutputStyleLoader;
+use HaoCode\Sdk\Memory\JsonMemoryStore;
 use HaoCode\Services\Permissions\DenialTracker;
 use HaoCode\Services\Permissions\PermissionChecker;
 use HaoCode\Services\Session\SessionManager;
 use HaoCode\Services\Settings\SettingsManager;
 use HaoCode\Services\Telemetry\PhoenixTracer;
 use HaoCode\Tools\Config\ConfigTool;
+use HaoCode\Tools\Memory\MemoryDeleteTool;
+use HaoCode\Tools\Memory\MemoryReadTool;
+use HaoCode\Tools\Memory\MemoryWriteTool;
 use HaoCode\Tools\AskUserQuestion\AskUserQuestionTool;
 use HaoCode\Tools\Skill\SkillDefinition;
 use HaoCode\Tools\Skill\SkillTool;
@@ -57,6 +60,8 @@ class AgentLoopFactory
                 $settings,
                 new SkillLoader($projectDirectory),
                 new CancellationToken(),
+                memoryStore: new JsonMemoryStore($settings->getMemoryStoragePath()),
+                memoryTools: ['MemoryRead'],
             );
         }
 
@@ -69,6 +74,23 @@ class AgentLoopFactory
         );
         foreach ($additionalTools as $tool) {
             $toolRegistry->register($tool);
+        }
+
+        if ($runContext !== null) {
+            $memoryStore = $runContext->memoryStore ?? new JsonMemoryStore;
+            foreach (['MemoryRead', 'MemoryWrite', 'MemoryDelete'] as $memoryToolName) {
+                $toolRegistry->unregister($memoryToolName);
+            }
+            foreach ([
+                new MemoryReadTool($memoryStore),
+                new MemoryWriteTool($memoryStore),
+                new MemoryDeleteTool($memoryStore),
+            ] as $memoryTool) {
+                if (in_array($memoryTool->name(), $runContext->memoryTools, true)
+                    && ($toolFilter === null || $toolFilter($memoryTool->name()))) {
+                    $toolRegistry->register($memoryTool);
+                }
+            }
         }
 
         if ($runContext?->enableAskUser) {
@@ -125,12 +147,13 @@ class AgentLoopFactory
             $contextBuilder = new ContextBuilder(
                 settings: $settings,
                 toolRegistry: $toolRegistry,
-                sessionMemory: $this->container->make(SessionMemory::class),
+                memoryStore: $runContext->memoryStore ?? new JsonMemoryStore,
                 skillLoader: $runContext->skillLoader,
                 gitContext: new GitContext($runContext->projectDirectory),
                 outputStyleLoader: new OutputStyleLoader($runContext->projectDirectory),
                 workingDirectory: $runContext->projectDirectory,
                 textOnly: $toolRegistry->getAllTools() === [],
+                includeMemoryInTextOnly: $runContext->includeMemoryInTextOnly,
             );
         } else {
             $settings = $this->container->make(SettingsManager::class);

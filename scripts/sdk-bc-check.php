@@ -27,6 +27,8 @@ use HaoCode\Sdk\HumanDecision;
 use HaoCode\Sdk\HumanInterrupt;
 use HaoCode\Sdk\HumanInterruptException;
 use HaoCode\Sdk\Message;
+use HaoCode\Sdk\Memory\JsonMemoryStore;
+use HaoCode\Sdk\Memory\MemoryStoreInterface;
 use HaoCode\Sdk\QueryResult;
 use HaoCode\Sdk\Sandbox\SandboxConfig;
 use HaoCode\Sdk\SdkSkill;
@@ -55,6 +57,8 @@ $classes = [
     Message::class,
     SdkTool::class,
     SdkSkill::class,
+    MemoryStoreInterface::class,
+    JsonMemoryStore::class,
     AbortController::class,
     StructuredResult::class,
     HaoCodeSdkServiceProvider::class,
@@ -162,7 +166,7 @@ foreach ($classes as $className) {
     $classIsInternal = isInternal($classDoc);
 
     $entry = [
-        'kind' => $ref->isAbstract() ? 'abstract_class' : 'class',
+        'kind' => $ref->isInterface() ? 'interface' : ($ref->isAbstract() ? 'abstract_class' : 'class'),
         'api' => $classIsApi,
         'internal' => $classIsInternal,
         'methods' => [],

@@ -144,7 +144,7 @@
         "internal": false,
         "methods": {
             "__construct": {
-                "signature": "public function __construct(?string $apiKey = null, ?string $model = null, ?string $baseUrl = null, ?string $providerType = null, ?int $maxTokens = null, ?string $cwd = null, int $maxTurns = 50, ?float $maxBudgetUsd = null, string $permissionMode = \"default\", array $allowedTools = [], array $disallowedTools = [], ?string $systemPrompt = null, ?string $appendSystemPrompt = null, bool $thinkingEnabled = false, int $thinkingBudget = 10000, mixed $onText = null, mixed $onThinking = null, mixed $onToolStart = null, mixed $onToolComplete = null, mixed $onTurnStart = null, bool $ephemeral = true, array $tools = [], array $skills = [], ?HaoCode\\Sdk\\AbortController $abortController = null, ?string $sessionId = null, bool $continueSession = false, ?array $responseSchema = null, ?HaoCode\\Sdk\\CredentialPool $credentialPool = null, ?HaoCode\\Sdk\\Sandbox\\SandboxConfig $sandbox = null, string $memorySummaryLevel = \"l0\", ?string $memoryStoragePath = null, array $skillDirectories = [], bool $recursiveSkillDiscovery = false, array $interruptOn = [], bool $enableAskUser = false)",
+                "signature": "public function __construct(?string $apiKey = null, ?string $model = null, ?string $baseUrl = null, ?string $providerType = null, ?int $maxTokens = null, ?string $cwd = null, int $maxTurns = 50, ?float $maxBudgetUsd = null, string $permissionMode = \"default\", array $allowedTools = [], array $disallowedTools = [], ?string $systemPrompt = null, ?string $appendSystemPrompt = null, bool $thinkingEnabled = false, int $thinkingBudget = 10000, mixed $onText = null, mixed $onThinking = null, mixed $onToolStart = null, mixed $onToolComplete = null, mixed $onTurnStart = null, bool $ephemeral = true, array $tools = [], array $skills = [], ?HaoCode\\Sdk\\AbortController $abortController = null, ?string $sessionId = null, bool $continueSession = false, ?array $responseSchema = null, ?HaoCode\\Sdk\\CredentialPool $credentialPool = null, ?HaoCode\\Sdk\\Sandbox\\SandboxConfig $sandbox = null, string $memorySummaryLevel = \"l0\", ?string $memoryStoragePath = null, array $skillDirectories = [], bool $recursiveSkillDiscovery = false, array $interruptOn = [], bool $enableAskUser = false, ?HaoCode\\Sdk\\Memory\\MemoryStoreInterface $memoryStore = null)",
                 "api": false,
                 "internal": false
             },
@@ -247,6 +247,11 @@
             },
             "memoryStoragePath": {
                 "signature": "public readonly ?string $memoryStoragePath",
+                "api": true,
+                "internal": false
+            },
+            "memoryStore": {
+                "signature": "public readonly ?HaoCode\\Sdk\\Memory\\MemoryStoreInterface $memoryStore",
                 "api": true,
                 "internal": false
             },
@@ -560,6 +565,67 @@
                 "internal": false
             }
         }
+    },
+    "HaoCode\\Sdk\\Memory\\JsonMemoryStore": {
+        "kind": "class",
+        "api": true,
+        "internal": false,
+        "methods": {
+            "__construct": {
+                "signature": "public function __construct(?string $storagePath = null)",
+                "api": true,
+                "internal": false
+            },
+            "all": {
+                "signature": "public function all(string $level = \"l0\") : array",
+                "api": true,
+                "internal": false
+            },
+            "delete": {
+                "signature": "public function delete(string $key) : bool",
+                "api": true,
+                "internal": false
+            },
+            "read": {
+                "signature": "public function read(string $key, string $level = \"l2\") : ?string",
+                "api": true,
+                "internal": false
+            },
+            "write": {
+                "signature": "public function write(string $key, string $value, string $type = \"note\") : void",
+                "api": true,
+                "internal": false
+            }
+        },
+        "properties": []
+    },
+    "HaoCode\\Sdk\\Memory\\MemoryStoreInterface": {
+        "kind": "interface",
+        "api": true,
+        "internal": false,
+        "methods": {
+            "all": {
+                "signature": "public function all(string $level = \"l0\") : array",
+                "api": true,
+                "internal": false
+            },
+            "delete": {
+                "signature": "public function delete(string $key) : bool",
+                "api": true,
+                "internal": false
+            },
+            "read": {
+                "signature": "public function read(string $key, string $level = \"l2\") : ?string",
+                "api": true,
+                "internal": false
+            },
+            "write": {
+                "signature": "public function write(string $key, string $value, string $type = \"note\") : void",
+                "api": true,
+                "internal": false
+            }
+        },
+        "properties": []
     },
     "HaoCode\\Sdk\\Message": {
         "kind": "class",

@@ -39,6 +39,7 @@ class DreamConsolidatorTest extends TestCase
         $files = [
             $this->tmpDir.'/.haocode/.consolidate-lock',
             $this->tmpDir.'/.haocode/memory.json',
+            $this->tmpDir.'/.haocode/memory.json.lock',
         ];
         foreach ($files as $file) {
             if (file_exists($file)) {

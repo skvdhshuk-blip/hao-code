@@ -21,6 +21,8 @@
 | `Message` | 流式事件消息信封 |
 | `SdkTool` | 自定义工具基类（4 个抽象方法） |
 | `SdkSkill` | 自定义 skill 定义 |
+| `MemoryStoreInterface` | 自定义长期记忆存储契约 |
+| `JsonMemoryStore` | 默认 JSON 长期记忆存储实现 |
 | `AbortController` | 取消控制器 |
 | `StructuredResult` | 结构化输出封装 |
 

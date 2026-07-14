@@ -230,10 +230,11 @@ class TieredMemoryTest extends TestCase
             ],
         ];
 
-        $ref = new \ReflectionClass($this->memory);
-        $prop = $ref->getProperty('memories');
-        $prop->setAccessible(true);
-        $prop->setValue($this->memory, $data);
+        mkdir($this->tmpHome.'/.haocode', 0755, true);
+        file_put_contents(
+            $this->tmpHome.'/.haocode/memory.json',
+            json_encode($data, JSON_THROW_ON_ERROR),
+        );
 
         // Should not throw — uses fallbackL0
         $prompt = $this->memory->forSystemPrompt();

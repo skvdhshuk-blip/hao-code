@@ -5,6 +5,7 @@ namespace HaoCode\Sdk;
 use HaoCode\Services\Agent\AgentRunContext;
 use HaoCode\Services\Agent\CancellationToken;
 use HaoCode\Services\Settings\SettingsManager;
+use HaoCode\Sdk\Memory\JsonMemoryStore;
 use HaoCode\Tools\Skill\SkillLoader;
 
 /**
@@ -65,6 +66,16 @@ final class AgentRunContextFactory
             $skillLoader->registerSkillDefinition($skill->toDefinition());
         }
 
+        $memoryStore = $config->memoryStore ?? new JsonMemoryStore($config->memoryStoragePath);
+        $includeMemoryInTextOnly = $config->memoryStore !== null
+            || $config->memoryStoragePath !== null
+            || $config->memorySummaryLevel !== 'l0';
+        $toolFilter = $config->toolFilter();
+        $memoryTools = array_values(array_filter(
+            ['MemoryRead', 'MemoryWrite', 'MemoryDelete'],
+            static fn (string $name): bool => $toolFilter === null || $toolFilter($name),
+        ));
+
         return new AgentRunContext(
             $workingDirectory,
             $projectDirectory,
@@ -76,6 +87,9 @@ final class AgentRunContextFactory
             null,
             null,
             $config->responseSchema,
+            $memoryStore,
+            $includeMemoryInTextOnly,
+            $memoryTools,
         );
     }
 }

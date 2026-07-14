@@ -31,31 +31,30 @@ class SessionMemory
      */
     public function set(string $key, string $value, string $type = 'note'): void
     {
-        $this->load();
-
-        $existing = $this->memories[$key] ?? null;
-
-        $entry = [
-            'value' => $value,
-            'type' => $type,
-            'updated_at' => date('c'),
-            'created_at' => $existing['created_at'] ?? date('c'),
-        ];
-
-        // Generate tiered summaries
         $summaries = $this->getSummarizer()->summarize($value);
-        $entry['l0'] = $summaries['l0'];
-        $entry['l1'] = $summaries['l1'];
-        $entry['l0_tokens'] = $summaries['l0_tokens'];
-        $entry['l1_tokens'] = $summaries['l1_tokens'];
-        $entry['l2_tokens'] = $summaries['l0_tokens'] > 0
-            ? $this->getSummarizer()->countTokens($value)
-            : 0;
-        $entry['summary_mode'] = $summaries['mode'];
-        $entry['summary_generated_at'] = date('c');
 
-        $this->memories[$key] = $entry;
-        $this->save();
+        $this->withExclusiveLock(function () use ($key, $value, $type, $summaries): void {
+            $this->load(true);
+            $existing = $this->memories[$key] ?? null;
+            $now = date('c');
+
+            $this->memories[$key] = [
+                'value' => $value,
+                'type' => $type,
+                'updated_at' => $now,
+                'created_at' => $existing['created_at'] ?? $now,
+                'l0' => $summaries['l0'],
+                'l1' => $summaries['l1'],
+                'l0_tokens' => $summaries['l0_tokens'],
+                'l1_tokens' => $summaries['l1_tokens'],
+                'l2_tokens' => $summaries['l0_tokens'] > 0
+                    ? $this->getSummarizer()->countTokens($value)
+                    : 0,
+                'summary_mode' => $summaries['mode'],
+                'summary_generated_at' => $now,
+            ];
+            $this->save();
+        });
     }
 
     /**
@@ -63,7 +62,7 @@ class SessionMemory
      */
     public function get(string $key): ?string
     {
-        $this->load();
+        $this->load(true);
         return $this->memories[$key]['value'] ?? null;
     }
 
@@ -72,7 +71,7 @@ class SessionMemory
      */
     public function getEntry(string $key): ?array
     {
-        $this->load();
+        $this->load(true);
         return $this->memories[$key] ?? null;
     }
 
@@ -84,7 +83,7 @@ class SessionMemory
      */
     public function getSummary(string $key, string $level = 'l1'): ?string
     {
-        $this->load();
+        $this->load(true);
         $entry = $this->memories[$key] ?? null;
 
         if ($entry === null) {
@@ -103,14 +102,16 @@ class SessionMemory
      */
     public function delete(string $key): bool
     {
-        $this->load();
-        if (! isset($this->memories[$key])) {
-            return false;
-        }
-        unset($this->memories[$key]);
-        $this->save();
+        return $this->withExclusiveLock(function () use ($key): bool {
+            $this->load(true);
+            if (! isset($this->memories[$key])) {
+                return false;
+            }
+            unset($this->memories[$key]);
+            $this->save();
 
-        return true;
+            return true;
+        });
     }
 
     /**
@@ -118,7 +119,7 @@ class SessionMemory
      */
     public function list(): array
     {
-        $this->load();
+        $this->load(true);
 
         return $this->memories ?? [];
     }
@@ -128,7 +129,7 @@ class SessionMemory
      */
     public function search(string $query): array
     {
-        $this->load();
+        $this->load(true);
         $results = [];
         $query = strtolower($query);
 
@@ -154,7 +155,7 @@ class SessionMemory
      */
     public function forSystemPrompt(int $maxChars = 3000, string $level = 'l0'): string
     {
-        $this->load();
+        $this->load(true);
         if (empty($this->memories)) {
             return '';
         }
@@ -194,8 +195,8 @@ class SessionMemory
      */
     public function regenerateSummaries(?string $key = null): int
     {
-        $this->load();
-        $count = 0;
+        $this->load(true);
+        $updates = [];
 
         $keys = $key !== null ? [$key] : array_keys($this->memories ?? []);
 
@@ -210,21 +211,38 @@ class SessionMemory
             }
 
             $summaries = $this->getSummarizer()->summarize($value);
-            $this->memories[$k]['l0'] = $summaries['l0'];
-            $this->memories[$k]['l1'] = $summaries['l1'];
-            $this->memories[$k]['l0_tokens'] = $summaries['l0_tokens'];
-            $this->memories[$k]['l1_tokens'] = $summaries['l1_tokens'];
-            $this->memories[$k]['l2_tokens'] = $this->getSummarizer()->countTokens($value);
-            $this->memories[$k]['summary_mode'] = $summaries['mode'];
-            $this->memories[$k]['summary_generated_at'] = date('c');
-            $count++;
+            $updates[$k] = ['value' => $value, 'summaries' => $summaries];
         }
 
-        if ($count > 0) {
-            $this->save();
+        if ($updates === []) {
+            return 0;
         }
 
-        return $count;
+        return $this->withExclusiveLock(function () use ($updates): int {
+            $this->load(true);
+            $count = 0;
+
+            foreach ($updates as $key => $update) {
+                if (($this->memories[$key]['value'] ?? null) !== $update['value']) {
+                    continue;
+                }
+                $summaries = $update['summaries'];
+                $this->memories[$key]['l0'] = $summaries['l0'];
+                $this->memories[$key]['l1'] = $summaries['l1'];
+                $this->memories[$key]['l0_tokens'] = $summaries['l0_tokens'];
+                $this->memories[$key]['l1_tokens'] = $summaries['l1_tokens'];
+                $this->memories[$key]['l2_tokens'] = $this->getSummarizer()->countTokens($update['value']);
+                $this->memories[$key]['summary_mode'] = $summaries['mode'];
+                $this->memories[$key]['summary_generated_at'] = date('c');
+                $count++;
+            }
+
+            if ($count > 0) {
+                $this->save();
+            }
+
+            return $count;
+        });
     }
 
     /**
@@ -232,18 +250,20 @@ class SessionMemory
      */
     public function compact(int $maxEntries = 100): int
     {
-        $this->load();
-        $count = count($this->memories);
+        return $this->withExclusiveLock(function () use ($maxEntries): int {
+            $this->load(true);
+            $count = count($this->memories);
 
-        if ($count <= $maxEntries) {
-            return 0;
-        }
+            if ($count <= $maxEntries) {
+                return 0;
+            }
 
-        uasort($this->memories, fn ($a, $b) => strtotime($b['updated_at'] ?? '') <=> strtotime($a['updated_at'] ?? ''));
-        $this->memories = array_slice($this->memories, 0, $maxEntries, true);
-        $this->save();
+            uasort($this->memories, fn ($a, $b) => strtotime($b['updated_at'] ?? '') <=> strtotime($a['updated_at'] ?? ''));
+            $this->memories = array_slice($this->memories, 0, $maxEntries, true);
+            $this->save();
 
-        return $count - $maxEntries;
+            return $count - $maxEntries;
+        });
     }
 
     private function getSummarizer(): TieredSummarizer
@@ -268,9 +288,9 @@ class SessionMemory
         return mb_substr($value, 0, 197) . '...';
     }
 
-    private function load(): void
+    private function load(bool $force = false): void
     {
-        if ($this->memories !== null) {
+        if (! $force && $this->memories !== null) {
             return;
         }
 
@@ -284,10 +304,55 @@ class SessionMemory
 
     private function save(): void
     {
+        $this->ensureDirectory();
         $dir = dirname($this->path);
-        if (! is_dir($dir)) {
-            mkdir($dir, 0755, true);
+        $temporaryPath = tempnam($dir, '.memory-');
+        if ($temporaryPath === false) {
+            throw new \RuntimeException("Unable to create a temporary memory file in {$dir}.");
         }
-        file_put_contents($this->path, json_encode($this->memories, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
+
+        try {
+            $json = json_encode($this->memories, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+            if (file_put_contents($temporaryPath, $json, LOCK_EX) === false) {
+                throw new \RuntimeException("Unable to write temporary memory file {$temporaryPath}.");
+            }
+            chmod($temporaryPath, 0600);
+            if (! rename($temporaryPath, $this->path)) {
+                throw new \RuntimeException("Unable to replace memory file {$this->path}.");
+            }
+        } finally {
+            if (file_exists($temporaryPath)) {
+                unlink($temporaryPath);
+            }
+        }
+    }
+
+    private function withExclusiveLock(callable $callback): mixed
+    {
+        $this->ensureDirectory();
+        $lockPath = $this->path.'.lock';
+        $handle = fopen($lockPath, 'c');
+        if ($handle === false) {
+            throw new \RuntimeException("Unable to open memory lock {$lockPath}.");
+        }
+
+        try {
+            if (! flock($handle, LOCK_EX)) {
+                throw new \RuntimeException("Unable to acquire memory lock {$lockPath}.");
+            }
+
+            return $callback();
+        } finally {
+            flock($handle, LOCK_UN);
+            fclose($handle);
+        }
+    }
+
+    private function ensureDirectory(): void
+    {
+        $dir = dirname($this->path);
+        if (! is_dir($dir) && ! mkdir($dir, 0755, true) && ! is_dir($dir)) {
+            throw new \RuntimeException("Unable to create memory directory {$dir}.");
+        }
     }
 }

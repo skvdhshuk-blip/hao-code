@@ -550,14 +550,40 @@ Runtime data is stored under `~/.haocode/storage` by default when installed
 through Composer. Set `HAOCODE_STORAGE_PATH` for an application-specific
 runtime directory.
 
-Session memory can be customized with `memorySummaryLevel` and `memoryStoragePath`:
+Long-term memory uses compact `l0` summaries in the system prompt by default;
+`l1` provides a larger overview and `l2` injects original content. Supplying
+`memoryStoragePath` explicitly also enables memory injection for text-only runs:
 
 ```php
+$memoryPath = __DIR__.'/var/haocode-memory.json';
+
 $config = new HaoCodeConfig(
     memorySummaryLevel: 'l1',
-    memoryStoragePath: __DIR__.'/var/haocode-memory.json',
+    memoryStoragePath: $memoryPath,
 );
 ```
+
+Use the public store API to seed or manage memory, and pass the same store to a
+run when the agent needs on-demand detail:
+
+```php
+use HaoCode\Sdk\Memory\JsonMemoryStore;
+
+$memory = new JsonMemoryStore($memoryPath);
+$memory->write('response_style', 'The user prefers concise answers.', 'preference');
+
+$config = new HaoCodeConfig(
+    memoryStore: $memory, // takes precedence over memoryStoragePath
+    allowedTools: ['MemoryRead'],
+);
+```
+
+`MemoryWrite` and `MemoryDelete` are never exposed unless explicitly listed in
+`allowedTools`. They are state-changing tools, so normal permission checks also
+apply; their tool policy limits use to explicit remember/update/forget requests
+and forbids storing secrets. `JsonMemoryStore` uses a file lock and atomic file
+replacement. Implement `MemoryStoreInterface` to use a database or another
+application-owned store.
 
 ## Examples
 
@@ -577,11 +603,9 @@ $config = new HaoCodeConfig(
 
 ## Version
 
-The current release is `v1.9.1`. It makes `HaoCodeConfig` safe by default and
-requires tools, permission bypass, and durable storage to be enabled explicitly.
-It also preserves durable session continuation and requires the original config
-when resuming a human-interrupt checkpoint so tool and sandbox boundaries cannot
-silently change.
+The current release is `v1.10.0`. It adds run-scoped long-term memory through a
+public storage contract, an atomic JSON implementation, and opt-in read, write,
+and delete tools that remain subject to normal SDK permissions.
 
 ## License
 

@@ -268,14 +268,14 @@ class HaoCodeConfig
          * - 'l1': Structured overviews (~500 tokens each).
          * - 'l2': Full memory content.
          *
-         * The agent can always use MemoryRead tool to fetch more detail.
+         * Add MemoryRead to allowedTools when the agent should fetch more detail.
          *
          * @api
          */
         public readonly string $memorySummaryLevel = 'l0',
 
         /**
-         * Custom storage path for SessionMemory. When set, memory is persisted
+         * Custom storage path for JsonMemoryStore. When set, memory is persisted
          * to this file instead of the default ~/.haocode/memory.json.
          *
          * Useful for SDK consumers that want isolated memory stores (e.g.,
@@ -317,7 +317,17 @@ class HaoCodeConfig
          * @api
          */
         public readonly bool $enableAskUser = false,
+
+        /**
+         * Custom long-term memory store. Takes precedence over memoryStoragePath.
+         *
+         * @api
+         */
+        public readonly ?\HaoCode\Sdk\Memory\MemoryStoreInterface $memoryStore = null,
     ) {
+        if (! in_array($this->memorySummaryLevel, ['l0', 'l1', 'l2'], true)) {
+            throw new \InvalidArgumentException('memorySummaryLevel must be l0, l1, or l2.');
+        }
         if ($this->ephemeral && ($this->interruptOn !== [] || $this->enableAskUser)) {
             throw new \InvalidArgumentException('Human-in-the-loop requires a durable session; ephemeral must be false.');
         }

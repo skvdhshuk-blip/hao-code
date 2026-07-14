@@ -2,7 +2,8 @@
 
 namespace HaoCode\Tools\Memory;
 
-use HaoCode\Services\Memory\SessionMemory;
+use HaoCode\Sdk\Memory\JsonMemoryStore;
+use HaoCode\Sdk\Memory\MemoryStoreInterface;
 use HaoCode\Tools\BaseTool;
 use HaoCode\Tools\ToolInputSchema;
 use HaoCode\Tools\ToolResult;
@@ -17,6 +18,13 @@ use HaoCode\Tools\ToolUseContext;
  */
 class MemoryReadTool extends BaseTool
 {
+    private readonly MemoryStoreInterface $memoryStore;
+
+    public function __construct(?MemoryStoreInterface $memoryStore = null)
+    {
+        $this->memoryStore = $memoryStore ?? new JsonMemoryStore;
+    }
+
     public function name(): string
     {
         return 'MemoryRead';
@@ -62,41 +70,31 @@ DESC;
         $key = $input['key'];
         $level = $input['level'] ?? 'l1';
 
-        /** @var SessionMemory $memory */
-        $memory = \HaoCode\Support\Runtime\SdkRuntime::app(SessionMemory::class);
-
         // List all keys
         if ($key === 'keys') {
-            $entries = $memory->list();
+            $entries = $this->memoryStore->all('l0');
             if (empty($entries)) {
                 return ToolResult::success('No persistent memories stored yet.');
             }
 
             $lines = [];
-            foreach ($entries as $k => $entry) {
-                $l0 = $entry['l0'] ?? '';
-                $tokens = $entry['l0_tokens'] ?? 0;
-                $mode = ($entry['summary_mode'] ?? '') === 'llm' ? '' : ' [raw]';
-                $lines[] = "- {$k}{$mode} ({$tokens}tk): {$l0}";
+            foreach ($entries as $k => $summary) {
+                $lines[] = "- {$k}: {$summary}";
             }
 
             return ToolResult::success("Available memory keys:\n\n" . implode("\n", $lines));
         }
 
         // Read specific key at requested level
-        $content = $memory->getSummary($key, $level);
+        $content = $this->memoryStore->read($key, $level);
 
         if ($content === null) {
-            $available = array_keys($memory->list());
+            $available = array_keys($this->memoryStore->all());
 
             return ToolResult::error("Memory key '{$key}' not found. Available keys: " . implode(', ', $available));
         }
 
-        $entry = $memory->getEntry($key);
-        $l2Tokens = $entry['l2_tokens'] ?? 0;
-        $mode = ($entry['summary_mode'] ?? '') === 'llm' ? 'LLM-generated' : 'rule-based';
-
-        $header = "Memory: {$key} (level: {$level}, {$l2Tokens} tokens total, summaries: {$mode})\n\n";
+        $header = "Memory: {$key} (level: {$level})\n\n";
 
         return ToolResult::success($header . $content);
     }

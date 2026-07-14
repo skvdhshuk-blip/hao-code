@@ -3,7 +3,7 @@
 namespace HaoCode\Services\Agent;
 
 use HaoCode\Services\Git\GitContext;
-use HaoCode\Services\Memory\SessionMemory;
+use HaoCode\Sdk\Memory\MemoryStoreInterface;
 use HaoCode\Services\OutputStyle\OutputStyleLoader;
 use HaoCode\Services\Settings\SettingsManager;
 use HaoCode\Tools\Skill\SkillLoader;
@@ -19,7 +19,7 @@ class ContextBuilder
 
     private const MAX_PROJECT_INSTRUCTIONS_CHARS = 100_000;
 
-    private const MAX_SESSION_MEMORY_CHARS = 40_000;
+    private const MAX_LONG_TERM_MEMORY_CHARS = 3_000;
 
     private const MAX_OUTPUT_STYLE_CHARS = 20_000;
 
@@ -28,12 +28,13 @@ class ContextBuilder
     public function __construct(
         private readonly SettingsManager $settings,
         private readonly ToolRegistry $toolRegistry,
-        private readonly SessionMemory $sessionMemory,
+        private readonly MemoryStoreInterface $memoryStore,
         private readonly SkillLoader $skillLoader,
         private readonly GitContext $gitContext,
         private readonly ?OutputStyleLoader $outputStyleLoader = null,
         private readonly ?string $workingDirectory = null,
         private readonly bool $textOnly = false,
+        private readonly bool $includeMemoryInTextOnly = false,
     ) {}
 
     public function buildSystemPrompt(): array
@@ -57,19 +58,7 @@ class ContextBuilder
             $prompt .= "\n\n# Project Instructions (from memory files)\n\n" . $memoryContent;
         }
 
-        // Load persistent session memory at the configured summary level.
-        // When a custom storage path is configured, use an isolated SessionMemory
-        // instance so SDK consumers get their own memory namespace.
-        $memoryLevel = $this->settings->getMemorySummaryLevel();
-        $memoryPath = $this->settings->getMemoryStoragePath();
-        $memorySource = $memoryPath !== null
-            ? new \HaoCode\Services\Memory\SessionMemory($memoryPath)
-            : $this->sessionMemory;
-        $memories = $memorySource->forSystemPrompt(level: $memoryLevel);
-        if ($memories) {
-            $prompt .= "\n\n# Session Memory\n\n"
-                . $this->truncateFragment($memories, self::MAX_SESSION_MEMORY_CHARS);
-        }
+        $prompt = $this->appendLongTermMemory($prompt);
 
         // Load available skills + the progressive-disclosure protocol that
         // tells the model how to consume them. The listing alone is not enough:
@@ -128,11 +117,55 @@ PROMPT;
             $prompt .= "\n\n".$this->truncateFragment($appendPrompt, self::MAX_APPEND_PROMPT_CHARS);
         }
 
+        if ($this->includeMemoryInTextOnly) {
+            $prompt = $this->appendLongTermMemory($prompt);
+        }
+
         return [[
             'type' => 'text',
             'text' => $this->truncateFragment($prompt, self::MAX_SYSTEM_PROMPT_CHARS),
             'cache_control' => ['type' => 'ephemeral'],
         ]];
+    }
+
+    private function appendLongTermMemory(string $prompt): string
+    {
+        $level = $this->settings->getMemorySummaryLevel();
+        if (! in_array($level, ['l0', 'l1', 'l2'], true)) {
+            $level = 'l0';
+        }
+        $entries = $this->memoryStore->all($level);
+
+        if ($entries !== []) {
+            $header = 'Reference data learned in previous sessions. It may be stale or incorrect; prefer the current user request and verified evidence.';
+            $lines = [$header];
+            $length = strlen($header);
+
+            foreach ($entries as $key => $content) {
+                $line = "- {$key}: {$content}";
+                if ($length + strlen($line) > self::MAX_LONG_TERM_MEMORY_CHARS) {
+                    break;
+                }
+                $lines[] = $line;
+                $length += strlen($line);
+            }
+
+            $prompt .= "\n\n# Long-Term Memory\n\n".implode("\n", $lines);
+        }
+
+        if ($this->toolRegistry->has('MemoryWrite') || $this->toolRegistry->has('MemoryDelete')) {
+            $prompt .= <<<'PROMPT'
+
+
+# Long-Term Memory Update Policy
+
+- Use MemoryWrite only when the user explicitly asks to remember or update durable information.
+- Use MemoryDelete only when the user explicitly asks to forget or remove stored information.
+- Never store credentials, access tokens, passwords, or other secrets.
+PROMPT;
+        }
+
+        return $prompt;
     }
 
     private function getDefaultSystemPrompt(): string

@@ -4,6 +4,7 @@ namespace Tests\Unit;
 
 use HaoCode\Sdk\AgentRunContextFactory;
 use HaoCode\Sdk\HaoCodeConfig;
+use HaoCode\Sdk\Memory\JsonMemoryStore;
 use HaoCode\Sdk\SdkSkill;
 use Tests\TestCase;
 
@@ -121,6 +122,56 @@ class AgentRunContextFactoryTest extends TestCase
         ));
 
         $this->assertSame('Imported skill', $context->skillLoader->findSkill('imported')?->description);
+    }
+
+    public function test_custom_memory_store_is_shared_with_forked_run_context(): void
+    {
+        $projectDirectory = $this->makeProjectDirectory('memory-store-project');
+        $store = new JsonMemoryStore($projectDirectory.'/memory.json');
+        $context = AgentRunContextFactory::make(new HaoCodeConfig(
+            cwd: $projectDirectory,
+            memoryStore: $store,
+        ));
+
+        $this->assertSame($store, $context->memoryStore);
+        $this->assertSame($store, $context->fork()->memoryStore);
+        $this->assertTrue($context->includeMemoryInTextOnly);
+        $this->assertSame([], $context->memoryTools);
+    }
+
+    public function test_memory_storage_path_creates_an_isolated_run_store(): void
+    {
+        $projectDirectory = $this->makeProjectDirectory('memory-path-project');
+        $memoryPath = $projectDirectory.'/memory.json';
+        $context = AgentRunContextFactory::make(new HaoCodeConfig(
+            cwd: $projectDirectory,
+            memoryStoragePath: $memoryPath,
+        ));
+
+        $context->memoryStore->write('project', 'isolated memory');
+
+        $this->assertSame('isolated memory', $context->memoryStore->read('project'));
+        $this->assertFileExists($memoryPath);
+        $this->assertTrue($context->includeMemoryInTextOnly);
+    }
+
+    public function test_memory_tool_authorization_is_inherited_by_forks(): void
+    {
+        $context = AgentRunContextFactory::make(new HaoCodeConfig(
+            allowedTools: ['MemoryRead', 'MemoryWrite'],
+            disallowedTools: ['MemoryWrite'],
+        ));
+
+        $this->assertSame(['MemoryRead'], $context->memoryTools);
+        $this->assertSame(['MemoryRead'], $context->fork()->memoryTools);
+    }
+
+    public function test_invalid_memory_summary_level_is_rejected(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('memorySummaryLevel must be l0, l1, or l2.');
+
+        new HaoCodeConfig(memorySummaryLevel: 'verbose');
     }
 
     public function test_sdk_skill_rejects_an_unknown_execution_context(): void

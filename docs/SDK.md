@@ -2,7 +2,7 @@
 
 Use hao-code as a framework-free PHP library to embed an AI coding agent in your application.
 
-This document describes the current `v1.9.1` source release.
+This document describes the current `v1.10.0` source release.
 
 ```bash
 composer require sk-wang/hao-code
@@ -33,6 +33,7 @@ in the selected provider entry in `~/.haocode/settings.json`.
   - [resumeInterrupt() / streamResumeInterrupt()](#resumeinterrupt--streamresumeinterrupt)
   - [structured()](#structured)
 - [HaoCodeConfig Reference](#haocodeconfig-reference)
+- [Long-Term Memory](#long-term-memory)
 - [Sandbox Runtime](#sandbox-runtime)
 - [QueryResult](#queryresult)
 - [MCP Tools](#mcp-tools)
@@ -368,6 +369,94 @@ all tools, permission bypass, and durable storage. Existing trusted callers must
 set `allowedTools: ['*']`, `permissionMode: 'bypass_permissions'`, and
 `ephemeral: false` explicitly when migrating to `v1.8.0`.
 
+## Long-Term Memory
+
+Long-term memory is separate from conversation history and project instruction
+files such as `AGENTS.md`, `HAOCODE.md`, and `CLAUDE.md`. A memory store contains
+learned reference data from previous runs. The SDK labels it as potentially
+stale data and gives the current user request and verified evidence precedence.
+
+The default `JsonMemoryStore` stores entries in `~/.haocode/memory.json`. Each
+entry has three retrieval levels:
+
+| Level | Purpose |
+|-------|---------|
+| `l0` | Compact one-line index; default system-prompt level |
+| `l1` | Structured overview for additional context |
+| `l2` | Original stored value |
+
+Use the public store API to seed memory before a run:
+
+```php
+use HaoCode\Sdk\HaoCode;
+use HaoCode\Sdk\HaoCodeConfig;
+use HaoCode\Sdk\Memory\JsonMemoryStore;
+
+$memory = new JsonMemoryStore(__DIR__.'/var/agent-memory.json');
+$memory->write(
+    'response_style',
+    'The user prefers concise answers with runnable examples.',
+    'preference',
+);
+
+$result = HaoCode::query('How should I structure this command?', new HaoCodeConfig(
+    memoryStore: $memory,
+    memorySummaryLevel: 'l0',
+    allowedTools: ['MemoryRead'],
+));
+```
+
+The same run-scoped store is used both for prompt injection and by all Memory
+tools. `memoryStore` takes precedence over `memoryStoragePath`. The path option
+is a shortcut when the default JSON implementation is sufficient:
+
+```php
+$config = new HaoCodeConfig(
+    memoryStoragePath: __DIR__.'/var/agent-memory.json',
+    memorySummaryLevel: 'l1',
+);
+```
+
+An explicitly supplied `memoryStore`, `memoryStoragePath`, or non-default
+`memorySummaryLevel` enables long-term-memory injection even when
+`allowedTools: []` keeps the run text-only. Text-only runs receive the configured
+summary but cannot fetch additional detail.
+
+### Reading and updating memory
+
+Memory tools remain opt-in:
+
+| Tool | Behavior | Permission classification |
+|------|----------|---------------------------|
+| `MemoryRead` | List keys or fetch `l1`/`l2` detail | Read-only |
+| `MemoryWrite` | Store or replace one entry | State-changing |
+| `MemoryDelete` | Delete one entry | State-changing |
+
+```php
+$config = new HaoCodeConfig(
+    memoryStore: $memory,
+    allowedTools: ['MemoryRead', 'MemoryWrite', 'MemoryDelete'],
+    ephemeral: false,
+    interruptOn: [
+        'MemoryWrite' => true,
+        'MemoryDelete' => true,
+    ],
+);
+```
+
+`MemoryWrite` and `MemoryDelete` are not silently enabled. In addition to being
+listed in `allowedTools`, they pass through the normal SDK permission system.
+Their model-facing policy permits them only for explicit user requests to
+remember, update, forget, or remove durable information, and forbids storing
+credentials or other secrets. A trusted non-interactive host may instead use
+`permissionMode: 'bypass_permissions'`, accepting responsibility for those
+mutations.
+
+`JsonMemoryStore` refreshes reads across instances and uses a lock plus
+same-directory atomic replacement for writes. Applications can implement
+`MemoryStoreInterface` to provide database-backed, per-user, or other
+application-specific isolation.
+
 ## Sandbox Runtime
 
 Use `SandboxConfig` when the agent needs file or shell tools but must not mutate
@@ -602,7 +691,8 @@ pure-Python k-means script, run it in AgentRun, and read back the JSON summary.
 | `thinkingEnabled` | `bool` | `false` | Enable extended thinking |
 | `thinkingBudget` | `int` | `10000` | Thinking token budget |
 | `memorySummaryLevel` | `string` | `'l0'` | Memory injected into the system prompt: `l0`, `l1`, or `l2` |
-| `memoryStoragePath` | `?string` | `null` | Isolated SessionMemory JSON file; defaults to `~/.haocode/memory.json` |
+| `memoryStoragePath` | `?string` | `null` | Isolated JSON memory file; defaults to `~/.haocode/memory.json` |
+| `memoryStore` | `?MemoryStoreInterface` | `null` | Run-scoped custom store; takes precedence over `memoryStoragePath` |
 
 ### Factory Method
 

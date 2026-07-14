@@ -2,6 +2,7 @@
 
 namespace HaoCode\Services\Agent;
 
+use HaoCode\Sdk\Memory\MemoryStoreInterface;
 use HaoCode\Services\Settings\SettingsManager;
 use HaoCode\Tools\Skill\SkillLoader;
 
@@ -23,6 +24,9 @@ final readonly class AgentRunContext
         public ?string $agentId = null,
         public ?string $teamName = null,
         public ?array $responseSchema = null,
+        public ?MemoryStoreInterface $memoryStore = null,
+        public bool $includeMemoryInTextOnly = false,
+        public array $memoryTools = [],
     ) {}
 
     public function fork(
@@ -49,6 +53,9 @@ final readonly class AgentRunContext
             $agentId ?? $this->agentId,
             $teamName ?? $this->teamName,
             $this->responseSchema,
+            $this->memoryStore,
+            $this->includeMemoryInTextOnly,
+            $this->memoryTools,
         );
     }
 }

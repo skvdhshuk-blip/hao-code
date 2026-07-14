@@ -16,6 +16,8 @@ use HaoCode\Services\Hooks\HookExecutor;
 use HaoCode\Services\Mcp\McpConnectionManager;
 use HaoCode\Services\Mcp\McpServerConfigManager;
 use HaoCode\Services\Memory\SessionMemory;
+use HaoCode\Sdk\Memory\JsonMemoryStore;
+use HaoCode\Sdk\Memory\MemoryStoreInterface;
 use HaoCode\Services\OutputStyle\OutputStyleLoader;
 use HaoCode\Services\Permissions\DenialTracker;
 use HaoCode\Services\Permissions\PermissionChecker;
@@ -198,6 +200,9 @@ final class SdkRuntime
         $app->singleton(HookExecutor::class);
         $app->singleton(OutputStyleLoader::class);
         $app->singleton(SessionMemory::class);
+        $app->singleton(MemoryStoreInterface::class, fn (Container $app) => new JsonMemoryStore(
+            $app->make(SettingsManager::class)->getMemoryStoragePath(),
+        ));
         $app->singleton(SkillLoader::class);
         $app->singleton(CostTracker::class);
         $app->singleton(\HaoCode\Services\FileHistory\FileHistoryManager::class);
@@ -211,7 +216,7 @@ final class SdkRuntime
         $app->singleton(ContextBuilder::class, fn (Container $app) => new ContextBuilder(
             settings: $app->make(SettingsManager::class),
             toolRegistry: $app->make(ToolRegistry::class),
-            sessionMemory: $app->make(SessionMemory::class),
+            memoryStore: $app->make(MemoryStoreInterface::class),
             skillLoader: $app->make(SkillLoader::class),
             gitContext: $app->make(GitContext::class),
             outputStyleLoader: $app->make(OutputStyleLoader::class),
