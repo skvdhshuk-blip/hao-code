@@ -729,6 +729,11 @@ $result->inputTokens();          // int
 $result->outputTokens();         // int
 ```
 
+`usage['input_tokens']` is the accumulated provider-reported input usage for
+the run. When the provider reports prompt-cache telemetry,
+`usage['cache_read_tokens']` contains the cached portion and
+`usage['cache_creation_tokens']` contains explicit cache writes (Anthropic).
+
 ---
 
 ## MCP Tools
@@ -1152,6 +1157,12 @@ Use `SendMessage` only while a member is `running` or `idle`, and call
 ## Multi-turn Conversations
 
 `Conversation` maintains persistent context across multiple `send()` calls:
+
+The system prompt is frozen when the conversation first runs. Volatile Git
+status is appended to the initial user turn, and later messages only extend the
+history. This preserves the byte-stable prefix required by DeepSeek's automatic
+prompt cache; memory, instruction, output-style, and system-prompt changes take
+effect in a new conversation rather than rewriting an active prefix.
 
 ```php
 $conv = HaoCode::conversation(new HaoCodeConfig(

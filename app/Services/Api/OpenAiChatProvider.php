@@ -30,6 +30,7 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
 class OpenAiChatProvider implements ApiKeyAwareProvider
 {
     private HttpClientInterface $httpClient;
+    private bool $useNativeStream;
     private int $maxRetries = 3;
     private array $lastRateLimitHeaders = [];
     /** @var callable(): float */
@@ -48,6 +49,7 @@ class OpenAiChatProvider implements ApiKeyAwareProvider
         private readonly float $streamPollTimeoutSeconds = 1.0,
         ?callable $timeProvider = null,
     ) {
+        $this->useNativeStream = $httpClient === null;
         $this->httpClient = $httpClient ?? HttpClient::create([
             'timeout' => 300,
             'max_duration' => 600,
@@ -146,15 +148,24 @@ class OpenAiChatProvider implements ApiKeyAwareProvider
             $payload['tools'] = $this->translateTools($tools);
         }
 
-        // DeepSeek R1 and other reasoning-capable models honour this hint;
+        $thinkingEnabled = $this->resolveThinkingEnabled();
+        if ($this->isDeepSeekV4Flash()) {
+            $payload['thinking'] = ['type' => $thinkingEnabled ? 'enabled' : 'disabled'];
+        }
+
+        // DeepSeek and other reasoning-capable models honour this hint;
         // models that don't understand it simply ignore the field.
-        if ($this->resolveThinkingEnabled()) {
+        if ($thinkingEnabled) {
             $budget = $this->resolveThinkingBudget();
-            $payload['reasoning_effort'] = match (true) {
-                $budget >= 16000 => 'high',
-                $budget >= 4000 => 'medium',
-                default => 'low',
-            };
+            if ($this->isDeepSeekV4Flash()) {
+                $payload['reasoning_effort'] = $budget >= 32000 ? 'max' : 'high';
+            } else {
+                $payload['reasoning_effort'] = match (true) {
+                    $budget >= 16000 => 'high',
+                    $budget >= 4000 => 'medium',
+                    default => 'low',
+                };
+            }
         }
 
         return $payload;
@@ -169,6 +180,18 @@ class OpenAiChatProvider implements ApiKeyAwareProvider
     ): \Generator {
         $baseUrl = $this->resolveBaseUrl();
         $payload = $this->buildPayload($systemPrompt, $messages, $tools);
+
+        if (! $this->useNativeStream) {
+            yield from $this->doHttpClientStreamMessages(
+                $baseUrl,
+                $payload,
+                $onRawEvent,
+                $shouldAbort,
+            );
+
+            return;
+        }
+
         $body = $this->encodePayload($payload);
         $url = rtrim($baseUrl, '/') . '/v1/chat/completions';
         $debug = getenv('HAOCODE_STREAM_DEBUG') === '1';
@@ -314,6 +337,103 @@ class OpenAiChatProvider implements ApiKeyAwareProvider
 
         // Emit deferred message_delta/stop if the server omitted a final
         // usage-only frame (some proxies stop after [DONE]).
+        foreach ($this->finalizeIfNeeded($state) as $emitted) {
+            yield $emitted;
+        }
+    }
+
+    /**
+     * Use the injected transport for tests and host applications that provide
+     * their own HttpClient. The default production path remains the native PHP
+     * stream wrapper used for chunked SSE compatibility.
+     */
+    private function doHttpClientStreamMessages(
+        string $baseUrl,
+        array $payload,
+        ?callable $onRawEvent,
+        ?callable $shouldAbort,
+    ): \Generator {
+        $response = $this->httpClient->request('POST', rtrim($baseUrl, '/').'/v1/chat/completions', [
+            'headers' => [
+                'authorization' => 'Bearer '.$this->resolveApiKey(),
+                'content-type' => 'application/json',
+                'accept' => 'text/event-stream',
+            ],
+            'body' => $this->encodePayload($payload),
+            'buffer' => false,
+            'http_version' => '1.1',
+            'verify_peer' => true,
+            'verify_host' => true,
+        ]);
+
+        if ($shouldAbort && $shouldAbort()) {
+            $response->cancel();
+
+            return;
+        }
+
+        $this->throwForHttpError($response);
+        $this->extractRateLimitHeaders($response);
+
+        $state = new OpenAiChatTranslatorState();
+        $lineBuffer = '';
+        $lastActivityAt = ($this->timeProvider)();
+
+        try {
+            foreach ($this->httpClient->stream($response, $this->streamPollTimeoutSeconds) as $chunk) {
+                if ($shouldAbort && $shouldAbort()) {
+                    $response->cancel();
+
+                    return;
+                }
+
+                if ($chunk->isTimeout()) {
+                    if (($this->timeProvider)() - $lastActivityAt >= $this->idleTimeoutSeconds) {
+                        $response->cancel();
+
+                        throw new ApiErrorException(
+                            "Streaming response stalled for more than {$this->idleTimeoutSeconds}s without new data. Retry the turn.",
+                            'stream_timeout',
+                        );
+                    }
+
+                    continue;
+                }
+
+                $lineBuffer .= $chunk->getContent();
+                $lastActivityAt = ($this->timeProvider)();
+
+                while (($newlinePos = strpos($lineBuffer, "\n")) !== false) {
+                    $line = rtrim(substr($lineBuffer, 0, $newlinePos), "\r");
+                    $lineBuffer = substr($lineBuffer, $newlinePos + 1);
+
+                    foreach ($this->processSseLine($line, $state, $onRawEvent) as $emitted) {
+                        if ($shouldAbort && $shouldAbort()) {
+                            $response->cancel();
+
+                            return;
+                        }
+
+                        yield $emitted;
+                    }
+                }
+            }
+        } catch (\Throwable $e) {
+            if ($shouldAbort && $shouldAbort()) {
+                $response->cancel();
+
+                return;
+            }
+
+            throw $e;
+        }
+
+        if ($lineBuffer !== '') {
+            foreach ($this->processSseLine(rtrim($lineBuffer, "\r"), $state, $onRawEvent) as $emitted) {
+                yield $emitted;
+            }
+        }
+
         foreach ($this->finalizeIfNeeded($state) as $emitted) {
             yield $emitted;
         }
@@ -699,6 +819,7 @@ class OpenAiChatProvider implements ApiKeyAwareProvider
     private function appendAssistantBlocks(array &$out, array $content): void
     {
         $textParts = [];
+        $reasoningParts = [];
         $toolCalls = [];
 
         foreach ($content as $block) {
@@ -707,6 +828,11 @@ class OpenAiChatProvider implements ApiKeyAwareProvider
                 $text = (string) ($block['text'] ?? '');
                 if ($text !== '') {
                     $textParts[] = $text;
+                }
+            } elseif ($type === 'thinking' && $this->isDeepSeekModel()) {
+                $thinking = (string) ($block['thinking'] ?? '');
+                if ($thinking !== '') {
+                    $reasoningParts[] = $thinking;
                 }
             } elseif ($type === 'tool_use') {
                 $rawInput = $block['input'] ?? new \stdClass();
@@ -723,7 +849,9 @@ class OpenAiChatProvider implements ApiKeyAwareProvider
                     ],
                 ];
             }
-            // thinking blocks: dropped (no faithful replay without encrypted signature)
+            // Anthropic thinking blocks remain excluded because their replay
+            // requires encrypted signatures. DeepSeek explicitly requires its
+            // plain reasoning_content to be echoed during tool-call turns.
         }
 
         if ($textParts === [] && $toolCalls === []) {
@@ -739,8 +867,24 @@ class OpenAiChatProvider implements ApiKeyAwareProvider
         if ($toolCalls !== []) {
             $message['tool_calls'] = $toolCalls;
         }
+        // DeepSeek requires reasoning_content to be replayed on tool-call turns,
+        // but replaying it on plain assistant turns only enlarges the fresh tail
+        // and delays prefix-cache hit-rate growth.
+        if ($reasoningParts !== [] && $toolCalls !== []) {
+            $message['reasoning_content'] = implode('', $reasoningParts);
+        }
 
         $out[] = $message;
+    }
+
+    private function isDeepSeekModel(): bool
+    {
+        return str_starts_with(strtolower($this->resolveModel()), 'deepseek-');
+    }
+
+    private function isDeepSeekV4Flash(): bool
+    {
+        return strtolower($this->resolveModel()) === 'deepseek-v4-flash';
     }
 
     private function translateTools(array $tools): array
@@ -828,8 +972,15 @@ class OpenAiChatProvider implements ApiKeyAwareProvider
             return [];
         }
 
-        $input = (int) ($usage['prompt_tokens'] ?? $usage['input_tokens'] ?? 0);
+        $contextInput = (int) ($usage['prompt_tokens'] ?? $usage['input_tokens'] ?? 0);
         $output = (int) ($usage['completion_tokens'] ?? $usage['output_tokens'] ?? 0);
+        $cacheRead = (int) ($usage['prompt_cache_hit_tokens']
+            ?? $usage['prompt_tokens_details']['cached_tokens']
+            ?? 0);
+        $cacheMiss = (int) ($usage['prompt_cache_miss_tokens'] ?? 0);
+        $input = $cacheMiss > 0
+            ? $cacheMiss
+            : max(0, $contextInput - $cacheRead);
         $reasoning = (int) ($usage['completion_tokens_details']['reasoning_tokens']
             ?? $usage['reasoning_tokens']
             ?? 0);
@@ -840,6 +991,10 @@ class OpenAiChatProvider implements ApiKeyAwareProvider
         ];
         if ($reasoning > 0) {
             $mapped['thinking_tokens'] = $reasoning;
+        }
+        if ($cacheRead > 0) {
+            $mapped['context_input_tokens'] = $contextInput;
+            $mapped['cache_read_input_tokens'] = $cacheRead;
         }
 
         return $mapped;

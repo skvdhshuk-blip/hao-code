@@ -122,7 +122,7 @@ class QueryEngine
         }
 
         $usage = $processor->getUsage();
-        $input = (int) ($usage['input_tokens'] ?? 0);
+        $input = (int) ($usage['context_input_tokens'] ?? $usage['input_tokens'] ?? 0);
         $output = (int) ($usage['output_tokens'] ?? 0);
         $span->setAttribute('llm.token_count.prompt', $input);
         $span->setAttribute('llm.token_count.completion', $output);

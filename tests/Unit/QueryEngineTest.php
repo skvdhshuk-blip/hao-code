@@ -157,6 +157,39 @@ class QueryEngineTest extends TestCase
         $this->assertSame(10, $usage['output_tokens']);
     }
 
+    public function test_trace_uses_full_context_tokens_when_prompt_cache_hits(): void
+    {
+        $processor = new StreamProcessor;
+        $processor->processEvent(new StreamEvent('message_start', [
+            'message' => [
+                'id' => 'msg_cache',
+                'usage' => [
+                    'input_tokens' => 100,
+                    'context_input_tokens' => 1000,
+                    'output_tokens' => 20,
+                    'cache_read_input_tokens' => 900,
+                ],
+            ],
+        ]));
+
+        $attributes = [];
+        $span = $this->createMock(\OpenTelemetry\API\Trace\SpanInterface::class);
+        $span->method('setAttribute')->willReturnCallback(
+            function (string $key, mixed $value) use (&$attributes, $span) {
+                $attributes[$key] = $value;
+
+                return $span;
+            },
+        );
+
+        $engine = new QueryEngine($this->makeClient([]), $this->makeRegistry());
+        $method = new \ReflectionMethod($engine, 'annotateLlmSpanWithResult');
+        $method->invoke($engine, $span, $processor);
+
+        $this->assertSame(1000, $attributes['llm.token_count.prompt']);
+        $this->assertSame(1020, $attributes['llm.token_count.total']);
+    }
+
     public function test_query_ignores_events_after_abort(): void
     {
         $events = [

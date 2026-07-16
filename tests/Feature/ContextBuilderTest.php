@@ -97,10 +97,17 @@ class ContextBuilderTest extends TestCase
         $this->assertStringContainsString('# Environment', $result[0]['text']);
     }
 
-    public function test_prompt_contains_current_date(): void
+    public function test_current_date_is_kept_out_of_cache_stable_system_prompt(): void
     {
         $result = $this->makeBuilder()->buildSystemPrompt();
-        $this->assertStringContainsString(date('Y-m-d'), $result[0]['text']);
+        $this->assertStringNotContainsString(date('Y-m-d'), $result[0]['text']);
+    }
+
+    public function test_initial_turn_context_contains_current_date(): void
+    {
+        $context = $this->makeBuilder()->buildTurnContext();
+
+        $this->assertStringContainsString(date('Y-m-d'), $context);
     }
 
     public function test_prompt_uses_explicit_working_directory_instead_of_process_cwd(): void
@@ -338,11 +345,22 @@ class ContextBuilderTest extends TestCase
         $this->assertStringContainsString('not `.claude`', $result[0]['text']);
     }
 
-    public function test_git_context_appended(): void
+    public function test_git_context_is_kept_out_of_cache_stable_system_prompt(): void
     {
         $gitContext = $this->makeGitContext("Branch: main\n# Git Status\nclean");
         $result = $this->makeBuilder(['gitContext' => $gitContext])->buildSystemPrompt();
-        $this->assertStringContainsString('Branch: main', $result[0]['text']);
+
+        $this->assertStringNotContainsString('Branch: main', $result[0]['text']);
+        $this->assertStringNotContainsString('# Git Status', $result[0]['text']);
+    }
+
+    public function test_git_context_is_available_as_initial_turn_context(): void
+    {
+        $gitContext = $this->makeGitContext("Branch: main\n# Git Status\nclean");
+        $context = $this->makeBuilder(['gitContext' => $gitContext])->buildTurnContext();
+
+        $this->assertStringContainsString('# Runtime', $context);
+        $this->assertStringContainsString("Branch: main\n# Git Status\nclean", $context);
     }
 
     public function test_git_context_absent_when_empty(): void

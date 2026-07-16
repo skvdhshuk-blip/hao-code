@@ -85,12 +85,6 @@ class ContextBuilder
 
         $prompt .= $this->getHaoCodeConventions();
 
-        // Append git context (current diff, branch info)
-        $gitContext = $this->gitContext->getDiffContext();
-        if ($gitContext) {
-            $prompt .= $gitContext;
-        }
-
         // Inject active output style instructions
         $activeStyle = $this->settings->getOutputStyle();
         if ($activeStyle && $this->outputStyleLoader) {
@@ -104,6 +98,34 @@ class ContextBuilder
         $prompt = $this->truncateFragment($prompt, self::MAX_SYSTEM_PROMPT_CHARS);
 
         return [['type' => 'text', 'text' => $prompt, 'cache_control' => ['type' => 'ephemeral']]];
+    }
+
+    /**
+     * Build volatile workspace context for the first user turn.
+     *
+     * Git status and diffs change while an agent works. Keeping them out of the
+     * system prompt lets provider-side prefix caches reuse the same session
+     * baseline while this snapshot remains part of the append-only history.
+     */
+    public function buildTurnContext(): string
+    {
+        if ($this->textOnly) {
+            return '';
+        }
+
+        $this->gitContext->beginSnapshot();
+
+        try {
+            $context = "# Runtime\n- Current date: ".date('Y-m-d');
+            $gitContext = trim($this->gitContext->getDiffContext());
+            if ($gitContext !== '') {
+                $context .= "\n\n{$gitContext}";
+            }
+
+            return $context;
+        } finally {
+            $this->gitContext->endSnapshot();
+        }
     }
 
     /**
@@ -223,11 +245,9 @@ PROMPT;
     private function getEnvironmentContext(): string
     {
         $cwd = $this->workingDirectory ?? getcwd();
-        $date = date('Y-m-d');
         $shell = getenv('SHELL') ?: 'unknown';
 
         $context = "\n\n# Environment\n";
-        $context .= "- Current date: {$date}\n";
         $context .= "- Working directory: {$cwd}\n";
         $context .= "- Shell: {$shell}\n";
         $context .= "- PHP: " . PHP_VERSION . "\n";
@@ -235,17 +255,6 @@ PROMPT;
 
         $isGitRepo = $this->gitContext->isGitRepo();
         $context .= '- Is git repo: ' . ($isGitRepo ? 'true' : 'false') . "\n";
-
-        if ($isGitRepo) {
-            $gitBranch = $this->gitContext->getCurrentBranch();
-            if ($gitBranch !== '') {
-                $context .= "- Git branch: {$gitBranch}\n";
-            }
-            $mainBranch = $this->gitContext->getDefaultBranch();
-            if ($mainBranch !== '') {
-                $context .= "- Main branch: {$mainBranch}\n";
-            }
-        }
 
         return $context;
     }

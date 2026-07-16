@@ -6,7 +6,8 @@ namespace HaoCode\Services\Git;
 
 /**
  * Provides git context for the agent loop — current diff, branch info, etc.
- * Injected into the system prompt so the agent has awareness of uncommitted changes.
+ * Volatile details are injected into the first user turn so the system prompt
+ * remains a cache-stable session prefix.
  */
 class GitContext
 {

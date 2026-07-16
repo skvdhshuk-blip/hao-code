@@ -112,6 +112,122 @@ class OpenAiChatProviderTest extends TestCase
         $this->assertSame('medium', $payload['reasoning_effort']);
     }
 
+    public function test_build_payload_uses_deepseek_v4_thinking_contract(): void
+    {
+        $provider = new OpenAiChatProvider(
+            apiKey: 'test',
+            model: 'deepseek-v4-flash',
+            thinkingEnabled: true,
+            thinkingBudget: 32000,
+            httpClient: new MockHttpClient([]),
+        );
+
+        $payload = $provider->buildPayload([], [['role' => 'user', 'content' => 'Fix the bug.']], []);
+
+        $this->assertSame(['type' => 'enabled'], $payload['thinking']);
+        $this->assertSame('max', $payload['reasoning_effort']);
+    }
+
+    public function test_build_payload_explicitly_disables_deepseek_v4_thinking(): void
+    {
+        $provider = new OpenAiChatProvider(
+            apiKey: 'test',
+            model: 'deepseek-v4-flash',
+            thinkingEnabled: false,
+            httpClient: new MockHttpClient([]),
+        );
+
+        $payload = $provider->buildPayload([], [['role' => 'user', 'content' => 'Answer directly.']], []);
+
+        $this->assertSame(['type' => 'disabled'], $payload['thinking']);
+        $this->assertArrayNotHasKey('reasoning_effort', $payload);
+    }
+
+    public function test_build_payload_replays_deepseek_reasoning_before_tool_results(): void
+    {
+        $provider = new OpenAiChatProvider(
+            apiKey: 'test',
+            model: 'deepseek-v4-flash',
+            thinkingEnabled: true,
+            httpClient: new MockHttpClient([]),
+        );
+
+        $payload = $provider->buildPayload([], [
+            ['role' => 'assistant', 'content' => [
+                ['type' => 'thinking', 'thinking' => 'I should inspect composer.json first.'],
+                ['type' => 'tool_use', 'id' => 'call_1', 'name' => 'Read', 'input' => ['file_path' => 'composer.json']],
+            ]],
+            ['role' => 'user', 'content' => [
+                ['type' => 'tool_result', 'tool_use_id' => 'call_1', 'content' => '{}'],
+            ]],
+        ], []);
+
+        $this->assertSame('I should inspect composer.json first.', $payload['messages'][0]['reasoning_content']);
+        $this->assertSame('call_1', $payload['messages'][0]['tool_calls'][0]['id']);
+        $this->assertSame('tool', $payload['messages'][1]['role']);
+    }
+
+    public function test_build_payload_does_not_replay_reasoning_on_plain_assistant_turns(): void
+    {
+        $provider = new OpenAiChatProvider(
+            apiKey: 'test',
+            model: 'deepseek-v4-flash',
+            thinkingEnabled: true,
+            httpClient: new MockHttpClient([]),
+        );
+
+        $payload = $provider->buildPayload([], [
+            ['role' => 'assistant', 'content' => [
+                ['type' => 'thinking', 'thinking' => 'Long private reasoning.'],
+                ['type' => 'text', 'text' => 'The answer.'],
+            ]],
+            ['role' => 'user', 'content' => 'Continue.'],
+        ], []);
+
+        $this->assertSame('The answer.', $payload['messages'][0]['content']);
+        $this->assertArrayNotHasKey('reasoning_content', $payload['messages'][0]);
+    }
+
+    public function test_usage_normalizes_deepseek_prefix_cache_tokens(): void
+    {
+        $provider = new OpenAiChatProvider(
+            apiKey: 'test',
+            model: 'deepseek-v4-flash',
+            httpClient: new MockHttpClient([]),
+        );
+        $method = new \ReflectionMethod($provider, 'mapUsage');
+        $usage = $method->invoke($provider, [
+            'prompt_tokens' => 1000,
+            'completion_tokens' => 20,
+            'prompt_cache_hit_tokens' => 900,
+            'prompt_cache_miss_tokens' => 100,
+        ]);
+
+        $this->assertSame(100, $usage['input_tokens']);
+        $this->assertSame(1000, $usage['context_input_tokens']);
+        $this->assertSame(900, $usage['cache_read_input_tokens']);
+        $this->assertSame(20, $usage['output_tokens']);
+    }
+
+    public function test_usage_normalizes_nested_openai_cache_tokens(): void
+    {
+        $provider = new OpenAiChatProvider(
+            apiKey: 'test',
+            model: 'gpt-4.1',
+            httpClient: new MockHttpClient([]),
+        );
+        $method = new \ReflectionMethod($provider, 'mapUsage');
+        $usage = $method->invoke($provider, [
+            'prompt_tokens' => 1000,
+            'completion_tokens' => 20,
+            'prompt_tokens_details' => ['cached_tokens' => 600],
+        ]);
+
+        $this->assertSame(400, $usage['input_tokens']);
+        $this->assertSame(1000, $usage['context_input_tokens']);
+        $this->assertSame(600, $usage['cache_read_input_tokens']);
+    }
+
     public function test_stream_translates_text_turn(): void
     {
         $sse = $this->buildSseStream([

@@ -155,6 +155,10 @@ values such as `ANTHROPIC_API_KEY`, `HAOCODE_MODEL`, `HAOCODE_API_BASE_URL`, and
 `apiKey` or put it in the selected provider entry in
 `~/.haocode/settings.json`.
 
+For `deepseek-v4-flash`, enabling thinking sends DeepSeek's explicit thinking
+contract. A thinking budget of `32000` or more selects maximum reasoning effort,
+and HaoCode preserves `reasoning_content` across multi-turn tool calls.
+
 Tools, permission bypass, and durable storage are independent opt-ins. An
 unattended full agent must state all three explicitly, for example
 `allowedTools: ['*']`, `permissionMode: 'bypass_permissions'`, and
@@ -345,6 +349,12 @@ $result = $conversation->send('Now review the newest changes.');
 echo $result->text;
 echo $conversation->getSessionId();
 ```
+
+HaoCode keeps the system prompt byte-stable for the lifetime of a conversation
+and grows message history append-only. Volatile Git status is attached to the
+initial user turn instead of rewriting the system prefix, improving automatic
+prefix-cache reuse on DeepSeek and other compatible providers. DeepSeek cache
+hits are reported through `usage['cache_read_tokens']`.
 
 ## Human approval
 

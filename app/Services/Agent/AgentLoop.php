@@ -29,6 +29,9 @@ class AgentLoop
 
     private bool $sessionStarted = false;
 
+    /** @var array<int, array<string, mixed>>|null Cache-stable prompt for this loop/session. */
+    private ?array $systemPrompt = null;
+
     private int $totalInputTokens = 0;
 
     private int $totalOutputTokens = 0;
@@ -213,8 +216,12 @@ class AgentLoop
     ): string {
         $this->aborted = false;
         $this->cancellationToken->reset();
+        $isSessionStart = ! $this->sessionStarted;
         if ($userInput !== null) {
-            $this->messageHistory->addUserMessage($userInput);
+            $modelInput = $isSessionStart
+                ? $this->withInitialTurnContext($userInput)
+                : $userInput;
+            $this->messageHistory->addUserMessage($modelInput);
             $this->sessionManager->recordEntry([
                 'type' => 'user_message',
                 'content' => is_string($userInput) ? $userInput : '[multi-content message with images]',
@@ -222,7 +229,7 @@ class AgentLoop
         }
 
         // Fire SessionStart hook on the very first user turn
-        if (! $this->sessionStarted) {
+        if ($isSessionStart) {
             $this->sessionStarted = true;
 
             // Wire up tool result persistence storage only for durable sessions.
@@ -241,7 +248,7 @@ class AgentLoop
         $malformedToolInputRetries = [];
         $totalMalformedToolInputRetries = 0;
         $incompleteResponseRetries = 0;
-        $systemPrompt = $this->contextBuilder->buildSystemPrompt();
+        $systemPrompt = $this->systemPrompt ??= $this->contextBuilder->buildSystemPrompt();
 
         while ($turnCount < $this->maxTurns && ! $this->aborted) {
             if ($this->eventPump !== null) {
@@ -336,7 +343,7 @@ class AgentLoop
 
                 // 5. Track usage
                 $usage = $processor->getUsage();
-                $this->lastTurnInputTokens = $usage['input_tokens'] ?? 0;
+                $this->lastTurnInputTokens = $usage['context_input_tokens'] ?? $usage['input_tokens'] ?? 0;
                 $this->totalInputTokens += $this->lastTurnInputTokens;
                 $this->totalOutputTokens += $usage['output_tokens'] ?? 0;
                 $this->totalCacheCreationTokens += $usage['cache_creation_input_tokens'] ?? 0;
@@ -625,6 +632,28 @@ class AgentLoop
         ));
     }
 
+    private function withInitialTurnContext(string|array $userInput): string|array
+    {
+        $turnContext = $this->contextBuilder->buildTurnContext();
+        if ($turnContext === '') {
+            return $userInput;
+        }
+
+        $contextBlock = [
+            'type' => 'text',
+            'text' => "# Initial workspace context\n\n{$turnContext}",
+        ];
+
+        if (is_array($userInput)) {
+            return array_merge([$contextBlock], $userInput);
+        }
+
+        return [
+            $contextBlock,
+            ['type' => 'text', 'text' => $userInput],
+        ];
+    }
+
     private function finalizeAfterTurnLimit(
         array $systemPrompt,
         ?callable $onTextDelta,
@@ -665,7 +694,7 @@ class AgentLoop
         );
 
         $usage = $processor->getUsage();
-        $this->lastTurnInputTokens = $usage['input_tokens'] ?? 0;
+        $this->lastTurnInputTokens = $usage['context_input_tokens'] ?? $usage['input_tokens'] ?? 0;
         $this->totalInputTokens += $this->lastTurnInputTokens;
         $this->totalOutputTokens += $usage['output_tokens'] ?? 0;
         $this->totalCacheCreationTokens += $usage['cache_creation_input_tokens'] ?? 0;

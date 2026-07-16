@@ -41,10 +41,13 @@ class AgentLoopTest extends TestCase
         ?ToolRegistry $registry = null,
         ?ContextCompactor $compactor = null,
         ?SessionManager $sessionManager = null,
+        ?ContextBuilder $contextBuilder = null,
     ): AgentLoop
     {
-        $contextBuilder = $this->createMock(ContextBuilder::class);
-        $contextBuilder->method('buildSystemPrompt')->willReturn([]);
+        if ($contextBuilder === null) {
+            $contextBuilder = $this->createMock(ContextBuilder::class);
+            $contextBuilder->method('buildSystemPrompt')->willReturn([]);
+        }
 
         $sessionManager ??= $this->createMock(SessionManager::class);
         $sessionManager->method('getSessionId')->willReturn('test-session');
@@ -92,6 +95,42 @@ class AgentLoopTest extends TestCase
         $loop = $this->makeLoop($qe);
         $result = $loop->run('hi');
         $this->assertSame('Hello there', $result);
+    }
+
+    public function test_session_reuses_byte_stable_system_prompt_and_appends_initial_context_once(): void
+    {
+        $captured = [];
+        $queryEngine = $this->createMock(QueryEngine::class);
+        $queryEngine->expects($this->exactly(2))
+            ->method('query')
+            ->willReturnCallback(function (array $systemPrompt, array $messages) use (&$captured): StreamProcessor {
+                $captured[] = compact('systemPrompt', 'messages');
+
+                return $this->makePlainTextProcessor('done');
+            });
+
+        $contextBuilder = $this->createMock(ContextBuilder::class);
+        $contextBuilder->expects($this->once())
+            ->method('buildSystemPrompt')
+            ->willReturn([['type' => 'text', 'text' => 'stable-prefix']]);
+        $contextBuilder->expects($this->once())
+            ->method('buildTurnContext')
+            ->willReturn("# Git Status\n M app/Foo.php");
+
+        $loop = $this->makeLoop($queryEngine, contextBuilder: $contextBuilder);
+        $loop->run('first request');
+        $loop->run('second request');
+
+        $this->assertSame($captured[0]['systemPrompt'], $captured[1]['systemPrompt']);
+        $this->assertSame('stable-prefix', $captured[0]['systemPrompt'][0]['text']);
+        $this->assertSame(
+            $captured[0]['messages'],
+            array_slice($captured[1]['messages'], 0, count($captured[0]['messages'])),
+            'The second request must preserve the complete first request history as a byte-stable prefix.',
+        );
+        $this->assertStringContainsString('# Initial workspace context', $captured[0]['messages'][0]['content'][0]['text']);
+        $this->assertSame('first request', $captured[0]['messages'][0]['content'][1]['text']);
+        $this->assertSame('second request', $captured[1]['messages'][2]['content']);
     }
 
     public function test_external_event_pump_runs_before_each_agent_turn(): void
@@ -1931,6 +1970,43 @@ class AgentLoopTest extends TestCase
         $loop->run('hello');
         $this->assertSame(50, $loop->getCacheCreationTokens());
         $this->assertSame(25, $loop->getCacheReadTokens());
+    }
+
+    public function test_context_input_tokens_drive_metrics_when_cache_usage_is_normalized(): void
+    {
+        $processor = new StreamProcessor;
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('message_start', [
+            'message' => [
+                'id' => 'msg_cache',
+                'usage' => [
+                    'input_tokens' => 100,
+                    'context_input_tokens' => 1000,
+                    'output_tokens' => 10,
+                    'cache_read_input_tokens' => 900,
+                ],
+            ],
+        ]));
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('content_block_start', [
+            'index' => 0,
+            'content_block' => ['type' => 'text', 'text' => ''],
+        ]));
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('content_block_delta', [
+            'index' => 0,
+            'delta' => ['type' => 'text_delta', 'text' => 'done'],
+        ]));
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('message_delta', [
+            'delta' => ['stop_reason' => 'end_turn'],
+        ]));
+
+        $queryEngine = $this->createMock(QueryEngine::class);
+        $queryEngine->method('query')->willReturn($processor);
+
+        $loop = $this->makeLoop($queryEngine);
+        $loop->run('hello');
+
+        $this->assertSame(1000, $loop->getLastTurnInputTokens());
+        $this->assertSame(1000, $loop->getTotalInputTokens());
+        $this->assertSame(900, $loop->getCacheReadTokens());
     }
 
     // ─── onTurnStart increments turn number ───────────────────────────────
