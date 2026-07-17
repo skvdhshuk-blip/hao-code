@@ -144,7 +144,7 @@
         "internal": false,
         "methods": {
             "__construct": {
-                "signature": "public function __construct(?string $apiKey = null, ?string $model = null, ?string $baseUrl = null, ?string $providerType = null, ?int $maxTokens = null, ?string $cwd = null, int $maxTurns = 50, ?float $maxBudgetUsd = null, string $permissionMode = \"default\", array $allowedTools = [], array $disallowedTools = [], ?string $systemPrompt = null, ?string $appendSystemPrompt = null, bool $thinkingEnabled = false, int $thinkingBudget = 10000, mixed $onText = null, mixed $onThinking = null, mixed $onToolStart = null, mixed $onToolComplete = null, mixed $onTurnStart = null, bool $ephemeral = true, array $tools = [], array $skills = [], ?HaoCode\\Sdk\\AbortController $abortController = null, ?string $sessionId = null, bool $continueSession = false, ?array $responseSchema = null, ?HaoCode\\Sdk\\CredentialPool $credentialPool = null, ?HaoCode\\Sdk\\Sandbox\\SandboxConfig $sandbox = null, string $memorySummaryLevel = \"l0\", ?string $memoryStoragePath = null, array $skillDirectories = [], bool $recursiveSkillDiscovery = false, array $interruptOn = [], bool $enableAskUser = false, ?HaoCode\\Sdk\\Memory\\MemoryStoreInterface $memoryStore = null)",
+                "signature": "public function __construct(?string $apiKey = null, ?string $model = null, ?string $baseUrl = null, ?string $providerType = null, ?int $maxTokens = null, ?string $cwd = null, int $maxTurns = 50, ?float $maxBudgetUsd = null, string $permissionMode = \"default\", array $allowedTools = [], array $disallowedTools = [], ?string $systemPrompt = null, ?string $appendSystemPrompt = null, bool $thinkingEnabled = false, int $thinkingBudget = 10000, mixed $onText = null, mixed $onThinking = null, mixed $onToolStart = null, mixed $onToolComplete = null, mixed $onTurnStart = null, bool $ephemeral = true, array $tools = [], array $skills = [], ?HaoCode\\Sdk\\AbortController $abortController = null, ?string $sessionId = null, bool $continueSession = false, ?array $responseSchema = null, ?HaoCode\\Sdk\\CredentialPool $credentialPool = null, ?HaoCode\\Sdk\\Sandbox\\SandboxConfig $sandbox = null, string $memorySummaryLevel = \"l0\", ?string $memoryStoragePath = null, array $skillDirectories = [], bool $recursiveSkillDiscovery = false, array $interruptOn = [], bool $enableAskUser = false, ?HaoCode\\Sdk\\Memory\\MemoryStoreInterface $memoryStore = null, string $hitlMode = \"ask\", ?string $hitlReviewModel = null)",
                 "api": false,
                 "internal": false
             },
@@ -222,6 +222,16 @@
             },
             "ephemeral": {
                 "signature": "public readonly bool $ephemeral",
+                "api": true,
+                "internal": false
+            },
+            "hitlMode": {
+                "signature": "public readonly string $hitlMode",
+                "api": true,
+                "internal": false
+            },
+            "hitlReviewModel": {
+                "signature": "public readonly ?string $hitlReviewModel",
                 "api": true,
                 "internal": false
             },
@@ -632,6 +642,11 @@
         "api": true,
         "internal": false,
         "methods": {
+            "autoDecision": {
+                "signature": "public static function autoDecision(string $sessionId, string $interruptId, string $actionId, string $toolName, array $toolInput, string $decision, string $source, string $riskLevel, string $reason) : self",
+                "api": true,
+                "internal": false
+            },
             "error": {
                 "signature": "public static function error(string $message) : self",
                 "api": true,
@@ -639,6 +654,11 @@
             },
             "interrupt": {
                 "signature": "public static function interrupt(HaoCode\\Sdk\\HumanInterrupt $interrupt) : self",
+                "api": true,
+                "internal": false
+            },
+            "isAutoDecision": {
+                "signature": "public function isAutoDecision() : bool",
                 "api": true,
                 "internal": false
             },
@@ -684,8 +704,18 @@
             }
         },
         "properties": {
+            "actionId": {
+                "signature": "public readonly ?string $actionId",
+                "api": true,
+                "internal": false
+            },
             "cost": {
                 "signature": "public readonly ?float $cost",
+                "api": true,
+                "internal": false
+            },
+            "decision": {
+                "signature": "public readonly ?string $decision",
                 "api": true,
                 "internal": false
             },
@@ -699,8 +729,28 @@
                 "api": true,
                 "internal": false
             },
+            "interruptId": {
+                "signature": "public readonly ?string $interruptId",
+                "api": true,
+                "internal": false
+            },
+            "reason": {
+                "signature": "public readonly ?string $reason",
+                "api": true,
+                "internal": false
+            },
+            "riskLevel": {
+                "signature": "public readonly ?string $riskLevel",
+                "api": true,
+                "internal": false
+            },
             "sessionId": {
                 "signature": "public readonly ?string $sessionId",
+                "api": true,
+                "internal": false
+            },
+            "source": {
+                "signature": "public readonly ?string $source",
                 "api": true,
                 "internal": false
             },

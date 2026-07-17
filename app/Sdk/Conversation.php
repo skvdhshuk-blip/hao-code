@@ -129,6 +129,12 @@ class Conversation
             \Fiber::getCurrent()?->suspend();
         };
 
+        // Smart/auto HITL decision events flow through the same fiber queue.
+        $this->loop->setAutoDecisionHandler(function (Message $message) use ($queue): void {
+            $queue->enqueue($message);
+            \Fiber::getCurrent()?->suspend();
+        });
+
         $response = null;
         $thrownException = null;
 
@@ -237,6 +243,10 @@ class Conversation
         }
 
         $queue = new \SplQueue;
+        $this->loop->setAutoDecisionHandler(function (Message $message) use ($queue): void {
+            $queue->enqueue($message);
+            \Fiber::getCurrent()?->suspend();
+        });
         $response = null;
         $thrown = null;
         $fiber = new \Fiber(function () use ($interruptId, $decisions, $queue, &$response, &$thrown): void {

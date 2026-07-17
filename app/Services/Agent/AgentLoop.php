@@ -7,6 +7,8 @@ use HaoCode\Sdk\HumanInterruptException;
 use HaoCode\Sdk\HumanActionRequest;
 use HaoCode\Services\Compact\ContextCompactor;
 use HaoCode\Services\Cost\CostTracker;
+use HaoCode\Services\Hitl\HitlReviewer;
+use HaoCode\Services\Hitl\SmartInterruptDecider;
 use HaoCode\Services\Hooks\HookExecutor;
 use HaoCode\Services\Permissions\PermissionChecker;
 use HaoCode\Services\Session\SessionManager;
@@ -60,6 +62,17 @@ class AgentLoop
 
     private ?\Closure $eventPump = null;
 
+    /** @var \Closure(\HaoCode\Sdk\Message): void|null */
+    private ?\Closure $autoDecisionHandler = null;
+
+    /** Decider for smart/auto HITL modes; rebuilt per run so circuit-breaker state stays run-scoped. */
+    private ?SmartInterruptDecider $interruptDecider = null;
+
+    private bool $interruptDeciderResolved = false;
+
+    /** Most recent user input, used as guardian-review context in smart HITL mode. */
+    private ?string $lastUserPrompt = null;
+
     public function __construct(
         private readonly QueryEngine $queryEngine,
         private readonly ToolOrchestrator $toolOrchestrator,
@@ -98,6 +111,18 @@ class AgentLoop
     public function setEventPump(?callable $eventPump): void
     {
         $this->eventPump = $eventPump === null ? null : \Closure::fromCallable($eventPump);
+    }
+
+    /**
+     * Register a handler invoked with each Message::autoDecision event emitted
+     * by the smart/auto HITL decider. Streaming entry points use this to yield
+     * the events; non-streaming callers may leave it unset.
+     *
+     * @internal
+     */
+    public function setAutoDecisionHandler(?callable $handler): void
+    {
+        $this->autoDecisionHandler = $handler === null ? null : \Closure::fromCallable($handler);
     }
 
     public function setWorkingDirectory(string $dir): void
@@ -203,6 +228,91 @@ class AgentLoop
     }
 
     /**
+     * Attempt to settle a pending interrupt batch without a human (smart/auto
+     * HITL modes). Emits one auto-decision event per action through the
+     * registered handler. When the whole batch is auto-decided, the decisions
+     * are applied through the exact same path a human resume would take
+     * (HumanInterruptCoordinator::resolve against the recorded checkpoint), so
+     * validation, checkpoint, and tool-execution semantics are preserved.
+     *
+     * @return array<int, array<string, mixed>>|null Resolved tool results, or
+     *         null when the batch must interrupt for a human.
+     */
+    private function settleInterruptBatchAutomatically(
+        HumanInterrupt $interrupt,
+        ToolUseContext $context,
+        ?callable $onToolStart,
+        ?callable $onToolComplete,
+    ): ?array {
+        $decider = $this->smartInterruptDecider();
+        if ($decider === null) {
+            return null; // ask mode: zero behaviour change.
+        }
+
+        $batch = $decider->decide($interrupt, $this->lastUserPrompt ?? '');
+        foreach ($batch['events'] as $event) {
+            if ($this->autoDecisionHandler !== null) {
+                ($this->autoDecisionHandler)($event);
+            }
+        }
+        if ($batch['status'] !== 'auto') {
+            return null;
+        }
+
+        $resolution = (new HumanInterruptCoordinator($this->sessionManager, $this->toolOrchestrator))->resolve(
+            $interrupt->id,
+            $batch['decisions'],
+            $context,
+            $onToolStart,
+            $onToolComplete,
+        );
+
+        return $resolution['results'];
+    }
+
+    /**
+     * Build the per-run smart/auto interrupt decider. Returns null in ask mode
+     * so the default path stays untouched. The reviewer reuses the run's
+     * provider settings, with the model overridden by hitlReviewModel when set.
+     */
+    private function smartInterruptDecider(): ?SmartInterruptDecider
+    {
+        if ($this->interruptDeciderResolved) {
+            return $this->interruptDecider;
+        }
+        $this->interruptDeciderResolved = true;
+
+        $mode = $this->runContext?->hitlMode ?? 'ask';
+        if (! in_array($mode, ['smart', 'auto'], true)) {
+            return null;
+        }
+
+        $cwd = $this->workingDirectory
+            ?? $this->runContext?->workingDirectory
+            ?? (getcwd() ?: '/');
+        $reviewer = null;
+        if ($mode === 'smart') {
+            $settings = $this->runContext?->settings;
+            $apiKey = $settings?->getApiKey();
+            $baseUrl = $settings?->getBaseUrl();
+            $providerType = $settings?->getProviderType();
+            $reviewer = new HitlReviewer([
+                'apiKey' => is_string($apiKey) && trim($apiKey) !== '' ? trim($apiKey) : null,
+                'model' => $this->runContext?->hitlReviewModel ?? $settings?->getModel(),
+                'baseUrl' => is_string($baseUrl) && trim($baseUrl) !== '' ? trim($baseUrl) : null,
+                'providerType' => is_string($providerType) && trim($providerType) !== '' ? trim($providerType) : null,
+            ], $cwd);
+        }
+
+        return $this->interruptDecider = new SmartInterruptDecider(
+            mode: $mode,
+            reviewer: $reviewer,
+            cwd: $cwd,
+            fallbackSessionId: (string) $this->sessionManager->getSessionId(),
+        );
+    }
+
+    /**
      * Original run body, preserved verbatim behind the tracer wrapper in
      * {@see run()} so span lifecycle stays isolated from the agent logic.
      */
@@ -216,6 +326,14 @@ class AgentLoop
     ): string {
         $this->aborted = false;
         $this->cancellationToken->reset();
+        $this->interruptDecider = null;
+        $this->interruptDeciderResolved = false;
+        if (is_string($userInput)) {
+            $this->lastUserPrompt = $userInput;
+        } elseif (is_array($userInput)) {
+            $encoded = json_encode($userInput, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+            $this->lastUserPrompt = is_string($encoded) ? $encoded : null;
+        }
         $isSessionStart = ! $this->sessionStarted;
         if ($userInput !== null) {
             $modelInput = $isSessionStart
@@ -545,7 +663,21 @@ class AgentLoop
                             'operation' => $this->runContext?->responseSchema !== null ? 'structured' : 'query',
                             'response_schema' => $this->runContext?->responseSchema,
                         ]);
-                        throw new HumanInterruptException($interrupt);
+
+                        // Smart/auto HITL: try to settle the batch automatically.
+                        // Returns the resolved tool results when every action was
+                        // auto-decided, null when the batch must go to a human
+                        // (ask mode, escalation, or fail-closed decider error).
+                        $autoResults = $this->settleInterruptBatchAutomatically(
+                            $interrupt,
+                            $context,
+                            $onToolStart,
+                            $onToolComplete,
+                        );
+                        if ($autoResults === null) {
+                            throw new HumanInterruptException($interrupt);
+                        }
+                        $toolResults = $autoResults;
                     }
 
                     ksort($toolResults);

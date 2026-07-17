@@ -12,6 +12,31 @@ namespace HaoCode\Sdk;
  */
 class HaoCodeConfig
 {
+    /**
+     * Human-in-the-loop approval mode:
+     *
+     * - 'ask' (default): every configured action interrupts for a human decision.
+     * - 'smart': rules fast-path routine actions, gray-area actions are reviewed
+     *   by a model (see {@see $hitlReviewModel}), and only dangerous actions
+     *   interrupt for a human decision.
+     * - 'auto': tool interrupts are suppressed entirely; AskUserQuestion still
+     *   interrupts for a human response.
+     *
+     * Unknown values are normalized to 'ask'.
+     *
+     * @api
+     */
+    public readonly string $hitlMode;
+
+    /**
+     * Model used to review gray-area actions when {@see $hitlMode} is 'smart'.
+     * null reuses the current run's model. Non-string and empty values are
+     * normalized to null.
+     *
+     * @api
+     */
+    public readonly ?string $hitlReviewModel;
+
     public function __construct(
         /**
          * Anthropic API key. Falls back to config('haocode.api_key').
@@ -324,7 +349,28 @@ class HaoCodeConfig
          * @api
          */
         public readonly ?\HaoCode\Sdk\Memory\MemoryStoreInterface $memoryStore = null,
+
+        /**
+         * Human-in-the-loop approval mode: 'ask', 'smart', or 'auto'.
+         * Unknown values normalize to 'ask'.
+         *
+         * @api
+         */
+        string $hitlMode = 'ask',
+
+        /**
+         * Model used to review gray-area actions in 'smart' HITL mode.
+         * null reuses the current run's model.
+         *
+         * @api
+         */
+        ?string $hitlReviewModel = null,
     ) {
+        $this->hitlMode = in_array($hitlMode, ['ask', 'smart', 'auto'], true) ? $hitlMode : 'ask';
+        $this->hitlReviewModel = is_string($hitlReviewModel) && trim($hitlReviewModel) !== ''
+            ? $hitlReviewModel
+            : null;
+
         if (! in_array($this->memorySummaryLevel, ['l0', 'l1', 'l2'], true)) {
             throw new \InvalidArgumentException('memorySummaryLevel must be l0, l1, or l2.');
         }

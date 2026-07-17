@@ -172,6 +172,12 @@ class HaoCode
             \Fiber::getCurrent()?->suspend();
         };
 
+        // Smart/auto HITL decision events flow through the same fiber queue.
+        $loop->setAutoDecisionHandler(function (Message $message) use ($queue): void {
+            $queue->enqueue($message);
+            \Fiber::getCurrent()?->suspend();
+        });
+
         $response = null;
         $thrownException = null;
 

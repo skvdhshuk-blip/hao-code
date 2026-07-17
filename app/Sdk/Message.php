@@ -13,6 +13,7 @@ namespace HaoCode\Sdk;
  * - result: final result with usage/cost
  * - error: an error occurred
  * - interrupt: generation paused for a durable human decision
+ * - auto_decision: an action was decided automatically by the smart HITL policy
  *
  * @api
  */
@@ -44,6 +45,18 @@ class Message
         public readonly ?string $error = null,
         /** @api */
         public readonly ?HumanInterrupt $interrupt = null,
+        /** @api */
+        public readonly ?string $interruptId = null,
+        /** @api */
+        public readonly ?string $actionId = null,
+        /** @api */
+        public readonly ?string $decision = null,
+        /** @api */
+        public readonly ?string $source = null,
+        /** @api */
+        public readonly ?string $riskLevel = null,
+        /** @api */
+        public readonly ?string $reason = null,
     ) {}
 
     /** @api */
@@ -88,6 +101,44 @@ class Message
         return new self(type: 'interrupt', sessionId: $interrupt->sessionId, interrupt: $interrupt);
     }
 
+    /**
+     * Automatic decision emitted by the smart HITL policy for one action.
+     *
+     * - $decision: 'approve', 'reject', or 'escalate' (unknown values normalize
+     *   to 'escalate', the safest fallback).
+     * - $source: 'rule', 'review', or 'batch' (unknown values normalize to 'rule').
+     * - $riskLevel: 'low', 'medium', 'high', or 'critical' (unknown values
+     *   normalize to 'medium').
+     * - $reason: human-readable rationale; escalations carry a 'rule:',
+     *   'review:', or 'batch:' prefix family matching the source.
+     *
+     * @api
+     */
+    public static function autoDecision(
+        string $sessionId,
+        string $interruptId,
+        string $actionId,
+        string $toolName,
+        array $toolInput,
+        string $decision,
+        string $source,
+        string $riskLevel,
+        string $reason,
+    ): self {
+        return new self(
+            type: 'auto_decision',
+            toolName: $toolName,
+            toolInput: $toolInput,
+            sessionId: $sessionId,
+            interruptId: $interruptId,
+            actionId: $actionId,
+            decision: in_array($decision, ['approve', 'reject', 'escalate'], true) ? $decision : 'escalate',
+            source: in_array($source, ['rule', 'review', 'batch'], true) ? $source : 'rule',
+            riskLevel: in_array($riskLevel, ['low', 'medium', 'high', 'critical'], true) ? $riskLevel : 'medium',
+            reason: $reason,
+        );
+    }
+
     /** @api */
     public function isResult(): bool
     {
@@ -104,5 +155,11 @@ class Message
     public function isInterrupt(): bool
     {
         return $this->type === 'interrupt';
+    }
+
+    /** @api */
+    public function isAutoDecision(): bool
+    {
+        return $this->type === 'auto_decision';
     }
 }

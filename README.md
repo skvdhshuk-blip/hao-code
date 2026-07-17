@@ -165,6 +165,12 @@ unattended full agent must state all three explicitly, for example
 `ephemeral: false`. Do this only inside a trust boundary appropriate for the
 tools being exposed.
 
+For human-in-the-loop runs, `hitlMode` selects the approval mode: `'ask'`
+(default) interrupts every configured action, `'smart'` automates routine
+approvals through rules plus a review model (`hitlReviewModel`, defaulting to
+the run's model), and `'auto'` suppresses tool interrupts entirely. Automatic
+decisions surface on the stream as `auto_decision` messages.
+
 > **v1.8.0 behavior change:** `v1.7.0` constructed `HaoCodeConfig` with all
 > tools, permission bypass, and durable storage by default. Existing trusted
 > callers that need the old behavior must now opt in to those three settings

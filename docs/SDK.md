@@ -341,6 +341,8 @@ configured output tokens and a safety margin before sending a request.
 | `credentialPool` | `?CredentialPool` | `null` | Rotate provider credentials and retry rate-limited keys |
 | `interruptOn` | `array` | `[]` | Exact tool names to pause before execution; values are `true`, `false`, or review configuration arrays |
 | `enableAskUser` | `bool` | `false` | Register `AskUserQuestion` as a serializable host interrupt |
+| `hitlMode` | `string` | `'ask'` | HITL approval mode: `'ask'`, `'smart'`, or `'auto'`; unknown values normalize to `'ask'`. See [Smart HITL modes](#smart-hitl-modes) |
+| `hitlReviewModel` | `?string` | `null` | Model used to review gray-area actions in `'smart'` mode; `null` reuses the current run's model |
 
 ### Prompts
 
@@ -1009,6 +1011,7 @@ tool requests; they do not bypass tool permissions, hooks, or skill tool scope.
 | `result` | `$msg->text`, `$msg->usage`, `$msg->cost`, `$msg->sessionId` | Final result |
 | `error` | `$msg->error` | An error occurred |
 | `interrupt` | `$msg->interrupt`, `$msg->sessionId` | Generation paused for human input; no `result` follows in that stream |
+| `auto_decision` | `$msg->sessionId`, `$msg->interruptId`, `$msg->actionId`, `$msg->toolName`, `$msg->toolInput`, `$msg->decision`, `$msg->source`, `$msg->riskLevel`, `$msg->reason` | An action was decided automatically by the smart HITL policy |
 
 ```php
 foreach (HaoCode::stream('Refactor the auth module', new HaoCodeConfig(
@@ -1114,6 +1117,47 @@ foreach (HaoCode::streamResumeInterrupt(
     }
     if ($message->isInterrupt()) {
         // Persist the new checkpoint; this run paused again.
+    }
+}
+```
+
+#### Smart HITL modes
+
+`hitlMode` controls how much of the approval flow is automated. The defaults
+are also available as `hitl_mode` / `hitl_review_model` in `config/haocode.php`
+(`HAOCODE_HITL_MODE` / `HAOCODE_HITL_REVIEW_MODEL`).
+
+| Mode | Behavior |
+|------|----------|
+| `'ask'` (default) | Every configured action interrupts for a human decision — the behavior described above. |
+| `'smart'` | Rules fast-path routine actions, gray-area actions are reviewed by a model, and only dangerous actions interrupt for a human decision. `hitlReviewModel` selects the review model; `null` reuses the current run's model. |
+| `'auto'` | Tool interrupts are suppressed entirely; `AskUserQuestion` still interrupts for a human response. |
+
+In `'smart'` and `'auto'` mode, every automatic decision is reported on the
+stream as an `auto_decision` message built by `Message::autoDecision()` and
+detected with `$msg->isAutoDecision()`. The message contract is frozen at nine
+fields:
+
+| Field | Type | Domain |
+|-------|------|--------|
+| `sessionId` | `string` | Owning session |
+| `interruptId` | `string` | Interrupt checkpoint the action belongs to |
+| `actionId` | `string` | Action that was decided |
+| `toolName` | `string` | Tool that was about to run |
+| `toolInput` | `array` | Normalized tool input that was reviewed |
+| `decision` | `string` | `approve`, `reject`, or `escalate` (unknown values normalize to `escalate`) |
+| `source` | `string` | `rule`, `review`, or `batch` (unknown values normalize to `rule`) |
+| `riskLevel` | `string` | `low`, `medium`, `high`, or `critical` (unknown values normalize to `medium`) |
+| `reason` | `string` | Human-readable rationale |
+
+`escalate` means the policy declined to decide and the action falls back to the
+normal human-interrupt flow. Escalation reasons carry a prefix family matching
+their source: `rule:`, `review:`, or `batch:`.
+
+```php
+foreach (HaoCode::stream('Deploy the release', $config) as $msg) {
+    if ($msg->isAutoDecision()) {
+        Log::info("{$msg->decision} ({$msg->source}/{$msg->riskLevel}): {$msg->reason}");
     }
 }
 ```

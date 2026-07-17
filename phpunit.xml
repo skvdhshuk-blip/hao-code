@@ -8,8 +8,12 @@
         <testsuite name="SDK">
             <directory>tests/Sdk</directory>
             <file>tests/Feature/SdkE2ETest.php</file>
+            <file>tests/Feature/SmartHitlModeTest.php</file>
             <file>tests/Feature/ToolInputSchemaTest.php</file>
             <file>tests/Unit/AgentLoopFactoryTest.php</file>
+            <file>tests/Unit/Hitl/SmartInterruptDeciderTest.php</file>
+            <file>tests/Unit/Hitl/HitlPolicyTest.php</file>
+            <file>tests/Unit/Hitl/HitlReviewerTest.php</file>
         </testsuite>
     </testsuites>
     <source>

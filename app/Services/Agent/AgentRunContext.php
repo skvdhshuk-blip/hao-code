@@ -27,6 +27,8 @@ final readonly class AgentRunContext
         public ?MemoryStoreInterface $memoryStore = null,
         public bool $includeMemoryInTextOnly = false,
         public array $memoryTools = [],
+        public string $hitlMode = 'ask',
+        public ?string $hitlReviewModel = null,
     ) {}
 
     public function fork(
@@ -56,6 +58,8 @@ final readonly class AgentRunContext
             $this->memoryStore,
             $this->includeMemoryInTextOnly,
             $this->memoryTools,
+            $this->hitlMode,
+            $this->hitlReviewModel,
         );
     }
 }

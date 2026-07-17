@@ -76,6 +76,24 @@ final class AgentRunContextFactory
             static fn (string $name): bool => $toolFilter === null || $toolFilter($name),
         ));
 
+        // HITL mode: an explicit HaoCodeConfig value wins; the 'ask' default
+        // falls back to the haocode.hitl_mode config file / HAOCODE_HITL_MODE
+        // environment default so deployments can opt in process-wide.
+        $hitlMode = $config->hitlMode;
+        if ($hitlMode === 'ask') {
+            $configuredMode = \HaoCode\Support\Runtime\SdkRuntime::config('haocode.hitl_mode', 'ask');
+            $hitlMode = is_string($configuredMode) && in_array($configuredMode, ['ask', 'smart', 'auto'], true)
+                ? $configuredMode
+                : 'ask';
+        }
+        $hitlReviewModel = $config->hitlReviewModel;
+        if ($hitlReviewModel === null) {
+            $configuredModel = \HaoCode\Support\Runtime\SdkRuntime::config('haocode.hitl_review_model');
+            $hitlReviewModel = is_string($configuredModel) && trim($configuredModel) !== ''
+                ? $configuredModel
+                : null;
+        }
+
         return new AgentRunContext(
             $workingDirectory,
             $projectDirectory,
@@ -90,6 +108,8 @@ final class AgentRunContextFactory
             $memoryStore,
             $includeMemoryInTextOnly,
             $memoryTools,
+            $hitlMode,
+            $hitlReviewModel,
         );
     }
 }
