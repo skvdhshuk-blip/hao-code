@@ -136,17 +136,14 @@ class SessionManager
             mkdir($this->sessionPath, 0755, true);
         }
 
-        $line = json_encode(
-            array_merge(
-                [
-                    'timestamp' => date('c'),
-                    'session_id' => $this->sessionId,
-                    'cwd' => $this->currentWorkingDirectory ?? (getcwd() ?: null),
-                ],
-                $entry
-            ),
-            JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES
-        )."\n";
+        $line = self::encodeEntryForJsonl(array_merge(
+            [
+                'timestamp' => date('c'),
+                'session_id' => $this->sessionId,
+                'cwd' => $this->currentWorkingDirectory ?? (getcwd() ?: null),
+            ],
+            $entry
+        ))."\n";
 
         file_put_contents($this->getFilePath(), $line, FILE_APPEND | LOCK_EX);
     }
@@ -417,17 +414,65 @@ class SessionManager
         return $latest;
     }
 
-    /** @param resource $handle */
-    private function appendJsonLine($handle, array $entry): void
+    /**
+     * Encode one JSONL entry, degrading gracefully instead of losing it.
+     * Tool outputs and checkpoint history can carry invalid UTF-8 (binary or
+     * non-UTF-8 file contents) or non-finite doubles — both make json_encode
+     * fail. Sanitize and retry, then fall back to partial output; writing a
+     * checkpoint or transcript line must never kill or silently corrupt a run.
+     */
+    private static function encodeEntryForJsonl(array $entry): string
     {
         $encoded = json_encode($entry, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
         if ($encoded === false) {
+            $encoded = json_encode(self::sanitizeForJson($entry), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        }
+        if ($encoded === false) {
+            $encoded = json_encode($entry, JSON_PARTIAL_OUTPUT_ON_ERROR | JSON_UNESCAPED_SLASHES);
+        }
+        if ($encoded === false) {
             throw new \RuntimeException('Could not serialize session interrupt checkpoint.');
         }
+
+        return $encoded;
+    }
+
+    /** @param resource $handle */
+    private function appendJsonLine($handle, array $entry): void
+    {
+        $encoded = self::encodeEntryForJsonl($entry);
         fseek($handle, 0, SEEK_END);
         if (fwrite($handle, $encoded."\n") === false || ! fflush($handle)) {
             throw new \RuntimeException('Could not persist session interrupt checkpoint.');
         }
+    }
+
+    /**
+     * Recursively scrub invalid UTF-8 byte sequences and non-finite doubles
+     * so json_encode cannot fail on tool payloads.
+     */
+    private static function sanitizeForJson(mixed $value): mixed
+    {
+        if (is_string($value)) {
+            if (preg_match('//u', $value) === 1) {
+                return $value;
+            }
+            $scrubbed = @iconv('UTF-8', 'UTF-8//IGNORE', $value);
+            return $scrubbed !== false ? $scrubbed : '';
+        }
+        if (is_float($value)) {
+            return is_finite($value) ? $value : 0.0;
+        }
+        if (is_array($value)) {
+            $sanitized = [];
+            foreach ($value as $key => $item) {
+                $sanitized[self::sanitizeForJson($key)] = self::sanitizeForJson($item);
+            }
+
+            return $sanitized;
+        }
+
+        return $value;
     }
 
     private function appendEntryToSession(string $sessionId, array $entry): void

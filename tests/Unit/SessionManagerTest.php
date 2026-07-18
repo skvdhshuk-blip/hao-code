@@ -240,4 +240,60 @@ class SessionManagerTest extends TestCase
 
         $this->assertSame($manager->getSessionId(), $manager->findMostRecentSessionId(getcwd()));
     }
+
+    public function test_checkpoint_write_survives_invalid_utf8_and_non_finite_doubles(): void
+    {
+        $manager = new SessionManager;
+        $binary = "\xB1\xBE\xB3\xAC\xFF\xFE"; // GBK bytes — invalid as UTF-8.
+        $interrupt = [
+            'id' => 'int-bin',
+            'session_id' => $manager->getSessionId(),
+            'actions' => [
+                ['id' => 'act-1', 'toolName' => 'Bash', 'input' => ['command' => "cat {$binary}"], 'allowedDecisions' => ['approve', 'reject']],
+            ],
+            'created_at' => date('c'),
+        ];
+        $checkpoint = [
+            'blocks' => [['type' => 'tool_result', 'output' => "file head {$binary} tail"]],
+            'results' => [],
+            'usage' => ['ratio' => INF, 'other' => -INF, 'nan' => NAN, 'ok' => 1.5],
+        ];
+
+        // Must not throw — the run is more important than one checkpoint line.
+        $manager->recordPendingInterrupt($interrupt, $checkpoint);
+
+        $filePath = $this->tmpDir.'/'.$manager->getSessionId().'.jsonl';
+        $lines = file($filePath, FILE_IGNORE_NEW_LINES | FILE_SKIP_EMPTY_LINES);
+        $this->assertNotEmpty($lines);
+        $decoded = json_decode((string) end($lines), true);
+        $this->assertIsArray($decoded, 'checkpoint line must be valid JSON after sanitizing');
+        $this->assertSame('interrupt_pending', $decoded['type']);
+        $this->assertSame('int-bin', $decoded['interrupt']['id']);
+        // Non-finite doubles are replaced, not fatal (JSON has no float
+        // fraction type — 0.0 may come back as int 0).
+        $this->assertEquals(0.0, $decoded['checkpoint']['usage']['ratio']);
+        $this->assertEquals(0.0, $decoded['checkpoint']['usage']['other']);
+        $this->assertEquals(0.0, $decoded['checkpoint']['usage']['nan']);
+        $this->assertSame(1.5, $decoded['checkpoint']['usage']['ok']);
+        // Invalid UTF-8 was scrubbed: the remaining bytes are valid UTF-8.
+        $this->assertSame(1, preg_match('//u', $decoded['interrupt']['actions'][0]['input']['command']));
+        $this->assertSame(1, preg_match('//u', $decoded['checkpoint']['blocks'][0]['output']));
+    }
+
+    public function test_checkpoint_write_keeps_valid_utf8_untouched(): void
+    {
+        $manager = new SessionManager;
+        $interrupt = [
+            'id' => 'int-utf8',
+            'session_id' => $manager->getSessionId(),
+            'actions' => [],
+            'created_at' => date('c'),
+        ];
+        $manager->recordPendingInterrupt($interrupt, ['blocks' => [], 'results' => [], 'note' => '继续（中文）éè']);
+
+        $entries = $manager->loadSession($manager->getSessionId());
+        $pending = array_values(array_filter($entries, static fn (array $entry): bool => ($entry['type'] ?? null) === 'interrupt_pending'));
+        $this->assertNotEmpty($pending);
+        $this->assertSame('继续（中文）éè', $pending[0]['checkpoint']['note']);
+    }
 }
