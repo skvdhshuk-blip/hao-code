@@ -15,18 +15,22 @@ class HaoCodeConfig
     /**
      * Human-in-the-loop approval mode:
      *
-     * - 'ask' (default): every configured action interrupts for a human decision.
+     * - 'ask': every configured action interrupts for a human decision.
      * - 'smart': rules fast-path routine actions, gray-area actions are reviewed
      *   by a model (see {@see $hitlReviewModel}), and only dangerous actions
      *   interrupt for a human decision.
      * - 'auto': tool interrupts are suppressed entirely; AskUserQuestion still
      *   interrupts for a human response.
      *
-     * Unknown values are normalized to 'ask'.
+     * null (the default) means "not chosen explicitly": the runtime then
+     * resolves the mode from the haocode.hitl_mode config file /
+     * HAOCODE_HITL_MODE environment variable (whose own default is 'smart').
+     * An explicit 'ask' is always honored as 'ask'. Unknown values normalize
+     * to null (unset semantics).
      *
      * @api
      */
-    public readonly string $hitlMode;
+    public readonly ?string $hitlMode;
 
     /**
      * Model used to review gray-area actions when {@see $hitlMode} is 'smart'.
@@ -36,6 +40,23 @@ class HaoCodeConfig
      * @api
      */
     public readonly ?string $hitlReviewModel;
+
+    /**
+     * Path to a JSON file with user-saved "always allow" Bash rules (the
+     * codex always-allow concept, exact-match v1). In 'smart' mode a Bash
+     * action whose trimmed command exactly equals a saved rule is approved
+     * before the rule classifier runs — including commands the classifier
+     * would otherwise red-line (user sovereignty). A missing, corrupt, or
+     * wrong-version file loads as an empty allowlist and never throws.
+     * null disables the feature; non-string and empty values normalize to
+     * null.
+     *
+     * File format (frozen):
+     * {"version":1,"rules":[{"command":"...","addedAt":"<iso8601>","source":"user"}]}
+     *
+     * @api
+     */
+    public readonly ?string $hitlAllowlistPath;
 
     public function __construct(
         /**
@@ -356,7 +377,7 @@ class HaoCodeConfig
          *
          * @api
          */
-        string $hitlMode = 'ask',
+        ?string $hitlMode = null,
 
         /**
          * Model used to review gray-area actions in 'smart' HITL mode.
@@ -365,10 +386,21 @@ class HaoCodeConfig
          * @api
          */
         ?string $hitlReviewModel = null,
+
+        /**
+         * Path to a JSON file with user-saved "always allow" Bash rules.
+         * Empty values normalize to null.
+         *
+         * @api
+         */
+        ?string $hitlAllowlistPath = null,
     ) {
-        $this->hitlMode = in_array($hitlMode, ['ask', 'smart', 'auto'], true) ? $hitlMode : 'ask';
+        $this->hitlMode = is_string($hitlMode) && in_array($hitlMode, ['ask', 'smart', 'auto'], true) ? $hitlMode : null;
         $this->hitlReviewModel = is_string($hitlReviewModel) && trim($hitlReviewModel) !== ''
             ? $hitlReviewModel
+            : null;
+        $this->hitlAllowlistPath = is_string($hitlAllowlistPath) && trim($hitlAllowlistPath) !== ''
+            ? $hitlAllowlistPath
             : null;
 
         if (! in_array($this->memorySummaryLevel, ['l0', 'l1', 'l2'], true)) {

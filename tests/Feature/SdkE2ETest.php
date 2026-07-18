@@ -1784,6 +1784,7 @@ JSON),
             allowedTools: ['Write'],
             ephemeral: false,
             interruptOn: ['Write' => true],
+            hitlMode: 'ask',
         );
 
         try {
@@ -1829,6 +1830,7 @@ JSON),
             allowedTools: ['Bash'],
             ephemeral: false,
             interruptOn: ['Bash' => true],
+            hitlMode: 'ask',
         )));
 
         $this->assertCount(1, array_filter($messages, fn (Message $message): bool => $message->isInterrupt()));
@@ -1849,6 +1851,7 @@ JSON),
             allowedTools: ['Write'],
             ephemeral: false,
             interruptOn: ['Write' => true],
+            hitlMode: 'ask',
         );
         $initial = iterator_to_array(HaoCode::stream('Write the file', $config));
         $interrupt = array_values(array_filter(
@@ -1896,6 +1899,7 @@ JSON),
             tools: [$lookup],
             ephemeral: false,
             interruptOn: ['Write' => true],
+            hitlMode: 'ask',
         );
 
         try {
@@ -1971,6 +1975,7 @@ JSON),
             allowedTools: ['Write'],
             ephemeral: false,
             interruptOn: ['Write' => true],
+            hitlMode: 'ask',
         );
         try {
             HaoCode::query('Write a file', $config);
@@ -2004,6 +2009,7 @@ JSON),
             allowedTools: ['Write'],
             ephemeral: false,
             interruptOn: ['Write' => true],
+            hitlMode: 'ask',
         );
         try {
             HaoCode::query('Write a file', $config);
@@ -2038,6 +2044,7 @@ JSON),
             allowedTools: ['Write'],
             ephemeral: false,
             interruptOn: ['Write' => true],
+            hitlMode: 'ask',
         );
         try {
             HaoCode::structured('Write then report', $schema, $config);
@@ -2081,6 +2088,7 @@ JSON),
             permissionMode: 'bypass_permissions',
             ephemeral: false,
             interruptOn: ['Write' => true],
+            hitlMode: 'ask',
         );
         try {
             HaoCode::query('Delegate the write to a child agent', $config);
@@ -2116,6 +2124,7 @@ JSON),
             allowedTools: ['Agent', 'Write'],
             ephemeral: false,
             interruptOn: ['Agent' => true, 'Write' => true],
+            hitlMode: 'ask',
         );
         try {
             HaoCode::query('Run a gated child', $config);
@@ -2158,6 +2167,9 @@ JSON),
             'haocode.model' => 'claude-test',
             'haocode.max_tokens' => 4096,
             'haocode.permission_mode' => 'bypass_permissions',
+            // These E2E tests exercise interrupt mechanics under 'ask'; pin the
+            // process default so the config-file default ('smart') stays untested here.
+            'haocode.hitl_mode' => 'ask',
             'haocode.global_settings_path' => $this->homeDir.'/.haocode/settings.json',
             'haocode.session_path' => $this->sessionDir,
             'haocode.api_stream_idle_timeout' => 2,

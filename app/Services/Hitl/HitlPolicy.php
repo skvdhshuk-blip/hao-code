@@ -57,14 +57,22 @@ final class HitlPolicy
         '/\/proc\/[^\s\/]*\/environ\b/i' => 'process environment harvesting',
     ];
 
-    /** Shell obfuscation / arbitrary-execution markers (aligned with the SDK DangerousPatterns). */
+    /**
+     * Shell obfuscation / arbitrary-execution markers.
+     *
+     * $() and backticks are intentionally absent: command substitutions are
+     * extracted and rated recursively (codex-style) instead of being rejected
+     * wholesale. ${} expansion, $IFS manipulation, and control characters stay
+     * red lines.
+     */
     private const OBFUSCATION_PATTERNS = [
-        '/\$\(/' => 'command substitution $()',
         '/\$\{/' => 'parameter expansion ${}',
-        '/`/' => 'backtick command substitution',
         '/\$IFS/' => 'IFS manipulation',
         '/[\x00-\x08\x0B\x0C\x7F]/' => 'control characters',
     ];
+
+    /** Maximum nesting depth for recursive command substitution rating. */
+    private const MAX_SUBST_DEPTH = 2;
 
     /** Commands that only read state and are safe to auto-allow (R4 allowlist). */
     private const SIMPLE_ALLOWLIST = [
@@ -72,7 +80,7 @@ final class HitlPolicy
         'tree', 'which', 'echo', 'printf', 'date', 'grep', 'rg', 'true', 'false',
         'hostname', 'whoami', 'uname', 'basename', 'dirname', 'realpath', 'readlink',
         'sort', 'uniq', 'comm', 'diff', 'cut', 'tr', 'jq', 'yq', 'more', 'less',
-        'awk', 'zipinfo',
+        'awk', 'zipinfo', 'nproc', 'cd',
     ];
 
     /** Commands that are always a red line regardless of arguments. */
@@ -272,14 +280,35 @@ final class HitlPolicy
             return self::verdict(self::ASK, 'Bash input is missing a command string.');
         }
 
+        return self::classifyBashCommand($command, $root, 0);
+    }
+
+    /** @return array{level: string, reason: string} */
+    private static function classifyBashCommand(string $command, string $root, int $depth): array
+    {
         foreach (self::OBFUSCATION_PATTERNS as $pattern => $label) {
             if (preg_match($pattern, $command) === 1) {
                 return self::verdict(self::RED_LINE, "Shell obfuscation pattern: {$label}.");
             }
         }
 
+        // Codex-style recursive rating: extract every effective command
+        // substitution, rate each inner command on its own, then rate the
+        // outer command with placeholder tokens standing in for the
+        // substitution spans.
+        $substVerdicts = [];
+        $rewritten = self::extractSubstitutions($command, $root, $depth, $substVerdicts);
+        if (is_array($rewritten)) {
+            return $rewritten; // parse failure (fail-closed) or red-lined inner command.
+        }
+
         $gray = null;
-        foreach (self::splitSegments($command) as $segment) {
+        foreach (self::splitSegments($rewritten) as $segment) {
+            $bare = preg_replace('/\d?>&\d/', ' ', $segment) ?? $segment;
+            $bare = preg_replace('/\d?>>?\s*\/dev\/null/', ' ', $bare) ?? $bare;
+            if (preg_match('/^__hitl_subst_\d+__$/', trim($bare)) === 1) {
+                continue; // substitution in command position; its own verdict governs.
+            }
             $verdict = self::classifySegment($segment, $root);
             if ($verdict['level'] === self::RED_LINE) {
                 return $verdict; // one red-line segment poisons the whole command.
@@ -289,13 +318,221 @@ final class HitlPolicy
             }
         }
 
+        // A substitution rated gray/ask raises the outer command to at least
+        // that level; auto-allowed substitutions never do.
+        foreach ($substVerdicts as $substVerdict) {
+            if ($substVerdict['level'] !== self::AUTO_ALLOW) {
+                $substGray = self::verdict(
+                    $substVerdict['level'],
+                    'Shell command substitution requires review: '.$substVerdict['reason'],
+                );
+
+                return $gray ?? $substGray;
+            }
+        }
+
         return $gray ?? self::verdict(self::AUTO_ALLOW, 'Read-only shell command allowlist.');
+    }
+
+    /**
+     * Extract effective command substitutions ($(...) and backticks) from a
+     * command string. Single-quoted spans never execute and are skipped;
+     * backslash escapes (outside single quotes) skip the next character;
+     * $((...)) arithmetic does not execute by itself but its content is still
+     * scanned for nested substitutions. Every effective substitution is rated
+     * recursively and its span is replaced with a __hitl_subst_N__ token.
+     *
+     * Returns the rewritten command string, or a red-line verdict array when
+     * parsing fails (fail-closed) or an inner command hits a red line.
+     *
+     * @param  array<string, array{level: string, reason: string}>  $substVerdicts
+     * @return string|array{level: string, reason: string}
+     */
+    private static function extractSubstitutions(string $command, string $root, int $depth, array &$substVerdicts): string|array
+    {
+        $out = '';
+        $len = strlen($command);
+        $i = 0;
+        while ($i < $len) {
+            $ch = $command[$i];
+            if ($ch === '\\') {
+                $out .= substr($command, $i, 2);
+                $i += 2;
+                continue;
+            }
+            if ($ch === "'") {
+                $end = strpos($command, "'", $i + 1);
+                if ($end === false) {
+                    $out .= substr($command, $i); // unbalanced quote; the shell will reject it.
+
+                    break;
+                }
+                $out .= substr($command, $i, $end - $i + 1);
+                $i = $end + 1;
+                continue;
+            }
+            $isSubst = $ch === '$' && ($command[$i + 1] ?? '') === '(';
+            $isArithmetic = $isSubst && ($command[$i + 2] ?? '') === '(';
+            if ($isSubst || $ch === '`') {
+                if ($isArithmetic) {
+                    $start = $i + 3;
+                    $close = self::findClosingParen($command, $start, 2);
+                    if ($close === null) {
+                        return self::verdict(self::RED_LINE, 'Unbalanced arithmetic expansion $((...)).');
+                    }
+                    // Arithmetic content is scanned for nested substitutions
+                    // but never rated as a command itself.
+                    $scanned = self::extractSubstitutions(
+                        substr($command, $start, $close - 1 - $start),
+                        $root,
+                        $depth,
+                        $substVerdicts,
+                    );
+                    if (is_array($scanned)) {
+                        return $scanned;
+                    }
+                    $token = '__hitl_subst_'.count($substVerdicts).'__';
+                    $substVerdicts[$token] = self::verdict(self::AUTO_ALLOW, 'Arithmetic expansion.');
+                    $out .= $token;
+                    $i = $close + 1;
+                    continue;
+                }
+                if ($isSubst) {
+                    $start = $i + 2;
+                    $close = self::findClosingParen($command, $start, 1);
+                    if ($close === null) {
+                        return self::verdict(self::RED_LINE, 'Unbalanced command substitution $(...).');
+                    }
+                } else {
+                    $start = $i + 1;
+                    $close = self::findClosingBacktick($command, $start);
+                    if ($close === null) {
+                        return self::verdict(self::RED_LINE, 'Unbalanced backtick command substitution.');
+                    }
+                }
+                if ($depth + 1 > self::MAX_SUBST_DEPTH) {
+                    return self::verdict(self::RED_LINE, 'Command substitution nesting exceeds depth limit.');
+                }
+                $verdict = self::classifyBashCommand(substr($command, $start, $close - $start), $root, $depth + 1);
+                if ($verdict['level'] === self::RED_LINE) {
+                    return self::verdict(
+                        self::RED_LINE,
+                        'Shell command substitution runs red-lined inner command: '.$verdict['reason'],
+                    );
+                }
+                $token = '__hitl_subst_'.count($substVerdicts).'__';
+                $substVerdicts[$token] = $verdict;
+                $out .= $token;
+                $i = $close + 1;
+                continue;
+            }
+            $out .= $ch;
+            $i++;
+        }
+
+        return $out;
+    }
+
+    /**
+     * Find the position where a paren group opened before $start balances,
+     * honoring backslash escapes and single/double quotes. $depth is 1 for
+     * $(...) and 2 for $((...)) so arithmetic consumes its closing "))".
+     */
+    private static function findClosingParen(string $command, int $start, int $depth): ?int
+    {
+        $len = strlen($command);
+        for ($i = $start; $i < $len; $i++) {
+            $ch = $command[$i];
+            if ($ch === '\\') {
+                $i++;
+                continue;
+            }
+            if ($ch === "'" || $ch === '"') {
+                $end = strpos($command, $ch, $i + 1);
+                if ($end === false) {
+                    return null;
+                }
+                $i = $end;
+                continue;
+            }
+            if ($ch === '(') {
+                $depth++;
+                continue;
+            }
+            if ($ch === ')') {
+                $depth--;
+                if ($depth === 0) {
+                    return $i;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /** Find the next unescaped backtick at or after $start. */
+    private static function findClosingBacktick(string $command, int $start): ?int
+    {
+        $len = strlen($command);
+        for ($i = $start; $i < $len; $i++) {
+            $ch = $command[$i];
+            if ($ch === '\\') {
+                $i++;
+                continue;
+            }
+            if ($ch === '`') {
+                return $i;
+            }
+        }
+
+        return null;
     }
 
     /** @return string[] */
     private static function splitSegments(string $command): array
     {
-        $segments = preg_split('/&&|\|\||[;|\n\r]/', $command) ?: [];
+        // Split on &&, ||, ;, |, and newlines — but only outside quotes, so a
+        // quoted "a|b" argument no longer shatters into bogus segments.
+        $segments = [];
+        $current = '';
+        $quote = null;
+        $len = strlen($command);
+        for ($i = 0; $i < $len; $i++) {
+            $ch = $command[$i];
+            if ($quote !== "'") {
+                if ($ch === '\\') {
+                    $current .= substr($command, $i, 2);
+                    $i++;
+                    continue;
+                }
+                if ($quote === null && ($ch === "'" || $ch === '"')) {
+                    $quote = $ch;
+                    $current .= $ch;
+                    continue;
+                }
+            }
+            if ($quote !== null) {
+                $current .= $ch;
+                if ($ch === $quote) {
+                    $quote = null;
+                }
+                continue;
+            }
+            if (($ch === '&' || $ch === '|') && ($command[$i + 1] ?? '') === $ch) {
+                $segments[] = $current;
+                $current = '';
+                $i++;
+                continue;
+            }
+            if ($ch === ';' || $ch === '|' || $ch === "\n" || $ch === "\r") {
+                $segments[] = $current;
+                $current = '';
+                continue;
+            }
+            $current .= $ch;
+        }
+        $segments[] = $current;
+
         return array_values(array_filter(array_map('trim', $segments), static fn (string $s): bool => $s !== ''));
     }
 
@@ -354,6 +591,30 @@ final class HitlPolicy
             if ($red !== null) {
                 return $red;
             }
+        }
+        if ($command === 'sysctl') {
+            foreach ($args as $arg) {
+                if ($arg === '-w' || preg_match('/^[A-Za-z0-9_.-]+=/', $arg) === 1) {
+                    return self::verdict(self::RED_LINE, 'sysctl with -w or key=value writes kernel parameters.');
+                }
+            }
+            return self::verdict(self::AUTO_ALLOW, 'Read-only sysctl query.');
+        }
+        if ($command === 'make') {
+            foreach ($args as $arg) {
+                if ($arg === 'install') {
+                    return self::verdict(self::GRAY, 'make install writes to system paths.');
+                }
+            }
+            return self::verdict(self::AUTO_ALLOW, 'Workspace-local make build.');
+        }
+        if ($command === 'ninja') {
+            return self::verdict(self::AUTO_ALLOW, 'Workspace-local ninja build.');
+        }
+        if ($command === 'cmake') {
+            return in_array('--install', $args, true)
+                ? self::verdict(self::GRAY, 'cmake --install writes to system paths.')
+                : self::verdict(self::AUTO_ALLOW, 'Workspace-local cmake invocation.');
         }
 
         return self::matchAllowlist($command, $args, $root)

@@ -29,6 +29,8 @@ final readonly class AgentRunContext
         public array $memoryTools = [],
         public string $hitlMode = 'ask',
         public ?string $hitlReviewModel = null,
+        public ?\HaoCode\Sdk\Sandbox\SandboxConfig $sandbox = null,
+        public ?string $hitlAllowlistPath = null,
     ) {}
 
     public function fork(
@@ -60,6 +62,8 @@ final readonly class AgentRunContext
             $this->memoryTools,
             $this->hitlMode,
             $this->hitlReviewModel,
+            $this->sandbox,
+            $this->hitlAllowlistPath,
         );
     }
 }

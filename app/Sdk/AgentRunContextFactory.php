@@ -76,21 +76,29 @@ final class AgentRunContextFactory
             static fn (string $name): bool => $toolFilter === null || $toolFilter($name),
         ));
 
-        // HITL mode: an explicit HaoCodeConfig value wins; the 'ask' default
-        // falls back to the haocode.hitl_mode config file / HAOCODE_HITL_MODE
-        // environment default so deployments can opt in process-wide.
+        // HITL mode: an explicit HaoCodeConfig value ('ask' included) always
+        // wins; null (unset) falls back to the haocode.hitl_mode config file /
+        // HAOCODE_HITL_MODE environment default so deployments can opt in
+        // process-wide.
         $hitlMode = $config->hitlMode;
-        if ($hitlMode === 'ask') {
-            $configuredMode = \HaoCode\Support\Runtime\SdkRuntime::config('haocode.hitl_mode', 'ask');
+        if ($hitlMode === null) {
+            $configuredMode = \HaoCode\Support\Runtime\SdkRuntime::config('haocode.hitl_mode', 'smart');
             $hitlMode = is_string($configuredMode) && in_array($configuredMode, ['ask', 'smart', 'auto'], true)
                 ? $configuredMode
-                : 'ask';
+                : 'smart';
         }
         $hitlReviewModel = $config->hitlReviewModel;
         if ($hitlReviewModel === null) {
             $configuredModel = \HaoCode\Support\Runtime\SdkRuntime::config('haocode.hitl_review_model');
             $hitlReviewModel = is_string($configuredModel) && trim($configuredModel) !== ''
                 ? $configuredModel
+                : null;
+        }
+        $hitlAllowlistPath = $config->hitlAllowlistPath;
+        if ($hitlAllowlistPath === null) {
+            $configuredPath = \HaoCode\Support\Runtime\SdkRuntime::config('haocode.hitl_allowlist_path');
+            $hitlAllowlistPath = is_string($configuredPath) && trim($configuredPath) !== ''
+                ? $configuredPath
                 : null;
         }
 
@@ -110,6 +118,8 @@ final class AgentRunContextFactory
             $memoryTools,
             $hitlMode,
             $hitlReviewModel,
+            $config->sandbox,
+            $hitlAllowlistPath,
         );
     }
 }

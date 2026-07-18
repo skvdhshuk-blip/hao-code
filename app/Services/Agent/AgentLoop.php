@@ -7,6 +7,7 @@ use HaoCode\Sdk\HumanInterruptException;
 use HaoCode\Sdk\HumanActionRequest;
 use HaoCode\Services\Compact\ContextCompactor;
 use HaoCode\Services\Cost\CostTracker;
+use HaoCode\Services\Hitl\HitlAllowlist;
 use HaoCode\Services\Hitl\HitlReviewer;
 use HaoCode\Services\Hitl\SmartInterruptDecider;
 use HaoCode\Services\Hooks\HookExecutor;
@@ -290,6 +291,17 @@ class AgentLoop
         $cwd = $this->workingDirectory
             ?? $this->runContext?->workingDirectory
             ?? (getcwd() ?: '/');
+        $sandbox = $this->runContext?->sandbox;
+        if ($sandbox !== null && ! is_dir($cwd)) {
+            // A sandbox remote cwd (e.g. '/workspace') usually does not exist
+            // on the PHP host; classify against the host project directory
+            // instead of failing every action closed.
+            $cwd = $this->runContext?->projectDirectory ?? $cwd;
+        }
+        $allowlistPath = $this->runContext?->hitlAllowlistPath;
+        $allowlist = is_string($allowlistPath) && trim($allowlistPath) !== ''
+            ? HitlAllowlist::fromFile($allowlistPath)
+            : null;
         $reviewer = null;
         if ($mode === 'smart') {
             $settings = $this->runContext?->settings;
@@ -309,6 +321,8 @@ class AgentLoop
             reviewer: $reviewer,
             cwd: $cwd,
             fallbackSessionId: (string) $this->sessionManager->getSessionId(),
+            sandbox: $sandbox,
+            allowlist: $allowlist,
         );
     }
 

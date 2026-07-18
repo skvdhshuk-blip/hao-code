@@ -6,13 +6,15 @@ namespace Tests\Unit\Hitl;
 
 use HaoCode\Sdk\HaoCodeConfig;
 use HaoCode\Sdk\StructuredResult;
+use HaoCode\Services\Api\ApiErrorException;
 use HaoCode\Services\Hitl\HitlReviewer;
 use PHPUnit\Framework\TestCase;
 
 /**
  * Covers the guardian review paths with an injected fake structured runner:
- * allow / deny / unsure outcomes, failure and timeout handling, rationale
- * truncation, and both circuit breakers (gray→ask, batch→human).
+ * allow / deny / unsure outcomes, failure and timeout handling, transient
+ * retry (max 3 attempts inside one 90s budget), schema-failure retry,
+ * rationale truncation, and both circuit breakers (gray→ask, batch→human).
  */
 class HitlReviewerTest extends TestCase
 {
@@ -156,6 +158,181 @@ class HitlReviewerTest extends TestCase
         $this->assertSame('allow', $result['outcome']);
         $this->assertStringEndsWith('…<truncated/>', $result['rationale']);
         $this->assertSame(str_repeat('r', 500).'…<truncated/>', $result['rationale']);
+    }
+
+    // ─── transient retry (codex guardian alignment) ───────────────────
+
+    public function test_time_budget_is_90_seconds(): void
+    {
+        $constant = (new \ReflectionClass(HitlReviewer::class))->getConstant('TIMEOUT_SECONDS');
+
+        $this->assertSame(90, $constant, 'Guardian review budget must match the codex 90s deadline.');
+    }
+
+    public function test_first_attempt_success_does_not_retry(): void
+    {
+        $calls = 0;
+        $runner = static function () use (&$calls): StructuredResult {
+            $calls++;
+
+            return new StructuredResult(HitlReviewerTest::verdictPublic('allow'));
+        };
+        $reviewer = new HitlReviewer(self::PROVIDER_CONFIG, sys_get_temp_dir(), $runner);
+
+        $result = $reviewer->review('task', 'Bash', ['command' => 'ls']);
+
+        $this->assertSame('allow', $result['outcome']);
+        $this->assertSame(1, $calls);
+    }
+
+    public function test_transient_exception_twice_then_success(): void
+    {
+        $calls = 0;
+        $runner = static function () use (&$calls): StructuredResult {
+            $calls++;
+            if ($calls <= 2) {
+                throw new ApiErrorException('Service overloaded.', 'overloaded_error');
+            }
+
+            return new StructuredResult(HitlReviewerTest::verdictPublic('allow', 'low', 'Recovered.'));
+        };
+        $reviewer = new HitlReviewer(self::PROVIDER_CONFIG, sys_get_temp_dir(), $runner);
+
+        $result = $reviewer->review('task', 'Bash', ['command' => 'ls']);
+
+        $this->assertSame('allow', $result['outcome']);
+        $this->assertSame('Recovered.', $result['rationale']);
+        $this->assertSame(3, $calls);
+        $this->assertFalse($reviewer->shouldEscalateGrayToAsk());
+    }
+
+    /**
+     * @return iterable<string, array{0: \Throwable}>
+     */
+    public static function transientExceptionProvider(): iterable
+    {
+        yield 'overloaded' => [new ApiErrorException('Overloaded.', 'overloaded_error')];
+        yield 'rate limit' => [new ApiErrorException('Slow down.', 'rate_limit_error')];
+        yield 'api error' => [new ApiErrorException('Internal API error.', 'api_error')];
+        yield 'stream timeout' => [new ApiErrorException('Stream timed out.', 'stream_timeout')];
+        yield 'transport error' => [new ApiErrorException('Network transport error.', 'transport_error')];
+        yield 'http 500' => [new ApiErrorException('HTTP 500', 'http_error', 500)];
+        yield 'http 503' => [new ApiErrorException('HTTP 503', 'http_error', 503)];
+        yield 'http 429' => [new ApiErrorException('HTTP 429', 'http_error', 429)];
+        yield 'sdk json parse failure' => [new \RuntimeException("Failed to parse structured response as JSON.\nRaw response: nope")];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('transientExceptionProvider')]
+    public function test_each_transient_exception_kind_is_retried(\Throwable $error): void
+    {
+        $calls = 0;
+        $runner = static function () use (&$calls, $error): StructuredResult {
+            $calls++;
+            if ($calls === 1) {
+                throw $error;
+            }
+
+            return new StructuredResult(HitlReviewerTest::verdictPublic('allow'));
+        };
+        $reviewer = new HitlReviewer(self::PROVIDER_CONFIG, sys_get_temp_dir(), $runner);
+
+        $result = $reviewer->review('task', 'Bash', ['command' => 'ls']);
+
+        $this->assertSame('allow', $result['outcome']);
+        $this->assertSame(2, $calls);
+    }
+
+    public function test_three_transient_failures_ask_and_count_as_one_failure(): void
+    {
+        $calls = 0;
+        $runner = static function () use (&$calls): StructuredResult {
+            $calls++;
+            throw new ApiErrorException('Service overloaded.', 'overloaded_error');
+        };
+        $reviewer = new HitlReviewer(self::PROVIDER_CONFIG, sys_get_temp_dir(), $runner);
+
+        $result = $reviewer->review('task', 'Bash', ['command' => 'a']);
+
+        $this->assertSame('ask', $result['outcome']);
+        $this->assertSame('medium', $result['riskLevel']);
+        $this->assertSame('Model review failed or timed out; escalating to a human.', $result['rationale']);
+        $this->assertSame(3, $calls, 'All three attempts must be consumed before failing closed.');
+        $this->assertFalse(
+            $reviewer->shouldEscalateGrayToAsk(),
+            'Three failed attempts inside one review count as ONE consecutive failure, not three.',
+        );
+
+        // Second review also fails 3x → now the breaker opens.
+        $reviewer->review('task', 'Bash', ['command' => 'b']);
+        $this->assertSame(6, $calls);
+        $this->assertTrue($reviewer->shouldEscalateGrayToAsk());
+    }
+
+    public function test_schema_validation_failure_then_success(): void
+    {
+        $calls = 0;
+        $runner = static function () use (&$calls): StructuredResult {
+            $calls++;
+            if ($calls === 1) {
+                return new StructuredResult(['risk_level' => 'extreme']); // fails schema validation
+            }
+
+            return new StructuredResult(HitlReviewerTest::verdictPublic('allow', 'low', 'Second try parsed.'));
+        };
+        $reviewer = new HitlReviewer(self::PROVIDER_CONFIG, sys_get_temp_dir(), $runner);
+
+        $result = $reviewer->review('task', 'Bash', ['command' => 'ls']);
+
+        $this->assertSame('allow', $result['outcome']);
+        $this->assertSame('Second try parsed.', $result['rationale']);
+        $this->assertSame(2, $calls);
+    }
+
+    /**
+     * @return iterable<string, array{0: \Throwable}>
+     */
+    public static function nonTransientExceptionProvider(): iterable
+    {
+        yield 'authentication error' => [new ApiErrorException('Invalid API key.', 'authentication_error', 401)];
+        yield 'permission error' => [new ApiErrorException('Forbidden.', 'permission_error', 403)];
+        yield 'bad request 400' => [new ApiErrorException('HTTP 400', 'http_error', 400)];
+        yield 'budget alarm exception' => [new \RuntimeException('HITL guardian review exceeded its time budget.')];
+        yield 'generic runtime error' => [new \RuntimeException('network down')];
+        yield 'config logic error' => [new \LogicException('Misconfigured provider.')];
+    }
+
+    #[\PHPUnit\Framework\Attributes\DataProvider('nonTransientExceptionProvider')]
+    public function test_non_transient_exception_fails_immediately_without_retry(\Throwable $error): void
+    {
+        $calls = 0;
+        $runner = static function () use (&$calls, $error): StructuredResult {
+            $calls++;
+            throw $error;
+        };
+        $reviewer = new HitlReviewer(self::PROVIDER_CONFIG, sys_get_temp_dir(), $runner);
+
+        $result = $reviewer->review('task', 'Bash', ['command' => 'a']);
+
+        $this->assertSame('ask', $result['outcome']);
+        $this->assertSame('Model review failed or timed out; escalating to a human.', $result['rationale']);
+        $this->assertSame(1, $calls, 'Non-transient errors must not consume retries.');
+    }
+
+    public function test_malformed_results_exhaust_all_attempts_before_asking(): void
+    {
+        $calls = 0;
+        $runner = static function () use (&$calls): StructuredResult {
+            $calls++;
+
+            return new StructuredResult(['risk_level' => 'extreme']); // always invalid
+        };
+        $reviewer = new HitlReviewer(self::PROVIDER_CONFIG, sys_get_temp_dir(), $runner);
+
+        $result = $reviewer->review('task', 'Bash', ['command' => 'a']);
+
+        $this->assertSame('ask', $result['outcome']);
+        $this->assertSame('Model review failed or timed out; escalating to a human.', $result['rationale']);
+        $this->assertSame(3, $calls);
     }
 
     // ─── circuit breakers ───────────────────────────────────────────────

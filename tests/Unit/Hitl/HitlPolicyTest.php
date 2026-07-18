@@ -125,7 +125,10 @@ class HitlPolicyTest extends TestCase
         yield 'Bash git commit' => [$A, 'Bash', ['command' => 'git commit -m x'], null];
         yield 'Bash git reset --hard' => [$R, 'Bash', ['command' => 'git reset --hard HEAD~1'], null];
         yield 'Bash npm publish' => [$R, 'Bash', ['command' => 'npm publish'], null];
-        yield 'Bash command substitution' => [$R, 'Bash', ['command' => 'echo $(whoami)'], null];
+        yield 'Bash command substitution with safe inner' => [$A, 'Bash', ['command' => 'echo $(date)'], null];
+        yield 'Bash command substitution with red inner' => [$R, 'Bash', ['command' => 'echo $(rm -rf ~)'], null];
+        yield 'Bash backtick substitution with red inner' => [$R, 'Bash', ['command' => 'echo `sudo x`'], null];
+        yield 'Bash unbalanced command substitution' => [$R, 'Bash', ['command' => 'echo $(date'], null];
         yield 'Bash rm -rf root' => [$R, 'Bash', ['command' => 'rm -rf /'], null];
         yield 'Bash rm -rf home' => [$R, 'Bash', ['command' => 'rm -rf ~'], null];
         yield 'Bash rm -rf workspace itself' => [$R, 'Bash', ['command' => "rm -rf {$workspace}"], null];
@@ -258,6 +261,32 @@ class HitlPolicyTest extends TestCase
         yield 'Bash composer require' => [$G, 'Bash', ['command' => 'composer require vendor/pkg'], null];
         yield 'Bash gem install' => [$G, 'Bash', ['command' => 'gem install bundler'], null];
         yield 'Bash cargo install' => [$G, 'Bash', ['command' => 'cargo install ripgrep'], null];
+
+        // --- Command substitution: recursive codex-style rating --------------------
+        yield 'Bash user build case with sysctl substitution' => [$A, 'Bash', ['command' => 'cd /Users/wanghao/php-5.6.40 && make -j$(sysctl -n hw.ncpu) 2>&1 | grep -E "error|Error" | head -20'], null];
+        yield 'Bash substitution inside double quotes' => [$A, 'Bash', ['command' => 'echo "$(date)"'], null];
+        yield 'Bash single-quoted substitution is inert' => [$A, 'Bash', ['command' => "echo '\$(rm -rf /)'"], null];
+        yield 'Bash substitution in command position red' => [$R, 'Bash', ['command' => '$(rm -rf ~)'], null];
+        yield 'Bash nested substitution two levels' => [$A, 'Bash', ['command' => 'echo $(echo $(date))'], null];
+        yield 'Bash nested substitution three levels' => [$R, 'Bash', ['command' => 'echo $(echo $(echo $(date)))'], null];
+        yield 'Bash backtick sysctl for make jobs' => [$A, 'Bash', ['command' => 'make -j`sysctl -n hw.ncpu`'], null];
+        yield 'Bash substitution gray inner raises outer' => [$G, 'Bash', ['command' => 'echo $(python3 script.py)'], null];
+        yield 'Bash substitution gray in command position' => [$G, 'Bash', ['command' => '$(make install)'], null];
+        yield 'Bash arithmetic expansion is inert' => [$A, 'Bash', ['command' => 'echo $((1 + 2))'], null];
+
+        // --- Build / query commands --------------------------------------------------
+        yield 'Bash cd' => [$A, 'Bash', ['command' => 'cd /Users/wanghao/php-5.6.40'], null];
+        yield 'Bash sysctl read' => [$A, 'Bash', ['command' => 'sysctl -n hw.ncpu'], null];
+        yield 'Bash sysctl -a read' => [$A, 'Bash', ['command' => 'sysctl -a'], null];
+        yield 'Bash sysctl write -w' => [$R, 'Bash', ['command' => 'sysctl -w kern.maxvnodes=1'], null];
+        yield 'Bash sysctl write key=value' => [$R, 'Bash', ['command' => 'sysctl kern.maxvnodes=1'], null];
+        yield 'Bash nproc' => [$A, 'Bash', ['command' => 'nproc'], null];
+        yield 'Bash make build' => [$A, 'Bash', ['command' => 'make -j4'], null];
+        yield 'Bash make target build' => [$A, 'Bash', ['command' => 'make all CFLAGS=-O2'], null];
+        yield 'Bash make install' => [$G, 'Bash', ['command' => 'make install'], null];
+        yield 'Bash ninja' => [$A, 'Bash', ['command' => 'ninja'], null];
+        yield 'Bash cmake build' => [$A, 'Bash', ['command' => 'cmake --build build'], null];
+        yield 'Bash cmake --install' => [$G, 'Bash', ['command' => 'cmake --install build'], null];
     }
 
     #[\PHPUnit\Framework\Attributes\DataProvider('classificationProvider')]

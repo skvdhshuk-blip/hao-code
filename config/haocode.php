@@ -73,15 +73,15 @@ return [
     |--------------------------------------------------------------------------
     | Human-in-the-Loop Approval Mode
     |--------------------------------------------------------------------------
-    | 'ask' interrupts every configured action (current default), 'smart'
-    | fast-paths routine actions through rules, sends gray-area actions to a
-    | review model, and interrupts only dangerous actions, while 'auto'
+    | 'ask' interrupts every configured action, 'smart' fast-paths routine
+    | actions through rules, sends gray-area actions to a review model, and
+    | interrupts only dangerous actions (current default), while 'auto'
     | suppresses tool interrupts entirely (AskUserQuestion still interrupts).
     | 'hitl_review_model' selects the gray-area review model; null reuses the
     | current run's model.
     | Supported: ask, smart, auto
     */
-    'hitl_mode' => $environment('HAOCODE_HITL_MODE', 'ask'),
+    'hitl_mode' => $environment('HAOCODE_HITL_MODE', 'smart'),
     'hitl_review_model' => $environment('HAOCODE_HITL_REVIEW_MODEL', null),
 
     /*

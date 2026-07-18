@@ -8,10 +8,10 @@ use PHPUnit\Framework\TestCase;
 
 final class SmartHitlSurfaceTest extends TestCase
 {
-    public function test_hitl_mode_defaults_to_ask(): void
+    public function test_hitl_mode_defaults_to_unset(): void
     {
         $config = new HaoCodeConfig;
-        $this->assertSame('ask', $config->hitlMode);
+        $this->assertNull($config->hitlMode);
         $this->assertNull($config->hitlReviewModel);
     }
 
@@ -22,11 +22,11 @@ final class SmartHitlSurfaceTest extends TestCase
         }
     }
 
-    public function test_hitl_mode_normalizes_unknown_values_to_ask(): void
+    public function test_hitl_mode_normalizes_unknown_values_to_unset(): void
     {
-        $this->assertSame('ask', (new HaoCodeConfig(hitlMode: 'yolo'))->hitlMode);
-        $this->assertSame('ask', (new HaoCodeConfig(hitlMode: ''))->hitlMode);
-        $this->assertSame('ask', (new HaoCodeConfig(hitlMode: 'SMART'))->hitlMode);
+        $this->assertNull((new HaoCodeConfig(hitlMode: 'yolo'))->hitlMode);
+        $this->assertNull((new HaoCodeConfig(hitlMode: ''))->hitlMode);
+        $this->assertNull((new HaoCodeConfig(hitlMode: 'SMART'))->hitlMode);
     }
 
     public function test_hitl_review_model_normalization(): void
@@ -103,7 +103,7 @@ final class SmartHitlSurfaceTest extends TestCase
     {
         $config = require dirname(__DIR__, 2).'/config/haocode.php';
 
-        $this->assertSame('ask', $config['hitl_mode']);
+        $this->assertSame('smart', $config['hitl_mode']);
         $this->assertNull($config['hitl_review_model']);
     }
 }

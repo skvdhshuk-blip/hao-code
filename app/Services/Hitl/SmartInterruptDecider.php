@@ -7,6 +7,7 @@ namespace HaoCode\Services\Hitl;
 use HaoCode\Sdk\HumanDecision;
 use HaoCode\Sdk\HumanInterrupt;
 use HaoCode\Sdk\Message;
+use HaoCode\Sdk\Sandbox\SandboxConfig;
 
 /**
  * Two-phase batch decider for the smart/auto HITL modes.
@@ -17,16 +18,26 @@ use HaoCode\Sdk\Message;
  * - Phase 1 classifies every action up front (deterministic rules in smart
  *   mode, blanket approval in auto mode; malformed or non-approvable actions
  *   are always ASK). The classifier is a pure local rule engine, so this is
- *   safe to run even on escalation paths.
+ *   safe to run even on escalation paths. Two fast paths run before/around
+ *   the classifier in smart mode:
+ *   - User-saved allow rules (HitlAllowlist) approve an exactly matching
+ *     Bash command BEFORE the classifier — the codex "always allow" concept,
+ *     which intentionally overrides red lines (user sovereignty).
+ *   - A gray Bash action that will genuinely execute inside the configured
+ *     sandbox (mode 'full' on an isolating provider) is approved without a
+ *     model review — the codex OnRequest concept of running unmatched
+ *     commands inside the restricted sandbox instead of asking.
  * - One red-line/ask action escalates the WHOLE batch: the SDK requires all
  *   decisions atomically, so a single human-bound action sends the batch to a
  *   human. Auto-decidable siblings become collateral and gray actions are not
  *   reviewed (saves review budget).
- * - Phase 2 auto-allows rule-approved actions and sends gray actions through
- *   the guardian model review (smart mode only). Review allow/deny settle the
+ * - Phase 2 auto-allows rule-approved actions, settles sandbox-contained
+ *   gray actions, and sends the remaining gray actions through the guardian
+ *   model review (smart mode only). Review allow/deny settle the
  *   action; review unsure/failure/circuit-breaker escalates the batch.
  * - Every settled or escalated action is described by a Message::autoDecision
- *   event. Escalation reasons carry the rule:/review:/batch: prefix family.
+ *   event. Escalation reasons carry the rule:/review:/batch: prefix family;
+ *   sandbox containment approvals carry the sandbox:contained reason.
  *
  * Everything is fail-closed: any unexpected error escalates the batch to a
  * human, never to silent approval.
@@ -42,12 +53,19 @@ final class SmartInterruptDecider
      * @param string $cwd Workspace root used by the rule classifier.
      * @param string $fallbackSessionId Session id used when the interrupt
      *        itself does not carry one.
+     * @param SandboxConfig|null $sandbox Active sandbox runtime config; gray
+     *        Bash actions are auto-approved only when the sandbox genuinely
+     *        contains shell execution (mode 'full' on an isolating provider).
+     * @param HitlAllowlist|null $allowlist User-saved always-allow rules;
+     *        null disables the feature.
      */
     public function __construct(
         private readonly string $mode,
         private readonly ?HitlReviewer $reviewer,
         private readonly string $cwd,
         private readonly string $fallbackSessionId,
+        private readonly ?SandboxConfig $sandbox = null,
+        private readonly ?HitlAllowlist $allowlist = null,
     ) {}
 
     /**
@@ -131,6 +149,7 @@ final class SmartInterruptDecider
                     'allowed' => $allowed,
                     'level' => HitlPolicy::ASK,
                     'reason' => 'Action is malformed or does not allow an approve decision.',
+                    'sandboxContained' => false,
                 ];
                 continue;
             }
@@ -142,17 +161,40 @@ final class SmartInterruptDecider
                     'allowed' => $allowed,
                     'level' => HitlPolicy::AUTO_ALLOW,
                     'reason' => "Auto-approved without rules or model review because hitlMode is 'auto'.",
+                    'sandboxContained' => false,
                 ];
                 continue;
             }
+            // User-saved allow rules run BEFORE the rule classifier: an exact
+            // match approves the command outright, including commands the
+            // classifier would red-line (codex always-allow; user sovereignty).
+            if ($this->allowlist !== null && $toolName === 'Bash') {
+                $command = is_array($input) ? ($input['command'] ?? null) : null;
+                if (is_string($command) && $this->allowlist->matches($command)) {
+                    $items[] = [
+                        'actionId' => $actionId,
+                        'toolName' => $toolName,
+                        'input' => $input,
+                        'allowed' => $allowed,
+                        'level' => HitlPolicy::AUTO_ALLOW,
+                        'reason' => 'allowlist:user_rule: User-saved allow rule.',
+                        'sandboxContained' => false,
+                    ];
+                    continue;
+                }
+            }
             $verdict = HitlPolicy::classifyAction($toolName, $input, $this->cwd);
+            $level = is_string($verdict['level'] ?? null) ? $verdict['level'] : HitlPolicy::ASK;
             $items[] = [
                 'actionId' => $actionId,
                 'toolName' => $toolName,
                 'input' => $input,
                 'allowed' => $allowed,
-                'level' => is_string($verdict['level'] ?? null) ? $verdict['level'] : HitlPolicy::ASK,
+                'level' => $level,
                 'reason' => is_string($verdict['reason'] ?? null) ? $verdict['reason'] : '',
+                // Gray actions only: red lines and ask-level actions are never
+                // sandbox-exempted and keep their human escalation.
+                'sandboxContained' => $level === HitlPolicy::GRAY && $this->isSandboxContained($toolName),
             ];
         }
 
@@ -211,6 +253,26 @@ final class SmartInterruptDecider
                 $outcomes[$index] = [
                     'kind' => 'auto',
                     'event' => $autoDecision($item['actionId'], $item['toolName'], $item['input'], 'approve', 'rule', 'low', $item['reason']),
+                ];
+                continue;
+            }
+
+            // Gray action contained by the sandbox: approve without spending
+            // a model review (codex OnRequest parity — unmatched commands run
+            // inside the restricted sandbox instead of asking the user).
+            if ($item['sandboxContained']) {
+                $decisions[] = HumanDecision::approve($item['actionId']);
+                $outcomes[$index] = [
+                    'kind' => 'auto',
+                    'event' => $autoDecision(
+                        $item['actionId'],
+                        $item['toolName'],
+                        $item['input'],
+                        'approve',
+                        'sandbox',
+                        'low',
+                        'sandbox:contained: Gray-zone action auto-approved to run inside the configured sandbox.',
+                    ),
                 ];
                 continue;
             }
@@ -284,6 +346,26 @@ final class SmartInterruptDecider
             'decisions' => $decisions,
             'events' => array_map(static fn (array $outcome): Message => $outcome['event'], $outcomes),
         ];
+    }
+
+    /**
+     * Whether the tool genuinely executes inside the configured sandbox.
+     *
+     * Only Bash with sandbox mode 'full' runs shell commands through the
+     * sandbox backend (SandboxRuntime exposes no Bash tool otherwise). The
+     * sandboxed file/search tools never produce gray actions, and host-only
+     * tools (Edit, apply_patch, …) are disabled while a sandbox is active.
+     * The 'local' provider is a working-directory jail without operating
+     * system isolation (docs/SDK.md: "Do not use it for untrusted commands"),
+     * so it does NOT qualify as containment; native (Seatbelt/bubblewrap),
+     * Tokimo (VM), and AgentRun (remote) do.
+     */
+    private function isSandboxContained(string $toolName): bool
+    {
+        return $toolName === 'Bash'
+            && $this->sandbox !== null
+            && $this->sandbox->enablesBash()
+            && $this->sandbox->provider !== 'local';
     }
 
     /**

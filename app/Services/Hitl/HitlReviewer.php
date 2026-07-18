@@ -7,6 +7,7 @@ namespace HaoCode\Services\Hitl;
 use HaoCode\Sdk\HaoCode;
 use HaoCode\Sdk\HaoCodeConfig;
 use HaoCode\Sdk\StructuredResult;
+use HaoCode\Services\Api\ApiErrorException;
 
 /**
  * Guardian-style model reviewer for gray-zone actions in smart HITL mode.
@@ -20,7 +21,8 @@ use HaoCode\Sdk\StructuredResult;
  */
 final class HitlReviewer
 {
-    private const TIMEOUT_SECONDS = 30;
+    private const TIMEOUT_SECONDS = 90;
+    private const MAX_ATTEMPTS = 3;
     private const MAX_CONSECUTIVE_FAILURES = 2;
     private const MAX_CONSECUTIVE_REJECTS = 3;
     private const MAX_TASK_CHARS = 4000;
@@ -125,6 +127,11 @@ final class HitlReviewer
     }
 
     /**
+     * Call the review model, retrying transient failures and schema-validation
+     * failures up to MAX_ATTEMPTS total attempts. All attempts share one
+     * TIMEOUT_SECONDS budget; the alarm is armed exactly once. Permanent
+     * errors (e.g. auth/config) fail immediately without consuming retries.
+     *
      * @return array{risk_level: string, user_authorization: string, outcome: string, rationale: string}|null
      */
     private function callModel(string $userPrompt, string $toolName, array $input): ?array
@@ -156,10 +163,39 @@ final class HitlReviewer
 
         $started = microtime(true);
         try {
-            $runner = $this->structuredRunner;
-            $result = $runner !== null
-                ? $runner($prompt, self::SCHEMA, $config)
-                : HaoCode::structured($prompt, self::SCHEMA, $config);
+            for ($attempt = 1; $attempt <= self::MAX_ATTEMPTS; $attempt++) {
+                try {
+                    $runner = $this->structuredRunner;
+                    $result = $runner !== null
+                        ? $runner($prompt, self::SCHEMA, $config)
+                        : HaoCode::structured($prompt, self::SCHEMA, $config);
+                } catch (\Throwable $e) {
+                    // Non-transient errors (auth, config, our own budget alarm)
+                    // fail immediately; transient ones retry within budget.
+                    if ($attempt >= self::MAX_ATTEMPTS || ! self::isTransient($e)) {
+                        return null;
+                    }
+                    if (microtime(true) - $started >= self::TIMEOUT_SECONDS) {
+                        return null; // budget exhausted (pcntl-less platforms)
+                    }
+                    continue;
+                }
+
+                if (microtime(true) - $started > self::TIMEOUT_SECONDS + 5.0) {
+                    return null; // returned past the budget; treat as a timeout.
+                }
+
+                $parsed = $this->parseResult($result);
+                if ($parsed !== null) {
+                    return $parsed;
+                }
+                // Schema validation failed — retry while budget remains.
+                if (microtime(true) - $started >= self::TIMEOUT_SECONDS) {
+                    return null;
+                }
+            }
+
+            return null;
         } finally {
             if ($alarmArmed) {
                 pcntl_alarm(0);
@@ -167,11 +203,43 @@ final class HitlReviewer
                 pcntl_async_signals($previousAsync);
             }
         }
-        if (microtime(true) - $started > self::TIMEOUT_SECONDS + 5.0) {
-            return null; // returned past the budget; treat as a timeout.
+    }
+
+    /**
+     * Transient = worth retrying inside the 90s budget: service overload, rate
+     * limits, connection/transport failures, stream interruption, and 5xx.
+     * Mirrors the provider layer's own retryable classification.
+     */
+    private static function isTransient(\Throwable $e): bool
+    {
+        if ($e instanceof ApiErrorException) {
+            $code = $e->getCode();
+            if ($code === 429 || $code >= 500) {
+                return true;
+            }
+
+            return in_array($e->getErrorType(), [
+                'overloaded_error',
+                'rate_limit_error',
+                'api_error',
+                'stream_timeout',
+                'transport_error',
+            ], true);
         }
 
-        return $this->parseResult($result);
+        // Raw Symfony transport/timeout failures (connection refused, DNS,
+        // chunked-stream aborts) — TimeoutExceptionInterface extends it.
+        if ($e instanceof \Symfony\Contracts\HttpClient\Exception\TransportExceptionInterface) {
+            return true;
+        }
+
+        // HaoCode::structured JSON parse failure — same class codex retries.
+        if ($e instanceof \RuntimeException
+            && str_starts_with($e->getMessage(), 'Failed to parse structured response as JSON')) {
+            return true;
+        }
+
+        return false;
     }
 
     /** @return array{risk_level: string, user_authorization: string, outcome: string, rationale: string}|null */

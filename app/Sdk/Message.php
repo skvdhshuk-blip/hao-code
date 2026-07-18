@@ -106,11 +106,12 @@ class Message
      *
      * - $decision: 'approve', 'reject', or 'escalate' (unknown values normalize
      *   to 'escalate', the safest fallback).
-     * - $source: 'rule', 'review', or 'batch' (unknown values normalize to 'rule').
+     * - $source: 'rule', 'review', 'sandbox', or 'batch' (unknown values
+     *   normalize to 'rule').
      * - $riskLevel: 'low', 'medium', 'high', or 'critical' (unknown values
      *   normalize to 'medium').
      * - $reason: human-readable rationale; escalations carry a 'rule:',
-     *   'review:', or 'batch:' prefix family matching the source.
+     *   'review:', 'sandbox:', or 'batch:' prefix family matching the source.
      *
      * @api
      */
@@ -133,7 +134,7 @@ class Message
             interruptId: $interruptId,
             actionId: $actionId,
             decision: in_array($decision, ['approve', 'reject', 'escalate'], true) ? $decision : 'escalate',
-            source: in_array($source, ['rule', 'review', 'batch'], true) ? $source : 'rule',
+            source: in_array($source, ['rule', 'review', 'sandbox', 'batch'], true) ? $source : 'rule',
             riskLevel: in_array($riskLevel, ['low', 'medium', 'high', 'critical'], true) ? $riskLevel : 'medium',
             reason: $reason,
         );

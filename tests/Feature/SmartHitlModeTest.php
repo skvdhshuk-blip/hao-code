@@ -223,7 +223,7 @@ class SmartHitlModeTest extends TestCase
     }
 
     // ──────────────────────────────────────────────────────────────
-    //  ask mode regression (default): no auto_decision events at all
+    //  ask mode regression: no auto_decision events at all
     // ──────────────────────────────────────────────────────────────
 
     public function test_ask_mode_emits_no_auto_decision_events(): void
@@ -240,6 +240,7 @@ class SmartHitlModeTest extends TestCase
             allowedTools: ['Bash'],
             ephemeral: false,
             interruptOn: ['Bash' => true],
+            hitlMode: 'ask',
         )));
 
         $this->assertCount(0, array_filter($messages, fn (Message $message): bool => $message->isAutoDecision()));
@@ -265,6 +266,9 @@ class SmartHitlModeTest extends TestCase
             'haocode.model' => 'claude-test',
             'haocode.max_tokens' => 4096,
             'haocode.permission_mode' => 'bypass_permissions',
+            // The 'ask' regression test relies on the process fallback; keep it
+            // pinned to 'ask' now that the config-file default is 'smart'.
+            'haocode.hitl_mode' => 'ask',
             'haocode.global_settings_path' => $this->homeDir.'/.haocode/settings.json',
             'haocode.session_path' => $this->sessionDir,
             'haocode.api_stream_idle_timeout' => 2,

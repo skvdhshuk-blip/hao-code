@@ -341,8 +341,9 @@ configured output tokens and a safety margin before sending a request.
 | `credentialPool` | `?CredentialPool` | `null` | Rotate provider credentials and retry rate-limited keys |
 | `interruptOn` | `array` | `[]` | Exact tool names to pause before execution; values are `true`, `false`, or review configuration arrays |
 | `enableAskUser` | `bool` | `false` | Register `AskUserQuestion` as a serializable host interrupt |
-| `hitlMode` | `string` | `'ask'` | HITL approval mode: `'ask'`, `'smart'`, or `'auto'`; unknown values normalize to `'ask'`. See [Smart HITL modes](#smart-hitl-modes) |
+| `hitlMode` | `?string` | `null` | HITL approval mode: `'ask'`, `'smart'`, or `'auto'`; `null` resolves from config/env (default `'smart'`). See [Smart HITL modes](#smart-hitl-modes) |
 | `hitlReviewModel` | `?string` | `null` | Model used to review gray-area actions in `'smart'` mode; `null` reuses the current run's model |
+| `hitlAllowlistPath` | `?string` | `null` | JSON file with user-saved "always allow" Bash rules (exact match, v1); `null` disables the feature. See [Smart HITL modes](#smart-hitl-modes) |
 
 ### Prompts
 
@@ -1129,9 +1130,14 @@ are also available as `hitl_mode` / `hitl_review_model` in `config/haocode.php`
 
 | Mode | Behavior |
 |------|----------|
-| `'ask'` (default) | Every configured action interrupts for a human decision — the behavior described above. |
-| `'smart'` | Rules fast-path routine actions, gray-area actions are reviewed by a model, and only dangerous actions interrupt for a human decision. `hitlReviewModel` selects the review model; `null` reuses the current run's model. |
+| `'ask'` | Every configured action interrupts for a human decision — the behavior described above. |
+| `'smart'` (default) | Rules fast-path routine actions, gray-area actions are reviewed by a model, and only dangerous actions interrupt for a human decision. `hitlReviewModel` selects the review model; `null` reuses the current run's model. |
 | `'auto'` | Tool interrupts are suppressed entirely; `AskUserQuestion` still interrupts for a human response. |
+
+`hitlMode` is nullable: `null` (the constructor default) means "not chosen
+explicitly" and resolves from the `haocode.hitl_mode` config value /
+`HAOCODE_HITL_MODE` environment variable, whose own default is `'smart'`. An
+explicit `'ask'` is always honored as `'ask'`.
 
 In `'smart'` and `'auto'` mode, every automatic decision is reported on the
 stream as an `auto_decision` message built by `Message::autoDecision()` and
@@ -1146,13 +1152,40 @@ fields:
 | `toolName` | `string` | Tool that was about to run |
 | `toolInput` | `array` | Normalized tool input that was reviewed |
 | `decision` | `string` | `approve`, `reject`, or `escalate` (unknown values normalize to `escalate`) |
-| `source` | `string` | `rule`, `review`, or `batch` (unknown values normalize to `rule`) |
+| `source` | `string` | `rule`, `review`, `sandbox`, or `batch` (unknown values normalize to `rule`) |
 | `riskLevel` | `string` | `low`, `medium`, `high`, or `critical` (unknown values normalize to `medium`) |
 | `reason` | `string` | Human-readable rationale |
 
 `escalate` means the policy declined to decide and the action falls back to the
 normal human-interrupt flow. Escalation reasons carry a prefix family matching
 their source: `rule:`, `review:`, or `batch:`.
+
+In `'smart'` mode, two fast paths settle actions without the guardian model:
+
+- **Sandbox containment** (codex `OnRequest` parity): a gray-area `Bash`
+  action that will genuinely execute inside the configured sandbox is
+  approved directly, with `source: 'sandbox'`, `riskLevel: 'low'`, and reason
+  `sandbox:contained: ...`. Containment requires sandbox mode `'full'` on an
+  isolating provider (`native`, `tokimo`, or `agentrun`); the `local`
+  provider is only a working-directory jail and does not qualify. Red-line
+  and ask-level actions are never sandbox-exempted.
+- **User-saved allow rules** (codex "always allow" parity): when
+  `hitlAllowlistPath` points to a JSON rule file, a `Bash` action whose
+  trimmed command is exactly equal to a saved rule is approved before the
+  rule classifier runs — with `source: 'rule'` and reason
+  `allowlist:user_rule: User-saved allow rule.` — even when the classifier
+  would red-line it (user sovereignty). Matching is exact-string only in v1:
+  no prefixes, no wildcards. A missing, corrupt, or wrong-version file loads
+  as an empty allowlist and never throws. The file format is frozen:
+
+  ```json
+  {
+    "version": 1,
+    "rules": [
+      {"command": "make deploy", "addedAt": "2025-01-01T00:00:00+00:00", "source": "user"}
+    ]
+  }
+  ```
 
 ```php
 foreach (HaoCode::stream('Deploy the release', $config) as $msg) {
