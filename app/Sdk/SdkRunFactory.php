@@ -127,6 +127,7 @@ final class SdkRunFactory
             idleTimeoutSeconds: (int) \HaoCode\Support\Runtime\SdkRuntime::config('haocode.api_stream_idle_timeout', 60),
             streamPollTimeoutSeconds: (float) \HaoCode\Support\Runtime\SdkRuntime::config('haocode.api_stream_poll_timeout', 1.0),
             providerType: $providerType,
+            oauthBearer: $config->oauthBearer === true,
         );
     }
 

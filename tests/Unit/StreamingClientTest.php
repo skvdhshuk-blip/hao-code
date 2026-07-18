@@ -940,6 +940,135 @@ class StreamingClientTest extends TestCase
         $this->assertContains('x-api-key: dynamic-key', $capturedHeaders);
     }
 
+    // ─── OAuth bearer token mode ──────────────────────────────────────────
+
+    /**
+     * @param string[] $headers
+     */
+    private function hasHeader(array $headers, string $expected): bool
+    {
+        foreach ($headers as $header) {
+            if (strcasecmp($header, $expected) === 0) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * @param string[] $headers
+     */
+    private function headerValue(array $headers, string $name): ?string
+    {
+        foreach ($headers as $header) {
+            if (stripos($header, $name . ':') === 0) {
+                return trim(substr($header, strlen($name) + 1));
+            }
+        }
+
+        return null;
+    }
+
+    public function test_oauth_bearer_mode_sends_authorization_header_and_oauth_beta_flag(): void
+    {
+        $capturedHeaders = null;
+        $httpClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$capturedHeaders) {
+            $capturedHeaders = $options['headers'] ?? [];
+
+            return new MockResponse([
+                "event: message_stop\n",
+                "data: {}\n\n",
+            ], ['http_code' => 200]);
+        });
+
+        $client = new StreamingClient(
+            apiKey: 'sk-ant-oat-token',
+            model: 'claude-sonnet-4-20250514',
+            httpClient: $httpClient,
+            oauthBearer: true,
+        );
+
+        iterator_to_array($client->streamMessages(
+            systemPrompt: [],
+            messages: [['role' => 'user', 'content' => 'hello']],
+            tools: [],
+        ));
+
+        $this->assertTrue($this->hasHeader($capturedHeaders, 'authorization: Bearer sk-ant-oat-token'));
+        $this->assertFalse($this->hasHeader($capturedHeaders, 'x-api-key: sk-ant-oat-token'));
+        $this->assertNull($this->headerValue($capturedHeaders, 'x-api-key'));
+
+        $beta = $this->headerValue($capturedHeaders, 'anthropic-beta');
+        $this->assertNotNull($beta);
+        $this->assertStringContainsString('prompt-caching-2024-07-31', $beta);
+        $this->assertStringContainsString('oauth-2025-04-20', $beta);
+    }
+
+    public function test_oauth_bearer_mode_via_settings_manager(): void
+    {
+        $capturedHeaders = null;
+        $httpClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$capturedHeaders) {
+            $capturedHeaders = $options['headers'] ?? [];
+
+            return new MockResponse([
+                "event: message_stop\n",
+                "data: {}\n\n",
+            ], ['http_code' => 200]);
+        });
+
+        $settings = new SettingsManager(getcwd());
+        $settings->set('api_key', 'sk-ant-oat-token');
+        $settings->set('oauth_bearer', true);
+
+        $client = (new StreamingClient(
+            apiKey: 'fallback-key',
+            model: 'claude-sonnet-4-20250514',
+            httpClient: $httpClient,
+        ))->withSettingsManager($settings);
+
+        iterator_to_array($client->streamMessages(
+            systemPrompt: [],
+            messages: [['role' => 'user', 'content' => 'hello']],
+            tools: [],
+        ));
+
+        $this->assertTrue($this->hasHeader($capturedHeaders, 'authorization: Bearer sk-ant-oat-token'));
+        $this->assertNull($this->headerValue($capturedHeaders, 'x-api-key'));
+        $beta = $this->headerValue($capturedHeaders, 'anthropic-beta');
+        $this->assertNotNull($beta);
+        $this->assertStringContainsString('oauth-2025-04-20', $beta);
+    }
+
+    public function test_default_mode_keeps_x_api_key_header_without_oauth_beta_flag(): void
+    {
+        $capturedHeaders = null;
+        $httpClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$capturedHeaders) {
+            $capturedHeaders = $options['headers'] ?? [];
+
+            return new MockResponse([
+                "event: message_stop\n",
+                "data: {}\n\n",
+            ], ['http_code' => 200]);
+        });
+
+        $client = new StreamingClient(
+            apiKey: 'plain-api-key',
+            model: 'claude-sonnet-4-20250514',
+            httpClient: $httpClient,
+        );
+
+        iterator_to_array($client->streamMessages(
+            systemPrompt: [],
+            messages: [['role' => 'user', 'content' => 'hello']],
+            tools: [],
+        ));
+
+        $this->assertTrue($this->hasHeader($capturedHeaders, 'x-api-key: plain-api-key'));
+        $this->assertNull($this->headerValue($capturedHeaders, 'authorization'));
+        $this->assertSame('prompt-caching-2024-07-31', $this->headerValue($capturedHeaders, 'anthropic-beta'));
+    }
+
     // ─── cache_control on tools ───────────────────────────────────────────
 
     public function test_cache_control_added_to_last_tool(): void

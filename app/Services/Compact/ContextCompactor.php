@@ -9,7 +9,12 @@ use HaoCode\Services\Hooks\HookExecutor;
 
 class ContextCompactor
 {
-    /** Claude context window (200k tokens) */
+    /**
+     * Default context window (200k tokens) and baseline for scaling.
+     *
+     * All constants below are the 200k-window baselines; per-instance values
+     * are derived proportionally from the resolved $contextWindow.
+     */
     private const CONTEXT_WINDOW = 200_000;
 
     /** Reserve for compaction summary output (~p99 of LLM summary) */
@@ -44,10 +49,44 @@ class ContextCompactor
 
     private ?FileStateCache $fileStateCache = null;
 
+    /**
+     * Resolved context window for this instance.
+     *
+     * All window-derived thresholds (effective window, auto-compact trigger,
+     * warning tiers) scale proportionally from the 200k baseline constants,
+     * so user-configured windows (e.g. 128k via SettingsManager) compact at
+     * the equivalent point instead of far too late.
+     */
+    private readonly int $contextWindow;
+
     public function __construct(
         private readonly QueryEngine $queryEngine,
         private readonly ?HookExecutor $hookExecutor = null,
-    ) {}
+        ?int $contextWindow = null,
+    ) {
+        $this->contextWindow = ($contextWindow !== null && $contextWindow > 0)
+            ? $contextWindow
+            : self::CONTEXT_WINDOW;
+    }
+
+    /**
+     * Scale a 200k-baseline threshold proportionally to the resolved window.
+     * With the default window this returns the baseline value unchanged.
+     */
+    private function scaleFromDefaultWindow(int $baselineValue): int
+    {
+        return (int) round($baselineValue * ($this->contextWindow / self::CONTEXT_WINDOW));
+    }
+
+    private function effectiveContextWindow(): int
+    {
+        return $this->scaleFromDefaultWindow(self::EFFECTIVE_CONTEXT_WINDOW);
+    }
+
+    private function autoCompactThreshold(): int
+    {
+        return $this->scaleFromDefaultWindow(self::AUTO_COMPACT_THRESHOLD);
+    }
 
     public function setFileStateCache(FileStateCache $cache): void
     {
@@ -128,14 +167,14 @@ class ContextCompactor
 
     public function shouldAutoCompact(int $totalInputTokens): bool
     {
-        return $totalInputTokens > self::AUTO_COMPACT_THRESHOLD
+        return $totalInputTokens > $this->autoCompactThreshold()
             && $this->compactFailures < self::MAX_COMPACT_FAILURES;
     }
 
     public function shouldMicroCompact(int $totalInputTokens): bool
     {
         return $totalInputTokens > self::MICRO_COMPACT_THRESHOLD
-            && $totalInputTokens <= self::AUTO_COMPACT_THRESHOLD;
+            && $totalInputTokens <= $this->autoCompactThreshold();
     }
 
     /**
@@ -153,14 +192,14 @@ class ContextCompactor
      */
     public function getWarningState(int $totalInputTokens): array
     {
-        $effectiveWindow = self::EFFECTIVE_CONTEXT_WINDOW;
+        $effectiveWindow = $this->effectiveContextWindow();
         $percentUsed = round(($totalInputTokens / $effectiveWindow) * 100, 1);
 
         $tokensRemaining = $effectiveWindow - $totalInputTokens;
 
-        $isBlocking = $tokensRemaining <= self::BLOCKING_BUFFER_TOKENS;
-        $isError    = $tokensRemaining <= self::ERROR_BUFFER_TOKENS;
-        $isWarning  = $tokensRemaining <= self::WARNING_BUFFER_TOKENS;
+        $isBlocking = $tokensRemaining <= $this->scaleFromDefaultWindow(self::BLOCKING_BUFFER_TOKENS);
+        $isError    = $tokensRemaining <= $this->scaleFromDefaultWindow(self::ERROR_BUFFER_TOKENS);
+        $isWarning  = $tokensRemaining <= $this->scaleFromDefaultWindow(self::WARNING_BUFFER_TOKENS);
 
         $message = null;
         if ($isBlocking) {

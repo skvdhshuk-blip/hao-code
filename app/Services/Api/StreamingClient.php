@@ -48,6 +48,7 @@ class StreamingClient implements ApiKeyAwareProvider, ForkSafeProvider
         ?OpenAiProvider $openAiProvider = null,
         ?OpenAiChatProvider $openAiChatProvider = null,
         string $providerType = 'anthropic',
+        bool $oauthBearer = false,
     ) {
         $this->connectionConfig = [
             'apiKey' => $apiKey,
@@ -61,6 +62,7 @@ class StreamingClient implements ApiKeyAwareProvider, ForkSafeProvider
             'streamPollTimeoutSeconds' => $streamPollTimeoutSeconds,
             'timeProvider' => $timeProvider,
             'providerType' => $providerType,
+            'oauthBearer' => $oauthBearer,
         ];
         $this->settingsManager = $settingsManager;
         $this->defaultProviderType = match ($providerType) {
@@ -80,6 +82,7 @@ class StreamingClient implements ApiKeyAwareProvider, ForkSafeProvider
             idleTimeoutSeconds: $idleTimeoutSeconds,
             streamPollTimeoutSeconds: $streamPollTimeoutSeconds,
             timeProvider: $timeProvider,
+            oauthBearer: $oauthBearer,
         );
 
         // When a SettingsManager is attached it owns the base URL, so the
@@ -189,6 +192,7 @@ class StreamingClient implements ApiKeyAwareProvider, ForkSafeProvider
             streamPollTimeoutSeconds: $config['streamPollTimeoutSeconds'],
             timeProvider: $config['timeProvider'],
             providerType: $settingsManager?->getProviderType() ?? $config['providerType'],
+            oauthBearer: $settingsManager?->isOauthBearer() ?? $config['oauthBearer'],
         );
     }
 

@@ -43,6 +43,9 @@ final class AgentRunContextFactory
                 default => 'anthropic',
             });
         }
+        if ($config->oauthBearer !== null) {
+            $settings->set('oauth_bearer', $config->oauthBearer);
+        }
 
         if ($config->systemPrompt !== null) {
             $settings->set('system_prompt', $config->systemPrompt);

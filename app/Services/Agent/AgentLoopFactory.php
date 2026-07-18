@@ -193,7 +193,7 @@ class AgentLoopFactory
             messageHistory: new MessageHistory(),
             permissionChecker: $permissionChecker,
             sessionManager: new SessionManager(persistenceEnabled: ! $ephemeral),
-            contextCompactor: new ContextCompactor($queryEngine, $hookExecutor),
+            contextCompactor: new ContextCompactor($queryEngine, $hookExecutor, $settings->getContextWindow()),
             costTracker: new CostTracker(),
             toolRegistry: $toolRegistry,
             hookExecutor: $hookExecutor,

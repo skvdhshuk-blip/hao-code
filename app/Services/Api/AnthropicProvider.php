@@ -37,6 +37,7 @@ class AnthropicProvider implements ApiKeyAwareProvider
         private readonly int $idleTimeoutSeconds = 60,
         private readonly float $streamPollTimeoutSeconds = 1.0,
         ?callable $timeProvider = null,
+        private bool $oauthBearer = false,
     ) {
         $this->httpClient = $httpClient ?? HttpClient::create([
             'timeout' => 300,
@@ -97,6 +98,43 @@ class AnthropicProvider implements ApiKeyAwareProvider
         }
 
         return $this->baseUrl;
+    }
+
+    private function resolveOauthBearer(): bool
+    {
+        if ($this->settingsManager) {
+            return $this->settingsManager->isOauthBearer();
+        }
+
+        return $this->oauthBearer;
+    }
+
+    /**
+     * Build the request headers for one /v1/messages call.
+     *
+     * OAuth access tokens (Claude Pro/Max subscriptions) must be sent as
+     * `Authorization: Bearer <token>` with the `oauth-2025-04-20` beta flag;
+     * plain API keys keep the `x-api-key` header. The beta flag is merged
+     * with the prompt-caching flag rather than replacing it.
+     */
+    private function buildRequestHeaders(): array
+    {
+        $betaFeatures = ['prompt-caching-2024-07-31'];
+        $headers = [];
+
+        if ($this->resolveOauthBearer()) {
+            $headers['Authorization'] = 'Bearer ' . $this->resolveApiKey();
+            $betaFeatures[] = 'oauth-2025-04-20';
+        } else {
+            $headers['x-api-key'] = $this->resolveApiKey();
+        }
+
+        $headers['anthropic-version'] = $this->apiVersion;
+        $headers['anthropic-beta'] = implode(',', $betaFeatures);
+        $headers['content-type'] = 'application/json';
+        $headers['accept'] = 'text/event-stream';
+
+        return $headers;
     }
 
     public function streamMessages(
@@ -178,13 +216,7 @@ class AnthropicProvider implements ApiKeyAwareProvider
         }
 
         $response = $this->httpClient->request('POST', rtrim($baseUrl, '/') . '/v1/messages', [
-            'headers' => [
-                'x-api-key' => $this->resolveApiKey(),
-                'anthropic-version' => $this->apiVersion,
-                'anthropic-beta' => 'prompt-caching-2024-07-31',
-                'content-type' => 'application/json',
-                'accept' => 'text/event-stream',
-            ],
+            'headers' => $this->buildRequestHeaders(),
             'body' => $this->encodePayload($payload),
             'buffer' => false,
             'http_version' => $this->preferredHttpVersion($baseUrl),
@@ -563,6 +595,7 @@ class AnthropicProvider implements ApiKeyAwareProvider
         $provider->maxTokens = $this->resolveMaxTokens();
         $provider->thinkingEnabled = $this->resolveThinkingEnabled();
         $provider->thinkingBudget = $this->resolveThinkingBudget();
+        $provider->oauthBearer = $this->resolveOauthBearer();
         $provider->settingsManager = null;
 
         return $provider;

@@ -21,10 +21,10 @@ class ContextCompactorWarningTest extends TestCase
     private const ERROR_THRESHOLD   = self::EFFECTIVE - 20_000; // 160_000
     private const BLOCKING_THRESHOLD = self::EFFECTIVE - 3_000; // 177_000
 
-    private function makeCompactor(): ContextCompactor
+    private function makeCompactor(?int $contextWindow = null): ContextCompactor
     {
         $queryEngine = $this->createMock(QueryEngine::class);
-        return new ContextCompactor($queryEngine);
+        return new ContextCompactor($queryEngine, null, $contextWindow);
     }
 
     // ─── percentUsed ──────────────────────────────────────────────────────
@@ -169,5 +169,103 @@ class ContextCompactorWarningTest extends TestCase
         $compactor = $this->makeCompactor();
         // Just above AUTO_COMPACT_THRESHOLD
         $this->assertTrue($compactor->shouldAutoCompact(168_000));
+    }
+
+    // ─── default window boundary assertions (200k baseline) ──────────────
+
+    public function test_default_window_auto_compact_boundary_is_167k(): void
+    {
+        $compactor = $this->makeCompactor();
+        // AUTO_COMPACT_THRESHOLD = 167_000 for the default 200k window
+        $this->assertFalse($compactor->shouldAutoCompact(166_999));
+        $this->assertFalse($compactor->shouldAutoCompact(167_000));
+        $this->assertTrue($compactor->shouldAutoCompact(167_001));
+    }
+
+    public function test_null_window_behaves_like_default(): void
+    {
+        $compactor = $this->makeCompactor(null);
+        $this->assertFalse($compactor->shouldAutoCompact(167_000));
+        $this->assertTrue($compactor->shouldAutoCompact(167_001));
+    }
+
+    public function test_non_positive_window_falls_back_to_default(): void
+    {
+        foreach ([0, -1, -100_000] as $invalidWindow) {
+            $compactor = $this->makeCompactor($invalidWindow);
+            $this->assertFalse($compactor->shouldAutoCompact(160_000));
+            $this->assertTrue($compactor->shouldAutoCompact(168_000));
+        }
+    }
+
+    // ─── custom 128k window ───────────────────────────────────────────────
+
+    /**
+     * For a 128k window every threshold scales by 128/200 = 0.64:
+     *   effective window        = 180_000 * 0.64 = 115_200
+     *   auto-compact threshold  = 167_000 * 0.64 = 106_880
+     *   warning when remaining <= 19_200 (tokens >= 96_000)
+     *   error   when remaining <= 12_800 (tokens >= 102_400)
+     *   blocking when remaining <= 1_920 (tokens >= 113_280)
+     */
+    private const CUSTOM_WINDOW = 128_000;
+    private const CUSTOM_EFFECTIVE = 115_200;
+    private const CUSTOM_AUTO_THRESHOLD = 106_880;
+
+    public function test_custom_128k_window_auto_compact_fires_near_106k(): void
+    {
+        $compactor = $this->makeCompactor(self::CUSTOM_WINDOW);
+
+        $this->assertFalse($compactor->shouldAutoCompact(100_000));
+        $this->assertFalse($compactor->shouldAutoCompact(self::CUSTOM_AUTO_THRESHOLD));
+        $this->assertTrue($compactor->shouldAutoCompact(self::CUSTOM_AUTO_THRESHOLD + 1));
+        $this->assertTrue($compactor->shouldAutoCompact(110_000));
+    }
+
+    public function test_custom_128k_window_micro_compact_range(): void
+    {
+        $compactor = $this->makeCompactor(self::CUSTOM_WINDOW);
+
+        // Above the fixed 40k micro floor but below the scaled auto threshold
+        $this->assertTrue($compactor->shouldMicroCompact(50_000));
+        // Above the scaled auto threshold → auto-compact takes over
+        $this->assertFalse($compactor->shouldMicroCompact(self::CUSTOM_AUTO_THRESHOLD + 1));
+    }
+
+    public function test_custom_128k_window_percent_used(): void
+    {
+        $compactor = $this->makeCompactor(self::CUSTOM_WINDOW);
+
+        $this->assertSame(50.0, $compactor->getWarningState(self::CUSTOM_EFFECTIVE / 2)['percentUsed']);
+        $this->assertSame(100.0, $compactor->getWarningState(self::CUSTOM_EFFECTIVE)['percentUsed']);
+    }
+
+    public function test_custom_128k_window_warning_tiers(): void
+    {
+        $compactor = $this->makeCompactor(self::CUSTOM_WINDOW);
+
+        // Well below warning: remaining = 115_200 - 90_000 = 25_200 > 19_200
+        $state = $compactor->getWarningState(90_000);
+        $this->assertFalse($state['isWarning']);
+        $this->assertFalse($state['isError']);
+        $this->assertFalse($state['isBlocking']);
+
+        // Warning tier: remaining = 19_200
+        $state = $compactor->getWarningState(96_000);
+        $this->assertTrue($state['isWarning']);
+        $this->assertFalse($state['isError']);
+        $this->assertFalse($state['isBlocking']);
+
+        // Error tier: remaining = 12_800
+        $state = $compactor->getWarningState(102_400);
+        $this->assertTrue($state['isWarning']);
+        $this->assertTrue($state['isError']);
+        $this->assertFalse($state['isBlocking']);
+
+        // Blocking tier: remaining = 1_920
+        $state = $compactor->getWarningState(113_280);
+        $this->assertTrue($state['isWarning']);
+        $this->assertTrue($state['isError']);
+        $this->assertTrue($state['isBlocking']);
     }
 }

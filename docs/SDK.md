@@ -44,6 +44,7 @@ in the selected provider entry in `~/.haocode/settings.json`.
 - [Multi-turn Conversations](#multi-turn-conversations)
 - [Session Resume & Continue](#session-resume--continue)
 - [Structured Output](#structured-output)
+- [Multimodal Input](#multimodal-input)
 - [Abort Controller](#abort-controller)
 - [Cost Tracking](#cost-tracking)
 - [Credential Pools](#credential-pools)
@@ -319,6 +320,7 @@ $config = new HaoCodeConfig(
 | `baseUrl` | `?string` | `null` | API endpoint URL (for proxies, custom endpoints) |
 | `maxTokens` | `?int` | `null` | Maximum output tokens per response |
 | `providerType` | `?string` | `null` | `anthropic`, `openai`, or `openai_chat` wire format |
+| `oauthBearer` | `?bool` | `null` | When `true`, treat `apiKey` as an Anthropic OAuth access token: it is sent as `Authorization: Bearer <token>` with the `oauth-2025-04-20` beta flag (merged with the prompt-caching flag) instead of the `x-api-key` header. `null`/`false` keeps the default `x-api-key` behaviour. Anthropic provider only |
 
 When any of these are set, the SDK creates a run-scoped provider. Explicit
 values override active settings; unspecified connection values still come from
@@ -362,6 +364,10 @@ configured output tokens and a safety margin before sending a request.
 | `tools` | `SdkTool[]` | `[]` | Custom tools to register |
 | `skills` | `SdkSkill[]` | `[]` | Custom skills to register |
 | `skillDirectories` | `string[]` | `[]` | Additional explicit directories containing `<name>/SKILL.md` packages |
+| `recursiveSkillDiscovery` | `bool` | `false` | Recursively discover nested Skill packages; shallow same-name packages win |
+| `images` | `array` | `[]` | Image attachments for multimodal input (one-shot queries and streams). Each item can be a local file path, URL, pre-built content block, or data URI. For conversations, pass images per-send via `Conversation::send()` |
+
+Tools, permission bypass, and durable storage are independent opt-ins. Merely
 | `recursiveSkillDiscovery` | `bool` | `false` | Recursively discover nested Skill packages; shallow same-name packages win |
 
 Tools, permission bypass, and durable storage are independent opt-ins. Merely

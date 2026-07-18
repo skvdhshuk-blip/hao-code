@@ -490,6 +490,7 @@ class SettingsManager
             'thinking_enabled',
             'thinking_budget',
             'effort_level',
+            'oauth_bearer',
         ];
         if (! in_array($key, $allowedKeys, true)) {
             return;
@@ -590,6 +591,20 @@ class SettingsManager
     public function getEffortLevel(): string
     {
         return $this->runtimeOverrides['effort_level'] ?? 'auto';
+    }
+
+    /**
+     * Whether the resolved API key is an Anthropic OAuth access token that
+     * must be sent as `Authorization: Bearer` instead of `x-api-key`.
+     * Defaults to false (plain API key behaviour).
+     */
+    public function isOauthBearer(): bool
+    {
+        if (array_key_exists('oauth_bearer', $this->runtimeOverrides)) {
+            return (bool) $this->runtimeOverrides['oauth_bearer'];
+        }
+
+        return false;
     }
 
     /**
