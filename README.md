@@ -110,6 +110,7 @@ $config = new HaoCodeConfig(
 | Sandbox | Local workspace, OS-native isolation, optional Tokimo runners, or Alibaba Cloud AgentRun for sandbox-scoped file and shell tools |
 | Skills | Prompt-packaged domain guidance through `SdkSkill` |
 | Structured output | JSON schema guided responses via `HaoCode::structured()` |
+| Multimodal input | Image input via file path, URL, data URI, or pre-built blocks in `query()`, `stream()`, and `Conversation::send()` |
 | Runtime control | Working directory, allowed tools, denied tools, permission mode, max turns, max tokens, thinking options |
 | Operations | Cost budget, usage metadata, abort controller, callbacks for text/tool/turn events |
 | State | Session IDs, conversation handles, memory summary levels, custom memory storage path |

@@ -73,12 +73,12 @@
                 "internal": false
             },
             "send": {
-                "signature": "public function send(string $prompt) : HaoCode\\Sdk\\QueryResult",
+                "signature": "public function send(string $prompt, array $images = []) : HaoCode\\Sdk\\QueryResult",
                 "api": true,
                 "internal": false
             },
             "stream": {
-                "signature": "public function stream(string $prompt) : Generator",
+                "signature": "public function stream(string $prompt, array $images = []) : Generator",
                 "api": true,
                 "internal": false
             },
@@ -144,7 +144,7 @@
         "internal": false,
         "methods": {
             "__construct": {
-                "signature": "public function __construct(?string $apiKey = null, ?string $model = null, ?string $baseUrl = null, ?string $providerType = null, ?int $maxTokens = null, ?string $cwd = null, int $maxTurns = 50, ?float $maxBudgetUsd = null, string $permissionMode = \"default\", array $allowedTools = [], array $disallowedTools = [], ?string $systemPrompt = null, ?string $appendSystemPrompt = null, bool $thinkingEnabled = false, int $thinkingBudget = 10000, mixed $onText = null, mixed $onThinking = null, mixed $onToolStart = null, mixed $onToolComplete = null, mixed $onTurnStart = null, bool $ephemeral = true, array $tools = [], array $skills = [], ?HaoCode\\Sdk\\AbortController $abortController = null, ?string $sessionId = null, bool $continueSession = false, ?array $responseSchema = null, ?HaoCode\\Sdk\\CredentialPool $credentialPool = null, ?HaoCode\\Sdk\\Sandbox\\SandboxConfig $sandbox = null, string $memorySummaryLevel = \"l0\", ?string $memoryStoragePath = null, array $skillDirectories = [], bool $recursiveSkillDiscovery = false, array $interruptOn = [], bool $enableAskUser = false, ?HaoCode\\Sdk\\Memory\\MemoryStoreInterface $memoryStore = null, ?string $hitlMode = null, ?string $hitlReviewModel = null, ?string $hitlAllowlistPath = null, ?bool $oauthBearer = null)",
+                "signature": "public function __construct(?string $apiKey = null, ?string $model = null, ?string $baseUrl = null, ?string $providerType = null, ?int $maxTokens = null, ?string $cwd = null, int $maxTurns = 50, ?float $maxBudgetUsd = null, string $permissionMode = \"default\", array $allowedTools = [], array $disallowedTools = [], ?string $systemPrompt = null, ?string $appendSystemPrompt = null, bool $thinkingEnabled = false, int $thinkingBudget = 10000, mixed $onText = null, mixed $onThinking = null, mixed $onToolStart = null, mixed $onToolComplete = null, mixed $onTurnStart = null, bool $ephemeral = true, array $tools = [], array $skills = [], ?HaoCode\\Sdk\\AbortController $abortController = null, ?string $sessionId = null, bool $continueSession = false, ?array $responseSchema = null, ?HaoCode\\Sdk\\CredentialPool $credentialPool = null, ?HaoCode\\Sdk\\Sandbox\\SandboxConfig $sandbox = null, string $memorySummaryLevel = \"l0\", ?string $memoryStoragePath = null, array $skillDirectories = [], bool $recursiveSkillDiscovery = false, array $interruptOn = [], bool $enableAskUser = false, ?HaoCode\\Sdk\\Memory\\MemoryStoreInterface $memoryStore = null, ?string $hitlMode = null, ?string $hitlReviewModel = null, ?string $hitlAllowlistPath = null, ?bool $oauthBearer = null, array $images = [])",
                 "api": false,
                 "internal": false
             },
@@ -237,6 +237,11 @@
             },
             "hitlReviewModel": {
                 "signature": "public readonly ?string $hitlReviewModel",
+                "api": true,
+                "internal": false
+            },
+            "images": {
+                "signature": "public readonly array $images",
                 "api": true,
                 "internal": false
             },
@@ -585,6 +590,24 @@
                 "internal": false
             }
         }
+    },
+    "HaoCode\\Sdk\\ImageContentBlock": {
+        "kind": "class",
+        "api": true,
+        "internal": false,
+        "methods": {
+            "buildUserContent": {
+                "signature": "public static function buildUserContent(string $prompt, array $images = []) : array|string",
+                "api": true,
+                "internal": false
+            },
+            "from": {
+                "signature": "public static function from(array|string $source) : array",
+                "api": true,
+                "internal": false
+            }
+        },
+        "properties": []
     },
     "HaoCode\\Sdk\\Memory\\JsonMemoryStore": {
         "kind": "class",

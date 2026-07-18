@@ -1349,6 +1349,84 @@ echo $ticket->queryResult->cost;
 
 ---
 
+## Multimodal Input
+
+Pass images to `query()`, `stream()`, or `Conversation::send()` alongside text prompts. The SDK translates them into provider-native image blocks automatically.
+
+### Via HaoCode::query() / stream()
+
+```php
+use HaoCode\Sdk\HaoCode;
+use HaoCode\Sdk\HaoCodeConfig;
+
+// Local file path (auto-detected MIME + base64)
+$result = HaoCode::query(
+    'Describe this photo',
+    new HaoCodeConfig(images: ['/path/to/photo.jpg'])
+);
+
+// Multiple images
+$result = HaoCode::query(
+    'What do these two diagrams have in common?',
+    new HaoCodeConfig(images: ['/path/to/diagram1.png', '/path/to/diagram2.png'])
+);
+
+// Streaming also works
+foreach (HaoCode::stream('Transcribe this screenshot', new HaoCodeConfig(
+    images: ['/path/to/screenshot.png']
+)) as $event) {
+    echo $event->text;
+}
+```
+
+### Via Conversation
+
+```php
+$conversation = HaoCode::conversation();
+
+$conversation->send('Describe this image', ['/path/to/photo.jpg']);
+
+// Streaming conversation with images
+foreach ($conversation->stream('Any logos here?', ['/path/to/brochure.pdf.png']) as $event) {
+    echo $event->text;
+}
+```
+
+### Image source formats
+
+The `images` array accepts four formats. They can be mixed in the same call:
+
+| Format | Example |
+|--------|---------|
+| Local file path | `'/path/to/photo.jpg'` |
+| Remote URL | `'https://example.com/image.png'` |
+| Data URI | `'data:image/png;base64,iVBORw0KGgo...'` |
+| Pre-built block | `['type' => 'image', 'source' => ['type' => 'base64', 'media_type' => 'image/jpeg', 'data' => '...']]` |
+
+### Manual block assembly
+
+For full control, use `ImageContentBlock` directly:
+
+```php
+use HaoCode\Sdk\ImageContentBlock;
+
+// From a local file (returns an Anthropic-shaped image block)
+$block = ImageContentBlock::from('/path/to/photo.jpg');
+
+// From a URL
+$block = ImageContentBlock::from('https://example.com/image.png');
+
+// From a data URI
+$block = ImageContentBlock::from('data:image/png;base64,iVBORw0KGgo...');
+
+// Build a complete user message with text + images
+$content = ImageContentBlock::buildUserContent('Analyze this', [$block]);
+```
+
+`buildUserContent()` returns an array of content blocks that the Provider layer sends as a native multimodal message. You do not need to base64-encode files manually; `ImageContentBlock::from()` detects the MIME type and reads the file automatically.
+
+---
+
 ## Abort Controller
 
 Cancel long-running operations from external code:
