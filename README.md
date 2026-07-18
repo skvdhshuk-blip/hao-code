@@ -165,11 +165,20 @@ unattended full agent must state all three explicitly, for example
 `ephemeral: false`. Do this only inside a trust boundary appropriate for the
 tools being exposed.
 
-For human-in-the-loop runs, `hitlMode` selects the approval mode: `'ask'`
-(default) interrupts every configured action, `'smart'` automates routine
-approvals through rules plus a review model (`hitlReviewModel`, defaulting to
-the run's model), and `'auto'` suppresses tool interrupts entirely. Automatic
-decisions surface on the stream as `auto_decision` messages.
+For human-in-the-loop runs, `hitlMode` selects the approval mode. The default
+is `'smart'` (resolved from `haocode.hitl_mode` / `HAOCODE_HITL_MODE` when the
+constructor value is `null`): routine actions are fast-pathed by rules,
+gray-area actions are reviewed by a model (`hitlReviewModel`, defaulting to the
+run's model), and only dangerous actions interrupt for a human decision.
+`'ask'` interrupts every configured action, and `'auto'` suppresses tool
+interrupts entirely. Every automatic decision surfaces on the stream as an
+`auto_decision` message. In `'smart'` mode, two fast paths settle `Bash`
+actions without the guardian model: sandbox containment (a gray-area command
+that will run inside an isolating sandbox is approved directly) and a
+user-saved allow list pointed to by `hitlAllowlistPath` (exact- and prefix-match
+v1+v2 rules; every segment of a compound command must match, so
+`git commit && rm -rf /` never slips through). See
+[Smart HITL modes](docs/SDK.md#smart-hitl-modes) in the SDK reference.
 
 > **v1.8.0 behavior change:** `v1.7.0` constructed `HaoCodeConfig` with all
 > tools, permission bypass, and durable storage by default. Existing trusted
@@ -653,9 +662,24 @@ application-owned store.
 
 ## Version
 
-The current release is `v1.10.0`. It adds run-scoped long-term memory through a
-public storage contract, an atomic JSON implementation, and opt-in read, write,
-and delete tools that remain subject to normal SDK permissions.
+The current release is `v1.13.1`. Notable changes since `v1.10.0`:
+
+- `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
+  recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/
+  tool-schema work in long-running sessions.
+- `v1.11.1` — Cache-stable system prompts, tool schemas, and conversation
+  history with volatile Git context moved into the initial user turn; normalized
+  DeepSeek and OpenAI-compatible cache usage accounting.
+- `v1.12.0` — Native smart HITL modes (`HitlPolicy`, `HitlReviewer`,
+  `SmartInterruptDecider`) with rule-based fast paths and a guardian review model.
+- `v1.12.1` — Smart HITL aligned with codex semantics: recursive command
+  grading, default mode `'smart'`, sandbox-containment fast path, and the
+  `hitlAllowlistPath` "always allow" file.
+- `v1.13.0` — Prefix-based always-allow rules (every segment of a compound
+  command must match) and temp-dir redirect downgrade from red-line to gray
+  review.
+- `v1.13.1` — Session JSONL writes never kill or corrupt a run: invalid UTF-8
+  and non-finite doubles are sanitized with partial-output fallback.
 
 ## License
 

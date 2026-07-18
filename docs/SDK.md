@@ -2,7 +2,7 @@
 
 Use hao-code as a framework-free PHP library to embed an AI coding agent in your application.
 
-This document describes the current `v1.10.0` source release.
+This document describes the current `v1.13.1` source release.
 
 ```bash
 composer require sk-wang/hao-code
