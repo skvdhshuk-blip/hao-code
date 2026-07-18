@@ -141,6 +141,18 @@ class HitlPolicyTest extends TestCase
         yield 'Bash find -delete' => [$G, 'Bash', ['command' => 'find . -name "*.log" -delete'], null];
         yield 'Bash echo redirect inside workspace' => [$A, 'Bash', ['command' => "echo hi > {$workspace}/note.txt"], null];
         yield 'Bash echo redirect outside workspace' => [$R, 'Bash', ['command' => 'echo hi > /etc/note'], null];
+
+        // --- Redirect downgrade: system temp dir is gray, not red --------------
+        $tempDir = realpath(sys_get_temp_dir()) ?: sys_get_temp_dir();
+        $home = getenv('HOME');
+        $home = is_string($home) && $home !== '' ? $home : '/nonexistent-home-dir';
+        yield 'Bash redirect to /tmp' => [$G, 'Bash', ['command' => 'cat > /tmp/hitl-policy-note'], null];
+        yield 'Bash redirect to /private/tmp' => [$G, 'Bash', ['command' => 'cat > /private/tmp/hitl-policy-note'], null];
+        yield 'Bash redirect to sys temp dir subpath' => [$G, 'Bash', ['command' => "echo hi > {$tempDir}/hitl-policy-sub/note.txt"], null];
+        yield 'Bash redirect to /etc stays red' => [$R, 'Bash', ['command' => 'cat > /etc/hitl-policy-note'], null];
+        yield 'Bash redirect to home dir stays red' => [$R, 'Bash', ['command' => "cat > {$home}/hitl-policy-note"], null];
+        yield 'Bash redirect to temp dir sibling stays red' => [$R, 'Bash', ['command' => 'cat > /tmpfoo/hitl-policy-note'], null];
+        yield 'Bash tee into /tmp' => [$G, 'Bash', ['command' => 'echo hi | tee /tmp/hitl-policy-note'], null];
         yield 'Bash mkdir inside workspace' => [$A, 'Bash', ['command' => "mkdir -p {$workspace}/a/b"], null];
         yield 'Bash cp from outside workspace' => [$G, 'Bash', ['command' => "cp /etc/hosts {$workspace}/hosts.txt"], null];
 

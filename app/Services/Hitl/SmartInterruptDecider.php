@@ -165,19 +165,26 @@ final class SmartInterruptDecider
                 ];
                 continue;
             }
-            // User-saved allow rules run BEFORE the rule classifier: an exact
-            // match approves the command outright, including commands the
+            // User-saved allow rules run BEFORE the rule classifier: a match
+            // (whole-command exact, or per-segment coverage via exact/prefix
+            // rules) approves the command outright, including commands the
             // classifier would red-line (codex always-allow; user sovereignty).
             if ($this->allowlist !== null && $toolName === 'Bash') {
                 $command = is_array($input) ? ($input['command'] ?? null) : null;
-                if (is_string($command) && $this->allowlist->matches($command)) {
+                $allowMatch = is_string($command) ? $this->allowlist->match($command) : null;
+                if ($allowMatch !== null) {
+                    $reason = 'allowlist:user_rule: User-saved allow rule.';
+                    if ($allowMatch['type'] === 'prefix') {
+                        $reason = 'allowlist:user_rule: User-saved allow rule (prefix: '
+                            .implode(' ', $allowMatch['tokens']).').';
+                    }
                     $items[] = [
                         'actionId' => $actionId,
                         'toolName' => $toolName,
                         'input' => $input,
                         'allowed' => $allowed,
                         'level' => HitlPolicy::AUTO_ALLOW,
-                        'reason' => 'allowlist:user_rule: User-saved allow rule.',
+                        'reason' => $reason,
                         'sandboxContained' => false,
                     ];
                     continue;

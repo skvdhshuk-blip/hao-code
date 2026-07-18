@@ -488,8 +488,15 @@ final class HitlPolicy
         return null;
     }
 
-    /** @return string[] */
-    private static function splitSegments(string $command): array
+    /**
+     * Split a shell command into segments on && / || / ; / | / newlines.
+     *
+     * @internal Exposed for HitlAllowlist, which applies the exact same
+     *           quote-aware segmentation for per-segment rule coverage.
+     *
+     * @return string[]
+     */
+    public static function splitSegments(string $command): array
     {
         // Split on &&, ||, ;, |, and newlines — but only outside quotes, so a
         // quoted "a|b" argument no longer shatters into bogus segments.
@@ -621,7 +628,12 @@ final class HitlPolicy
             ?? self::verdict(self::GRAY, "Command '{$command}' is not on the read-only allowlist.");
     }
 
-    /** Redirect sinks are writes: every target must resolve inside the workspace. */
+    /**
+     * Redirect sinks are writes: targets must stay inside the workspace, and
+     * targets inside the system temp dir are downgraded from a red line to a
+     * gray area (routine workflows legitimately write scratch files there).
+     * Sensitive material stays a red line regardless (check order unchanged).
+     */
     private static function checkRedirects(string $segment, string $root): ?array
     {
         $cleaned = preg_replace('/\d?>&\d/', ' ', $segment) ?? $segment;
@@ -645,6 +657,9 @@ final class HitlPolicy
                 return self::verdict(self::RED_LINE, "Redirect target '{$target}' cannot be resolved safely.");
             }
             if (! self::isWithinWorkspace($resolved, $root)) {
+                if (self::isWithinTempDir($resolved)) {
+                    return self::verdict(self::GRAY, "Redirect writes to the system temp dir ('{$resolved}').");
+                }
                 return self::verdict(self::RED_LINE, "Redirect writes outside the workspace ('{$resolved}').");
             }
             $sensitive = self::matchSensitive($resolved);
@@ -653,6 +668,39 @@ final class HitlPolicy
             }
         }
         return null;
+    }
+
+    /**
+     * Whether a resolved path lies inside the system temp dir: the realpath
+     * of sys_get_temp_dir() plus the well-known temp roots, all realpath-
+     * normalized (macOS symlinks /tmp to /private/tmp). Comparison is on path
+     * boundaries so sibling directories like /tmpfoo never qualify.
+     */
+    private static function isWithinTempDir(string $resolved): bool
+    {
+        foreach (self::tempDirs() as $dir) {
+            if ($resolved === $dir || str_starts_with($resolved, $dir.'/')) {
+                return true;
+            }
+        }
+        return false;
+    }
+
+    /** @return string[] */
+    private static function tempDirs(): array
+    {
+        static $dirs = null;
+        if ($dirs === null) {
+            $dirs = [];
+            foreach ([sys_get_temp_dir(), '/tmp', '/var/tmp', '/private/tmp', '/private/var/tmp'] as $candidate) {
+                $real = realpath($candidate);
+                if (is_string($real) && $real !== '') {
+                    $dirs[$real] = true;
+                }
+            }
+            $dirs = array_keys($dirs);
+        }
+        return $dirs;
     }
 
     /** @return array{level: string, reason: string} */

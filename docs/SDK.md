@@ -343,7 +343,7 @@ configured output tokens and a safety margin before sending a request.
 | `enableAskUser` | `bool` | `false` | Register `AskUserQuestion` as a serializable host interrupt |
 | `hitlMode` | `?string` | `null` | HITL approval mode: `'ask'`, `'smart'`, or `'auto'`; `null` resolves from config/env (default `'smart'`). See [Smart HITL modes](#smart-hitl-modes) |
 | `hitlReviewModel` | `?string` | `null` | Model used to review gray-area actions in `'smart'` mode; `null` reuses the current run's model |
-| `hitlAllowlistPath` | `?string` | `null` | JSON file with user-saved "always allow" Bash rules (exact match, v1); `null` disables the feature. See [Smart HITL modes](#smart-hitl-modes) |
+| `hitlAllowlistPath` | `?string` | `null` | JSON file with user-saved "always allow" Bash rules (exact/prefix, v1+v2); `null` disables the feature. See [Smart HITL modes](#smart-hitl-modes) |
 
 ### Prompts
 
@@ -1170,18 +1170,27 @@ In `'smart'` mode, two fast paths settle actions without the guardian model:
   provider is only a working-directory jail and does not qualify. Red-line
   and ask-level actions are never sandbox-exempted.
 - **User-saved allow rules** (codex "always allow" parity): when
-  `hitlAllowlistPath` points to a JSON rule file, a `Bash` action whose
-  trimmed command is exactly equal to a saved rule is approved before the
-  rule classifier runs — with `source: 'rule'` and reason
-  `allowlist:user_rule: User-saved allow rule.` — even when the classifier
-  would red-line it (user sovereignty). Matching is exact-string only in v1:
-  no prefixes, no wildcards. A missing, corrupt, or wrong-version file loads
-  as an empty allowlist and never throws. The file format is frozen:
+  `hitlAllowlistPath` points to a JSON rule file, a `Bash` action matching a
+  saved rule is approved before the rule classifier runs — with
+  `source: 'rule'` and reason `allowlist:user_rule: User-saved allow rule.`
+  (prefix hits append `(prefix: <tokens>)` before the final period) — even
+  when the classifier would red-line it (user sovereignty). Matching first
+  tries whole-command equality against exact/legacy rules; otherwise the
+  command is split into segments on `&&` / `||` / `;` / `|` / newlines
+  (quote-aware), leading `VAR=value` assignments are stripped per segment,
+  and every segment must hit a v2 rule — an exact rule by trimmed equality or
+  a prefix rule by leading-token equality — so `git commit && rm -rf /` never
+  slips through a `git commit` prefix. A missing, corrupt, or unknown-version
+  file loads as an empty allowlist and never throws. The file format is
+  frozen (version 1 keeps exact-match-only entries; version 2 adds typed
+  `exact` / `prefix` rules):
 
   ```json
   {
-    "version": 1,
+    "version": 2,
     "rules": [
+      {"type": "prefix", "tokens": ["git", "commit"], "addedAt": "2025-01-01T00:00:00+00:00", "source": "user"},
+      {"type": "exact", "command": "node scripts/foo.js --flag", "addedAt": "2025-01-01T00:00:00+00:00", "source": "user"},
       {"command": "make deploy", "addedAt": "2025-01-01T00:00:00+00:00", "source": "user"}
     ]
   }
