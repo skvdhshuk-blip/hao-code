@@ -74,9 +74,13 @@ class HaoCode
         $run = self::createRun($config);
         $loop = $run->loop;
 
+        $userInput = $config->images !== []
+            ? ImageContentBlock::buildUserContent($prompt, $config->images)
+            : $prompt;
+
         try {
             $response = $loop->run(
-                userInput: $prompt,
+                userInput: $userInput,
                 onTextDelta: $config->onText,
                 onToolStart: $config->onToolStart,
                 onToolComplete: $config->onToolComplete,
@@ -137,6 +141,10 @@ class HaoCode
         $loop = $run->loop;
         $queue = new \SplQueue;
 
+        $userInput = $config->images !== []
+            ? ImageContentBlock::buildUserContent($prompt, $config->images)
+            : $prompt;
+
         // These callbacks are exclusively invoked from within the Fiber below.
         // Fiber::getCurrent()?->suspend() uses the nullable operator as a defensive
         // guard; in practice getCurrent() will always return the active Fiber here.
@@ -181,10 +189,10 @@ class HaoCode
         $response = null;
         $thrownException = null;
 
-        $fiber = new \Fiber(function () use ($loop, $prompt, $onText, $onToolStart, $onToolComplete, $onTurnStart, $config, &$response, &$thrownException): void {
+        $fiber = new \Fiber(function () use ($loop, $userInput, $onText, $onToolStart, $onToolComplete, $onTurnStart, $config, &$response, &$thrownException): void {
             try {
                 $response = $loop->run(
-                    userInput: $prompt,
+                    userInput: $userInput,
                     onTextDelta: $onText,
                     onToolStart: $onToolStart,
                     onToolComplete: $onToolComplete,

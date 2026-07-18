@@ -394,6 +394,35 @@ class HaoCodeConfig
          * @api
          */
         ?string $hitlAllowlistPath = null,
+
+        /**
+         * Treat {@see $apiKey} as an Anthropic OAuth access token instead of
+         * an API key: the SDK then sends `Authorization: Bearer <token>` plus
+         * the `oauth-2025-04-20` anthropic-beta flag instead of the
+         * `x-api-key` header. null/false keeps the default x-api-key
+         * behaviour. Only meaningful for the 'anthropic' provider type.
+         *
+         * @api
+         */
+        public readonly ?bool $oauthBearer = null,
+
+        /**
+         * Image attachments for multimodal input (one-shot queries and streams).
+         *
+         * Each item can be:
+         * - A local file path (e.g. '/path/to/photo.jpg')
+         * - A URL string (e.g. 'https://example.com/photo.jpg')
+         * - A pre-built content block array (e.g. ['type' => 'image', 'source' => [...]])
+         * - A data URI (e.g. 'data:image/png;base64,iVBORw0KGgo...')
+         *
+         * For multi-turn conversations, pass images per-send via
+         * {@see Conversation::send()} instead.
+         *
+         * @api
+         *
+         * @var string[]|array<string, mixed>[]
+         */
+        public readonly array $images = [],
     ) {
         $this->hitlMode = is_string($hitlMode) && in_array($hitlMode, ['ask', 'smart', 'auto'], true) ? $hitlMode : null;
         $this->hitlReviewModel = is_string($hitlReviewModel) && trim($hitlReviewModel) !== ''

@@ -42,7 +42,7 @@ class Conversation
      *
      * @api
      */
-    public function send(string $prompt): QueryResult
+    public function send(string $prompt, array $images = []): QueryResult
     {
         if ($this->closed) {
             throw new \RuntimeException('Conversation has been closed.');
@@ -50,8 +50,12 @@ class Conversation
 
         $this->turnCount++;
 
+        $userInput = $images !== []
+            ? ImageContentBlock::buildUserContent($prompt, $images)
+            : $prompt;
+
         $response = $this->loop->run(
-            userInput: $prompt,
+            userInput: $userInput,
             onTextDelta: $this->config->onText,
             onToolStart: $this->config->onToolStart,
             onToolComplete: $this->config->onToolComplete,
@@ -84,13 +88,17 @@ class Conversation
      *
      * @return \Generator<int, Message>
      */
-    public function stream(string $prompt): \Generator
+    public function stream(string $prompt, array $images = []): \Generator
     {
         if ($this->closed) {
             throw new \RuntimeException('Conversation has been closed.');
         }
 
         $this->turnCount++;
+
+        $userInput = $images !== []
+            ? ImageContentBlock::buildUserContent($prompt, $images)
+            : $prompt;
 
         $queue = new \SplQueue;
 
@@ -138,10 +146,10 @@ class Conversation
         $response = null;
         $thrownException = null;
 
-        $fiber = new \Fiber(function () use ($prompt, $onText, $onToolStart, $onToolComplete, $onTurnStart, &$response, &$thrownException): void {
+        $fiber = new \Fiber(function () use ($userInput, $onText, $onToolStart, $onToolComplete, $onTurnStart, &$response, &$thrownException): void {
             try {
                 $response = $this->loop->run(
-                    userInput: $prompt,
+                    userInput: $userInput,
                     onTextDelta: $onText,
                     onToolStart: $onToolStart,
                     onToolComplete: $onToolComplete,

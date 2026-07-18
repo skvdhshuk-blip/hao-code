@@ -35,6 +35,8 @@ use HaoCode\Sdk\SdkSkill;
 use HaoCode\Sdk\SdkTool;
 use HaoCode\Sdk\StructuredResult;
 
+use HaoCode\Sdk\ImageContentBlock;
+
 const SNAPSHOT_PATH = __DIR__.'/../tests/Sdk/Fixtures/public-api.snapshot.json';
 
 $mode = $argv[1] ?? '--verify';
@@ -62,6 +64,7 @@ $classes = [
     AbortController::class,
     StructuredResult::class,
     HaoCodeSdkServiceProvider::class,
+    ImageContentBlock::class,
 ];
 
 /**
