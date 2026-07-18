@@ -58,6 +58,23 @@ class HaoCodeConfig
      */
     public readonly ?string $hitlAllowlistPath;
 
+    /**
+     * Extra HTTP request headers merged into every provider request (e.g.
+     * GitHub Copilot's `Editor-Version` / `Copilot-Integration-Id`).
+     *
+     * Each provider merges this map into its hardcoded request headers; a
+     * custom value wins over the hardcoded default for the same header name
+     * (matched case-insensitively), except `Authorization` / `x-api-key`,
+     * which always stay under the provider's authentication logic. Entries
+     * with non-string keys/values, invalid header names, or CR/LF characters
+     * are filtered out.
+     *
+     * @api
+     *
+     * @var array<string, string>
+     */
+    public readonly array $headers;
+
     public function __construct(
         /**
          * Anthropic API key. Falls back to config('haocode.api_key').
@@ -423,6 +440,17 @@ class HaoCodeConfig
          * @var string[]|array<string, mixed>[]
          */
         public readonly array $images = [],
+
+        /**
+         * Extra HTTP request headers merged into every provider request
+         * (string => string map, e.g. ['Editor-Version' => 'vscode/1.96.0']).
+         * Invalid entries are filtered out; see {@see $headers}.
+         *
+         * @api
+         *
+         * @var array<string, string>
+         */
+        array $headers = [],
     ) {
         $this->hitlMode = is_string($hitlMode) && in_array($hitlMode, ['ask', 'smart', 'auto'], true) ? $hitlMode : null;
         $this->hitlReviewModel = is_string($hitlReviewModel) && trim($hitlReviewModel) !== ''
@@ -431,6 +459,7 @@ class HaoCodeConfig
         $this->hitlAllowlistPath = is_string($hitlAllowlistPath) && trim($hitlAllowlistPath) !== ''
             ? $hitlAllowlistPath
             : null;
+        $this->headers = \HaoCode\Services\Api\RequestHeaders::sanitize($headers);
 
         if (! in_array($this->memorySummaryLevel, ['l0', 'l1', 'l2'], true)) {
             throw new \InvalidArgumentException('memorySummaryLevel must be l0, l1, or l2.');
@@ -541,6 +570,35 @@ class HaoCodeConfig
     {
         $values = get_object_vars($this);
         $values['responseSchema'] = $schema;
+
+        return new self(...$values);
+    }
+    /** @internal */
+    public function withOverrides(
+        ?callable $onText = null,
+        ?callable $onThinking = null,
+        ?callable $onToolStart = null,
+        ?callable $onToolComplete = null,
+        ?callable $onTurnStart = null,
+        array $images = [],
+        bool $ephemeral = true,
+        ?array $responseSchema = null,
+        ?AbortController $abortController = null,
+        ?string $cwd = null,
+        ?float $maxBudgetUsd = null,
+    ): self {
+        $values = get_object_vars($this);
+        $values['onText'] = $onText;
+        $values['onThinking'] = $onThinking;
+        $values['onToolStart'] = $onToolStart;
+        $values['onToolComplete'] = $onToolComplete;
+        $values['onTurnStart'] = $onTurnStart;
+        $values['images'] = $images;
+        $values['ephemeral'] = $ephemeral;
+        $values['responseSchema'] = $responseSchema;
+        $values['abortController'] = $abortController;
+        $values['cwd'] = $cwd;
+        $values['maxBudgetUsd'] = $maxBudgetUsd;
 
         return new self(...$values);
     }

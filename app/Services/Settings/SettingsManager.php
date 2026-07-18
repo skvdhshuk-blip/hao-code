@@ -491,6 +491,7 @@ class SettingsManager
             'thinking_budget',
             'effort_level',
             'oauth_bearer',
+            'headers',
         ];
         if (! in_array($key, $allowedKeys, true)) {
             return;
@@ -605,6 +606,25 @@ class SettingsManager
         }
 
         return false;
+    }
+
+    /**
+     * Custom HTTP request headers for this run (runtime overrides only).
+     * Providers merge these into their hardcoded request headers; custom
+     * values win same-name except Authorization/x-api-key. Returns an empty
+     * array when no override is set.
+     *
+     * @return array<string, string>
+     */
+    public function getHeaders(): array
+    {
+        $raw = $this->runtimeOverrides['headers'] ?? null;
+
+        if (! is_array($raw)) {
+            return [];
+        }
+
+        return \HaoCode\Services\Api\RequestHeaders::sanitize($raw);
     }
 
     /**

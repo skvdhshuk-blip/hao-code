@@ -2,7 +2,7 @@
 
 Use hao-code as a framework-free PHP library to embed an AI coding agent in your application.
 
-This document describes the current `v1.13.1` source release.
+This document describes the current `v1.15.0` source release.
 
 ```bash
 composer require sk-wang/hao-code
@@ -24,6 +24,7 @@ in the selected provider entry in `~/.haocode/settings.json`.
 ## Table of Contents
 
 - [Quick Start](#quick-start)
+- [Agent & Runner](#agent--runner)
 - [Requirements](#requirements)
 - [HaoCode API Reference](#haocode-api-reference)
   - [query()](#query)
@@ -321,6 +322,7 @@ $config = new HaoCodeConfig(
 | `maxTokens` | `?int` | `null` | Maximum output tokens per response |
 | `providerType` | `?string` | `null` | `anthropic`, `openai`, or `openai_chat` wire format |
 | `oauthBearer` | `?bool` | `null` | When `true`, treat `apiKey` as an Anthropic OAuth access token: it is sent as `Authorization: Bearer <token>` with the `oauth-2025-04-20` beta flag (merged with the prompt-caching flag) instead of the `x-api-key` header. `null`/`false` keeps the default `x-api-key` behaviour. Anthropic provider only |
+| `headers` | `array<string, string>` | `[]` | Extra HTTP request headers merged into every provider request (e.g. GitHub Copilot's `Editor-Version` / `Copilot-Integration-Id`). A custom value overrides the provider's hardcoded header of the same name (case-insensitive), except `Authorization` / `x-api-key`, which always stay under the SDK's authentication logic. Invalid entries (non-string keys/values, invalid header names, CR/LF) are filtered out |
 
 When any of these are set, the SDK creates a run-scoped provider. Explicit
 values override active settings; unspecified connection values still come from

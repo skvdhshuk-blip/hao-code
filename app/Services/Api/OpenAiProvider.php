@@ -36,6 +36,8 @@ class OpenAiProvider implements ApiKeyAwareProvider
     private HttpClientInterface $httpClient;
     private int $maxRetries = 3;
     private array $lastRateLimitHeaders = [];
+    /** @var array<string, string> */
+    private array $headers;
     /** @var callable(): float */
     private $timeProvider;
 
@@ -51,12 +53,14 @@ class OpenAiProvider implements ApiKeyAwareProvider
         private readonly int $idleTimeoutSeconds = 60,
         private readonly float $streamPollTimeoutSeconds = 1.0,
         ?callable $timeProvider = null,
+        array $headers = [],
     ) {
         $this->httpClient = $httpClient ?? HttpClient::create([
             'timeout' => 300,
             'max_duration' => 600,
         ]);
         $this->timeProvider = $timeProvider ?? static fn (): float => microtime(true);
+        $this->headers = RequestHeaders::sanitize($headers);
     }
 
     public function streamMessages(
@@ -144,11 +148,7 @@ class OpenAiProvider implements ApiKeyAwareProvider
         $payload = $this->buildPayload($systemPrompt, $messages, $tools);
 
         $response = $this->httpClient->request('POST', rtrim($baseUrl, '/') . '/v1/responses', [
-            'headers' => [
-                'authorization' => 'Bearer ' . $this->resolveApiKey(),
-                'content-type' => 'application/json',
-                'accept' => 'text/event-stream',
-            ],
+            'headers' => $this->buildRequestHeaders(),
             'body' => $this->encodePayload($payload),
             'buffer' => false,
             'http_version' => '1.1',
@@ -810,6 +810,34 @@ class OpenAiProvider implements ApiKeyAwareProvider
     private function resolveModel(): string
     {
         return $this->settingsManager?->getModel() ?: $this->model;
+    }
+
+    /**
+     * Custom request headers for this run (run-scoped settings win over the
+     * constructor map).
+     *
+     * @return array<string, string>
+     */
+    private function resolveCustomHeaders(): array
+    {
+        return $this->settingsManager?->getHeaders() ?: $this->headers;
+    }
+
+    /**
+     * Build the request headers for one /v1/responses call: the hardcoded
+     * auth/content defaults merged with caller-supplied custom headers.
+     * Custom values win same-name (case-insensitive) except `Authorization`,
+     * which always stays under the auth logic.
+     *
+     * @return array<string, string>
+     */
+    private function buildRequestHeaders(): array
+    {
+        return RequestHeaders::mergeCustom([
+            'authorization' => 'Bearer ' . $this->resolveApiKey(),
+            'content-type' => 'application/json',
+            'accept' => 'text/event-stream',
+        ], $this->resolveCustomHeaders());
     }
 
     private function resolveApiKey(): string

@@ -71,33 +71,10 @@ class HaoCode
             }
         }
 
-        $run = self::createRun($config);
-        $loop = $run->loop;
+        $agent = Agent::fromConfig($config);
+        $options = RunOptions::fromConfig($config);
 
-        $userInput = $config->images !== []
-            ? ImageContentBlock::buildUserContent($prompt, $config->images)
-            : $prompt;
-
-        try {
-            $response = $loop->run(
-                userInput: $userInput,
-                onTextDelta: $config->onText,
-                onToolStart: $config->onToolStart,
-                onToolComplete: $config->onToolComplete,
-                onTurnStart: $config->onTurnStart,
-                onThinkingDelta: $config->onThinking,
-            );
-
-            return new QueryResult(
-                text: $response,
-                usage: self::extractUsage($loop),
-                cost: $loop->getEstimatedCost(),
-                sessionId: $config->ephemeral ? null : $loop->getSessionManager()->getSessionId(),
-                turnsUsed: $loop->getLastRunTurns(),
-            );
-        } finally {
-            $run->close();
-        }
+        return Runner::run($agent, $prompt, $options);
     }
 
     /**
@@ -137,110 +114,10 @@ class HaoCode
             return;
         }
 
-        $run = self::createRun($config);
-        $loop = $run->loop;
-        $queue = new \SplQueue;
+        $agent = Agent::fromConfig($config);
+        $options = RunOptions::fromConfig($config);
 
-        $userInput = $config->images !== []
-            ? ImageContentBlock::buildUserContent($prompt, $config->images)
-            : $prompt;
-
-        // These callbacks are exclusively invoked from within the Fiber below.
-        // Fiber::getCurrent()?->suspend() uses the nullable operator as a defensive
-        // guard; in practice getCurrent() will always return the active Fiber here.
-        $onText = function (string $delta) use ($queue, $config): void {
-            $queue->enqueue(Message::text($delta));
-            if ($config->onText) {
-                ($config->onText)($delta);
-            }
-            \Fiber::getCurrent()?->suspend();
-        };
-
-        $onToolStart = function (string $name, array $input) use ($queue, $config): void {
-            $queue->enqueue(Message::toolStart($name, $input));
-            if ($config->onToolStart) {
-                ($config->onToolStart)($name, $input);
-            }
-            \Fiber::getCurrent()?->suspend();
-        };
-
-        $onToolComplete = function (string $name, $result) use ($queue, $config): void {
-            $queue->enqueue(Message::toolResult($name, $result->output, $result->isError));
-            if ($config->onToolComplete) {
-                ($config->onToolComplete)($name, $result);
-            }
-            \Fiber::getCurrent()?->suspend();
-        };
-
-        $onTurnStart = function (int $turn) use ($queue, $config): void {
-            $queue->enqueue(Message::turn($turn));
-            if ($config->onTurnStart) {
-                ($config->onTurnStart)($turn);
-            }
-            \Fiber::getCurrent()?->suspend();
-        };
-
-        // Smart/auto HITL decision events flow through the same fiber queue.
-        $loop->setAutoDecisionHandler(function (Message $message) use ($queue): void {
-            $queue->enqueue($message);
-            \Fiber::getCurrent()?->suspend();
-        });
-
-        $response = null;
-        $thrownException = null;
-
-        $fiber = new \Fiber(function () use ($loop, $userInput, $onText, $onToolStart, $onToolComplete, $onTurnStart, $config, &$response, &$thrownException): void {
-            try {
-                $response = $loop->run(
-                    userInput: $userInput,
-                    onTextDelta: $onText,
-                    onToolStart: $onToolStart,
-                    onToolComplete: $onToolComplete,
-                    onTurnStart: $onTurnStart,
-                    onThinkingDelta: $config->onThinking,
-                );
-            } catch (\Throwable $e) {
-                $thrownException = $e;
-            }
-        });
-
-        try {
-            $fiber->start();
-
-            while (! $fiber->isTerminated()) {
-                while (! $queue->isEmpty()) {
-                    yield $queue->dequeue();
-                }
-                if (! $fiber->isTerminated()) {
-                    $fiber->resume();
-                }
-            }
-
-            // Drain any messages enqueued before the fiber's final termination
-            while (! $queue->isEmpty()) {
-                yield $queue->dequeue();
-            }
-
-            if ($thrownException instanceof HumanInterruptException) {
-                yield Message::interrupt($thrownException->interrupt);
-
-                return;
-            }
-            if ($thrownException !== null) {
-                yield Message::error($thrownException->getMessage());
-
-                return;
-            }
-
-            yield Message::result(
-                text: $response ?? '',
-                usage: self::extractUsage($loop),
-                cost: $loop->getEstimatedCost(),
-                sessionId: $config->ephemeral ? null : $loop->getSessionManager()->getSessionId(),
-            );
-        } finally {
-            $run->close();
-        }
+        yield from Runner::stream($agent, $prompt, $options);
     }
 
     /**
@@ -530,8 +407,7 @@ class HaoCode
     private static function buildStreamingClient(
         HaoCodeConfig $config,
         ?SettingsManager $settings = null,
-    ): ?StreamingClient
-    {
+    ): ?StreamingClient {
         return SdkRunFactory::buildStreamingClient($config, $settings);
     }
 

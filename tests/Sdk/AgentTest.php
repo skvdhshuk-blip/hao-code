@@ -1,0 +1,125 @@
+<?php
+
+namespace Tests\Sdk;
+
+use HaoCode\Sdk\Agent;
+use HaoCode\Sdk\HaoCodeConfig;
+use HaoCode\Sdk\SdkTool;
+use Tests\TestCase;
+
+class AgentTest extends TestCase
+{
+    public function test_construction_uses_safe_defaults(): void
+    {
+        $agent = new Agent();
+
+        $this->assertSame('default', $agent->name);
+        $this->assertNull($agent->model);
+        $this->assertNull($agent->apiKey);
+        $this->assertSame(50, $agent->maxTurns);
+        $this->assertSame('default', $agent->permissionMode);
+        $this->assertSame([], $agent->allowedTools);
+        $this->assertSame([], $agent->disallowedTools);
+        $this->assertSame([], $agent->tools);
+        $this->assertSame([], $agent->skills);
+        $this->assertFalse($agent->thinkingEnabled);
+        $this->assertSame(10000, $agent->thinkingBudget);
+        $this->assertSame('l0', $agent->memorySummaryLevel);
+        $this->assertTrue($agent->ephemeral);
+    }
+
+    public function test_with_methods_are_immutable_and_return_new_instances(): void
+    {
+        $agent = new Agent();
+
+        $withTools = $agent->withTools([]);
+        $this->assertNotSame($agent, $withTools);
+        $this->assertSame([], $withTools->tools);
+
+        $withModel = $agent->withModel('claude-sonnet-4');
+        $this->assertNotSame($agent, $withModel);
+        $this->assertSame('claude-sonnet-4', $withModel->model);
+        $this->assertNull($agent->model, 'Original agent is unchanged');
+
+        $withSystemPrompt = $agent->withSystemPrompt('You are a test agent.');
+        $this->assertSame('You are a test agent.', $withSystemPrompt->systemPrompt);
+
+        $withMaxTurns = $agent->withMaxTurns(10);
+        $this->assertSame(10, $withMaxTurns->maxTurns);
+
+        $withPermissionMode = $agent->withPermissionMode('bypass_permissions');
+        $this->assertSame('bypass_permissions', $withPermissionMode->permissionMode);
+    }
+
+    public function test_to_config_preserves_all_agent_fields(): void
+    {
+        $agent = new Agent(
+            name: 'test-agent',
+            model: 'claude-sonnet-4',
+            apiKey: 'secret',
+            baseUrl: 'https://example.com',
+            providerType: 'anthropic',
+            maxTokens: 1024,
+            maxTurns: 25,
+            systemPrompt: 'System prompt',
+            appendSystemPrompt: 'Append prompt',
+            thinkingEnabled: true,
+            thinkingBudget: 5000,
+            permissionMode: 'plan',
+            allowedTools: ['Read'],
+            disallowedTools: ['Bash'],
+            ephemeral: false,
+        );
+
+        $config = $agent->toConfig();
+
+        $this->assertSame('test-agent', $config->agentName ?? $agent->name);
+        $this->assertSame('claude-sonnet-4', $config->model);
+        $this->assertSame('secret', $config->apiKey);
+        $this->assertSame('https://example.com', $config->baseUrl);
+        $this->assertSame('anthropic', $config->providerType);
+        $this->assertSame(1024, $config->maxTokens);
+        $this->assertSame(25, $config->maxTurns);
+        $this->assertSame('System prompt', $config->systemPrompt);
+        $this->assertSame('Append prompt', $config->appendSystemPrompt);
+        $this->assertTrue($config->thinkingEnabled);
+        $this->assertSame(5000, $config->thinkingBudget);
+        $this->assertSame('plan', $config->permissionMode);
+        $this->assertSame(['Read'], $config->allowedTools);
+        $this->assertSame(['Bash'], $config->disallowedTools);
+        $this->assertFalse($config->ephemeral);
+    }
+
+    public function test_from_config_round_trips_an_agent(): void
+    {
+        $original = new Agent(
+            name: 'round-trip',
+            model: 'claude-sonnet-4',
+            maxTurns: 42,
+            systemPrompt: 'Round trip',
+            allowedTools: ['Read', 'Grep'],
+            ephemeral: false,
+        );
+
+        $config = $original->toConfig();
+        $restored = Agent::fromConfig($config, name: 'round-trip');
+
+        $this->assertSame($original->name, $restored->name);
+        $this->assertSame($original->model, $restored->model);
+        $this->assertSame($original->maxTurns, $restored->maxTurns);
+        $this->assertSame($original->systemPrompt, $restored->systemPrompt);
+        $this->assertSame($original->allowedTools, $restored->allowedTools);
+        $this->assertSame($original->ephemeral, $restored->ephemeral);
+    }
+
+    public function test_as_tool_returns_a_tool_with_given_name_and_description(): void
+    {
+        $agent = new Agent(name: 'specialist');
+        $tool = $agent->asTool('specialist', 'Do a specialist task.');
+
+        $this->assertInstanceOf(SdkTool::class, $tool);
+        $this->assertSame('specialist', $tool->name());
+        $this->assertSame('Do a specialist task.', $tool->description());
+        $this->assertArrayHasKey('task', $tool->parameters());
+    }
+}

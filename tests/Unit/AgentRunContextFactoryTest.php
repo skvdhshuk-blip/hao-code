@@ -174,6 +174,37 @@ class AgentRunContextFactoryTest extends TestCase
         new HaoCodeConfig(memorySummaryLevel: 'verbose');
     }
 
+    public function test_custom_headers_are_filtered_and_written_to_run_settings(): void
+    {
+        $projectDirectory = $this->makeProjectDirectory('headers-project');
+        $config = new HaoCodeConfig(
+            cwd: $projectDirectory,
+            headers: [
+                'Editor-Version' => 'vscode/1.96.0',
+                'Copilot-Integration-Id' => 'vscode-chat',
+                'Empty-Value' => '',
+                'Invalid Name' => 'x',           // filtered: not a valid header token
+                'Injected' => "bad\r\nvalue",    // filtered: CR/LF value
+                0 => 'numeric-key',              // filtered: non-string key
+                'NonString' => 42,               // filtered: non-string value
+            ],
+        );
+
+        $expected = [
+            'Editor-Version' => 'vscode/1.96.0',
+            'Copilot-Integration-Id' => 'vscode-chat',
+            'Empty-Value' => '',
+        ];
+        $this->assertSame($expected, $config->headers);
+
+        $context = AgentRunContextFactory::make($config);
+        $this->assertSame($expected, $context->settings->getHeaders());
+
+        // A config without headers leaves the run settings untouched.
+        $plain = AgentRunContextFactory::make(new HaoCodeConfig(cwd: $projectDirectory));
+        $this->assertSame([], $plain->settings->getHeaders());
+    }
+
     public function test_sdk_skill_rejects_an_unknown_execution_context(): void
     {
         $this->expectException(\InvalidArgumentException::class);

@@ -292,6 +292,62 @@ class OpenAiProviderTest extends TestCase
         $this->collectEvents($sse);
     }
 
+    public function test_stream_merges_custom_headers_and_protects_authorization(): void
+    {
+        $capturedHeaders = null;
+        $httpClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$capturedHeaders) {
+            $capturedHeaders = $options['headers'] ?? [];
+
+            $body = "event: response.completed\n";
+            $body .= 'data: ' . json_encode([
+                'type' => 'response.completed',
+                'response' => [
+                    'id' => 'resp_h',
+                    'output' => [['type' => 'message']],
+                    'usage' => ['input_tokens' => 1, 'output_tokens' => 1],
+                ],
+            ], JSON_UNESCAPED_UNICODE) . "\n\n";
+
+            return new MockResponse([$body], ['http_code' => 200]);
+        });
+
+        $provider = new OpenAiProvider(
+            apiKey: 'real-key',
+            model: 'gpt-5',
+            httpClient: $httpClient,
+            headers: [
+                'Editor-Version' => 'vscode/1.96.0',
+                'Accept' => 'application/json',     // same-name override wins
+                'Authorization' => 'Bearer stolen', // auth header stays protected
+            ],
+        );
+
+        iterator_to_array($provider->streamMessages(
+            systemPrompt: [],
+            messages: [['role' => 'user', 'content' => 'hi']],
+            tools: [],
+        ));
+
+        $this->assertNotNull($capturedHeaders);
+        $this->assertSame('vscode/1.96.0', $this->headerLineValue($capturedHeaders, 'editor-version'));
+        $this->assertSame('application/json', $this->headerLineValue($capturedHeaders, 'accept'));
+        $this->assertSame('Bearer real-key', $this->headerLineValue($capturedHeaders, 'authorization'));
+    }
+
+    /**
+     * @param string[] $headers
+     */
+    private function headerLineValue(array $headers, string $name): ?string
+    {
+        foreach ($headers as $header) {
+            if (stripos($header, $name . ':') === 0) {
+                return trim(substr($header, strlen($name) + 1));
+            }
+        }
+
+        return null;
+    }
+
     /**
      * Build a MockResponse that emits the provided OpenAI SSE envelopes as a
      * single chunk — the provider is responsible for correctly buffering

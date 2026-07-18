@@ -33,6 +33,8 @@ class OpenAiChatProvider implements ApiKeyAwareProvider
     private bool $useNativeStream;
     private int $maxRetries = 3;
     private array $lastRateLimitHeaders = [];
+    /** @var array<string, string> */
+    private array $headers;
     /** @var callable(): float */
     private $timeProvider;
 
@@ -48,6 +50,7 @@ class OpenAiChatProvider implements ApiKeyAwareProvider
         private readonly int $idleTimeoutSeconds = 60,
         private readonly float $streamPollTimeoutSeconds = 1.0,
         ?callable $timeProvider = null,
+        array $headers = [],
     ) {
         $this->useNativeStream = $httpClient === null;
         $this->httpClient = $httpClient ?? HttpClient::create([
@@ -55,6 +58,7 @@ class OpenAiChatProvider implements ApiKeyAwareProvider
             'max_duration' => 600,
         ]);
         $this->timeProvider = $timeProvider ?? static fn (): float => microtime(true);
+        $this->headers = RequestHeaders::sanitize($headers);
     }
 
     public function streamMessages(
@@ -171,6 +175,64 @@ class OpenAiChatProvider implements ApiKeyAwareProvider
         return $payload;
     }
 
+    /**
+     * Custom request headers for this run (run-scoped settings win over the
+     * constructor map).
+     *
+     * @return array<string, string>
+     */
+    private function resolveCustomHeaders(): array
+    {
+        return $this->settingsManager?->getHeaders() ?: $this->headers;
+    }
+
+    /**
+     * Public for testing — the merged Chat Completions request headers as an
+     * associative map, shared by both transports (native stream wrapper and
+     * Symfony HttpClient). Custom values win same-name (case-insensitive)
+     * except `Authorization`, which always stays under the auth logic.
+     *
+     * @return array<string, string>
+     */
+    public function buildRequestHeaders(): array
+    {
+        return RequestHeaders::mergeCustom([
+            'Authorization' => 'Bearer ' . $this->resolveApiKey(),
+            'Content-Type' => 'application/json',
+            'Accept' => 'text/event-stream',
+        ], $this->resolveCustomHeaders());
+    }
+
+    /**
+     * Public for testing — request header lines ("Name: value") for the
+     * native PHP stream-wrapper transport. Adds `Connection: close` unless
+     * the caller already supplied a Connection header.
+     *
+     * @return string[]
+     */
+    public function buildNativeHeaderLines(): array
+    {
+        $headers = $this->buildRequestHeaders();
+
+        $hasConnection = false;
+        foreach ($headers as $name => $_) {
+            if (strtolower((string) $name) === 'connection') {
+                $hasConnection = true;
+                break;
+            }
+        }
+        if (! $hasConnection) {
+            $headers['Connection'] = 'close';
+        }
+
+        $lines = [];
+        foreach ($headers as $name => $value) {
+            $lines[] = $name . ': ' . $value;
+        }
+
+        return $lines;
+    }
+
     private function doStreamMessages(
         array $systemPrompt,
         array $messages,
@@ -199,12 +261,7 @@ class OpenAiChatProvider implements ApiKeyAwareProvider
         // 用 PHP 原生 stream wrappers 实现 SSE 流式读取，绕开 Symfony HttpClient + Curl
         // 在某些 SSE/chunked-transfer 网关下被 16KB write-buffer 提前 close stream 的问题。
         // PHP 的 http:// wrapper 自己管 chunked decoding，对大量 SSE event 友好。
-        $headers = [
-            'Authorization: Bearer ' . $this->resolveApiKey(),
-            'Content-Type: application/json',
-            'Accept: text/event-stream',
-            'Connection: close',
-        ];
+        $headers = $this->buildNativeHeaderLines();
         $ctx = stream_context_create([
             'http' => [
                 'method' => 'POST',
@@ -354,11 +411,7 @@ class OpenAiChatProvider implements ApiKeyAwareProvider
         ?callable $shouldAbort,
     ): \Generator {
         $response = $this->httpClient->request('POST', rtrim($baseUrl, '/').'/v1/chat/completions', [
-            'headers' => [
-                'authorization' => 'Bearer '.$this->resolveApiKey(),
-                'content-type' => 'application/json',
-                'accept' => 'text/event-stream',
-            ],
+            'headers' => $this->buildRequestHeaders(),
             'body' => $this->encodePayload($payload),
             'buffer' => false,
             'http_version' => '1.1',

@@ -100,6 +100,29 @@ $config = new HaoCodeConfig(
 );
 ```
 
+## Agent & Runner
+
+HaoCode also exposes a reusable `Agent` and `Runner` API for applications that
+want to define an agent once and execute it many times.
+
+```php
+use HaoCode\Sdk\Agent;
+use HaoCode\Sdk\RunOptions;
+use HaoCode\Sdk\Runner;
+
+$agent = new Agent(
+    name: 'reviewer',
+    model: 'claude-sonnet-4',
+    allowedTools: ['Read', 'Grep'],
+);
+
+$result = Runner::run($agent, 'Review this file', RunOptions::make(cwd: __DIR__));
+```
+
+Agents can be composed: one agent can use another as a tool via `Agent::asTool()`.
+`HaoCode::query()` and `HaoCode::stream()` remain unchanged and are implemented on
+top of `Runner`.
+
 ## What It Provides
 
 | Area | Capability |

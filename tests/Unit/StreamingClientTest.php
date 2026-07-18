@@ -1069,6 +1069,74 @@ class StreamingClientTest extends TestCase
         $this->assertSame('prompt-caching-2024-07-31', $this->headerValue($capturedHeaders, 'anthropic-beta'));
     }
 
+    public function test_custom_headers_merge_into_anthropic_requests_and_auth_stays_protected(): void
+    {
+        $capturedHeaders = null;
+        $httpClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$capturedHeaders) {
+            $capturedHeaders = $options['headers'] ?? [];
+
+            return new MockResponse([
+                "event: message_stop\n",
+                "data: {}\n\n",
+            ], ['http_code' => 200]);
+        });
+
+        $client = new StreamingClient(
+            apiKey: 'real-key',
+            model: 'claude-sonnet-4-20250514',
+            httpClient: $httpClient,
+            headers: [
+                'Editor-Version' => 'vscode/1.96.0',
+                'Copilot-Integration-Id' => 'vscode-chat',
+                'anthropic-beta' => 'custom-beta-flag', // same-name override wins
+                'x-api-key' => 'stolen',                // auth header stays protected
+            ],
+        );
+
+        iterator_to_array($client->streamMessages(
+            systemPrompt: [],
+            messages: [['role' => 'user', 'content' => 'hello']],
+            tools: [],
+        ));
+
+        $this->assertSame('vscode/1.96.0', $this->headerValue($capturedHeaders, 'editor-version'));
+        $this->assertSame('vscode-chat', $this->headerValue($capturedHeaders, 'copilot-integration-id'));
+        $this->assertSame('custom-beta-flag', $this->headerValue($capturedHeaders, 'anthropic-beta'));
+        $this->assertSame('real-key', $this->headerValue($capturedHeaders, 'x-api-key'));
+    }
+
+    public function test_custom_headers_via_settings_manager(): void
+    {
+        $capturedHeaders = null;
+        $httpClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$capturedHeaders) {
+            $capturedHeaders = $options['headers'] ?? [];
+
+            return new MockResponse([
+                "event: message_stop\n",
+                "data: {}\n\n",
+            ], ['http_code' => 200]);
+        });
+
+        $settings = new SettingsManager(getcwd());
+        $settings->set('api_key', 'real-key');
+        $settings->set('headers', ['Editor-Version' => 'phpstorm/2024.3']);
+
+        $client = (new StreamingClient(
+            apiKey: 'real-key',
+            model: 'claude-sonnet-4-20250514',
+            httpClient: $httpClient,
+        ))->withSettingsManager($settings);
+
+        iterator_to_array($client->streamMessages(
+            systemPrompt: [],
+            messages: [['role' => 'user', 'content' => 'hello']],
+            tools: [],
+        ));
+
+        $this->assertSame('phpstorm/2024.3', $this->headerValue($capturedHeaders, 'editor-version'));
+        $this->assertSame('real-key', $this->headerValue($capturedHeaders, 'x-api-key'));
+    }
+
     // ─── cache_control on tools ───────────────────────────────────────────
 
     public function test_cache_control_added_to_last_tool(): void

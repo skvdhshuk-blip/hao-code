@@ -46,6 +46,9 @@ final class AgentRunContextFactory
         if ($config->oauthBearer !== null) {
             $settings->set('oauth_bearer', $config->oauthBearer);
         }
+        if ($config->headers !== []) {
+            $settings->set('headers', $config->headers);
+        }
 
         if ($config->systemPrompt !== null) {
             $settings->set('system_prompt', $config->systemPrompt);

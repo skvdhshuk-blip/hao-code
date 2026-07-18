@@ -49,6 +49,7 @@ class StreamingClient implements ApiKeyAwareProvider, ForkSafeProvider
         ?OpenAiChatProvider $openAiChatProvider = null,
         string $providerType = 'anthropic',
         bool $oauthBearer = false,
+        array $headers = [],
     ) {
         $this->connectionConfig = [
             'apiKey' => $apiKey,
@@ -63,6 +64,7 @@ class StreamingClient implements ApiKeyAwareProvider, ForkSafeProvider
             'timeProvider' => $timeProvider,
             'providerType' => $providerType,
             'oauthBearer' => $oauthBearer,
+            'headers' => RequestHeaders::sanitize($headers),
         ];
         $this->settingsManager = $settingsManager;
         $this->defaultProviderType = match ($providerType) {
@@ -83,6 +85,7 @@ class StreamingClient implements ApiKeyAwareProvider, ForkSafeProvider
             streamPollTimeoutSeconds: $streamPollTimeoutSeconds,
             timeProvider: $timeProvider,
             oauthBearer: $oauthBearer,
+            headers: $this->connectionConfig['headers'],
         );
 
         // When a SettingsManager is attached it owns the base URL, so the
@@ -103,6 +106,7 @@ class StreamingClient implements ApiKeyAwareProvider, ForkSafeProvider
             idleTimeoutSeconds: $idleTimeoutSeconds,
             streamPollTimeoutSeconds: $streamPollTimeoutSeconds,
             timeProvider: $timeProvider,
+            headers: $this->connectionConfig['headers'],
         );
 
         $this->openaiChat = $openAiChatProvider ?? new OpenAiChatProvider(
@@ -117,6 +121,7 @@ class StreamingClient implements ApiKeyAwareProvider, ForkSafeProvider
             idleTimeoutSeconds: $idleTimeoutSeconds,
             streamPollTimeoutSeconds: $streamPollTimeoutSeconds,
             timeProvider: $timeProvider,
+            headers: $this->connectionConfig['headers'],
         );
     }
 
@@ -193,6 +198,7 @@ class StreamingClient implements ApiKeyAwareProvider, ForkSafeProvider
             timeProvider: $config['timeProvider'],
             providerType: $settingsManager?->getProviderType() ?? $config['providerType'],
             oauthBearer: $settingsManager?->isOauthBearer() ?? $config['oauthBearer'],
+            headers: $settingsManager?->getHeaders() ?: $config['headers'],
         );
     }
 

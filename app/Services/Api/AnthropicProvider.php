@@ -21,6 +21,8 @@ class AnthropicProvider implements ApiKeyAwareProvider
     private HttpClientInterface $httpClient;
     private int $maxRetries = 3;
     private array $lastRateLimitHeaders = [];
+    /** @var array<string, string> */
+    private array $headers;
     /** @var callable(): float */
     private $timeProvider;
 
@@ -38,12 +40,14 @@ class AnthropicProvider implements ApiKeyAwareProvider
         private readonly float $streamPollTimeoutSeconds = 1.0,
         ?callable $timeProvider = null,
         private bool $oauthBearer = false,
+        array $headers = [],
     ) {
         $this->httpClient = $httpClient ?? HttpClient::create([
             'timeout' => 300,
             'max_duration' => 600,
         ]);
         $this->timeProvider = $timeProvider ?? static fn (): float => microtime(true);
+        $this->headers = RequestHeaders::sanitize($headers);
     }
 
     private function resolveModel(): string
@@ -110,6 +114,18 @@ class AnthropicProvider implements ApiKeyAwareProvider
     }
 
     /**
+     * Custom request headers for this run. A run-scoped SettingsManager
+     * (runtime overrides) wins; otherwise the constructor-provided map is
+     * used. Empty when neither source defines any.
+     *
+     * @return array<string, string>
+     */
+    private function resolveCustomHeaders(): array
+    {
+        return $this->settingsManager?->getHeaders() ?: $this->headers;
+    }
+
+    /**
      * Build the request headers for one /v1/messages call.
      *
      * OAuth access tokens (Claude Pro/Max subscriptions) must be sent as
@@ -134,7 +150,9 @@ class AnthropicProvider implements ApiKeyAwareProvider
         $headers['content-type'] = 'application/json';
         $headers['accept'] = 'text/event-stream';
 
-        return $headers;
+        // Caller-supplied headers (e.g. Copilot gateway requirements) win
+        // over the hardcoded defaults, but never over the auth headers.
+        return RequestHeaders::mergeCustom($headers, $this->resolveCustomHeaders());
     }
 
     public function streamMessages(
