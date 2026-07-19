@@ -18,6 +18,8 @@ declare(strict_types=1);
 require_once __DIR__.'/../vendor/autoload.php';
 
 use HaoCode\Sdk\AbortController;
+use HaoCode\Sdk\Agent;
+use HaoCode\Sdk\AgentAsTool;
 use HaoCode\Sdk\Conversation;
 use HaoCode\Sdk\HaoCode;
 use HaoCode\Sdk\HaoCodeConfig;
@@ -30,6 +32,8 @@ use HaoCode\Sdk\Message;
 use HaoCode\Sdk\Memory\JsonMemoryStore;
 use HaoCode\Sdk\Memory\MemoryStoreInterface;
 use HaoCode\Sdk\QueryResult;
+use HaoCode\Sdk\RunOptions;
+use HaoCode\Sdk\Runner;
 use HaoCode\Sdk\Sandbox\SandboxConfig;
 use HaoCode\Sdk\SdkSkill;
 use HaoCode\Sdk\SdkTool;
@@ -65,6 +69,10 @@ $classes = [
     StructuredResult::class,
     HaoCodeSdkServiceProvider::class,
     ImageContentBlock::class,
+    Agent::class,
+    AgentAsTool::class,
+    Runner::class,
+    RunOptions::class,
 ];
 
 /**

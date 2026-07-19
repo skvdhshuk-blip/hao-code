@@ -57,7 +57,7 @@ class HaoCode
         if ($config->sessionId !== null) {
             $conv = self::resume($config->sessionId, $config);
             try {
-                return $conv->send($prompt);
+                return $conv->send($prompt, $config->images);
             } finally {
                 $conv->close();
             }
@@ -65,7 +65,7 @@ class HaoCode
         if ($config->continueSession) {
             $conv = self::continueLatest($config->cwd, $config);
             try {
-                return $conv->send($prompt);
+                return $conv->send($prompt, $config->images);
             } finally {
                 $conv->close();
             }
@@ -96,7 +96,7 @@ class HaoCode
         if ($config->sessionId !== null) {
             $conversation = self::resume($config->sessionId, $config);
             try {
-                yield from $conversation->stream($prompt);
+                yield from $conversation->stream($prompt, $config->images);
             } finally {
                 $conversation->close();
             }
@@ -106,7 +106,7 @@ class HaoCode
         if ($config->continueSession) {
             $conversation = self::continueLatest($config->cwd, $config);
             try {
-                yield from $conversation->stream($prompt);
+                yield from $conversation->stream($prompt, $config->images);
             } finally {
                 $conversation->close();
             }

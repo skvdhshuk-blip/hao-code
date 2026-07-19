@@ -35,9 +35,8 @@ class Runner
     public static function run(Agent $agent, string $prompt, ?RunOptions $options = null): QueryResult
     {
         $options ??= new RunOptions();
-        $config = $options->toConfig($agent);
 
-        $run = self::createRun($config);
+        $run = self::createRun($agent, $options);
         $loop = $run->loop;
 
         $userInput = $options->images !== []
@@ -76,9 +75,8 @@ class Runner
     public static function stream(Agent $agent, string $prompt, ?RunOptions $options = null): \Generator
     {
         $options ??= new RunOptions();
-        $config = $options->toConfig($agent);
 
-        $run = self::createRun($config);
+        $run = self::createRun($agent, $options);
         $loop = $run->loop;
         $queue = new \SplQueue;
 
@@ -179,12 +177,12 @@ class Runner
         }
     }
 
-    private static function createRun(HaoCodeConfig $config): SdkRun
+    private static function createRun(Agent $agent, RunOptions $options): SdkRun
     {
         /** @var AgentLoopFactory $factory */
         $factory = \HaoCode\Support\Runtime\SdkRuntime::app(AgentLoopFactory::class);
 
-        return SdkRunFactory::create($config, $factory);
+        return SdkRunFactory::createFromAgent($agent, $options, $factory);
     }
 
     private static function extractUsage(AgentLoop $loop): array

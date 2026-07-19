@@ -2149,6 +2149,39 @@ JSON),
         $this->assertSame('Gated parent completed.', $result->text);
     }
 
+    public function test_resume_redirect_forwards_images_to_the_conversation(): void
+    {
+        $payloads = [];
+        $this->bootWithMock([
+            function (array $payload) use (&$payloads): MockResponse {
+                $payloads[] = $payload;
+                return MockAnthropicSse::textResponse('first');
+            },
+            function (array $payload) use (&$payloads): MockResponse {
+                $payloads[] = $payload;
+                return MockAnthropicSse::textResponse('second');
+            },
+        ]);
+
+        $first = HaoCode::query('hi', new HaoCodeConfig(ephemeral: false));
+        $this->assertNotNull($first->sessionId);
+
+        // Regression: resuming a session through the HaoCode facade must carry
+        // config images into the conversation (the v1.15.0 Runner refactor
+        // dropped them on the resume redirect).
+        HaoCode::query('look at this', new HaoCodeConfig(
+            ephemeral: false,
+            sessionId: $first->sessionId,
+            images: ['data:image/png;base64,iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAYAAAAfFcSJAAAADUlEQVR42mP8z8BQDwAEhQGAhKmMIQAAAABJRU5ErkJggg=='],
+        ));
+
+        $this->assertCount(2, $payloads);
+        $messages = $payloads[1]['messages'] ?? [];
+        $lastUser = end($messages);
+        $blocks = is_array($lastUser['content'] ?? null) ? $lastUser['content'] : [];
+        $this->assertContains('image', array_column($blocks, 'type'));
+    }
+
     //  Infrastructure
     // ══════════════════════════════════════════════════════════════
 

@@ -26,6 +26,21 @@ class Conversation
     private SdkRun $run;
 
     /**
+     * The agent definition backing this conversation, normalized from the
+     * constructor config via {@see Agent::fromConfig()}. Everything that
+     * defines the agent (model, tools, prompts, permissions, sandbox,
+     * headers) is owned by this object; session/resume concerns stay on
+     * the Conversation itself.
+     */
+    private readonly Agent $agent;
+
+    /**
+     * Per-run execution options (callbacks, persistence, budget, cwd),
+     * derived from the same constructor config.
+     */
+    private readonly RunOptions $options;
+
+    /**
      * @internal
      */
     public function __construct(
@@ -33,7 +48,9 @@ class Conversation
         AgentLoopFactory $factory,
         ?StreamingClient $streamingClient = null,
     ) {
-        $this->run = SdkRunFactory::create($config, $factory, $streamingClient);
+        $this->agent = Agent::fromConfig($config);
+        $this->options = RunOptions::fromConfig($config);
+        $this->run = SdkRunFactory::createFromAgent($this->agent, $this->options, $factory, $streamingClient);
         $this->loop = $this->run->loop;
     }
 
@@ -56,11 +73,11 @@ class Conversation
 
         $response = $this->loop->run(
             userInput: $userInput,
-            onTextDelta: $this->config->onText,
-            onToolStart: $this->config->onToolStart,
-            onToolComplete: $this->config->onToolComplete,
-            onTurnStart: $this->config->onTurnStart,
-            onThinkingDelta: $this->config->onThinking,
+            onTextDelta: $this->options->onText,
+            onToolStart: $this->options->onToolStart,
+            onToolComplete: $this->options->onToolComplete,
+            onTurnStart: $this->options->onTurnStart,
+            onThinkingDelta: $this->options->onThinking,
         );
 
         return new QueryResult(
@@ -72,7 +89,7 @@ class Conversation
                 'cache_read_tokens' => $this->loop->getCacheReadTokens(),
             ],
             cost: $this->loop->getEstimatedCost(),
-            sessionId: $this->config->ephemeral ? null : $this->loop->getSessionManager()->getSessionId(),
+            sessionId: $this->options->ephemeral ? null : $this->loop->getSessionManager()->getSessionId(),
             turnsUsed: $this->turnCount,
         );
     }
@@ -107,32 +124,32 @@ class Conversation
         // guard; in practice getCurrent() will always return the active Fiber here.
         $onText = function (string $delta) use ($queue): void {
             $queue->enqueue(Message::text($delta));
-            if ($this->config->onText) {
-                ($this->config->onText)($delta);
+            if ($this->options->onText) {
+                ($this->options->onText)($delta);
             }
             \Fiber::getCurrent()?->suspend();
         };
 
         $onToolStart = function (string $name, array $input) use ($queue): void {
             $queue->enqueue(Message::toolStart($name, $input));
-            if ($this->config->onToolStart) {
-                ($this->config->onToolStart)($name, $input);
+            if ($this->options->onToolStart) {
+                ($this->options->onToolStart)($name, $input);
             }
             \Fiber::getCurrent()?->suspend();
         };
 
         $onToolComplete = function (string $name, $result) use ($queue): void {
             $queue->enqueue(Message::toolResult($name, $result->output, $result->isError));
-            if ($this->config->onToolComplete) {
-                ($this->config->onToolComplete)($name, $result);
+            if ($this->options->onToolComplete) {
+                ($this->options->onToolComplete)($name, $result);
             }
             \Fiber::getCurrent()?->suspend();
         };
 
         $onTurnStart = function (int $turn) use ($queue): void {
             $queue->enqueue(Message::turn($turn));
-            if ($this->config->onTurnStart) {
-                ($this->config->onTurnStart)($turn);
+            if ($this->options->onTurnStart) {
+                ($this->options->onTurnStart)($turn);
             }
             \Fiber::getCurrent()?->suspend();
         };
@@ -154,7 +171,7 @@ class Conversation
                     onToolStart: $onToolStart,
                     onToolComplete: $onToolComplete,
                     onTurnStart: $onTurnStart,
-                    onThinkingDelta: $this->config->onThinking,
+                    onThinkingDelta: $this->options->onThinking,
                 );
             } catch (\Throwable $e) {
                 $thrownException = $e;
@@ -197,7 +214,7 @@ class Conversation
                 'cache_read_tokens' => $this->loop->getCacheReadTokens(),
             ],
             cost: $this->loop->getEstimatedCost(),
-            sessionId: $this->config->ephemeral ? null : $this->loop->getSessionManager()->getSessionId(),
+            sessionId: $this->options->ephemeral ? null : $this->loop->getSessionManager()->getSessionId(),
         );
     }
 
@@ -216,11 +233,11 @@ class Conversation
         $response = $this->loop->resumeInterrupt(
             interruptId: $interruptId,
             decisions: $decisions,
-            onTextDelta: $this->config->onText,
-            onToolStart: $this->config->onToolStart,
-            onToolComplete: $this->config->onToolComplete,
-            onTurnStart: $this->config->onTurnStart,
-            onThinkingDelta: $this->config->onThinking,
+            onTextDelta: $this->options->onText,
+            onToolStart: $this->options->onToolStart,
+            onToolComplete: $this->options->onToolComplete,
+            onTurnStart: $this->options->onTurnStart,
+            onThinkingDelta: $this->options->onThinking,
         );
 
         return new QueryResult(
@@ -264,33 +281,33 @@ class Conversation
                     $decisions,
                     function (string $delta) use ($queue): void {
                         $queue->enqueue(Message::text($delta));
-                        if ($this->config->onText) {
-                            ($this->config->onText)($delta);
+                        if ($this->options->onText) {
+                            ($this->options->onText)($delta);
                         }
                         \Fiber::getCurrent()?->suspend();
                     },
                     function (string $name, array $input) use ($queue): void {
                         $queue->enqueue(Message::toolStart($name, $input));
-                        if ($this->config->onToolStart) {
-                            ($this->config->onToolStart)($name, $input);
+                        if ($this->options->onToolStart) {
+                            ($this->options->onToolStart)($name, $input);
                         }
                         \Fiber::getCurrent()?->suspend();
                     },
                     function (string $name, $result) use ($queue): void {
                         $queue->enqueue(Message::toolResult($name, $result->output, $result->isError));
-                        if ($this->config->onToolComplete) {
-                            ($this->config->onToolComplete)($name, $result);
+                        if ($this->options->onToolComplete) {
+                            ($this->options->onToolComplete)($name, $result);
                         }
                         \Fiber::getCurrent()?->suspend();
                     },
                     function (int $turn) use ($queue): void {
                         $queue->enqueue(Message::turn($turn));
-                        if ($this->config->onTurnStart) {
-                            ($this->config->onTurnStart)($turn);
+                        if ($this->options->onTurnStart) {
+                            ($this->options->onTurnStart)($turn);
                         }
                         \Fiber::getCurrent()?->suspend();
                     },
-                    $this->config->onThinking,
+                    $this->options->onThinking,
                 );
             } catch (\Throwable $e) {
                 $thrown = $e;

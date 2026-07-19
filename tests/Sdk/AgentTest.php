@@ -112,6 +112,17 @@ class AgentTest extends TestCase
         $this->assertSame($original->ephemeral, $restored->ephemeral);
     }
 
+    public function test_headers_round_trip_through_config(): void
+    {
+        $agent = new Agent(name: 'copilot', headers: ['Editor-Version' => 'vscode/1.96.0']);
+
+        $config = $agent->toConfig();
+        $this->assertSame(['Editor-Version' => 'vscode/1.96.0'], $config->headers);
+
+        $restored = Agent::fromConfig($config);
+        $this->assertSame(['Editor-Version' => 'vscode/1.96.0'], $restored->headers);
+    }
+
     public function test_as_tool_returns_a_tool_with_given_name_and_description(): void
     {
         $agent = new Agent(name: 'specialist');

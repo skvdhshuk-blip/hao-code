@@ -22,6 +22,253 @@
         },
         "properties": []
     },
+    "HaoCode\\Sdk\\Agent": {
+        "kind": "class",
+        "api": true,
+        "internal": false,
+        "methods": {
+            "__construct": {
+                "signature": "public function __construct(string $name = \"default\", ?string $model = null, ?string $apiKey = null, ?string $baseUrl = null, ?string $providerType = null, ?int $maxTokens = null, int $maxTurns = 50, ?string $systemPrompt = null, ?string $appendSystemPrompt = null, bool $thinkingEnabled = false, int $thinkingBudget = 10000, string $permissionMode = \"default\", array $allowedTools = [], array $disallowedTools = [], array $tools = [], array $skills = [], ?HaoCode\\Sdk\\Sandbox\\SandboxConfig $sandbox = null, ?HaoCode\\Sdk\\CredentialPool $credentialPool = null, ?bool $oauthBearer = null, string $memorySummaryLevel = \"l0\", ?string $memoryStoragePath = null, array $skillDirectories = [], bool $recursiveSkillDiscovery = false, array $interruptOn = [], bool $enableAskUser = false, ?HaoCode\\Sdk\\Memory\\MemoryStoreInterface $memoryStore = null, ?string $hitlMode = null, ?string $hitlReviewModel = null, ?string $hitlAllowlistPath = null, bool $ephemeral = true, array $headers = [])",
+                "api": true,
+                "internal": false
+            },
+            "asTool": {
+                "signature": "public function asTool(string $toolName, string $description) : HaoCode\\Sdk\\SdkTool",
+                "api": true,
+                "internal": false
+            },
+            "fromConfig": {
+                "signature": "public static function fromConfig(HaoCode\\Sdk\\HaoCodeConfig $config, string $name = \"default\") : self",
+                "api": true,
+                "internal": false
+            },
+            "toConfig": {
+                "signature": "public function toConfig() : HaoCode\\Sdk\\HaoCodeConfig",
+                "api": false,
+                "internal": true
+            },
+            "withMaxTurns": {
+                "signature": "public function withMaxTurns(int $maxTurns) : self",
+                "api": true,
+                "internal": false
+            },
+            "withModel": {
+                "signature": "public function withModel(string $model) : self",
+                "api": true,
+                "internal": false
+            },
+            "withPermissionMode": {
+                "signature": "public function withPermissionMode(string $permissionMode) : self",
+                "api": true,
+                "internal": false
+            },
+            "withSystemPrompt": {
+                "signature": "public function withSystemPrompt(string $systemPrompt) : self",
+                "api": true,
+                "internal": false
+            },
+            "withTool": {
+                "signature": "public function withTool(HaoCode\\Sdk\\SdkTool $tool) : self",
+                "api": true,
+                "internal": false
+            },
+            "withTools": {
+                "signature": "public function withTools(array $tools) : self",
+                "api": true,
+                "internal": false
+            }
+        },
+        "properties": {
+            "allowedTools": {
+                "signature": "public readonly array $allowedTools",
+                "api": true,
+                "internal": false
+            },
+            "apiKey": {
+                "signature": "public readonly ?string $apiKey",
+                "api": true,
+                "internal": false
+            },
+            "appendSystemPrompt": {
+                "signature": "public readonly ?string $appendSystemPrompt",
+                "api": true,
+                "internal": false
+            },
+            "baseUrl": {
+                "signature": "public readonly ?string $baseUrl",
+                "api": true,
+                "internal": false
+            },
+            "credentialPool": {
+                "signature": "public readonly ?HaoCode\\Sdk\\CredentialPool $credentialPool",
+                "api": true,
+                "internal": false
+            },
+            "disallowedTools": {
+                "signature": "public readonly array $disallowedTools",
+                "api": true,
+                "internal": false
+            },
+            "enableAskUser": {
+                "signature": "public readonly bool $enableAskUser",
+                "api": true,
+                "internal": false
+            },
+            "ephemeral": {
+                "signature": "public readonly bool $ephemeral",
+                "api": true,
+                "internal": false
+            },
+            "headers": {
+                "signature": "public readonly array $headers",
+                "api": true,
+                "internal": false
+            },
+            "hitlAllowlistPath": {
+                "signature": "public readonly ?string $hitlAllowlistPath",
+                "api": true,
+                "internal": false
+            },
+            "hitlMode": {
+                "signature": "public readonly ?string $hitlMode",
+                "api": true,
+                "internal": false
+            },
+            "hitlReviewModel": {
+                "signature": "public readonly ?string $hitlReviewModel",
+                "api": true,
+                "internal": false
+            },
+            "interruptOn": {
+                "signature": "public readonly array $interruptOn",
+                "api": true,
+                "internal": false
+            },
+            "maxTokens": {
+                "signature": "public readonly ?int $maxTokens",
+                "api": true,
+                "internal": false
+            },
+            "maxTurns": {
+                "signature": "public readonly int $maxTurns",
+                "api": true,
+                "internal": false
+            },
+            "memoryStoragePath": {
+                "signature": "public readonly ?string $memoryStoragePath",
+                "api": true,
+                "internal": false
+            },
+            "memoryStore": {
+                "signature": "public readonly ?HaoCode\\Sdk\\Memory\\MemoryStoreInterface $memoryStore",
+                "api": true,
+                "internal": false
+            },
+            "memorySummaryLevel": {
+                "signature": "public readonly string $memorySummaryLevel",
+                "api": true,
+                "internal": false
+            },
+            "model": {
+                "signature": "public readonly ?string $model",
+                "api": true,
+                "internal": false
+            },
+            "name": {
+                "signature": "public readonly string $name",
+                "api": true,
+                "internal": false
+            },
+            "oauthBearer": {
+                "signature": "public readonly ?bool $oauthBearer",
+                "api": true,
+                "internal": false
+            },
+            "permissionMode": {
+                "signature": "public readonly string $permissionMode",
+                "api": true,
+                "internal": false
+            },
+            "providerType": {
+                "signature": "public readonly ?string $providerType",
+                "api": true,
+                "internal": false
+            },
+            "recursiveSkillDiscovery": {
+                "signature": "public readonly bool $recursiveSkillDiscovery",
+                "api": true,
+                "internal": false
+            },
+            "sandbox": {
+                "signature": "public readonly ?HaoCode\\Sdk\\Sandbox\\SandboxConfig $sandbox",
+                "api": true,
+                "internal": false
+            },
+            "skillDirectories": {
+                "signature": "public readonly array $skillDirectories",
+                "api": true,
+                "internal": false
+            },
+            "skills": {
+                "signature": "public readonly array $skills",
+                "api": true,
+                "internal": false
+            },
+            "systemPrompt": {
+                "signature": "public readonly ?string $systemPrompt",
+                "api": true,
+                "internal": false
+            },
+            "thinkingBudget": {
+                "signature": "public readonly int $thinkingBudget",
+                "api": true,
+                "internal": false
+            },
+            "thinkingEnabled": {
+                "signature": "public readonly bool $thinkingEnabled",
+                "api": true,
+                "internal": false
+            },
+            "tools": {
+                "signature": "public readonly array $tools",
+                "api": true,
+                "internal": false
+            }
+        }
+    },
+    "HaoCode\\Sdk\\AgentAsTool": {
+        "kind": "class",
+        "api": false,
+        "internal": true,
+        "methods": {
+            "__construct": {
+                "signature": "public function __construct(string $toolName, string $toolDescription, HaoCode\\Sdk\\Agent $agent)",
+                "api": false,
+                "internal": false
+            },
+            "description": {
+                "signature": "public function description() : string",
+                "api": false,
+                "internal": false
+            },
+            "handle": {
+                "signature": "public function handle(array $input) : string",
+                "api": false,
+                "internal": false
+            },
+            "name": {
+                "signature": "public function name() : string",
+                "api": false,
+                "internal": false
+            },
+            "parameters": {
+                "signature": "public function parameters() : array",
+                "api": false,
+                "internal": false
+            }
+        },
+        "properties": []
+    },
     "HaoCode\\Sdk\\Conversation": {
         "kind": "class",
         "api": true,
@@ -892,6 +1139,123 @@
                 "internal": false
             }
         }
+    },
+    "HaoCode\\Sdk\\RunOptions": {
+        "kind": "class",
+        "api": true,
+        "internal": false,
+        "methods": {
+            "__construct": {
+                "signature": "public function __construct(mixed $onText = null, mixed $onThinking = null, mixed $onToolStart = null, mixed $onToolComplete = null, mixed $onTurnStart = null, array $images = [], bool $ephemeral = true, ?array $responseSchema = null, ?HaoCode\\Sdk\\AbortController $abortController = null, ?string $cwd = null, ?float $maxBudgetUsd = null)",
+                "api": true,
+                "internal": false
+            },
+            "fromConfig": {
+                "signature": "public static function fromConfig(HaoCode\\Sdk\\HaoCodeConfig $config) : self",
+                "api": true,
+                "internal": false
+            },
+            "make": {
+                "signature": "public static function make(?string $cwd = null, bool $ephemeral = true) : self",
+                "api": false,
+                "internal": false
+            },
+            "toConfig": {
+                "signature": "public function toConfig(HaoCode\\Sdk\\Agent $agent) : HaoCode\\Sdk\\HaoCodeConfig",
+                "api": false,
+                "internal": true
+            },
+            "withCwd": {
+                "signature": "public function withCwd(string $cwd) : self",
+                "api": true,
+                "internal": false
+            },
+            "withDurableSession": {
+                "signature": "public function withDurableSession() : self",
+                "api": true,
+                "internal": false
+            },
+            "withTextCallback": {
+                "signature": "public function withTextCallback(callable $callback) : self",
+                "api": true,
+                "internal": false
+            }
+        },
+        "properties": {
+            "abortController": {
+                "signature": "public readonly ?HaoCode\\Sdk\\AbortController $abortController",
+                "api": true,
+                "internal": false
+            },
+            "cwd": {
+                "signature": "public readonly ?string $cwd",
+                "api": true,
+                "internal": false
+            },
+            "ephemeral": {
+                "signature": "public readonly bool $ephemeral",
+                "api": true,
+                "internal": false
+            },
+            "images": {
+                "signature": "public readonly array $images",
+                "api": true,
+                "internal": false
+            },
+            "maxBudgetUsd": {
+                "signature": "public readonly ?float $maxBudgetUsd",
+                "api": true,
+                "internal": false
+            },
+            "onText": {
+                "signature": "public readonly mixed $onText",
+                "api": true,
+                "internal": false
+            },
+            "onThinking": {
+                "signature": "public readonly mixed $onThinking",
+                "api": true,
+                "internal": false
+            },
+            "onToolComplete": {
+                "signature": "public readonly mixed $onToolComplete",
+                "api": true,
+                "internal": false
+            },
+            "onToolStart": {
+                "signature": "public readonly mixed $onToolStart",
+                "api": true,
+                "internal": false
+            },
+            "onTurnStart": {
+                "signature": "public readonly mixed $onTurnStart",
+                "api": true,
+                "internal": false
+            },
+            "responseSchema": {
+                "signature": "public readonly ?array $responseSchema",
+                "api": true,
+                "internal": false
+            }
+        }
+    },
+    "HaoCode\\Sdk\\Runner": {
+        "kind": "class",
+        "api": true,
+        "internal": false,
+        "methods": {
+            "run": {
+                "signature": "public static function run(HaoCode\\Sdk\\Agent $agent, string $prompt, ?HaoCode\\Sdk\\RunOptions $options = null) : HaoCode\\Sdk\\QueryResult",
+                "api": true,
+                "internal": false
+            },
+            "stream": {
+                "signature": "public static function stream(HaoCode\\Sdk\\Agent $agent, string $prompt, ?HaoCode\\Sdk\\RunOptions $options = null) : Generator",
+                "api": true,
+                "internal": false
+            }
+        },
+        "properties": []
     },
     "HaoCode\\Sdk\\Sandbox\\SandboxConfig": {
         "kind": "class",

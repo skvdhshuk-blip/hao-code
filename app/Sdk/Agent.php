@@ -143,6 +143,18 @@ class Agent
          * @api
          */
         public readonly bool $ephemeral = true,
+
+        /**
+         * Extra HTTP request headers merged into every provider request
+         * (e.g. GitHub Copilot's `Editor-Version` / `Copilot-Integration-Id`).
+         * Mirrors {@see HaoCodeConfig::$headers}; invalid entries are filtered
+         * out when the run configuration is built.
+         *
+         * @api
+         *
+         * @var array<string, string>
+         */
+        public readonly array $headers = [],
     ) {}
 
     /**
@@ -245,6 +257,7 @@ class Agent
             hitlReviewModel: $this->hitlReviewModel,
             hitlAllowlistPath: $this->hitlAllowlistPath,
             ephemeral: $this->ephemeral,
+            headers: $this->headers,
         );
     }
 
@@ -286,6 +299,7 @@ class Agent
             hitlReviewModel: $config->hitlReviewModel,
             hitlAllowlistPath: $config->hitlAllowlistPath,
             ephemeral: $config->ephemeral,
+            headers: $config->headers,
         );
     }
 
@@ -338,6 +352,7 @@ class Agent
             'hitlReviewModel' => $this->hitlReviewModel,
             'hitlAllowlistPath' => $this->hitlAllowlistPath,
             'ephemeral' => $this->ephemeral,
+            'headers' => $this->headers,
         ];
     }
 }

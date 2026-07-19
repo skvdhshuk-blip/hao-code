@@ -92,6 +92,52 @@ Runnable examples:
 
 ---
 
+## Agent & Runner
+
+`Agent` is a reusable agent definition: everything that stays the same across
+runs (model, system prompt, tools, skills, permissions, sandbox, credentials,
+request headers). `Runner` executes an `Agent` once with a prompt and optional
+`RunOptions` (the things that change per execution: callbacks, images,
+session persistence, cwd, budget, abort controller).
+
+```php
+use HaoCode\Sdk\Agent;
+use HaoCode\Sdk\Runner;
+use HaoCode\Sdk\RunOptions;
+
+$agent = new Agent(
+    name: 'code-reviewer',
+    model: 'claude-sonnet-4',
+    allowedTools: ['Read', 'Grep', 'Glob'],
+    maxTurns: 50,
+);
+
+$result = Runner::run($agent, 'Review the latest commit');
+
+foreach (Runner::stream($agent, 'Stream the review', new RunOptions(
+    onText: fn (string $delta) => print($delta),
+)) as $message) {
+    // Message::text / toolStart / toolResult / turn / result
+}
+```
+
+`Agent` is immutable: `withTool()`, `withTools()`, `withModel()`,
+`withSystemPrompt()`, `withMaxTurns()`, and `withPermissionMode()` each return
+a new instance. `Agent::fromConfig()` / `Agent::toConfig()` convert between an
+`Agent` and a legacy `HaoCodeConfig`, and `Agent::asTool()` exposes the agent
+as a tool for another agent (see [Agent Teams](#agent-teams)).
+
+The `HaoCode` facade delegates to these primitives: `HaoCode::query()` and
+`HaoCode::stream()` build an `Agent` + `RunOptions` from the given
+`HaoCodeConfig` and call `Runner`, while `Conversation` keeps its own internal
+`Agent` definition and reuses the same single run-assembly path
+(`SdkRunFactory::createFromAgent()`, internal). Interrupt resume
+(`resumeInterrupt` / `streamResumeInterrupt`) remains a `Conversation`
+capability, because resuming requires the persisted session and checkpoint
+state that only a durable conversation holds.
+
+---
+
 ## Requirements
 
 - PHP `^8.1`

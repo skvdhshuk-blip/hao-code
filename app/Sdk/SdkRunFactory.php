@@ -18,6 +18,29 @@ use HaoCode\Tools\Mcp\ReadMcpResourceTool;
 /** @internal */
 final class SdkRunFactory
 {
+    /**
+     * Internal adaptation point between the modern Agent/RunOptions pair and
+     * the legacy HaoCodeConfig-based run assembly.
+     *
+     * Both {@see Runner} (single runs) and {@see Conversation} (multi-turn
+     * sessions) route through this method so there is exactly one place that
+     * turns an agent definition into a running AgentLoop. It intentionally
+     * lives here — not on AgentLoopFactory — because run assembly needs
+     * SDK-layer concerns (credential pools, sandbox, MCP tools, budget
+     * thresholds, abort wiring) while AgentLoopFactory stays an SDK-agnostic
+     * service-layer primitive shared with sub-agents and skill forks.
+     *
+     * @internal
+     */
+    public static function createFromAgent(
+        Agent $agent,
+        ?RunOptions $options,
+        AgentLoopFactory $factory,
+        ?StreamingClient $streamingClient = null,
+    ): SdkRun {
+        return self::create(($options ?? new RunOptions)->toConfig($agent), $factory, $streamingClient);
+    }
+
     public static function create(
         HaoCodeConfig $config,
         AgentLoopFactory $factory,
