@@ -350,9 +350,10 @@ class ToolOrchestratorTest extends TestCase
 
     public function test_execute_tools_returns_results_for_all_safe_and_unsafe_blocks(): void
     {
-        if (!function_exists('pcntl_fork')) {
-            $this->markTestSkipped('pcntl_fork is required for this test.');
-        }
+        // Covers both the pcntl-fork path and the no-pcntl fallback path.
+        // Previously this was skipped when pcntl was unavailable, which hid an
+        // index-loss bug in the fallback branch (safe results re-indexed from 0
+        // collided with unsafe results and overwrote each other).
 
         $registry = new ToolRegistry;
 
@@ -407,9 +408,9 @@ class ToolOrchestratorTest extends TestCase
 
     public function test_execute_tools_preserves_original_call_order_for_interleaved_blocks(): void
     {
-        if (!function_exists('pcntl_fork')) {
-            $this->markTestSkipped('pcntl_fork is required for this test.');
-        }
+        // Covers both the pcntl-fork path and the no-pcntl fallback path.
+        // The interleaved [safe, unsafe, safe] case is exactly the one that
+        // exposed the fallback index-loss bug.
 
         // Registers safe and unsafe tools (same as the previous test)
         $registry = new ToolRegistry;
@@ -583,9 +584,7 @@ class ToolOrchestratorTest extends TestCase
 
     public function test_parallel_tool_completion_preserves_error_state(): void
     {
-        if (!function_exists('pcntl_fork')) {
-            $this->markTestSkipped('pcntl_fork is required for this test.');
-        }
+        // Covers both the pcntl-fork path and the no-pcntl fallback path.
 
         $toolRegistry = new ToolRegistry;
         $toolRegistry->register(new class extends BaseTool

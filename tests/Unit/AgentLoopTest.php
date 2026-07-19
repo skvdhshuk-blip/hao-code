@@ -1568,14 +1568,21 @@ class AgentLoopTest extends TestCase
             hookExecutor: $hookExecutor,
         );
 
-        $tempFile = sys_get_temp_dir() . '/haocode_stream_0_' . getmypid() . '_toolu_cleanup';
+        // Snapshot existing haocode_stream_ IPC files so we can assert that
+        // the forked run cleans up after itself even on stream failure.
+        $beforeStreamFiles = glob(sys_get_temp_dir() . '/haocode_stream_*') ?: [];
 
         try {
             $agent->run('请探索这个仓库');
             $this->fail('Expected RuntimeException to be thrown.');
         } catch (\RuntimeException $e) {
             $this->assertSame('stream failed after tool start', $e->getMessage());
-            $this->assertFileDoesNotExist($tempFile);
+            $afterStreamFiles = glob(sys_get_temp_dir() . '/haocode_stream_*') ?: [];
+            $this->assertSame(
+                $beforeStreamFiles,
+                $afterStreamFiles,
+                'Streaming IPC temp files must be cleaned up after a stream failure.',
+            );
         }
     }
 

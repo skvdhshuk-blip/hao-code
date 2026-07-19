@@ -125,6 +125,77 @@ class SessionManagerTest extends TestCase
         $this->assertSame([], $entries);
     }
 
+    /**
+     * @dataProvider traversalSessionIdProvider
+     */
+    public function test_load_session_rejects_traversal_ids(string $maliciousId): void
+    {
+        $manager = new SessionManager;
+
+        $this->expectException(\InvalidArgumentException::class);
+        $manager->loadSession($maliciousId);
+    }
+
+    /**
+     * @dataProvider traversalSessionIdProvider
+     */
+    public function test_switch_to_session_rejects_traversal_ids(string $maliciousId): void
+    {
+        $manager = new SessionManager;
+
+        $this->expectException(\InvalidArgumentException::class);
+        $manager->switchToSession($maliciousId);
+    }
+
+    /**
+     * @dataProvider traversalSessionIdProvider
+     */
+    public function test_claim_interrupt_rejects_traversal_ids(string $maliciousId): void
+    {
+        $manager = new SessionManager;
+
+        $this->expectException(\InvalidArgumentException::class);
+        $manager->claimInterrupt($maliciousId, 'int-1', []);
+    }
+
+    public static function traversalSessionIdProvider(): array
+    {
+        return [
+            'parent dir'        => ['../../etc/passwd'],
+            'absolute path'     => ['/etc/passwd'],
+            'leading slash'     => ['/outside'],
+            'trailing slash'    => ['legit/'],
+            'backslash'         => ['legit\\.jsonl'],
+            'null byte'         => ["legit\0evil"],
+            'glob star'         => ['*.jsonl'],
+            'glob question'     => ['legit?'],
+            'glob bracket'      => ['legit[abc]'],
+            'empty'             => [''],
+        ];
+    }
+
+    public function test_load_session_rejects_traversal_does_not_touch_target(): void
+    {
+        // Pre-create a real session, then attempt to read a sibling via traversal.
+        // The guard must throw before any file access happens.
+        $manager = new SessionManager;
+        $manager->recordEntry(['type' => 'user_message', 'content' => 'real']);
+        $realId = $manager->getSessionId();
+
+        $victim = $this->tmpDir . '/victim.jsonl';
+        file_put_contents($victim, json_encode(['type' => 'user_message', 'content' => 'secret']) . "\n");
+
+        try {
+            $manager->loadSession('../victim');
+            $this->fail('Expected InvalidArgumentException for traversal session id.');
+        } catch (\InvalidArgumentException $e) {
+            // expected
+        }
+
+        // The victim file is untouched and still readable directly.
+        $this->assertFileExists($victim);
+    }
+
     public function test_recorded_entry_includes_timestamp_and_session_id(): void
     {
         $manager = new SessionManager;

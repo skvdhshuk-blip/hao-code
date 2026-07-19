@@ -259,10 +259,12 @@ class ToolOrchestrator
         // For small counts, just run concurrently with non-blocking approach
         // PHP doesn't have native async, so use fork-based parallelism when available
         if (!function_exists('pcntl_fork')) {
-            // Fallback to sequential
+            // Fallback to sequential. Preserve original block indices so the
+            // caller can still re-sort into call order — using $results[] here
+            // would re-index from 0 and overwrite interleaved unsafe results.
             $results = [];
-            foreach ($blocks as $block) {
-                $results[] = $this->executeSingleTool($block, $context, $onStart, $onComplete);
+            foreach ($blocks as $idx => $block) {
+                $results[$idx] = $this->executeSingleTool($block, $context, $onStart, $onComplete);
             }
             return $results;
         }
@@ -277,7 +279,10 @@ class ToolOrchestrator
         $parentStateBefore = $context->getReadFileStateSnapshot();
 
         foreach ($blocks as $idx => $block) {
-            $tempFile = sys_get_temp_dir() . '/haocode_tool_' . $idx . '_' . getmypid();
+            // Use tempnam() for an unpredictable, 0600-mode filename instead of
+            // a guessable "<prefix>_<idx>_<pid>" — predictable names let other
+            // local users race or symlink-swap the IPC file.
+            $tempFile = $this->allocateIpcTempFile('haocode_tool_');
             $tempFiles[$idx] = $tempFile;
 
             $pid = pcntl_fork();
@@ -311,7 +316,13 @@ class ToolOrchestrator
         foreach ($pids as $idx => $pid) {
             pcntl_waitpid($pid, $status);
             if (isset($tempFiles[$idx]) && file_exists($tempFiles[$idx])) {
-                $data = @unserialize(file_get_contents($tempFiles[$idx]));
+                // allowed_classes => false blocks PHP object injection even if a
+                // gadget chain is present in dependencies and an attacker can
+                // influence the file contents.
+                $data = @unserialize(
+                    (string) file_get_contents($tempFiles[$idx]),
+                    ['allowed_classes' => false],
+                );
                 if (is_array($data) && isset($data['result'])) {
                     // New format: result + readState
                     $results[$idx] = $data['result'];
@@ -343,6 +354,28 @@ class ToolOrchestrator
         // Return with original block indices intact so the caller can re-sort them
         // into the correct call order.
         return $results;
+    }
+
+    /**
+     * Allocate a private, unpredictable IPC temp file.
+     *
+     * tempnam() returns a path under the system temp dir with a random suffix
+     * and 0600 permissions, replacing the previous guessable
+     * "haocode_tool_<idx>_<pid>" / "haocode_stream_<idx>_<pid>_<toolCallId>"
+     * names that were vulnerable to symlink-swap and predictable-file races.
+     * The caller owns the returned file and must unlink it when done.
+     */
+    private function allocateIpcTempFile(string $prefix): string
+    {
+        $path = tempnam(sys_get_temp_dir(), $prefix);
+        if ($path === false) {
+            throw new \RuntimeException('Could not allocate IPC temp file.');
+        }
+        // tempnam() already creates the file with 0600 on most platforms; chmod
+        // again defensively in case umask or a custom tmpdir changed that.
+        @chmod($path, 0600);
+
+        return $path;
     }
 
     private function executeSingleTool(

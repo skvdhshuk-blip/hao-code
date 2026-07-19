@@ -49,7 +49,7 @@ class SessionManager
 
     public function switchToSession(string $sessionId, ?string $title = null): void
     {
-        $this->sessionId = $sessionId;
+        $this->sessionId = $this->validateSessionId($sessionId);
         $this->title = $title;
     }
 
@@ -222,6 +222,8 @@ class SessionManager
             throw new \RuntimeException('Human-in-the-loop requires a durable session.');
         }
 
+        $sessionId = $this->validateSessionId($sessionId);
+
         if (! is_dir($this->sessionPath)) {
             throw new \RuntimeException("Session not found: {$sessionId}");
         }
@@ -360,6 +362,8 @@ class SessionManager
      */
     public function loadSession(string $sessionId): array
     {
+        $sessionId = $this->validateSessionId($sessionId);
+
         // Try exact match first (file format: {sessionId}.jsonl)
         $exactPath = $this->sessionPath.'/'.$sessionId.'.jsonl';
         $files = file_exists($exactPath) ? [$exactPath] : [];
@@ -395,6 +399,29 @@ class SessionManager
     private function getFilePath(): string
     {
         return $this->sessionPath.'/'.$this->sessionId.'.jsonl';
+    }
+
+    /**
+     * Reject session IDs that could escape the session directory.
+     *
+     * Session IDs are persisted as `{sessionPath}/{$sessionId}.jsonl` and also
+     * fed to glob(). Anything containing path separators, `..`, NUL bytes, or
+     * glob metacharacters can read or write outside the session directory, so
+     * every external entry point must funnel through this guard. The format
+     * matches {@see generateSessionId()} (`Y-m-d_His_hex`) but is permissive
+     * enough for legacy/test IDs like `nonexistent_session_xyz`.
+     */
+    private function validateSessionId(string $sessionId): string
+    {
+        if ($sessionId === '' || strlen($sessionId) > 128
+            || preg_match('/[^A-Za-z0-9_-]/', $sessionId) === 1
+        ) {
+            throw new \InvalidArgumentException(
+                'Invalid session id: must be 1-128 characters of [A-Za-z0-9_-].',
+            );
+        }
+
+        return $sessionId;
     }
 
     /** @param resource $handle */
@@ -477,6 +504,7 @@ class SessionManager
 
     private function appendEntryToSession(string $sessionId, array $entry): void
     {
+        $sessionId = $this->validateSessionId($sessionId);
         $path = $this->sessionPath.'/'.$sessionId.'.jsonl';
         $handle = @fopen($path, 'c+');
         if ($handle === false) {
@@ -614,6 +642,8 @@ class SessionManager
      */
     private function writeSessionEntries(string $sessionId, array $entries): void
     {
+        $sessionId = $this->validateSessionId($sessionId);
+
         if (! is_dir($this->sessionPath)) {
             mkdir($this->sessionPath, 0755, true);
         }

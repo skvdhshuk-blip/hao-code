@@ -89,7 +89,16 @@ class StreamingToolExecutor
      */
     private function forkTool(array $block, int $index): void
     {
-        $tempFile = sys_get_temp_dir() . '/haocode_stream_' . $index . '_' . getmypid() . '_' . $block['id'];
+        // Use tempnam() for an unpredictable, 0600 IPC path. Never splice the
+        // model/gateway-provided tool-call id ($block['id']) into the filename:
+        // a hostile gateway could inject "../" to write outside the temp dir.
+        $tempFile = tempnam(sys_get_temp_dir(), 'haocode_stream_');
+        if ($tempFile === false) {
+            // Could not allocate an IPC file — degrade to sequential execution.
+            $this->queuedBlocks[$index] = $block;
+            return;
+        }
+        @chmod($tempFile, 0600);
 
         // Snapshot readFileState before fork so we can detect child additions.
         $stateBefore = $this->context->getReadFileStateSnapshot();
@@ -163,7 +172,12 @@ class StreamingToolExecutor
             } while ($waitResult === 0);
 
             $data = $aborted ? false : @file_get_contents($info['temp_file']);
-            $payload = $data !== false ? @unserialize($data) : false;
+            // allowed_classes => false blocks PHP object injection — the temp
+            // file is owned by us but written by the child fork, and a
+            // compromised dependency could otherwise trigger a gadget chain.
+            $payload = $data !== false
+                ? @unserialize($data, ['allowed_classes' => false])
+                : false;
 
             if ($aborted) {
                 $result = $this->abortedResult($info['block']);
