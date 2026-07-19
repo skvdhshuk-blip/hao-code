@@ -14,9 +14,9 @@ ExecPolicy 是 HaoCode SDK 的命令执行授权层。每次 `Bash` 工具调用
 | `env_deny` | string[] | `[]` | 拒绝的环境变量；非空时**必须包含全部 6 项硬黑名单**（见第 5 节） |
 | `risk` | string | `normal` | 风险等级：`normal` 或 `high` |
 | `allow_chain` | bool | `false` | 是否允许 `&&` `\|\|` `;` `$()` `` ` `` 等命令链操作符 |
-| `approval_ttl` | int | `0` | `risk=high` 审批缓存秒数；`0` = 每次重新确认 |
+| `approval_ttl` | int | `0` | **当前未实现**（保留字段）。原设计意图：`risk=high` 审批缓存秒数，`0` = 每次重新确认。Matcher 当前总是把 high-risk 视为"每次重新确认"，忽略此字段。 |
 | `cwd_restriction` | string | `null` | 允许执行的工作目录前缀（绝对路径） |
-| `allow_auto` | bool | `false` | `normal` 风险下跳过人工确认弹窗 |
+| `allow_auto` | bool | `false` | `normal` 风险下命中时，PermissionChecker 直接返回 `PermissionDecision::allow()`，跳过 HITL/SmartHitl 审批流。`risk=high` 与 `allow_auto=true` 是禁止组合，Loader 会拒绝加载。 |
 | `note` | string | `null` | 人类可读备注，不影响匹配逻辑 |
 
 ## 2. 示例 YAML
@@ -130,15 +130,28 @@ project policies/*.yml（项目级，按文件名字典序合并）
 bundled policies/default.yml（内置兜底）
 ```
 
-同优先级内，相同 `tool+cmd` 在 `allow_chain`/`risk`/`allow_auto` 上不一致时启动校验报错。
+同优先级内，相同 `tool+cmd+args_match` 签名（args_match 排序后比较，空数组视为同一签名）在 `allow_chain`/`risk`/`allow_auto` 上不一致时启动校验报错。同一 `cmd` 但不同 `args_match` 的规则可以共存——这正是 `git status`(normal/auto) 与 `git push --force`(high/no-auto) 共用 `cmd: git` 的依据。
+
+### 3.1 规则匹配顺序（specificity 优先）
+
+PolicyMatcher 在构造时按 specificity 稳定排序，避免 `cmd: "*"` 兜底规则遮蔽后续具体规则。Specificity 二元组（大的优先）：
+
+1. `cmd` 不是 `"*"` 通配符（精确命令名 > 通配符）
+2. 规则带 `args_match`（有参数约束 > 无参数约束）
+
+同 specificity 内保留 YAML 声明顺序。这意味着：
+
+- `git status` 会命中 `bash-git-status`（cmd=git, args=status*），不会先被 `cmd: "*"` 吃掉
+- `git push --force` 会命中 `bash-git-push-force`（risk=high），不会被前面的 normal 规则短路
+- 只有未被任何具体规则覆盖的命令（如 `ls`）才落到 `cmd: "*"` 兜底
 
 ## 4. risk=high 三件套行为
 
-命中 `risk=high` 时 PolicyMatcher 执行以下三步：
+命中 `risk=high` 时 PolicyMatcher 执行以下两步（`approval_ttl` 字段当前未实现，统一视为"每次重新确认"）：
 
 1. **OTEL span 上报** — 写入 `permission.high_risk_decision` span，携带 `rule.name/tool/cmd/risk`（失败不阻断流程）。
-2. **审批弹窗** — 向用户展示规则名和原因；`approval_ttl=0` 时每次执行均弹窗。
-3. **禁止自动通过** — `allow_auto=true` 与 `risk=high` 并存时启动校验直接报错。
+2. **审批弹窗** — PolicyMatcher 返回 `ApprovalRequired`，PermissionChecker 转译成 `PermissionDecision::ask()`，进入 HITL 审批流。
+3. **禁止自动通过** — `allow_auto=true` 与 `risk=high` 并存时 Loader 启动校验直接报错。
 
 **OTEL span 示例：**
 ```json
@@ -155,7 +168,7 @@ bundled policies/default.yml（内置兜底）
 | # | 校验项 | 触发条件 |
 |---|--------|----------|
 | 1 | regex 长度 | `args_match` 中任一正则超过 1000 字符（ReDoS 防护） |
-| 2 | 规则冲突 | 同 `tool+cmd` 的规则在 `allow_chain`/`risk`/`allow_auto` 上不一致 |
+| 2 | 规则冲突 | 同 `tool+cmd+args_match 签名` 的规则在 `allow_chain`/`risk`/`allow_auto` 上不一致（同 cmd 不同 args 可共存） |
 | 3 | 高风险自动批准 | `risk=high` 与 `allow_auto=true` 同时出现 |
 | 4 | env_deny 完整性 | 非空 `env_deny` 缺少下列任一硬黑名单条目 |
 | 5 | cwd 路径合法性 | `cwd_restriction` 非绝对路径或归一化后越出文件系统根 |
@@ -172,20 +185,13 @@ bundled policies/default.yml（内置兜底）
 
 命令必须同时通过两层才能执行；ExecPolicy 规则无法绕过 `permissions.deny` 中已拒绝的工具。
 
+注意 Policy 决策的转译：`AllowAuto` 直接放行；普通 `Allow` 返回 null 让 PermissionChecker 继续 fallback 到 deny/allow/dangerous 判断（两层平行）；`Deny` 硬拒；`ApprovalRequired` 转 `ask()`。
+
 ## 7. policy:dump / policy:import 示例
 
 ### policy:dump（Artisan 命令）
 
-```bash
-# 导出到 stdout
-php artisan policy:dump policies/default.yml
-
-# 合并多个文件并美化输出
-php artisan policy:dump policies/default.yml policies/laravel-dev.yml \
-  --output=dist/merged-policy.json --pretty
-```
-
-输出格式为 `{ "rules": [ { "name": ..., "tool": ..., "cmd": ..., ... } ] }`。
+> **注意**：`php artisan policy:dump` 命令当前**未实现**。下面的用法是设计意图，未来版本会补齐。临时可以通过 `PolicyImporter::importFile()` 读 JSON，再用 `json_encode` 手动 dump。
 
 ### policy:import（PHP API）
 

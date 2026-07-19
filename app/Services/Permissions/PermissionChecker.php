@@ -57,7 +57,7 @@ class PermissionChecker
         }
 
         // Policy layer: check DSL rules before deny (fail-closed by default)
-        $policyDecision = $this->checkPolicy($tool, $input);
+        $policyDecision = $this->checkPolicy($tool, $input, $context);
         if ($policyDecision !== null) {
             return $this->maybeDowngradeAsk($policyDecision);
         }
@@ -123,7 +123,7 @@ class PermissionChecker
         return $decision;
     }
 
-    private function checkPolicy(ToolInterface $tool, array $input): ?PermissionDecision
+    private function checkPolicy(ToolInterface $tool, array $input, ToolUseContext $context): ?PermissionDecision
     {
         $policyFiles = $this->settings->getPolicyFiles();
         if (empty($policyFiles)) {
@@ -152,10 +152,23 @@ class PermissionChecker
         $binary = $parts[0] ?? $cmd;
         $args = $parts[1] ?? '';
 
-        $decision = $matcher->match($tool->name(), $binary, ['args' => $args]);
+        // Forward cwd so rules with cwd_restriction are actually enforced on
+        // the PermissionChecker path. env and stdin_size are intentionally not
+        // forwarded: the PHP process env is not the spawned command's env, and
+        // stdin is not visible at permission-check time. Those checks only
+        // apply on the JobStore path that constructs the command's real env.
+        $decision = $matcher->match($tool->name(), $binary, [
+            'args' => $args,
+            'cwd' => $context->workingDirectory,
+        ]);
 
         return match ($decision->kind) {
             PolicyDecisionKind::Allow => null, // let normal flow continue
+            // allow_auto: true — bypass the human-approval flow entirely.
+            // Unlike plain Allow (which falls through to deny/allow/dangerous
+            // checks), AllowAuto short-circuits to PermissionDecision::allow()
+            // so the tool runs without prompting or escalation.
+            PolicyDecisionKind::AllowAuto => PermissionDecision::allow(),
             PolicyDecisionKind::Deny => PermissionDecision::deny($decision->reason ?? 'Denied by policy'),
             PolicyDecisionKind::ApprovalRequired => PermissionDecision::ask($decision->reason ?? 'Policy requires approval'),
         };

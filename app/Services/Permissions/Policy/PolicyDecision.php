@@ -5,6 +5,7 @@ namespace HaoCode\Services\Permissions\Policy;
 enum PolicyDecisionKind: string
 {
     case Allow = 'allow';
+    case AllowAuto = 'allow_auto';
     case Deny = 'deny';
     case ApprovalRequired = 'approval_required';
 }
@@ -23,6 +24,18 @@ class PolicyDecision
         return new self(PolicyDecisionKind::Allow, $ruleName);
     }
 
+    /**
+     * Like {@see allow()}, but signals that the matched rule was explicitly
+     * marked `allow_auto: true` and the caller (PermissionChecker) may bypass
+     * the human-approval flow entirely. This is the only policy outcome that
+     * short-circuits to PermissionDecision::allow() — plain Allow still falls
+     * through to the rest of the permission pipeline.
+     */
+    public static function allowAuto(?string $ruleName = null): self
+    {
+        return new self(PolicyDecisionKind::AllowAuto, $ruleName);
+    }
+
     public static function deny(string $reason, ?string $ruleName = null): self
     {
         return new self(PolicyDecisionKind::Deny, $ruleName, $reason);
@@ -35,7 +48,8 @@ class PolicyDecision
 
     public function isAllowed(): bool
     {
-        return $this->kind === PolicyDecisionKind::Allow;
+        return $this->kind === PolicyDecisionKind::Allow
+            || $this->kind === PolicyDecisionKind::AllowAuto;
     }
 
     public function isDenied(): bool

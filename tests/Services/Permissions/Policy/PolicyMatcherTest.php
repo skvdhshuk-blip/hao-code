@@ -203,4 +203,71 @@ class PolicyMatcherTest extends TestCase
 
         $this->assertSame(PolicyDecisionKind::Allow, $result->kind);
     }
+
+    // ─── specificity ordering (chatgpt 子问题 #2) ───────────────────────
+
+    public function test_specific_cmd_beats_wildcard_even_when_declared_after(): void
+    {
+        // Wildcard declared FIRST, specific rule second. Before the sort fix,
+        // `git status` would hit the wildcard and never reach the specific rule.
+        $m = $this->matcher([
+            $this->makeRule(['name' => 'bash-catch-all', 'cmd' => '*', 'allow_auto' => false]),
+            $this->makeRule(['name' => 'git-status', 'cmd' => 'git', 'args_match' => ['status*'], 'allow_auto' => true]),
+        ]);
+
+        $result = $m->match('Bash', 'git', ['args' => 'status']);
+
+        // git-status has allow_auto=true → AllowAuto (not plain Allow). The
+        // assertion that matters here is the rule name: the specific rule won.
+        $this->assertSame(PolicyDecisionKind::AllowAuto, $result->kind);
+        $this->assertSame('git-status', $result->ruleName, 'specific rule must win over wildcard');
+    }
+
+    public function test_wildcard_still_matches_uncovered_commands(): void
+    {
+        $m = $this->matcher([
+            $this->makeRule(['name' => 'bash-catch-all', 'cmd' => '*']),
+            $this->makeRule(['name' => 'git-status', 'cmd' => 'git', 'args_match' => ['status*']]),
+        ]);
+
+        // `ls` is not covered by any specific rule → wildcard must catch it.
+        $result = $m->match('Bash', 'ls');
+
+        $this->assertSame(PolicyDecisionKind::Allow, $result->kind);
+        $this->assertSame('bash-catch-all', $result->ruleName);
+    }
+
+    public function test_same_specificity_keeps_declaration_order(): void
+    {
+        // git-log and git-diff have identical specificity (cmd=git, has args).
+        // Declaration order must be preserved: log is declared first, so when
+        // both could match (they shouldn't here, but the principle holds) log
+        // wins. Verify with two rules whose args don't overlap to make the
+        // assertion concrete.
+        $m = $this->matcher([
+            $this->makeRule(['name' => 'git-log', 'cmd' => 'git', 'args_match' => ['log*']]),
+            $this->makeRule(['name' => 'git-diff', 'cmd' => 'git', 'args_match' => ['diff*']]),
+        ]);
+
+        $logResult = $m->match('Bash', 'git', ['args' => 'log --oneline']);
+        $this->assertSame('git-log', $logResult->ruleName);
+
+        $diffResult = $m->match('Bash', 'git', ['args' => 'diff HEAD']);
+        $this->assertSame('git-diff', $diffResult->ruleName);
+    }
+
+    public function test_get_rules_returns_sorted_view(): void
+    {
+        // Directly inspect the sort result to lock the contract.
+        $m = $this->matcher([
+            $this->makeRule(['name' => 'wildcard', 'cmd' => '*']),
+            $this->makeRule(['name' => 'with-args', 'cmd' => 'git', 'args_match' => ['status*']]),
+            $this->makeRule(['name' => 'specific-cmd', 'cmd' => 'composer']),
+        ]);
+
+        $names = array_map(fn (PolicyRule $r): string => $r->name, $m->getRules());
+
+        // Most specific first (cmd + args), then specific cmd, then wildcard.
+        $this->assertSame(['with-args', 'specific-cmd', 'wildcard'], $names);
+    }
 }

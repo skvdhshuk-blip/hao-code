@@ -11,10 +11,55 @@ class PolicyMatcher
     /** Shell chain operators that are forbidden by default */
     private const CHAIN_PATTERN = '/(?:&&|\|\|?|;;?|\$\(|`)/';
 
+    /** @var PolicyRule[] sorted by specificity */
+    private readonly array $rules;
+
     /** @param PolicyRule[] $rules */
-    public function __construct(
-        private readonly array $rules,
-    ) {}
+    public function __construct(array $rules)
+    {
+        // Sort once by specificity so that more specific rules win over
+        // wildcard fallbacks regardless of YAML declaration order. This is
+        // critical when a policy bundles both a `cmd: "*"` catch-all and
+        // targeted rules for the same tool — without this, the catch-all
+        // shadows everything declared after it.
+        //
+        // Specificity tuple (higher wins):
+        //   1. cmd is not the "*" wildcard
+        //   2. rule has args_match patterns
+        // PHP's usort is stable since 8.0, so equal-specificity rules keep
+        // their original declaration order.
+        usort($rules, function (PolicyRule $a, PolicyRule $b): int {
+            $aSpecificity = $this->specificity($a);
+            $bSpecificity = $this->specificity($b);
+            $byWildcard = $bSpecificity[0] <=> $aSpecificity[0];   // specific cmd first
+            if ($byWildcard !== 0) {
+                return $byWildcard;
+            }
+
+            return $bSpecificity[1] <=> $aSpecificity[1];         // has args first
+        });
+
+        $this->rules = $rules;
+    }
+
+    /**
+     * @return array{0: int, 1: int}
+     */
+    private function specificity(PolicyRule $rule): array
+    {
+        return [
+            $rule->cmd === '*' ? 0 : 1,
+            $rule->argsMatch === [] ? 0 : 1,
+        ];
+    }
+
+    /**
+     * @return PolicyRule[] sorted by specificity
+     */
+    public function getRules(): array
+    {
+        return $this->rules;
+    }
 
     /**
      * Returns a matcher that allows every Bash command — use only when no policy
@@ -79,7 +124,13 @@ class PolicyMatcher
                 return $this->buildHighRiskDecision($rule);
             }
 
-            return PolicyDecision::allow($rule->name);
+            // allow_auto: true → short-circuit to AllowAuto so the
+            // PermissionChecker can bypass the human-approval flow. Plain
+            // allowAuto=false still returns Allow and falls through to the
+            // deny/allow/dangerous-pattern pipeline.
+            return $rule->allowAuto
+                ? PolicyDecision::allowAuto($rule->name)
+                : PolicyDecision::allow($rule->name);
         }
 
         // No rule matched → deny by default (fail-closed)

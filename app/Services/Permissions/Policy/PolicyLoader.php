@@ -63,12 +63,16 @@ class PolicyLoader
         }
     }
 
-    /** Validation 2: no conflicting rules for same tool+cmd */
+    /** Validation 2: no conflicting rules for same tool+cmd+args signature */
     private function validateNoConflicts(array $rules): void
     {
         $seen = [];
         foreach ($rules as $rule) {
-            $key = $rule->tool.'::'.$rule->cmd;
+            // Include the args_match signature in the conflict key so that
+            // rules targeting the same command but different argument shapes
+            // (e.g. `git status` vs `git push --force`) can coexist with
+            // different risk/allow_auto classifications.
+            $key = $rule->tool.'::'.$rule->cmd.'::'.$this->argsSignature($rule->argsMatch);
             if (isset($seen[$key])) {
                 $existing = $seen[$key];
                 if ($existing->allowChain !== $rule->allowChain
@@ -76,12 +80,28 @@ class PolicyLoader
                     || $existing->allowAuto !== $rule->allowAuto
                 ) {
                     throw new RuntimeException(
-                        "Conflicting rules for tool='{$rule->tool}' cmd='{$rule->cmd}': '{$existing->name}' vs '{$rule->name}'."
+                        "Conflicting rules for tool='{$rule->tool}' cmd='{$rule->cmd}' args='".implode(',', $rule->argsMatch)."': '{$existing->name}' vs '{$rule->name}'."
                     );
                 }
             }
             $seen[$key] = $rule;
         }
+    }
+
+    /**
+     * Stable signature for an args_match list so that two rules with the same
+     * command but different argument patterns are not treated as duplicates.
+     * Order-independent: ["a","b"] and ["b","a"] collapse to the same key.
+     */
+    private function argsSignature(array $argsMatch): string
+    {
+        if ($argsMatch === []) {
+            return '~';
+        }
+        $copy = $argsMatch;
+        sort($copy);
+
+        return implode('|', $copy);
     }
 
     /** Validation 3: risk=high + allow_auto=true is forbidden */

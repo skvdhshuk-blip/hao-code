@@ -96,6 +96,62 @@ class PolicyLoaderTest extends TestCase
         $this->assertCount(2, $loaded);
     }
 
+    // Validation 2 (expanded): same tool+cmd but different args_match signatures
+    // must coexist — this is the case the bundled policies/default.yml relies
+    // on (git status vs git push --force share cmd=git but differ on risk).
+    public function test_accepts_same_cmd_with_different_args(): void
+    {
+        $path = $this->writeYamlFromRules([
+            $this->validRule(['name' => 'git-status', 'args_match' => ['status*'], 'allow_auto' => true]),
+            $this->validRule(['name' => 'git-force-push', 'args_match' => ['/push.*--force/'], 'risk' => 'high']),
+        ]);
+
+        $loaded = (new PolicyLoader)->load($path);
+        $this->assertCount(2, $loaded);
+    }
+
+    public function test_rejects_same_cmd_same_args_different_risk(): void
+    {
+        $path = $this->writeYamlFromRules([
+            $this->validRule(['name' => 'rule-a', 'args_match' => ['status*'], 'risk' => 'normal']),
+            $this->validRule(['name' => 'rule-b', 'args_match' => ['status*'], 'risk' => 'high']),
+        ]);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessageMatches('/Conflicting rules/');
+
+        (new PolicyLoader)->load($path);
+    }
+
+    public function test_rejects_same_cmd_same_args_different_allow_auto(): void
+    {
+        $path = $this->writeYamlFromRules([
+            $this->validRule(['name' => 'rule-a', 'args_match' => ['status*'], 'allow_auto' => false]),
+            $this->validRule(['name' => 'rule-b', 'args_match' => ['status*'], 'allow_auto' => true]),
+        ]);
+
+        $this->expectException(RuntimeException::class);
+        $this->expectExceptionMessageMatches('/Conflicting rules/');
+
+        (new PolicyLoader)->load($path);
+    }
+
+    public function test_loads_bundled_default_yml_end_to_end(): void
+    {
+        // Regression: the bundled policies/default.yml must load cleanly through
+        // the real Loader. Before the args_signature fix this threw on Bash::git
+        // because git-status/git-log/git-diff (normal) collided with
+        // git-push-force (high).
+        $loaded = (new PolicyLoader)->load(dirname(__DIR__, 4).'/policies/default.yml');
+        $this->assertGreaterThan(0, count($loaded));
+    }
+
+    public function test_loads_bundled_laravel_dev_yml_end_to_end(): void
+    {
+        $loaded = (new PolicyLoader)->load(dirname(__DIR__, 4).'/policies/laravel-dev.yml');
+        $this->assertGreaterThan(0, count($loaded));
+    }
+
     // Validation 3: risk=high + allow_auto=true → fail-closed
     public function test_rejects_high_risk_with_allow_auto(): void
     {
