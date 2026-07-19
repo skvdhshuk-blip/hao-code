@@ -38,6 +38,7 @@ use HaoCode\Sdk\Sandbox\SandboxConfig;
 use HaoCode\Sdk\SdkSkill;
 use HaoCode\Sdk\SdkTool;
 use HaoCode\Sdk\StructuredResult;
+use HaoCode\Sdk\StructuredResultValidationException;
 
 use HaoCode\Sdk\ImageContentBlock;
 
@@ -63,6 +64,7 @@ $classes = [
     Message::class,
     SdkTool::class,
     SdkSkill::class,
+    StructuredResultValidationException::class,
     MemoryStoreInterface::class,
     JsonMemoryStore::class,
     AbortController::class,

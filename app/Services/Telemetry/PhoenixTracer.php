@@ -61,6 +61,26 @@ class PhoenixTracer
     public const KIND_TOOL = 'TOOL';
     public const KIND_CHAIN = 'CHAIN';
 
+    /**
+     * Attribute keys whose values carry user-visible message or tool I/O
+     * content. When {@see $redactMessages} is enabled, PhoenixTracer masks
+     * these to '[redacted]' before forwarding to the collector so that Bash
+     * commands, file contents, MCP payloads, HTTP headers and similar
+     * sensitive data never leave the process — regardless of which caller
+     * attached the attribute.
+     *
+     * Patterns are anchored regexes tested against the full attribute key.
+     * They cover the OpenInference canonical keys plus the project-specific
+     * variants emitted by QueryEngine and ToolOrchestrator.
+     */
+    private const REDACT_KEY_PATTERNS = [
+        '/^llm\.system$/',
+        '/^llm\.input_messages\.\d+\.message\.content$/',
+        '/^output\.value$/',
+        '/^input\.value$/',
+        '/^llm\.output_messages\.\d+\.message\.tool_calls\.\d+\.tool_call\.function\.arguments$/',
+    ];
+
     private ?TracerProvider $provider = null;
     private ?TracerInterface $tracer = null;
     private bool $initFailed = false;
@@ -152,6 +172,14 @@ class PhoenixTracer
         $span->setAttribute('openinference.span.kind', $openInferenceKind);
 
         foreach ($attributes as $key => $value) {
+            // Centralized redaction: when redact_messages is on, mask any
+            // attribute whose key matches a known content-bearing pattern.
+            // This protects tool inputs/outputs and LLM message bodies even
+            // if a caller forgets to check shouldRedactMessages() locally.
+            if ($this->redactMessages && $this->isRedactableKey((string) $key)) {
+                $span->setAttribute($key, '[redacted]');
+                continue;
+            }
             $normalized = $this->normalizeAttributeValue($value);
             if ($normalized === null) {
                 continue;
@@ -284,6 +312,24 @@ class PhoenixTracer
             ->addSpanProcessor($processor)
             ->setResource($resource)
             ->build();
+    }
+
+    /**
+     * Whether an attribute key names content that must be masked when
+     * redact_messages is enabled. Exposed (internal, not @api) so callers and
+     * tests can verify the redaction contract without spinning up a real span.
+     *
+     * @internal
+     */
+    public function isRedactableKey(string $key): bool
+    {
+        foreach (self::REDACT_KEY_PATTERNS as $pattern) {
+            if (preg_match($pattern, $key) === 1) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function normalizeAttributeValue(mixed $value): mixed

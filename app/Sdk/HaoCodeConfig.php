@@ -451,6 +451,19 @@ class HaoCodeConfig
          * @var array<string, string>
          */
         array $headers = [],
+
+        /**
+         * Maximum number of times {@see HaoCode::structured()} retries the
+         * model when its JSON output fails schema validation. Each retry
+         * appends the validator's JSON-pointer error paths to the prompt so
+         * the model can correct itself. Defaults to 1 (one retry).
+         *
+         * Set to 0 to fail fast and surface a StructuredResultValidationException
+         * on the first violation.
+         *
+         * @api
+         */
+        public readonly int $structuredMaxRetries = 1,
     ) {
         $this->hitlMode = is_string($hitlMode) && in_array($hitlMode, ['ask', 'smart', 'auto'], true) ? $hitlMode : null;
         $this->hitlReviewModel = is_string($hitlReviewModel) && trim($hitlReviewModel) !== ''

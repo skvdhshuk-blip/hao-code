@@ -142,6 +142,11 @@ class QueryEngine
         $toolBlocks = $processor->getToolUseBlocks();
         if ($toolBlocks !== []) {
             $span->setAttribute('llm.output_tool_calls_count', count($toolBlocks));
+            // Note: tool-call arguments are attached unconditionally; the
+            // PhoenixTracer masks them at startSpan() time when
+            // redact_messages is enabled (matched via REDACT_KEY_PATTERNS).
+            // Do NOT pre-emptively skip them here — that would prevent the
+            // count metadata above from being emitted alongside the names.
             foreach (array_slice($toolBlocks, 0, 10) as $index => $block) {
                 $span->setAttribute("llm.output_messages.{$index}.message.tool_calls.0.tool_call.function.name", (string) ($block['name'] ?? ''));
                 $span->setAttribute(

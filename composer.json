@@ -12,6 +12,7 @@
         "open-telemetry/exporter-otlp": "^1.0",
         "open-telemetry/sdk": "^1.0",
         "open-telemetry/sem-conv": "^1.0",
+        "swaggest/json-schema": "^0.12.43",
         "symfony/clock": "^6.4 || ^7.0 || ^8.0",
         "symfony/http-client": "^6.4 || ^7.0 || ^8.0",
         "symfony/yaml": "^6.4 || ^7.0 || ^8.0"

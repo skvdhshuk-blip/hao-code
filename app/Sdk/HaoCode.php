@@ -358,17 +358,50 @@ class HaoCode
     public static function structured(string $prompt, array $jsonSchema, ?HaoCodeConfig $config = null): StructuredResult
     {
         $effectiveSchema = $config?->responseSchema ?? $jsonSchema;
+        $maxRetries = max(0, $config?->structuredMaxRetries ?? 1);
+
         $schemaJson = json_encode($effectiveSchema, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
 
-        $structuredPrompt = $prompt."\n\n".
+        $basePrompt = $prompt."\n\n".
             'IMPORTANT: You MUST respond with ONLY a valid JSON object matching this schema. '.
             "No markdown fences, no explanation, no extra text — just the raw JSON.\n\n".
             "Schema:\n".$schemaJson;
 
         $config = ($config ?? new HaoCodeConfig)->withResponseSchema($effectiveSchema);
-        $queryResult = self::query($structuredPrompt, $config);
 
-        return self::parseStructuredResult($queryResult);
+        $attempt = 0;
+        $lastValidationErrors = [];
+        $lastRawText = '';
+        while (true) {
+            $promptForAttempt = $attempt === 0
+                ? $basePrompt
+                : $basePrompt."\n\n".
+                    "Your previous response did not match the schema. ".
+                    "Fix these violations and reply with the corrected JSON only:\n".
+                    implode("\n", $lastValidationErrors);
+
+            $queryResult = self::query($promptForAttempt, $config);
+            $lastRawText = $queryResult->text;
+
+            $parsed = self::parseStructuredResult($queryResult);
+            // parseStructuredResult already guarantees $parsed is a JSON array;
+            // now validate it against the supplied schema.
+            $errors = self::validateAgainstSchema($parsed->toArray(), $effectiveSchema);
+            if ($errors === []) {
+                return $parsed;
+            }
+
+            $lastValidationErrors = $errors;
+            if ($attempt >= $maxRetries) {
+                throw new StructuredResultValidationException(
+                    'Structured response failed schema validation after '.($attempt + 1).
+                    ' attempt(s). Violations: '.implode('; ', $errors),
+                    $lastRawText,
+                    $errors,
+                );
+            }
+            $attempt++;
+        }
     }
 
     private static function parseStructuredResult(QueryResult $queryResult): StructuredResult
@@ -389,6 +422,32 @@ class HaoCode
         }
 
         return new StructuredResult($decoded, $queryResult->text, $queryResult);
+    }
+
+    /**
+     * Validate the decoded structured response against the JSON Schema.
+     *
+     * Returns a list of human-readable error strings (empty when valid). Each
+     * error includes the JSON-pointer path produced by the validator so the
+     * retry prompt can point the model at the offending field.
+     *
+     * @return list<string>
+     */
+    private static function validateAgainstSchema(array $data, array $schema): array
+    {
+        try {
+            $schemaObj = json_decode((string) json_encode($schema, JSON_UNESCAPED_SLASHES));
+            $dataObj = json_decode((string) json_encode($data, JSON_UNESCAPED_SLASHES));
+            \Swaggest\JsonSchema\Schema::import($schemaObj)->in($dataObj);
+
+            return [];
+        } catch (\Swaggest\JsonSchema\InvalidValue $e) {
+            return [trim($e->getMessage())];
+        } catch (\Throwable $e) {
+            // Schema itself was malformed (e.g. unsupported draft) — surface
+            // as a single validation error so the caller can diagnose.
+            return ['Schema validation setup failed: '.$e->getMessage()];
+        }
     }
 
     private static function createRun(HaoCodeConfig $config): SdkRun

@@ -391,7 +391,7 @@
         "internal": false,
         "methods": {
             "__construct": {
-                "signature": "public function __construct(?string $apiKey = null, ?string $model = null, ?string $baseUrl = null, ?string $providerType = null, ?int $maxTokens = null, ?string $cwd = null, int $maxTurns = 50, ?float $maxBudgetUsd = null, string $permissionMode = \"default\", array $allowedTools = [], array $disallowedTools = [], ?string $systemPrompt = null, ?string $appendSystemPrompt = null, bool $thinkingEnabled = false, int $thinkingBudget = 10000, mixed $onText = null, mixed $onThinking = null, mixed $onToolStart = null, mixed $onToolComplete = null, mixed $onTurnStart = null, bool $ephemeral = true, array $tools = [], array $skills = [], ?HaoCode\\Sdk\\AbortController $abortController = null, ?string $sessionId = null, bool $continueSession = false, ?array $responseSchema = null, ?HaoCode\\Sdk\\CredentialPool $credentialPool = null, ?HaoCode\\Sdk\\Sandbox\\SandboxConfig $sandbox = null, string $memorySummaryLevel = \"l0\", ?string $memoryStoragePath = null, array $skillDirectories = [], bool $recursiveSkillDiscovery = false, array $interruptOn = [], bool $enableAskUser = false, ?HaoCode\\Sdk\\Memory\\MemoryStoreInterface $memoryStore = null, ?string $hitlMode = null, ?string $hitlReviewModel = null, ?string $hitlAllowlistPath = null, ?bool $oauthBearer = null, array $images = [], array $headers = [])",
+                "signature": "public function __construct(?string $apiKey = null, ?string $model = null, ?string $baseUrl = null, ?string $providerType = null, ?int $maxTokens = null, ?string $cwd = null, int $maxTurns = 50, ?float $maxBudgetUsd = null, string $permissionMode = \"default\", array $allowedTools = [], array $disallowedTools = [], ?string $systemPrompt = null, ?string $appendSystemPrompt = null, bool $thinkingEnabled = false, int $thinkingBudget = 10000, mixed $onText = null, mixed $onThinking = null, mixed $onToolStart = null, mixed $onToolComplete = null, mixed $onTurnStart = null, bool $ephemeral = true, array $tools = [], array $skills = [], ?HaoCode\\Sdk\\AbortController $abortController = null, ?string $sessionId = null, bool $continueSession = false, ?array $responseSchema = null, ?HaoCode\\Sdk\\CredentialPool $credentialPool = null, ?HaoCode\\Sdk\\Sandbox\\SandboxConfig $sandbox = null, string $memorySummaryLevel = \"l0\", ?string $memoryStoragePath = null, array $skillDirectories = [], bool $recursiveSkillDiscovery = false, array $interruptOn = [], bool $enableAskUser = false, ?HaoCode\\Sdk\\Memory\\MemoryStoreInterface $memoryStore = null, ?string $hitlMode = null, ?string $hitlReviewModel = null, ?string $hitlAllowlistPath = null, ?bool $oauthBearer = null, array $images = [], array $headers = [], int $structuredMaxRetries = 1)",
                 "api": false,
                 "internal": false
             },
@@ -609,6 +609,11 @@
             },
             "skills": {
                 "signature": "public readonly array $skills",
+                "api": true,
+                "internal": false
+            },
+            "structuredMaxRetries": {
+                "signature": "public readonly int $structuredMaxRetries",
                 "api": true,
                 "internal": false
             },
@@ -1493,6 +1498,30 @@
             "rawText": {
                 "signature": "public readonly string $rawText",
                 "api": true,
+                "internal": false
+            }
+        }
+    },
+    "HaoCode\\Sdk\\StructuredResultValidationException": {
+        "kind": "class",
+        "api": true,
+        "internal": false,
+        "methods": {
+            "__construct": {
+                "signature": "public function __construct(string $message, string $rawResponse, array $validationErrors)",
+                "api": true,
+                "internal": false
+            }
+        },
+        "properties": {
+            "rawResponse": {
+                "signature": "public readonly string $rawResponse",
+                "api": true,
+                "internal": false
+            },
+            "validationErrors": {
+                "signature": "public readonly array $validationErrors",
+                "api": false,
                 "internal": false
             }
         }

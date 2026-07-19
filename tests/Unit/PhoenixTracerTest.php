@@ -60,4 +60,45 @@ class PhoenixTracerTest extends TestCase
 
         $this->addToAssertionCount(1);
     }
+
+    // ─── centralized redaction (chatgpt P2 telemetry gap) ───────────────
+
+    /**
+     * @dataProvider redactableKeyProvider
+     */
+    public function test_is_redactable_key_masks_content_bearing_keys(string $key, bool $expected): void
+    {
+        $tracer = PhoenixTracer::fromConfig(['enabled' => false]);
+
+        $this->assertSame($expected, $tracer->isRedactableKey($key), "key: {$key}");
+    }
+
+    public static function redactableKeyProvider(): array
+    {
+        return [
+            // Canonical OpenInference keys
+            'llm.system'                      => ['llm.system', true],
+            'output.value'                    => ['output.value', true],
+            'input.value'                     => ['input.value', true],
+            'llm.input_messages.0.content'    => ['llm.input_messages.0.message.content', true],
+            'llm.input_messages.42.content'   => ['llm.input_messages.42.message.content', true],
+            'tool_call args index 0'         => ['llm.output_messages.0.message.tool_calls.0.tool_call.function.arguments', true],
+            'tool_call args index 9'         => ['llm.output_messages.9.message.tool_calls.3.tool_call.function.arguments', true],
+
+            // Metadata keys that must NOT be redacted
+            'llm.model_name'                  => ['llm.model_name', false],
+            'llm.token_count.total'           => ['llm.token_count.total', false],
+            'tool.name'                       => ['tool.name', false],
+            'tool.call_id'                    => ['tool.call_id', false],
+            'tool.is_error'                   => ['tool.is_error', false],
+            'llm.tools.names'                 => ['llm.tools.names', false],
+            'llm.output_tool_calls_count'     => ['llm.output_tool_calls_count', false],
+            'llm.input_messages_count'        => ['llm.input_messages_count', false],
+            'tool_call name (not args)'      => ['llm.output_messages.0.message.tool_calls.0.tool_call.function.name', false],
+
+            // Paths that look similar but are not on the redaction list
+            'llm.output_messages.0.role'      => ['llm.output_messages.0.message.role', false],
+            'input.mime_type'                 => ['input.mime_type', false],
+        ];
+    }
 }

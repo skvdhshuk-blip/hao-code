@@ -17,6 +17,7 @@ use HaoCode\Sdk\QueryResult;
 use HaoCode\Sdk\SdkSkill;
 use HaoCode\Sdk\SdkTool;
 use HaoCode\Sdk\StructuredResult;
+use HaoCode\Sdk\StructuredResultValidationException;
 use HaoCode\Services\Api\StreamingClient;
 use HaoCode\Services\Settings\SettingsManager;
 use Symfony\Component\HttpClient\Response\MockResponse;
@@ -2260,5 +2261,130 @@ JSON),
         }
 
         @rmdir($directory);
+    }
+
+    // ──────────────────────────────────────────────────────────────
+    //  Test: structured() schema validation (chatgpt P2)
+    // ──────────────────────────────────────────────────────────────
+
+    public function test_structured_accepts_response_that_satisfies_schema(): void
+    {
+        $this->bootWithMock([
+            MockAnthropicSse::textResponse('{"category":"shipping","priority":"high"}'),
+        ]);
+
+        chdir($this->projectDir);
+
+        $result = HaoCode::structured('Classify this ticket.', [
+            'type' => 'object',
+            'required' => ['category', 'priority'],
+            'properties' => [
+                'category' => ['type' => 'string'],
+                'priority' => ['enum' => ['low', 'medium', 'high']],
+            ],
+        ]);
+
+        $this->assertSame('shipping', $result->category);
+        $this->assertSame('high', $result['priority']);
+    }
+
+    public function test_structured_retries_once_when_model_returns_invalid_enum(): void
+    {
+        // First response violates the enum; second response is valid. Track
+        // request count via a closure response so we don't depend on the
+        // bootWithMock captured-reference helper.
+        $requestCount = 0;
+        $lastPayload = null;
+        $this->bootWithMock([
+            function (array $payload) use (&$requestCount, &$lastPayload): MockResponse {
+                $requestCount++;
+                $lastPayload = $payload;
+                return MockAnthropicSse::textResponse('{"category":"shipping","priority":"urgent"}');
+            },
+            function (array $payload) use (&$requestCount, &$lastPayload): MockResponse {
+                $requestCount++;
+                $lastPayload = $payload;
+                return MockAnthropicSse::textResponse('{"category":"shipping","priority":"high"}');
+            },
+        ]);
+
+        chdir($this->projectDir);
+
+        $result = HaoCode::structured('Classify this ticket.', [
+            'type' => 'object',
+            'required' => ['category', 'priority'],
+            'properties' => [
+                'category' => ['type' => 'string'],
+                'priority' => ['enum' => ['low', 'medium', 'high']],
+            ],
+        ]);
+
+        $this->assertSame('high', $result['priority']);
+        // Confirm the retry actually happened: two provider requests were made.
+        $this->assertSame(2, $requestCount, 'invalid first response must trigger exactly one retry');
+        // And the second prompt contained the validator's error feedback.
+        $secondPrompt = $lastPayload['messages'][0]['content'] ?? '';
+        $secondPromptStr = is_array($secondPrompt) ? json_encode($secondPrompt) : (string) $secondPrompt;
+        $this->assertStringContainsString('did not match the schema', $secondPromptStr);
+    }
+
+    public function test_structured_throws_when_retry_exhausted(): void
+    {
+        // Both responses violate the enum. Default maxRetries=1 means one retry,
+        // so the second invalid response must throw.
+        $this->bootWithMock([
+            MockAnthropicSse::textResponse('{"category":"shipping","priority":"urgent"}'),
+            MockAnthropicSse::textResponse('{"category":"shipping","priority":"asap"}'),
+        ]);
+
+        chdir($this->projectDir);
+
+        try {
+            HaoCode::structured('Classify this ticket.', [
+                'type' => 'object',
+                'required' => ['category', 'priority'],
+                'properties' => [
+                    'category' => ['type' => 'string'],
+                    'priority' => ['enum' => ['low', 'medium', 'high']],
+                ],
+            ]);
+            $this->fail('Expected StructuredResultValidationException');
+        } catch (StructuredResultValidationException $e) {
+            $this->assertNotEmpty($e->validationErrors);
+            $this->assertStringContainsString('schema validation', $e->getMessage());
+            // Raw response + at least one error path are surfaced for diagnosis.
+            $this->assertNotSame('', $e->rawResponse);
+        }
+    }
+
+    public function test_structured_respects_zero_max_retries(): void
+    {
+        // With structuredMaxRetries=0, a single invalid response throws
+        // immediately without a second request.
+        $requestCount = 0;
+        $this->bootWithMock([
+            function (array $payload) use (&$requestCount): MockResponse {
+                $requestCount++;
+                return MockAnthropicSse::textResponse('{"category":"shipping"}');
+            },
+        ]);
+
+        chdir($this->projectDir);
+
+        try {
+            HaoCode::structured('Classify this ticket.', [
+                'type' => 'object',
+                'required' => ['category', 'priority'],
+                'properties' => [
+                    'category' => ['type' => 'string'],
+                    'priority' => ['enum' => ['low', 'medium', 'high']],
+                ],
+            ], new HaoCodeConfig(structuredMaxRetries: 0));
+            $this->fail('Expected StructuredResultValidationException');
+        } catch (StructuredResultValidationException $e) {
+            // Only one provider request — no retry attempted.
+            $this->assertSame(1, $requestCount, 'structuredMaxRetries=0 must not retry');
+            $this->assertStringContainsString('priority', implode(' ', $e->validationErrors));
+        }
     }
 }

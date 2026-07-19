@@ -321,7 +321,12 @@ decision semantics.
 
 ### structured()
 
-Extract structured (JSON) data from the agent's response.
+Extract structured (JSON) data from the agent's response. The schema is
+validated with a real JSON Schema validator
+([`swaggest/json-schema`](https://github.com/swaggest/json-schema)); when the
+model returns JSON that violates the schema, the SDK retries once by appending
+the validator's error paths to the prompt. Configure the retry budget with
+`HaoCodeConfig::$structuredMaxRetries` (default `1`; set to `0` to fail fast).
 
 ```php
 HaoCode::structured(string $prompt, array $jsonSchema, ?HaoCodeConfig $config = null): StructuredResult
@@ -343,6 +348,11 @@ echo $result['priority'];  // 'high' (ArrayAccess)
 $result->toArray();        // ['category' => 'shipping', ...]
 $result->toJson();         // '{"category":"shipping",...}'
 ```
+
+When validation fails after exhausting retries, `structured()` throws
+`HaoCode\Sdk\StructuredResultValidationException`, which exposes the raw model
+response (`$e->rawResponse`) and the validator's error list
+(`$e->validationErrors`) so callers can log, fall back, or surface the failure.
 
 ---
 
@@ -402,6 +412,7 @@ configured output tokens and a safety margin before sending a request.
 | `systemPrompt` | `?string` | `null` | Replace the default system prompt entirely |
 | `appendSystemPrompt` | `?string` | `null` | Append text to the default system prompt |
 | `responseSchema` | `?array` | `null` | Override the schema used by `structured()` |
+| `structuredMaxRetries` | `int` | `1` | Number of times `structured()` retries the model when its JSON fails schema validation. Each retry appends the validator's error paths to the prompt. `0` fails fast and throws `StructuredResultValidationException` on the first violation. |
 
 ### Tools & Skills
 
