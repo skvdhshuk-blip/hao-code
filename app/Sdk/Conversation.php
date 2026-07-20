@@ -373,8 +373,13 @@ class Conversation
             }
         }
 
-        // Point session manager to the loaded session
-        $this->loop->getSessionManager()->switchToSession($sessionId);
+        // Point session manager at the loaded session. Use the canonical id
+        // that loadSession resolved (it may differ from $sessionId when the
+        // caller passed a partial prefix). Switching to the canonical id
+        // keeps subsequent reads and writes on the same file (chatgpt #9:
+        // previously a partial id read A but wrote to B).
+        $canonicalId = $sessionManager->getLastResolvedSessionId() ?? $sessionId;
+        $this->loop->getSessionManager()->switchToSession($canonicalId);
     }
 
     /**

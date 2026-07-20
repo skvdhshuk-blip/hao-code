@@ -12,6 +12,13 @@ class SessionManager
 
     private ?string $currentWorkingDirectory = null;
 
+    /**
+     * Canonical id resolved by the most recent loadSession() call. Null until
+     * a session is loaded. Lets callers switch the active session to the
+     * canonical id rather than the user-supplied partial (chatgpt #9).
+     */
+    private ?string $lastResolvedSessionId = null;
+
     public function __construct(
         private readonly bool $persistenceEnabled = true,
     )
@@ -171,11 +178,56 @@ class SessionManager
             throw new \RuntimeException('Human-in-the-loop requires a durable session.');
         }
 
-        $this->recordEntry([
-            'type' => 'interrupt_pending',
-            'interrupt' => $interrupt,
-            'checkpoint' => $checkpoint,
-        ]);
+        // Unlike recordEntry() (which is best-effort for ordinary transcript
+        // lines), an interrupt checkpoint is the SDK's promise that the call
+        // can be resumed. A silent write failure would let the caller hand
+        // back a HumanInterrupt that points at a non-existent checkpoint, so
+        // the next resume() would crash with "Interrupt not found". Use a
+        // durable write path: exclusive lock, check every I/O return value,
+        // and throw on failure so the caller sees the problem immediately
+        // rather than after raising the interrupt (chatgpt 3rd review #8).
+        if (! is_dir($this->sessionPath)) {
+            if (! @mkdir($this->sessionPath, 0700, true) && ! is_dir($this->sessionPath)) {
+                throw new \RuntimeException(
+                    'Could not create session directory for interrupt checkpoint: '.$this->sessionPath,
+                );
+            }
+        }
+
+        $entry = array_merge(
+            [
+                'timestamp' => date('c'),
+                'session_id' => $this->sessionId,
+                'cwd' => $this->currentWorkingDirectory ?? (getcwd() ?: null),
+                'type' => 'interrupt_pending',
+                'interrupt' => $interrupt,
+                'checkpoint' => $checkpoint,
+            ],
+        );
+        $line = self::encodeEntryForJsonl($entry)."\n";
+
+        $handle = @fopen($this->getFilePath(), 'a');
+        if ($handle === false) {
+            throw new \RuntimeException(
+                'Could not open session file for interrupt checkpoint: '.$this->getFilePath(),
+            );
+        }
+
+        try {
+            if (! flock($handle, LOCK_EX)) {
+                throw new \RuntimeException('Could not lock session file for interrupt checkpoint.');
+            }
+            $written = fwrite($handle, $line);
+            if ($written === false || $written !== strlen($line)) {
+                throw new \RuntimeException('Could not write interrupt checkpoint to session file.');
+            }
+            if (! fflush($handle)) {
+                throw new \RuntimeException('Could not flush interrupt checkpoint to disk.');
+            }
+        } finally {
+            @flock($handle, LOCK_UN);
+            fclose($handle);
+        }
     }
 
     /** @internal */
@@ -359,6 +411,12 @@ class SessionManager
 
     /**
      * Load a previous session from transcript.
+     *
+     * Returns the parsed entries. When the caller passed a partial id that
+     * matched via glob, the resolved canonical id is exposed via
+     * {@see findSessionId()} (and is what the session manager will write to
+     * going forward, so reads and writes stay consistent). Multiple glob
+     * matches throw — callers must disambiguate.
      */
     public function loadSession(string $sessionId): array
     {
@@ -366,19 +424,87 @@ class SessionManager
 
         // Try exact match first (file format: {sessionId}.jsonl)
         $exactPath = $this->sessionPath.'/'.$sessionId.'.jsonl';
-        $files = file_exists($exactPath) ? [$exactPath] : [];
+        if (file_exists($exactPath)) {
+            $this->lastResolvedSessionId = $sessionId;
 
-        // Fallback to glob for partial ID matching
-        if (empty($files)) {
-            $pattern = $this->sessionPath.'/'.$sessionId.'*.jsonl';
-            $files = glob($pattern);
+            return $this->readEntriesFromPath($exactPath);
         }
 
-        if (empty($files)) {
+        // Fallback to glob for partial ID matching — but require a UNIQUE
+        // hit. Previously the first match silently won, which let a short
+        // prefix like "2026-07" load 2026-07-20_120000_abcd.jsonl while
+        // later writes landed in 2026-07.jsonl (read/write split-brain).
+        // chatgpt 3rd review #9.
+        $matches = glob($this->sessionPath.'/'.$sessionId.'*.jsonl') ?: [];
+        if ($matches === []) {
             return [];
         }
+        if (count($matches) > 1) {
+            $names = array_map(static fn (string $p): string => basename($p), $matches);
 
-        $lines = file($files[0]);
+            throw new \RuntimeException(
+                'Ambiguous session id "'.$sessionId.'" matches '
+                .count($matches).' sessions: '.implode(', ', array_slice($names, 0, 5))
+                .(count($names) > 5 ? ', ...' : '')
+                .'. Provide the full session id.',
+            );
+        }
+
+        $canonical = basename($matches[0], '.jsonl');
+        $this->lastResolvedSessionId = $canonical;
+
+        return $this->readEntriesFromPath($matches[0]);
+    }
+
+    /**
+     * Resolve a (possibly partial) session id to its canonical form.
+     *
+     * Returns the canonical id (basename without .jsonl) when exactly one
+     * session matches, null when nothing matches, and throws when multiple
+     * sessions match. Exposed so callers that need to switch the session
+     * manager to the right id can do so without re-running the glob.
+     */
+    public function findSessionId(string $partial): ?string
+    {
+        $partial = $this->validateSessionId($partial);
+
+        if (file_exists($this->sessionPath.'/'.$partial.'.jsonl')) {
+            return $partial;
+        }
+
+        $matches = glob($this->sessionPath.'/'.$partial.'*.jsonl') ?: [];
+        if ($matches === []) {
+            return null;
+        }
+        if (count($matches) > 1) {
+            $names = array_map(static fn (string $p): string => basename($p), $matches);
+
+            throw new \RuntimeException(
+                'Ambiguous session id "'.$partial.'" matches '
+                .count($matches).' sessions: '.implode(', ', array_slice($names, 0, 5))
+                .(count($names) > 5 ? ', ...' : '')
+                .'. Provide the full session id.',
+            );
+        }
+
+        return basename($matches[0], '.jsonl');
+    }
+
+    /**
+     * The canonical id resolved by the most recent loadSession() call, or
+     * null when loadSession() has not been called (or the last call did not
+     * match any session). Callers that previously switched to the user-
+     * supplied partial id should switch to this instead to avoid the
+     * read-A-write-B split-brain.
+     */
+    public function getLastResolvedSessionId(): ?string
+    {
+        return $this->lastResolvedSessionId;
+    }
+
+    private function readEntriesFromPath(string $path): array
+    {
+        $lines = file($path);
         if ($lines === false) {
             return [];
         }

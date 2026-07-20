@@ -141,8 +141,18 @@ class PolicyMatcher
                 : PolicyDecision::allow($rule->name);
         }
 
-        // No rule matched → deny by default (fail-closed)
-        return PolicyDecision::deny('No matching policy rule found for '.$tool.':'.$cmd.'.');
+        // No rule matched → NotApplicable, not Deny. The Policy DSL is a
+        // Bash-command authorization layer; if a policy file only defines
+        // rules for Bash (the common case), returning Deny here would
+        // hard-reject every Read/Grep/Glob/MCP call. The caller maps
+        // NotApplicable to null and continues its normal permission pipeline
+        // (explicit deny rules, dangerous patterns, read-only auto-allow,
+        // default ask). Chain-operator and env-deny checks above still
+        // short-circuit to hard Deny when they trip, so fail-closed is
+        // preserved for the cases policy actually covers.
+        return PolicyDecision::notApplicable(
+            'No matching policy rule for '.$tool.':'.$cmd.'.',
+        );
     }
 
     private function ruleMatches(PolicyRule $rule, string $tool, string $cmd, string $args): bool

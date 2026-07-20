@@ -1,6 +1,6 @@
 # ExecPolicy DSL 使用指南
 
-ExecPolicy 是 HaoCode SDK 的命令执行授权层。每次 `Bash` 工具调用都经过策略匹配；无规则命中时默认拒绝（fail-closed）。
+ExecPolicy 是 HaoCode SDK 的命令执行授权层。每次 `Bash` 工具调用都经过策略匹配；命令链操作符、env_deny 等硬约束命中时返回硬拒绝（fail-closed）。未匹配任何规则的工具调用返回 `NotApplicable`（不是 `Deny`），让外层 PermissionChecker 继续走显式 deny/危险模式/只读自动放行/默认 ask 流程——这样配置了 Bash 规则的 policy 不会误伤 Read/Grep/Glob/MCP 等非 Bash 工具。注意 cron 守护进程路径（JobStore）把 `NotApplicable` 当作 `Deny` 处理，保持无人值守的 fail-closed 语义。
 
 ## 1. DSL 字段说明
 

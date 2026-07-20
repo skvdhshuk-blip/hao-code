@@ -27,24 +27,111 @@ class ToolInputSchema
 
     /**
      * Validate input against the schema rules.
+     *
+     * When $validationRules is non-empty, runs the Laravel-style rule pipeline
+     * (SdkTool and legacy callers). When empty but $jsonSchema is non-empty,
+     * falls back to a real JSON Schema validator (swaggest) so MCP dynamic
+     * tools and the 47 built-in tools that pass only a JSON Schema still get
+     * required/enum/type/nested-object/array-item validation. Schema parse
+     * failures (malformed $ref, unsupported draft, etc.) degrade gracefully
+     * to "allow" so one bad MCP server can't take down every tool call.
      */
     public function validate(array $input): array
     {
-        if (empty($this->validationRules)) {
+        if (! empty($this->validationRules)) {
+            foreach ($this->validationRules as $attribute => $rules) {
+                $rules = is_array($rules) ? $rules : explode('|', (string) $rules);
+                foreach ($this->valuesForAttribute($input, (string) $attribute) as [$label, $exists, $value]) {
+                    $error = $this->validateValue($label, $exists, $value, $rules);
+                    if ($error !== null) {
+                        throw new \InvalidArgumentException('Tool input validation failed: '.$error);
+                    }
+                }
+            }
+
             return $input;
         }
 
-        foreach ($this->validationRules as $attribute => $rules) {
-            $rules = is_array($rules) ? $rules : explode('|', (string) $rules);
-            foreach ($this->valuesForAttribute($input, (string) $attribute) as [$label, $exists, $value]) {
-                $error = $this->validateValue($label, $exists, $value, $rules);
-                if ($error !== null) {
-                    throw new \InvalidArgumentException('Tool input validation failed: '.$error);
-                }
-            }
+        if (empty($this->jsonSchema)) {
+            return $input;
+        }
+
+        $errors = $this->validateWithJsonSchema($input);
+        if ($errors !== []) {
+            throw new \InvalidArgumentException('Tool input validation failed: '.implode('; ', $errors));
         }
 
         return $input;
+    }
+
+    /**
+     * Validate against $jsonSchema using swaggest. Returns a list of
+     * human-readable error strings (empty when valid). Schema parse failures
+     * return an empty list (silent allow) — see validate() docblock.
+     *
+     * @return list<string>
+     */
+    private function validateWithJsonSchema(array $input): array
+    {
+        try {
+            // Normalize the schema so empty object-typed fields (properties,
+            // patternProperties, etc.) become JSON objects rather than empty
+            // arrays. PHP's json_encode emits [] for an empty array, but
+            // JSON Schema requires these fields to be objects — swaggest
+            // rejects `{"properties": []}` as a schema error, which would
+            // surface as a validation failure on otherwise-innocent inputs.
+            $schemaObj = json_decode((string) json_encode(
+                $this->normalizeObjectFields($this->jsonSchema),
+                JSON_UNESCAPED_SLASHES,
+            ));
+            // Tool input is semantically a JSON object (a map of param name
+            // to value). An empty [] in PHP encodes to [] (array), which
+            // fails `type: object`. Coerce the top level to an object so
+            // the common "no parameters" case validates against object schemas.
+            $dataObj = $input === []
+                ? new \stdClass()
+                : json_decode((string) json_encode($input, JSON_UNESCAPED_SLASHES));
+            \Swaggest\JsonSchema\Schema::import($schemaObj)->in($dataObj);
+
+            return [];
+        } catch (\Swaggest\JsonSchema\InvalidValue $e) {
+            // Data violated the schema — surface as a validation error.
+            return [trim($e->getMessage())];
+        } catch (\Throwable $e) {
+            // Schema itself was malformed (unsupported draft, recursive $ref,
+            // non-standard MCP schema). Degrade to allow so one bad schema
+            // doesn't break every call to this tool. Production logging is
+            // the caller's responsibility; here we silently allow.
+            return [];
+        }
+    }
+
+    /**
+     * JSON Schema fields that must always be objects, never arrays. When a
+     * caller writes an empty PHP array for these, json_encode would emit `[]`
+     * and swaggest rejects the schema. Coerce to stdClass so `{}` is emitted.
+     */
+    private const OBJECT_TYPED_SCHEMA_FIELDS = [
+        'properties', 'patternProperties', 'definitions', '$defs',
+        'dependencies', '$dependencies',
+    ];
+
+    private function normalizeObjectFields(mixed $value): mixed
+    {
+        if (is_array($value)) {
+            // Empty array that is NOT in an object-typed field context still
+            // needs coercion when it sits at one of those keys. Walk first.
+            $out = [];
+            foreach ($value as $k => $v) {
+                $out[$k] = in_array($k, self::OBJECT_TYPED_SCHEMA_FIELDS, true) && is_array($v) && $v === []
+                    ? new \stdClass()
+                    : $this->normalizeObjectFields($v);
+            }
+
+            return $out;
+        }
+
+        return $value;
     }
 
     /**

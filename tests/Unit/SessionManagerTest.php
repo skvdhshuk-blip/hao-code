@@ -196,6 +196,125 @@ class SessionManagerTest extends TestCase
         $this->assertFileExists($victim);
     }
 
+    // ─── partial ID resolution (chatgpt 3rd review #9) ─────────────────
+
+    public function test_partial_id_resolves_to_canonical_and_switches_to_it(): void
+    {
+        // Two sessions sharing a date prefix; loadSession with a unique-enough
+        // partial must resolve to the canonical id and expose it via
+        // getLastResolvedSessionId(). Writes after the load go to the right file.
+        $fullId = '2026-07-20_120000_abcd1234';
+        file_put_contents(
+            $this->tmpDir.'/'.$fullId.'.jsonl',
+            json_encode(['type' => 'user_message', 'content' => 'first'])."\n",
+        );
+
+        $manager = new SessionManager;
+        $entries = $manager->loadSession('2026-07-20_120000_abcd');
+
+        $this->assertCount(1, $entries);
+        $this->assertSame($fullId, $manager->getLastResolvedSessionId(), 'canonical id must be exposed after partial-id load');
+
+        // Switching and writing must land in the canonical file, not a
+        // ghost file named after the partial id.
+        $manager->switchToSession($manager->getLastResolvedSessionId());
+        $manager->recordEntry(['type' => 'user_message', 'content' => 'second']);
+
+        $this->assertFileExists($this->tmpDir.'/'.$fullId.'.jsonl');
+        $this->assertFileDoesNotExist($this->tmpDir.'/2026-07-20_120000_abcd.jsonl');
+    }
+
+    public function test_partial_id_with_multiple_matches_throws_ambiguous_exception(): void
+    {
+        // Two sessions sharing a prefix. The caller must disambiguate —
+        // silently picking the first match caused read-A-write-B split-brain.
+        file_put_contents($this->tmpDir.'/2026-07-20_120000_aaaa.jsonl', json_encode(['type' => 'user_message', 'content' => 'a'])."\n");
+        file_put_contents($this->tmpDir.'/2026-07-20_120000_bbbb.jsonl', json_encode(['type' => 'user_message', 'content' => 'b'])."\n");
+
+        $manager = new SessionManager;
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessageMatches('/Ambiguous session id/');
+        $manager->loadSession('2026-07-20');
+    }
+
+    public function test_find_session_id_returns_null_when_nothing_matches(): void
+    {
+        $manager = new SessionManager;
+
+        $this->assertNull($manager->findSessionId('nonexistent-prefix-xyz'));
+    }
+
+    public function test_find_session_id_returns_canonical_for_unique_match(): void
+    {
+        $fullId = '2026-07-20_180000_efgh5678';
+        file_put_contents(
+            $this->tmpDir.'/'.$fullId.'.jsonl',
+            json_encode(['type' => 'user_message', 'content' => 'first'])."\n",
+        );
+
+        $manager = new SessionManager;
+
+        $this->assertSame($fullId, $manager->findSessionId('2026-07-20_18'));
+    }
+
+    // ─── interrupt checkpoint durable persistence (chatgpt 3rd review #8) ──
+
+    public function test_record_pending_interrupt_throws_when_session_dir_is_unwritable(): void
+    {
+        // chatgpt #8: recordPendingInterrupt used to call best-effort
+        // recordEntry(), so a disk failure silently dropped the checkpoint
+        // while the caller still raised a HumanInterrupt. The durable path
+        // must throw so the caller knows the checkpoint didn't land.
+        if (function_exists('posix_geteuid') && posix_geteuid() === 0) {
+            $this->markTestSkipped('Root bypasses file permissions; cannot simulate read-only dir.');
+        }
+
+        $readOnlyDir = $this->tmpDir . '/readonly_' . uniqid();
+        mkdir($readOnlyDir, 0500, true);
+        $manager = new SessionManager;
+        // Force the manager onto the read-only path by recording once
+        // successfully, then locking the directory.
+        config(['haocode.session_path' => $readOnlyDir]);
+        // Re-create manager so it picks up the new path.
+        $manager = new SessionManager;
+        $manager->switchToSession('test-readonly-' . uniqid());
+
+        chmod($readOnlyDir, 0500);
+        try {
+            $this->expectException(\RuntimeException::class);
+            $manager->recordPendingInterrupt(
+                ['id' => 'int-1', 'session_id' => $manager->getSessionId(), 'actions' => [], 'created_at' => date('c')],
+                ['blocks' => [], 'results' => []],
+            );
+        } finally {
+            chmod($readOnlyDir, 0700);
+            // tearDown will clean up.
+        }
+    }
+
+    public function test_record_pending_interrupt_durable_happy_path(): void
+    {
+        // Sanity check: the durable write path still records the interrupt
+        // correctly when the disk is healthy.
+        $manager = new SessionManager;
+        $interrupt = [
+            'id' => 'int-durable',
+            'session_id' => $manager->getSessionId(),
+            'actions' => [],
+            'created_at' => date('c'),
+        ];
+        $manager->recordPendingInterrupt($interrupt, ['blocks' => [], 'results' => []]);
+
+        $entries = $manager->loadSession($manager->getSessionId());
+        $pending = array_values(array_filter(
+            $entries,
+            static fn (array $e): bool => ($e['type'] ?? null) === 'interrupt_pending',
+        ));
+        $this->assertNotEmpty($pending);
+        $this->assertSame('int-durable', $pending[0]['interrupt']['id']);
+    }
+
     public function test_recorded_entry_includes_timestamp_and_session_id(): void
     {
         $manager = new SessionManager;

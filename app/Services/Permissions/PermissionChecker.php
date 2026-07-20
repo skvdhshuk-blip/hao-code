@@ -91,7 +91,8 @@ class PermissionChecker
         // matcher sees only the binary). allow_auto now defers until every hard
         // gate below has cleared.
         $policyAutoAllow = false;
-        $policyDecision = $this->checkPolicy($tool, $input, $context, $policyAutoAllow);
+        $policyAskReason = '';
+        $policyDecision = $this->checkPolicy($tool, $input, $context, $policyAutoAllow, $policyAskReason);
         if ($policyDecision !== null) {
             return $this->maybeDowngradeAsk($policyDecision);
         }
@@ -140,11 +141,16 @@ class PermissionChecker
             }
         }
 
-        // Policy allow_auto — only honored once deny rules and dangerous patterns
-        // have cleared. Bypasses the human-approval prompt but never overrides
-        // an explicit deny or a dangerous-command classification.
+        // Policy soft outcomes — only honored once deny rules and dangerous
+        // patterns have cleared. AllowAuto bypasses the prompt; ApprovalRequired
+        // surfaces as ask(). Both defer to explicit deny and dangerous-class
+        // decisions above (chatgpt 5.4a: previously ApprovalRequired short-
+        // circuited right after checkPolicy, bypassing the deny list).
         if ($policyAutoAllow) {
             return PermissionDecision::allow();
+        }
+        if ($policyAskReason !== '') {
+            return $this->maybeDowngradeAsk(PermissionDecision::ask($policyAskReason));
         }
 
         // Check explicit allow rules
@@ -193,8 +199,9 @@ class PermissionChecker
      * pipeline entirely.
      *
      * @param-out bool $policyAutoAllow
+     * @param-out string $policyAskReason  Non-empty when policy asked for approval (deferred)
      */
-    private function checkPolicy(ToolInterface $tool, array $input, ToolUseContext $context, bool &$policyAutoAllow = false): ?PermissionDecision
+    private function checkPolicy(ToolInterface $tool, array $input, ToolUseContext $context, bool &$policyAutoAllow = false, string &$policyAskReason = ''): ?PermissionDecision
     {
         $policyFiles = $this->settings->getPolicyFiles();
         if (empty($policyFiles)) {
@@ -238,19 +245,27 @@ class PermissionChecker
             'raw_command' => $rawCommand,
         ]);
 
-        // AllowAuto is a SOFT outcome: flag it for the caller and fall through
-        // (return null) so deny rules and dangerous-pattern checks still run.
-        // The caller honors $policyAutoAllow only after every hard gate clears.
+        // AllowAuto and ApprovalRequired are SOFT outcomes: flag them for the
+        // caller and fall through (return null) so explicit deny rules and
+        // dangerous-pattern checks still run. The caller honors them only
+        // after every hard gate clears. Without this deferral, a rule with
+        // risk=high would short-circuit to ask() and bypass the explicit deny
+        // list, letting the user approve past a deny rule (chatgpt 5.4a).
         if ($decision->kind === PolicyDecisionKind::AllowAuto) {
             $policyAutoAllow = true;
+
+            return null;
+        }
+        if ($decision->kind === PolicyDecisionKind::ApprovalRequired) {
+            $policyAskReason = $decision->reason ?? 'Policy requires approval';
 
             return null;
         }
 
         return match ($decision->kind) {
             PolicyDecisionKind::Allow => null, // soft: let normal flow continue
+            PolicyDecisionKind::NotApplicable => null, // policy has no opinion; continue normal pipeline
             PolicyDecisionKind::Deny => PermissionDecision::deny($decision->reason ?? 'Denied by policy'),
-            PolicyDecisionKind::ApprovalRequired => PermissionDecision::ask($decision->reason ?? 'Policy requires approval'),
         };
     }
 

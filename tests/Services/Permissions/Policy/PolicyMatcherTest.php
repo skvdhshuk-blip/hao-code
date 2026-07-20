@@ -43,10 +43,13 @@ class PolicyMatcherTest extends TestCase
         $m = $this->matcher([$rule]);
 
         $allow = $m->match('Bash', 'git', ['args' => 'push origin main']);
-        $deny = $m->match('Bash', 'git', ['args' => 'pull origin main']);
+        $nonMatch = $m->match('Bash', 'git', ['args' => 'pull origin main']);
 
         $this->assertSame(PolicyDecisionKind::Allow, $allow->kind);
-        $this->assertSame(PolicyDecisionKind::Deny, $deny->kind);
+        // args don't match → no rule applies → NotApplicable (policy has no opinion;
+        // the caller falls through to its normal pipeline). Previously this
+        // returned Deny, which hard-rejected any command the rule didn't cover.
+        $this->assertSame(PolicyDecisionKind::NotApplicable, $nonMatch->kind);
     }
 
     // Test point 1c: args exact mode
@@ -56,10 +59,10 @@ class PolicyMatcherTest extends TestCase
         $m = $this->matcher([$rule]);
 
         $allow = $m->match('Bash', 'git', ['args' => 'status']);
-        $deny = $m->match('Bash', 'git', ['args' => 'status --short']);
+        $nonMatch = $m->match('Bash', 'git', ['args' => 'status --short']);
 
         $this->assertSame(PolicyDecisionKind::Allow, $allow->kind);
-        $this->assertSame(PolicyDecisionKind::Deny, $deny->kind);
+        $this->assertSame(PolicyDecisionKind::NotApplicable, $nonMatch->kind);
     }
 
     // Test point 1d: args wildcard mode
@@ -69,10 +72,10 @@ class PolicyMatcherTest extends TestCase
         $m = $this->matcher([$rule]);
 
         $allow = $m->match('Bash', 'git', ['args' => 'status --short']);
-        $deny = $m->match('Bash', 'git', ['args' => 'push origin']);
+        $nonMatch = $m->match('Bash', 'git', ['args' => 'push origin']);
 
         $this->assertSame(PolicyDecisionKind::Allow, $allow->kind);
-        $this->assertSame(PolicyDecisionKind::Deny, $deny->kind);
+        $this->assertSame(PolicyDecisionKind::NotApplicable, $nonMatch->kind);
     }
 
     // Test point 2: command chain default deny, allow_chain: true permits
@@ -174,13 +177,17 @@ class PolicyMatcherTest extends TestCase
     }
 
     // No rule matched → fail-closed deny
-    public function test_no_matching_rule_denies(): void
+    public function test_no_matching_rule_returns_not_applicable(): void
     {
+        // chatgpt 5.1: a Bash-only policy must not hard-deny non-Bash tools.
+        // No rule matched → NotApplicable, letting the caller's normal
+        // permission pipeline (deny rules, dangerous patterns, read-only,
+        // default ask) decide.
         $m = $this->matcher([]);
 
         $result = $m->match('Bash', 'unknown-cmd');
 
-        $this->assertSame(PolicyDecisionKind::Deny, $result->kind);
+        $this->assertSame(PolicyDecisionKind::NotApplicable, $result->kind);
         $this->assertStringContainsString('No matching policy rule', $result->reason);
     }
 

@@ -115,14 +115,21 @@ class JobStore
             throw new \InvalidArgumentException("Invalid cron expression (must have 5 fields): {$cron}");
         }
 
-        // Policy precheck (security red line #7) — always executed, never skippable
+        // Policy precheck (security red line #7) — always executed, never skippable.
+        // On the cron daemon path, NotApplicable (no rule matched) is treated
+        // as Deny: an unattended scheduler must be fail-closed, unlike the
+        // interactive PermissionChecker path where NotApplicable falls through
+        // to the normal permission pipeline.
         $cmdParts = preg_split('/\s+/', trim($command), 2);
         $binary = $cmdParts[0] ?? $command;
         $args = $cmdParts[1] ?? '';
         $decision = $this->policyMatcher->match('Bash', $binary, ['args' => $args]);
-        if ($decision->kind === PolicyDecisionKind::Deny) {
+        if (
+            $decision->kind === PolicyDecisionKind::Deny
+            || $decision->kind === PolicyDecisionKind::NotApplicable
+        ) {
             throw new RuntimeException(
-                'Job rejected by policy: '.($decision->reason ?? 'no reason given')
+                'Job rejected by policy: '.($decision->reason ?? 'no matching rule (fail-closed)')
             );
         }
 

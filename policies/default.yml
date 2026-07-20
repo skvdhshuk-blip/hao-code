@@ -86,7 +86,11 @@ rules:
     tool: Bash
     cmd: composer
     args_match:
-      - "install*"
+      # Composer install can execute third-party code via plugins and scripts.
+      # Only auto-allow when the caller has explicitly disabled both, which
+      # matches Composer's own guidance for untrusted packages.
+      - "/install.*--no-plugins/"
+      - "/--no-scripts/"
     risk: normal
     allow_chain: false
     allow_auto: true
@@ -97,13 +101,14 @@ rules:
       - PYTHONPATH
       - NODE_OPTIONS
       - PERL5OPT
+    note: Auto-allow only with --no-plugins and --no-scripts; bare install requires approval.
 
   - name: bash-phpunit
     tool: Bash
     cmd: vendor/bin/phpunit
     risk: normal
     allow_chain: false
-    allow_auto: true
+    allow_auto: false
     env_deny:
       - LD_PRELOAD
       - DYLD_INSERT_LIBRARIES
@@ -111,3 +116,4 @@ rules:
       - PYTHONPATH
       - NODE_OPTIONS
       - PERL5OPT
+    note: PHPUnit executes project bootstrap, test classes and dependencies — never auto-allow.

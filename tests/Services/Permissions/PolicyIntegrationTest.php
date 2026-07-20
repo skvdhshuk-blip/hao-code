@@ -43,12 +43,41 @@ class PolicyIntegrationTest extends TestCase
 
     public function test_policy_allows_whitelisted_bash(): void
     {
-        // default.yml has bash-composer-install: allow_auto=true → AllowAuto.
+        // default.yml's bash-composer-install now requires --no-plugins AND
+        // --no-scripts (Composer install executes third-party code otherwise).
+        // With both flags present → AllowAuto.
         $matcher = $this->buildMatcher();
-        $result = $matcher->match('Bash', 'composer', ['args' => 'install --no-interaction']);
+        $result = $matcher->match('Bash', 'composer', ['args' => 'install --no-plugins --no-scripts']);
 
         $this->assertSame(PolicyDecisionKind::AllowAuto, $result->kind, $result->reason ?? '');
         $this->assertSame('bash-composer-install', $result->ruleName);
+    }
+
+    public function test_policy_does_not_auto_allow_bare_composer_install(): void
+    {
+        // Bare `composer install` (no --no-plugins/--no-scripts) must NOT be
+        // auto-allowed — Composer plugins and scripts can execute arbitrary
+        // third-party code. The specific rule no longer matches, so the
+        // command falls through to the wildcard bash-read-only (allow_auto=false),
+        // which returns plain Allow. PermissionChecker treats plain Allow as
+        // "fall through to deny/dangerous/ask", so the user still gets a prompt.
+        $matcher = $this->buildMatcher();
+        $result = $matcher->match('Bash', 'composer', ['args' => 'install']);
+
+        $this->assertSame(PolicyDecisionKind::Allow, $result->kind);
+        $this->assertNotSame('bash-composer-install', $result->ruleName, 'bare install must not match the auto-allow rule');
+    }
+
+    public function test_policy_does_not_auto_allow_phpunit(): void
+    {
+        // PHPUnit runs project code (bootstrap, test classes, deps) and must
+        // never be auto-allowed regardless of the rule. The bundled policy
+        // sets allow_auto=false on vendor/bin/phpunit.
+        $matcher = $this->buildMatcher();
+        $result = $matcher->match('Bash', 'vendor/bin/phpunit', ['args' => '']);
+
+        $this->assertSame(PolicyDecisionKind::Allow, $result->kind, 'phpunit rule has allow_auto=false');
+        $this->assertSame('bash-phpunit', $result->ruleName);
     }
 
     public function test_policy_blocks_command_chain(): void

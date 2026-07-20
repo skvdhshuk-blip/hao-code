@@ -464,6 +464,39 @@ class HaoCodeConfig
          * @api
          */
         public readonly int $structuredMaxRetries = 1,
+
+        /**
+         * Allow WebFetch to reach private networks (RFC1918, link-local,
+         * cloud-metadata 169.254.169.254, etc.). Defaults to false — SSRF
+         * protection is on. Loopback (127.0.0.1/8 and ::1/128) is always
+         * allowed via the default allowlist so local dev servers keep working.
+         *
+         * Enable only when you trust the agent and the URLs it will hit.
+         *
+         * @api
+         */
+        public readonly bool $webfetchAllowPrivateNetworks = false,
+
+        /**
+         * CIDR allowlist that bypasses the WebFetch SSRF guard (e.g.
+         * ['192.168.0.0/16', '10.0.0.0/8']). Empty by default — use
+         * precise entries instead of flipping webfetchAllowPrivateNetworks.
+         *
+         * @api
+         *
+         * @var list<string>
+         */
+        public readonly array $webfetchPrivateAllowList = [],
+
+        /**
+         * Hard cap on decompressed response bytes pulled into memory per
+         * WebFetch request. Responses exceeding the cap are cancelled and
+         * surface as an error to the agent (previously the entire body was
+         * buffered, risking OOM). Defaults to 5 MiB.
+         *
+         * @api
+         */
+        public readonly int $webfetchMaxBytes = 5_242_880,
     ) {
         $this->hitlMode = is_string($hitlMode) && in_array($hitlMode, ['ask', 'smart', 'auto'], true) ? $hitlMode : null;
         $this->hitlReviewModel = is_string($hitlReviewModel) && trim($hitlReviewModel) !== ''

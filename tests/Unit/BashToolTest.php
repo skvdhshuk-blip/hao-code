@@ -495,4 +495,49 @@ class BashToolTest extends TestCase
         $this->assertFalse($followUp->isError);
         $this->assertStringContainsString($childDir, trim($followUp->output));
     }
+
+    // ─── env_deny hardening (chatgpt 5.5) ──────────────────────────────
+    //
+    // BashTool strips PolicyLoader::REQUIRED_ENV_DENY before spawning the
+    // subprocess. LD_PRELOAD / DYLD_* / PYTHONPATH / NODE_OPTIONS / PERL5OPT
+    // enable code injection into child processes and must never reach the
+    // spawned shell regardless of policy configuration.
+
+    /**
+     * @dataProvider envDenyKeyProvider
+     */
+    public function test_required_env_deny_keys_are_stripped_from_subprocess(string $envKey): void
+    {
+        // Set the env var on the PHP process (the way an attacker-controlled
+        // parent shell or systemd unit would), then ask BashTool to print
+        // the child env. The key must NOT appear in the child output.
+        putenv($envKey . '=haocode-should-not-leak');
+        try {
+            $result = $this->tool->call([
+                'command' => 'env',
+                'description' => 'dump env for test',
+            ], $this->context);
+
+            $this->assertFalse($result->isError, $result->output);
+            $this->assertStringNotContainsString(
+                $envKey . '=haocode-should-not-leak',
+                $result->output,
+                "{$envKey} must be stripped before the subprocess sees it",
+            );
+        } finally {
+            putenv($envKey);
+        }
+    }
+
+    public static function envDenyKeyProvider(): array
+    {
+        return [
+            'LD_PRELOAD'              => ['LD_PRELOAD'],
+            'DYLD_INSERT_LIBRARIES'   => ['DYLD_INSERT_LIBRARIES'],
+            'DYLD_LIBRARY_PATH'       => ['DYLD_LIBRARY_PATH'],
+            'PYTHONPATH'              => ['PYTHONPATH'],
+            'NODE_OPTIONS'            => ['NODE_OPTIONS'],
+            'PERL5OPT'                => ['PERL5OPT'],
+        ];
+    }
 }

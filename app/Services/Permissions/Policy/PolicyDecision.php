@@ -8,6 +8,14 @@ enum PolicyDecisionKind: string
     case AllowAuto = 'allow_auto';
     case Deny = 'deny';
     case ApprovalRequired = 'approval_required';
+    /**
+     * No policy rule matched this tool+command. Distinct from Deny: the
+     * policy layer has no opinion and the caller should fall through to its
+     * normal permission pipeline (explicit deny rules, dangerous-pattern
+     * checks, read-only auto-allow, default ask). Without this, a single
+     * Bash-targeted policy file would hard-deny every non-Bash tool.
+     */
+    case NotApplicable = 'not_applicable';
 }
 
 class PolicyDecision
@@ -44,6 +52,15 @@ class PolicyDecision
     public static function approvalRequired(string $ruleName, string $reason, bool $cacheDecision = true): self
     {
         return new self(PolicyDecisionKind::ApprovalRequired, $ruleName, $reason, $cacheDecision);
+    }
+
+    /**
+     * No policy rule matched. The caller should treat this as "policy has no
+     * opinion" and fall through to its normal permission pipeline.
+     */
+    public static function notApplicable(string $reason): self
+    {
+        return new self(PolicyDecisionKind::NotApplicable, null, $reason, false);
     }
 
     public function isAllowed(): bool

@@ -413,6 +413,9 @@ configured output tokens and a safety margin before sending a request.
 | `appendSystemPrompt` | `?string` | `null` | Append text to the default system prompt |
 | `responseSchema` | `?array` | `null` | Override the schema used by `structured()` |
 | `structuredMaxRetries` | `int` | `1` | Number of times `structured()` retries the model when its JSON fails schema validation. Each retry appends the validator's error paths to the prompt. `0` fails fast and throws `StructuredResultValidationException` on the first violation. |
+| `webfetchAllowPrivateNetworks` | `bool` | `false` | Allow WebFetch to reach RFC1918 / link-local / cloud-metadata endpoints. Loopback (127.0.0.1/8 and ::1/128) is always allowed via the default allowlist so local dev servers keep working. Enable only when you trust the agent and the URLs it will hit. |
+| `webfetchPrivateAllowList` | `list<string>` | `[]` | CIDR allowlist that bypasses the WebFetch SSRF guard (e.g. `['192.168.0.0/16']`). Prefer precise entries over flipping `webfetchAllowPrivateNetworks`. |
+| `webfetchMaxBytes` | `int` | `5_242_880` | Hard cap on decompressed response bytes per WebFetch request. Responses over the cap are cancelled and surfaced as an error (previously the entire body was buffered, risking OOM). |
 
 ### Tools & Skills
 

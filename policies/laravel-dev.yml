@@ -59,7 +59,7 @@ rules:
     cmd: vendor/bin/pint
     risk: normal
     allow_chain: false
-    allow_auto: true
+    allow_auto: false
     cwd_restriction: /var/www
     env_deny:
       - LD_PRELOAD
@@ -68,13 +68,14 @@ rules:
       - PYTHONPATH
       - NODE_OPTIONS
       - PERL5OPT
+    note: Pint rewrites source files — require approval even in restricted cwd.
 
   - name: laravel-phpunit
     tool: Bash
     cmd: vendor/bin/phpunit
     risk: normal
     allow_chain: false
-    allow_auto: true
+    allow_auto: false
     cwd_restriction: /var/www
     env_deny:
       - LD_PRELOAD
@@ -83,6 +84,7 @@ rules:
       - PYTHONPATH
       - NODE_OPTIONS
       - PERL5OPT
+    note: PHPUnit executes project code — never auto-allow.
 
   - name: laravel-storage-link
     tool: Bash

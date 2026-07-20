@@ -33,9 +33,84 @@ class ToolInputSchemaTest extends TestCase
 
     public function test_validate_with_no_rules_returns_input(): void
     {
+        // Neither rules nor a constraining jsonSchema → passthrough.
         $schema = ToolInputSchema::make(['type' => 'object'], []);
         $input = ['anything' => 'goes'];
         $this->assertSame($input, $schema->validate($input));
+    }
+
+    public function test_validate_falls_back_to_json_schema_when_rules_empty(): void
+    {
+        // chatgpt #10: with no Laravel-style rules but a jsonSchema declaring
+        // required + enum, the validator must still enforce them via swaggest.
+        // This is the path MCP tools and most built-in tools rely on.
+        $schema = ToolInputSchema::make([
+            'type' => 'object',
+            'required' => ['mode'],
+            'properties' => [
+                'mode' => ['type' => 'string', 'enum' => ['read', 'write']],
+            ],
+        ]);
+
+        // Valid input passes.
+        $this->assertSame(['mode' => 'read'], $schema->validate(['mode' => 'read']));
+
+        // Missing required field is rejected.
+        try {
+            $schema->validate([]);
+            $this->fail('Expected validation failure for missing required field');
+        } catch (\InvalidArgumentException $e) {
+            $this->assertStringContainsString('Tool input validation failed', $e->getMessage());
+        }
+
+        // Enum violation is rejected.
+        try {
+            $schema->validate(['mode' => 'execute']);
+            $this->fail('Expected validation failure for enum violation');
+        } catch (\InvalidArgumentException $e) {
+            $this->assertStringContainsString('enum', strtolower($e->getMessage()));
+        }
+    }
+
+    public function test_validate_with_nested_json_schema_enforces_item_types(): void
+    {
+        // Nested objects + array item types must also be enforced by swaggest.
+        $schema = ToolInputSchema::make([
+            'type' => 'object',
+            'properties' => [
+                'items' => [
+                    'type' => 'array',
+                    'items' => ['type' => 'string'],
+                ],
+            ],
+        ]);
+
+        // Valid (array of strings).
+        $this->assertSame(['items' => ['a', 'b']], $schema->validate(['items' => ['a', 'b']]));
+
+        // Invalid (array of integers).
+        try {
+            $schema->validate(['items' => [1, 2]]);
+            $this->fail('Expected validation failure for array item type mismatch');
+        } catch (\InvalidArgumentException $e) {
+            $this->assertStringContainsString('Tool input validation failed', $e->getMessage());
+        }
+    }
+
+    public function test_validate_with_malformed_json_schema_silently_allows(): void
+    {
+        // A broken schema (e.g. recursive $ref, unsupported draft) must NOT
+        // break every call to the tool — degrade to allow. This is the MCP
+        // compatibility safety net: a misbehaving MCP server should not
+        // take down the whole agent.
+        $schema = ToolInputSchema::make([
+            'type' => 'object',
+            '$ref' => 'https://example.com/nonexistent-schema.json',
+        ]);
+
+        // Should not throw — silent allow.
+        $result = $schema->validate(['anything' => 'goes']);
+        $this->assertSame(['anything' => 'goes'], $result);
     }
 
     // ─── validate — with rules ────────────────────────────────────────────

@@ -130,6 +130,19 @@ DESC;
         $env = getenv();
         $env['TERM'] = 'xterm-256color';
 
+        // Strip the Policy DSL's hard-coded env denylist before spawning the
+        // subprocess. These 6 keys (LD_PRELOAD, DYLD_*, PYTHONPATH,
+        // NODE_OPTIONS, PERL5OPT) are unconditional red lines defined in
+        // PolicyLoader::REQUIRED_ENV_DENY — they enable code injection into
+        // child processes and must never reach a spawned shell, regardless of
+        // which policy rule matched. Previously env_deny was unenforceable
+        // here because PermissionChecker doesn't forward env to PolicyMatcher
+        // (chatgpt 5.5: the env_deny config was effectively dead code on the
+        // Bash path).
+        foreach (\HaoCode\Services\Permissions\Policy\PolicyLoader::REQUIRED_ENV_DENY as $deniedKey) {
+            unset($env[$deniedKey]);
+        }
+
         $process = proc_open(
             $wrappedCommand,
             $descriptors,
@@ -323,9 +336,38 @@ DESC;
         $taskId = 'bg_' . bin2hex(random_bytes(4));
         $outFile = sys_get_temp_dir() . '/haocode_' . $taskId . '.out';
 
-        $fullCommand = "cd " . escapeshellarg($cwd) . " && bash -c " . escapeshellarg($command) . " > " . escapeshellarg($outFile) . " 2>&1 & echo $!";
+        // Spawn via proc_open with an env filter so the REQUIRED_ENV_DENY
+        // keys (LD_PRELOAD, DYLD_*, PYTHONPATH, NODE_OPTIONS, PERL5OPT) do
+        // not reach the backgrounded shell. shell_exec inherits the full
+        // PHP env verbatim, which previously made the Policy env_deny
+        // unenforceable on this path too (chatgpt 5.5).
+        $env = getenv();
+        foreach (\HaoCode\Services\Permissions\Policy\PolicyLoader::REQUIRED_ENV_DENY as $deniedKey) {
+            unset($env[$deniedKey]);
+        }
 
-        $output = shell_exec($fullCommand);
+        $descriptors = [
+            0 => ['file', '/dev/null', 'r'],
+            1 => ['file', $outFile, 'w'],
+            2 => ['file', $outFile, 'a'],
+        ];
+
+        // Wrap so the background PID is echoed back on stdout (the original
+        // `& echo $!` pattern), but through proc_open so we control the env.
+        $wrapped = 'cd ' . escapeshellarg($cwd) . ' && bash -c ' . escapeshellarg($command) . ' & echo $!';
+
+        $process = @proc_open($wrapped, $descriptors, $pipes, $cwd, $env);
+        if (! is_resource($process)) {
+            return ToolResult::error("Failed to start background command: {$command}");
+        }
+
+        // Read the echoed PID from stdout, then close.
+        $output = stream_get_contents($pipes[1]);
+        fclose($pipes[1]);
+        // The background child is detached via `&`; proc_close returns after
+        // the foreground `echo $!` finishes, not after the background job.
+        proc_close($process);
+
         $pid = (int) trim($output ?? '0');
 
         if ($pid <= 0) {

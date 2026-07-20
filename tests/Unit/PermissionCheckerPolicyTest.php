@@ -499,6 +499,80 @@ YAML;
         };
     }
 
+    // ─── NotApplicable + ApprovalRequired precedence (chatgpt 5.1 + 5.4a) ──
+
+    public function test_bash_only_policy_does_not_block_read_tool(): void
+    {
+        // A policy that only declares Bash rules must not hard-deny non-Bash
+        // tools. Read falls through Policy (NotApplicable) and reaches the
+        // read-only auto-allow branch.
+        $path = $this->writePolicy('bash-only.yml', "rules:\n"
+            . "  - name: bash-read-only\n"
+            . "    tool: Bash\n"
+            . "    cmd: '*'\n"
+            . "    risk: normal\n"
+            . "    allow_auto: false\n"
+            . "    env_deny:\n" . self::ENV_DENY_BLOCK
+        );
+
+        $checker = $this->makeCheckerWithPolicy($path);
+        $readTool = $this->makeReadOnlyTool('Read');
+
+        $decision = $checker->check($readTool, ['file_path' => '/tmp/regular.txt'], $this->context);
+
+        $this->assertTrue($decision->allowed, 'Read must be allowed even when policy only covers Bash');
+    }
+
+    public function test_approval_required_does_not_short_circuit_explicit_deny(): void
+    {
+        // chatgpt 5.4a: previously ApprovalRequired short-circuited right
+        // after checkPolicy, skipping the explicit deny list. A risk=high
+        // policy hit + a matching deny rule must result in hard deny, not ask.
+        $settings = $this->createMock(SettingsManager::class);
+        $settings->method('getPermissionMode')->willReturn(PermissionMode::Default);
+        $settings->method('getAllowRules')->willReturn([]);
+        $settings->method('getDenyRules')->willReturn(['Bash(git push --force*)']);
+
+        $path = $this->writePolicy('high-risk.yml', "rules:\n"
+            . "  - name: git-force-push\n"
+            . "    tool: Bash\n"
+            . "    cmd: git\n"
+            . "    args_match: [\"/push.*--force/\"]\n"
+            . "    risk: high\n"
+            . "    allow_auto: false\n"
+            . "    env_deny:\n" . self::ENV_DENY_BLOCK
+        );
+        $settings->method('getPolicyFiles')->willReturn([$path]);
+
+        $checker = new PermissionChecker($settings, new DenialTracker);
+        $decision = $checker->check($this->bashTool(), ['command' => 'git push --force origin main'], $this->context);
+
+        $this->assertFalse($decision->allowed);
+        $this->assertFalse($decision->needsPrompt, 'deny rule must override policy ApprovalRequired');
+        $this->assertStringContainsString('Denied by rule', $decision->reason ?? '');
+    }
+
+    public function test_approval_required_surfaces_as_ask_when_no_deny_matches(): void
+    {
+        // Happy path for the deferred ApprovalRequired: no deny rule, no
+        // dangerous pattern → the policy's risk=high surfaces as ask().
+        $path = $this->writePolicy('high-risk.yml', "rules:\n"
+            . "  - name: git-force-push\n"
+            . "    tool: Bash\n"
+            . "    cmd: git\n"
+            . "    args_match: [\"/push.*--force/\"]\n"
+            . "    risk: high\n"
+            . "    allow_auto: false\n"
+            . "    env_deny:\n" . self::ENV_DENY_BLOCK
+        );
+
+        $checker = $this->makeCheckerWithPolicy($path);
+        $decision = $checker->check($this->bashTool(), ['command' => 'git push --force origin main'], $this->context);
+
+        $this->assertFalse($decision->allowed);
+        $this->assertTrue($decision->needsPrompt, 'high-risk policy must surface as ask when no deny/dangerous gate trips');
+    }
+
     // ─── tool.checkPermissions() hookup (chatgpt 3rd review #2) ──────────
     //
     // ToolInterface::checkPermissions() used to be dead on the main path.
