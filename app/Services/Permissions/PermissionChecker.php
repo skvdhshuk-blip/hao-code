@@ -56,8 +56,22 @@ class PermissionChecker
             }
         }
 
-        // Policy layer: check DSL rules before deny (fail-closed by default)
-        $policyDecision = $this->checkPolicy($tool, $input, $context);
+        // Decision precedence (deny always wins over allow_auto):
+        //   1. Policy deny / approval-required       (hard, short-circuits)
+        //   2. Explicit deny rules                    (hard, short-circuits)
+        //   3. Bash dangerous patterns / obfuscation  (hard, short-circuits to ask)
+        //   4. Policy allow_auto                      (soft, runs only if nothing above blocked)
+        //   5. Explicit allow rules
+        //   6. Read-only tools
+        //   7. Default ask
+        //
+        // allow_auto previously short-circuited to allow() right after checkPolicy,
+        // which let `composer install && curl evil` bypass the deny rules and
+        // dangerous-pattern checks (the chain operator hides in args after the
+        // matcher sees only the binary). allow_auto now defers until every hard
+        // gate below has cleared.
+        $policyAutoAllow = false;
+        $policyDecision = $this->checkPolicy($tool, $input, $context, $policyAutoAllow);
         if ($policyDecision !== null) {
             return $this->maybeDowngradeAsk($policyDecision);
         }
@@ -68,13 +82,6 @@ class PermissionChecker
                 $this->denialTracker->record($tool->name(), $this->summarizeInput($input), "rule: {$rule}");
 
                 return PermissionDecision::deny("Denied by rule: {$rule}");
-            }
-        }
-
-        // Check explicit allow rules
-        foreach ($this->settings->getAllowRules() as $rule) {
-            if ($this->matchesRule($rule, $tool, $input)) {
-                return PermissionDecision::allow();
             }
         }
 
@@ -101,6 +108,20 @@ class PermissionChecker
             }
         }
 
+        // Policy allow_auto — only honored once deny rules and dangerous patterns
+        // have cleared. Bypasses the human-approval prompt but never overrides
+        // an explicit deny or a dangerous-command classification.
+        if ($policyAutoAllow) {
+            return PermissionDecision::allow();
+        }
+
+        // Check explicit allow rules
+        foreach ($this->settings->getAllowRules() as $rule) {
+            if ($this->matchesRule($rule, $tool, $input)) {
+                return PermissionDecision::allow();
+            }
+        }
+
         // Read-only tools auto-approve
         if ($tool->isReadOnly($input)) {
             return PermissionDecision::allow();
@@ -123,7 +144,25 @@ class PermissionChecker
         return $decision;
     }
 
-    private function checkPolicy(ToolInterface $tool, array $input, ToolUseContext $context): ?PermissionDecision
+    /**
+     * Run the Policy DSL against the tool call.
+     *
+     * Returns a non-null PermissionDecision for HARD policy outcomes
+     * (Deny, ApprovalRequired, broken-policy fail-closed) — these
+     * short-circuit the rest of {@see check()}.
+     *
+     * For SOFT outcomes (plain Allow, or AllowAuto), returns null so the
+     * caller can still apply explicit deny rules and Bash dangerous-pattern
+     * checks. When the policy matched an `allow_auto: true` rule, the
+     * by-reference `$policyAutoAllow` flag is set so the caller can honor it
+     * as a deferred allow AFTER every hard gate has cleared. This closes the
+     * chain-operator bypass where `composer install && curl evil` would
+     * otherwise short-circuit to allow() and skip the deny / dangerous
+     * pipeline entirely.
+     *
+     * @param-out bool $policyAutoAllow
+     */
+    private function checkPolicy(ToolInterface $tool, array $input, ToolUseContext $context, bool &$policyAutoAllow = false): ?PermissionDecision
     {
         $policyFiles = $this->settings->getPolicyFiles();
         if (empty($policyFiles)) {
@@ -146,10 +185,14 @@ class PermissionChecker
         }
 
         $matcher = new PolicyMatcher($rules);
-        $cmd = $input['command'] ?? '';
-        // Extract the first token as the command binary, pass rest as args
-        $parts = preg_split('/\s+/', trim($cmd), 2);
-        $binary = $parts[0] ?? $cmd;
+        $rawCommand = $input['command'] ?? '';
+        // Extract the first token as the command binary, pass rest as args.
+        // Forward the raw (unsplit) command as raw_command so the matcher's
+        // chain-operator check sees `&&`, `||`, `$()` etc. hidden inside the
+        // args — otherwise a rule with allow_chain=false is bypassable by
+        // hiding operators in the second token onward.
+        $parts = preg_split('/\s+/', trim($rawCommand), 2);
+        $binary = $parts[0] ?? $rawCommand;
         $args = $parts[1] ?? '';
 
         // Forward cwd so rules with cwd_restriction are actually enforced on
@@ -160,15 +203,20 @@ class PermissionChecker
         $decision = $matcher->match($tool->name(), $binary, [
             'args' => $args,
             'cwd' => $context->workingDirectory,
+            'raw_command' => $rawCommand,
         ]);
 
+        // AllowAuto is a SOFT outcome: flag it for the caller and fall through
+        // (return null) so deny rules and dangerous-pattern checks still run.
+        // The caller honors $policyAutoAllow only after every hard gate clears.
+        if ($decision->kind === PolicyDecisionKind::AllowAuto) {
+            $policyAutoAllow = true;
+
+            return null;
+        }
+
         return match ($decision->kind) {
-            PolicyDecisionKind::Allow => null, // let normal flow continue
-            // allow_auto: true — bypass the human-approval flow entirely.
-            // Unlike plain Allow (which falls through to deny/allow/dangerous
-            // checks), AllowAuto short-circuits to PermissionDecision::allow()
-            // so the tool runs without prompting or escalation.
-            PolicyDecisionKind::AllowAuto => PermissionDecision::allow(),
+            PolicyDecisionKind::Allow => null, // soft: let normal flow continue
             PolicyDecisionKind::Deny => PermissionDecision::deny($decision->reason ?? 'Denied by policy'),
             PolicyDecisionKind::ApprovalRequired => PermissionDecision::ask($decision->reason ?? 'Policy requires approval'),
         };

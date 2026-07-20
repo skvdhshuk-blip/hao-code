@@ -173,9 +173,12 @@ class AgentLoop
 
         try {
             $output = $this->runInternal($userInput, $onTextDelta, $onToolStart, $onToolComplete, $onTurnStart, $onThinkingDelta);
-            $agentSpan?->setAttribute('output.value', $output);
-            $agentSpan?->setAttribute('llm.token_count.prompt', $this->totalInputTokens);
-            $agentSpan?->setAttribute('llm.token_count.completion', $this->totalOutputTokens);
+            // Route through PhoenixTracer::setAttribute so redact_messages
+            // masks the agent's final answer; a direct setAttribute bypasses
+            // the sanitizer that startSpan() applies to its initial attributes.
+            $this->tracer?->setAttribute($agentSpan, 'output.value', $output);
+            $this->tracer?->setAttribute($agentSpan, 'llm.token_count.prompt', $this->totalInputTokens);
+            $this->tracer?->setAttribute($agentSpan, 'llm.token_count.completion', $this->totalOutputTokens);
 
             return $output;
         } catch (\Throwable $e) {

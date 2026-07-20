@@ -191,12 +191,48 @@ class PhoenixTracer
     }
 
     /**
+     * Set an attribute on a span through the centralized redaction pipeline.
+     *
+     * Use this for every post-creation attribute write — anything written
+     * via `$span->setAttribute(...)` directly bypasses the sanitizer that
+     * {@see startSpan()} applies to its initial attribute bag, which lets
+     * tool I/O, LLM output and tool-call arguments leak to Phoenix even
+     * when `redact_messages` is enabled.
+     *
+     * Convention: callers that hold a `PhoenixTracer` reference MUST route
+     * attribute writes through here. The span may be null (when telemetry
+     * is disabled or initialization failed); this method is a no-op then.
+     */
+    public function setAttribute(?SpanInterface $span, string $key, mixed $value): void
+    {
+        if ($span === null) {
+            return;
+        }
+
+        if ($this->redactMessages && $this->isRedactableKey($key)) {
+            $span->setAttribute($key, '[redacted]');
+
+            return;
+        }
+
+        $normalized = $this->normalizeAttributeValue($value);
+        if ($normalized === null) {
+            return;
+        }
+        $span->setAttribute($key, $normalized);
+    }
+
+    /**
      * Mark a span as an error and end it safely. Use in catch blocks:
      *
      *   } catch (Throwable $e) {
      *       $this->tracer->recordException($span, $e);
      *       throw $e;
      *   }
+     *
+     * Exception messages frequently embed API bodies, file contents or
+     * credential-bearing paths. When redact_messages is on, the recorded
+     * message is masked to avoid leaking those via the exception event.
      */
     public function recordException(?SpanInterface $span, Throwable $error): void
     {
@@ -204,11 +240,13 @@ class PhoenixTracer
             return;
         }
 
+        $message = $this->redactMessages ? '[redacted]' : $error->getMessage();
+
         $span->recordException($error, [
             'exception.type' => $error::class,
-            'exception.message' => $error->getMessage(),
+            'exception.message' => $message,
         ]);
-        $span->setStatus(StatusCode::STATUS_ERROR, $error->getMessage());
+        $span->setStatus(StatusCode::STATUS_ERROR, $message);
     }
 
     /**

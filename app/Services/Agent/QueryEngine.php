@@ -112,44 +112,46 @@ class QueryEngine
      */
     private function annotateLlmSpanWithResult(\OpenTelemetry\API\Trace\SpanInterface $span, StreamProcessor $processor): void
     {
+        // Every attribute goes through PhoenixTracer::setAttribute so the
+        // redaction pipeline applies to post-creation writes too. The
+        // previous direct setAttribute calls bypassed that pipeline —
+        // output.value and tool-call arguments leaked even with
+        // redact_messages=true.
+        $tr = $this->tracer;
+
         // The response's model is authoritative — it reflects what the
         // provider actually served, including cases where SDK overrides
         // make the container SettingsManager's view of "current model"
         // stale or wrong (e.g. SDK path with bypassed settings).
         $responseModel = $processor->getModel();
         if ($responseModel !== null && $responseModel !== '') {
-            $span->setAttribute('llm.model_name', $responseModel);
+            $tr?->setAttribute($span, 'llm.model_name', $responseModel);
         }
 
         $usage = $processor->getUsage();
         $input = (int) ($usage['context_input_tokens'] ?? $usage['input_tokens'] ?? 0);
         $output = (int) ($usage['output_tokens'] ?? 0);
-        $span->setAttribute('llm.token_count.prompt', $input);
-        $span->setAttribute('llm.token_count.completion', $output);
-        $span->setAttribute('llm.token_count.total', $input + $output);
+        $tr?->setAttribute($span, 'llm.token_count.prompt', $input);
+        $tr?->setAttribute($span, 'llm.token_count.completion', $output);
+        $tr?->setAttribute($span, 'llm.token_count.total', $input + $output);
 
         if ($processor->getStopReason() !== null) {
-            $span->setAttribute('llm.stop_reason', $processor->getStopReason());
+            $tr?->setAttribute($span, 'llm.stop_reason', $processor->getStopReason());
         }
 
-        $span->setAttribute(
-            'output.value',
-            ($this->tracer?->shouldRedactMessages() ?? false)
-                ? '[redacted]'
-                : $processor->getAccumulatedText(),
-        );
+        $tr?->setAttribute($span, 'output.value', $processor->getAccumulatedText());
 
         $toolBlocks = $processor->getToolUseBlocks();
         if ($toolBlocks !== []) {
-            $span->setAttribute('llm.output_tool_calls_count', count($toolBlocks));
-            // Note: tool-call arguments are attached unconditionally; the
-            // PhoenixTracer masks them at startSpan() time when
-            // redact_messages is enabled (matched via REDACT_KEY_PATTERNS).
-            // Do NOT pre-emptively skip them here — that would prevent the
-            // count metadata above from being emitted alongside the names.
+            $tr?->setAttribute($span, 'llm.output_tool_calls_count', count($toolBlocks));
             foreach (array_slice($toolBlocks, 0, 10) as $index => $block) {
-                $span->setAttribute("llm.output_messages.{$index}.message.tool_calls.0.tool_call.function.name", (string) ($block['name'] ?? ''));
-                $span->setAttribute(
+                $tr?->setAttribute(
+                    $span,
+                    "llm.output_messages.{$index}.message.tool_calls.0.tool_call.function.name",
+                    (string) ($block['name'] ?? ''),
+                );
+                $tr?->setAttribute(
+                    $span,
                     "llm.output_messages.{$index}.message.tool_calls.0.tool_call.function.arguments",
                     json_encode($block['input'] ?? [], JSON_UNESCAPED_UNICODE) ?: '',
                 );

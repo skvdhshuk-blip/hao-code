@@ -404,8 +404,12 @@ class ToolOrchestrator
             $apiResult = $this->executeSingleToolInner($block, $context, $onStart, $onComplete);
 
             if ($toolSpan !== null) {
-                $toolSpan->setAttribute('output.value', (string) ($apiResult['content'] ?? ''));
-                $toolSpan->setAttribute('tool.is_error', (bool) ($apiResult['is_error'] ?? false));
+                // Route through PhoenixTracer::setAttribute so tool output is
+                // masked when redact_messages is on. A direct setAttribute
+                // here used to leak file contents / Bash output / MCP payloads
+                // regardless of the redaction flag.
+                $this->tracer?->setAttribute($toolSpan, 'output.value', (string) ($apiResult['content'] ?? ''));
+                $this->tracer?->setAttribute($toolSpan, 'tool.is_error', (bool) ($apiResult['is_error'] ?? false));
             }
 
             return $apiResult;

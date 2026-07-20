@@ -182,12 +182,72 @@ class QueryEngineTest extends TestCase
             },
         );
 
-        $engine = new QueryEngine($this->makeClient([]), $this->makeRegistry());
+        // annotateLlmSpanWithResult now routes writes through
+        // PhoenixTracer::setAttribute; pass a redactMessages=false tracer so
+        // the values reach the mock span unchanged.
+        $tracer = \HaoCode\Services\Telemetry\PhoenixTracer::fromConfig([
+            'enabled' => false,
+            'redact_messages' => false,
+        ]);
+
+        $engine = new QueryEngine($this->makeClient([]), $this->makeRegistry(), $tracer);
         $method = new \ReflectionMethod($engine, 'annotateLlmSpanWithResult');
         $method->invoke($engine, $span, $processor);
 
         $this->assertSame(1000, $attributes['llm.token_count.prompt']);
         $this->assertSame(1020, $attributes['llm.token_count.total']);
+    }
+
+    public function test_annotate_llm_span_redacts_output_and_tool_args_when_redact_enabled(): void
+    {
+        // Regression for chatgpt second-review: post-span setAttribute writes
+        // used to bypass PhoenixTracer's sanitizer, so output.value and
+        // tool-call arguments leaked to Phoenix even with redact_messages on.
+        $processor = new StreamProcessor;
+        $processor->processEvent(new StreamEvent('message_start', [
+            'message' => ['id' => 'msg_redact', 'usage' => ['input_tokens' => 10, 'output_tokens' => 5]],
+        ]));
+        // Seed an accumulated text and a tool-use block so annotateLlmSpanWithResult
+        // actually has something to redact.
+        $processor->processEvent(new StreamEvent('content_block_start', [
+            'index' => 0,
+            'content_block' => ['type' => 'text', 'text' => ''],
+        ]));
+        $processor->processEvent(new StreamEvent('content_block_delta', [
+            'index' => 0,
+            'delta' => ['type' => 'text_delta', 'text' => 'SECRET-LLM-OUTPUT'],
+        ]));
+        $processor->processEvent(new StreamEvent('content_block_stop', ['index' => 0]));
+        $processor->processEvent(new StreamEvent('content_block_start', [
+            'index' => 1,
+            'content_block' => ['type' => 'tool_use', 'id' => 'toolu_1', 'name' => 'Bash', 'input' => ['command' => 'SECRET-BASH-CMD']],
+        ]));
+        $processor->processEvent(new StreamEvent('content_block_stop', ['index' => 1]));
+
+        $attributes = [];
+        $span = $this->createMock(\OpenTelemetry\API\Trace\SpanInterface::class);
+        $span->method('setAttribute')->willReturnCallback(
+            function (string $key, mixed $value) use (&$attributes, $span) {
+                $attributes[$key] = $value;
+
+                return $span;
+            },
+        );
+
+        $tracer = \HaoCode\Services\Telemetry\PhoenixTracer::fromConfig([
+            'enabled' => false,
+            'redact_messages' => true,
+        ]);
+
+        $engine = new QueryEngine($this->makeClient([]), $this->makeRegistry(), $tracer);
+        $method = new \ReflectionMethod($engine, 'annotateLlmSpanWithResult');
+        $method->invoke($engine, $span, $processor);
+
+        $this->assertSame('[redacted]', $attributes['output.value'] ?? null, 'output.value must be masked when redact_messages is on');
+        $argsKey = 'llm.output_messages.0.message.tool_calls.0.tool_call.function.arguments';
+        $this->assertSame('[redacted]', $attributes[$argsKey] ?? null, 'tool-call arguments must be masked');
+        // Non-sensitive keys still carry their real values.
+        $this->assertSame('Bash', $attributes['llm.output_messages.0.message.tool_calls.0.tool_call.function.name'] ?? null);
     }
 
     public function test_query_ignores_events_after_abort(): void

@@ -75,7 +75,7 @@ class PolicyMatcher
     /**
      * Match tool+cmd against loaded rules and return a decision.
      *
-     * @param  array<string, mixed>  $context  Keys: args (string), env (array), cwd (string), stdin_size (int)
+     * @param  array<string, mixed>  $context  Keys: args (string), env (array), cwd (string), stdin_size (int), raw_command (string)
      */
     public function match(string $tool, string $cmd, array $context = []): PolicyDecision
     {
@@ -83,6 +83,12 @@ class PolicyMatcher
         $env = $context['env'] ?? [];
         $cwd = $context['cwd'] ?? null;
         $stdinSize = $context['stdin_size'] ?? 0;
+        // The full command string (binary + args) is what chain-operator
+        // detection must scan. Callers that pre-split the command into
+        // binary + args (e.g. PermissionChecker) MUST forward the original
+        // string here, otherwise `allow_chain: false` is bypassable by hiding
+        // operators in the args (e.g. `composer install && curl ...`).
+        $rawCommand = $context['raw_command'] ?? null;
 
         // stdin size limit check (always applied)
         if ($stdinSize > self::STDIN_SIZE_LIMIT) {
@@ -97,8 +103,10 @@ class PolicyMatcher
             }
 
             // Command chain precheck happens before cmd matching
-            // so chain operators in the full cmd string are caught first.
-            $chainDecision = $this->checkChain($cmd, $rule);
+            // so chain operators in the full command string are caught first.
+            // Prefer the unsplit raw_command when available; fall back to $cmd
+            // for direct callers (tests, JobStore) that pass the full string in.
+            $chainDecision = $this->checkChain($rawCommand ?? $cmd, $rule);
             if ($chainDecision !== null) {
                 return $chainDecision;
             }

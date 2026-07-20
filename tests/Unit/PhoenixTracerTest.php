@@ -73,6 +73,26 @@ class PhoenixTracerTest extends TestCase
         $this->assertSame($expected, $tracer->isRedactableKey($key), "key: {$key}");
     }
 
+    public function test_set_attribute_is_noop_on_null_span(): void
+    {
+        // Disabled tracer returns null spans from startSpan; callers must be
+        // able to chain $tracer->setAttribute($span, ...) without null guards.
+        $tracer = PhoenixTracer::fromConfig(['enabled' => false]);
+
+        // Should not throw on a null span.
+        $tracer->setAttribute(null, 'output.value', 'sensitive');
+        $tracer->setAttribute(null, 'llm.model_name', 'claude-test');
+
+        $this->addToAssertionCount(1);
+    }
+
+    // End-to-end redaction on a live span cannot be exercised here without an
+    // enabled tracer (which would attempt a real OTLP export). The
+    // isRedactableKey data provider above locks the key contract; the null-span
+    // no-op test guards the wrapper. The caller audit (no remaining direct
+    // ->setAttribute in app/Services outside PhoenixTracer itself) is the
+    // safety net that the centralized path is actually used.
+
     public static function redactableKeyProvider(): array
     {
         return [
