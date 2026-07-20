@@ -58,11 +58,27 @@ final class SandboxManager
         );
 
         foreach ($iterator as $file) {
-            if (! $file instanceof \SplFileInfo || ! $file->isFile()) {
+            // Reject symlinks outright. PHP's SplFileInfo reports a symlink to
+            // a regular file as isFile()=true AND isLink()=true, so the old
+            // isFile() check alone happily read the link target's contents.
+            // A malicious repo could ship project/leak.txt -> ~/.ssh/id_rsa
+            // and have the key copied into the sandbox before any sandbox-side
+            // policy applied. (chatgpt 3rd review #4)
+            if (! $file instanceof \SplFileInfo || $file->isLink() || ! $file->isFile()) {
                 continue;
             }
 
             $localPath = $file->getPathname();
+
+            // Defense-in-depth: resolve the canonical path and confirm it sits
+            // inside the project root. This guards against future iterator
+            // flag changes (e.g. FOLLOW_SYMLINKS) or link farms created after
+            // the iterator snapshot.
+            $resolved = realpath($localPath);
+            if ($resolved === false || ! str_starts_with($resolved . DIRECTORY_SEPARATOR, $root . DIRECTORY_SEPARATOR)) {
+                continue;
+            }
+
             $relative = ltrim(str_replace($root, '', $localPath), DIRECTORY_SEPARATOR);
             $relative = str_replace(DIRECTORY_SEPARATOR, '/', $relative);
 

@@ -4,6 +4,7 @@ namespace Tests\Unit;
 
 use HaoCode\Services\Permissions\DenialTracker;
 use HaoCode\Services\Permissions\PermissionChecker;
+use HaoCode\Services\Permissions\PermissionDecision;
 use HaoCode\Services\Permissions\PermissionMode;
 use HaoCode\Services\Permissions\Policy\PolicyLoader;
 use HaoCode\Services\Settings\SettingsManager;
@@ -62,6 +63,20 @@ class PermissionCheckerPolicyTest extends TestCase
         $settings->method('getPolicyFiles')->willReturn([$policyPath]);
         $settings->method('getAllowRules')->willReturn([]);
         $settings->method('getDenyRules')->willReturn([]);
+
+        return new PermissionChecker($settings, new DenialTracker);
+    }
+
+    private function makeChecker(
+        PermissionMode $mode = PermissionMode::Default,
+        array $allowRules = [],
+        array $denyRules = [],
+    ): PermissionChecker {
+        $settings = $this->createMock(SettingsManager::class);
+        $settings->method('getPermissionMode')->willReturn($mode);
+        $settings->method('getPolicyFiles')->willReturn([]);
+        $settings->method('getAllowRules')->willReturn($allowRules);
+        $settings->method('getDenyRules')->willReturn($denyRules);
 
         return new PermissionChecker($settings, new DenialTracker);
     }
@@ -384,5 +399,215 @@ YAML;
 
         $this->assertTrue($decision->allowed, 'allow_auto must still bypass the prompt when no deny/dangerous gate trips');
         $this->assertFalse($decision->needsPrompt);
+    }
+
+    // ─── SensitivePathGuard (chatgpt 3rd review #3) ─────────────────────
+    //
+    // The guard runs in PermissionChecker before any policy or read-only
+    // fast path. Read of ~/.ssh/id_rsa must be denied even though Read is
+    // isReadOnly()=true and would otherwise hit the auto-allow branch.
+    // Bash `cat ~/.ssh/id_rsa` must also be denied (via the `command`
+    // PATH_LIKE_KEY), even though bash commands normally go through the
+    // dangerous-pattern path which does not include credential paths.
+
+    public function test_read_of_ssh_key_is_blocked_by_guard(): void
+    {
+        $readTool = $this->makeReadOnlyTool('Read');
+        $checker = $this->makeChecker(); // no policy, default mode
+
+        $decision = $checker->check($readTool, ['file_path' => '/home/user/.ssh/id_rsa'], $this->context);
+
+        $this->assertFalse($decision->allowed);
+        $this->assertFalse($decision->needsPrompt, 'sensitive-path guard must hard-deny, not prompt');
+        $this->assertStringContainsStringIgnoringCase('sensitive', $decision->reason ?? '');
+    }
+
+    public function test_bash_cat_of_credentials_is_blocked_by_guard(): void
+    {
+        $checker = $this->makeChecker();
+
+        $decision = $checker->check($this->bashTool(), ['command' => 'cat /home/user/.aws/credentials'], $this->context);
+
+        $this->assertFalse($decision->allowed);
+        $this->assertFalse($decision->needsPrompt);
+        $this->assertStringContainsStringIgnoringCase('sensitive', $decision->reason ?? '');
+    }
+
+    public function test_guard_does_not_block_clean_paths(): void
+    {
+        $readTool = $this->makeReadOnlyTool('Read');
+        $checker = $this->makeChecker();
+
+        $decision = $checker->check($readTool, ['file_path' => '/tmp/regular-file.txt'], $this->context);
+
+        // Read is read-only → allowed by the fast path (guard did not fire).
+        $this->assertTrue($decision->allowed);
+    }
+
+    public function test_guard_honors_bypass_permissions_mode(): void
+    {
+        // BypassPermissions is an explicit "I trust everything" mode; the
+        // guard must not override it (consistent with how the rest of
+        // PermissionChecker treats BypassPermissions as the highest authority).
+        $settings = $this->createMock(SettingsManager::class);
+        $settings->method('getPermissionMode')->willReturn(PermissionMode::BypassPermissions);
+        $settings->method('getAllowRules')->willReturn([]);
+        $settings->method('getDenyRules')->willReturn([]);
+        $settings->method('getPolicyFiles')->willReturn([]);
+
+        $checker = new PermissionChecker($settings, new DenialTracker);
+        $readTool = $this->makeReadOnlyTool('Read');
+
+        $decision = $checker->check($readTool, ['file_path' => '/home/user/.ssh/id_rsa'], $this->context);
+
+        $this->assertTrue($decision->allowed, 'BypassPermissions must override the sensitive-path guard');
+    }
+
+    public function test_guard_overrides_accept_edits_mode(): void
+    {
+        // This is the actual chatgpt reproduction: AcceptEdits auto-allows
+        // file tools, which used to bypass HitlPolicy's sensitive-path
+        // classifier entirely. The guard now runs first and blocks the read.
+        $settings = $this->createMock(SettingsManager::class);
+        $settings->method('getPermissionMode')->willReturn(PermissionMode::AcceptEdits);
+        $settings->method('getAllowRules')->willReturn([]);
+        $settings->method('getDenyRules')->willReturn([]);
+        $settings->method('getPolicyFiles')->willReturn([]);
+
+        $checker = new PermissionChecker($settings, new DenialTracker);
+        $readTool = $this->makeReadOnlyTool('Read');
+
+        $decision = $checker->check($readTool, ['file_path' => '/home/user/.ssh/id_rsa'], $this->context);
+
+        $this->assertFalse($decision->allowed, 'AcceptEdits must NOT override the sensitive-path guard');
+        $this->assertStringContainsStringIgnoringCase('sensitive', $decision->reason ?? '');
+    }
+
+    private function makeReadOnlyTool(string $name): BaseTool
+    {
+        return new class($name) extends BaseTool {
+            public function __construct(private string $n) {}
+            public function name(): string { return $this->n; }
+            public function description(): string { return ''; }
+            public function inputSchema(): ToolInputSchema {
+                return ToolInputSchema::make(['type' => 'object', 'properties' => []]);
+            }
+            public function call(array $input, ToolUseContext $ctx): ToolResult {
+                return ToolResult::success('ok');
+            }
+            public function isReadOnly(array $input): bool { return true; }
+        };
+    }
+
+    // ─── tool.checkPermissions() hookup (chatgpt 3rd review #2) ──────────
+    //
+    // ToolInterface::checkPermissions() used to be dead on the main path.
+    // PermissionChecker now calls it after policy hard decisions and before
+    // explicit deny rules. Tool deny/ask short-circuits; tool allow falls
+    // through so the rest of the pipeline still applies.
+
+    public function test_tool_check_permissions_ask_short_circuits_to_prompt(): void
+    {
+        $tool = new class extends BaseTool {
+            public function name(): string { return 'CustomAsker'; }
+            public function description(): string { return ''; }
+            public function inputSchema(): ToolInputSchema {
+                return ToolInputSchema::make(['type' => 'object', 'properties' => []]);
+            }
+            public function call(array $input, ToolUseContext $ctx): ToolResult {
+                return ToolResult::success('ok');
+            }
+            public function checkPermissions(array $input, ToolUseContext $context): PermissionDecision {
+                return PermissionDecision::ask('Custom tool always asks');
+            }
+        };
+
+        $checker = $this->makeChecker();
+        $decision = $checker->check($tool, ['file_path' => '/tmp/clean.txt'], $this->context);
+
+        $this->assertFalse($decision->allowed);
+        $this->assertTrue($decision->needsPrompt);
+        $this->assertStringContainsString('Custom tool always asks', $decision->reason ?? '');
+    }
+
+    public function test_tool_check_permissions_deny_short_circuits_to_hard_deny(): void
+    {
+        $tool = new class extends BaseTool {
+            public function name(): string { return 'CustomDenier'; }
+            public function description(): string { return ''; }
+            public function inputSchema(): ToolInputSchema {
+                return ToolInputSchema::make(['type' => 'object', 'properties' => []]);
+            }
+            public function call(array $input, ToolUseContext $ctx): ToolResult {
+                return ToolResult::success('ok');
+            }
+            public function checkPermissions(array $input, ToolUseContext $context): PermissionDecision {
+                return PermissionDecision::deny('Custom tool says no');
+            }
+        };
+
+        $checker = $this->makeChecker();
+        $decision = $checker->check($tool, ['file_path' => '/tmp/clean.txt'], $this->context);
+
+        $this->assertFalse($decision->allowed);
+        $this->assertFalse($decision->needsPrompt);
+        $this->assertStringContainsString('Custom tool says no', $decision->reason ?? '');
+    }
+
+    public function test_tool_check_permissions_allow_does_not_short_circuit_explicit_deny(): void
+    {
+        // Tool says allow, but an explicit deny rule matches — deny rule must
+        // still win. This guards against the next "allow short-circuits
+        // everything" regression.
+        $tool = new class extends BaseTool {
+            public function name(): string { return 'Bash'; }
+            public function description(): string { return ''; }
+            public function inputSchema(): ToolInputSchema {
+                return ToolInputSchema::make(['type' => 'object', 'properties' => []]);
+            }
+            public function call(array $input, ToolUseContext $ctx): ToolResult {
+                return ToolResult::success('ok');
+            }
+            public function checkPermissions(array $input, ToolUseContext $context): PermissionDecision {
+                return PermissionDecision::allow();
+            }
+        };
+
+        $checker = $this->makeChecker(denyRules: ['Bash(rm -rf*)']);
+        $decision = $checker->check($tool, ['command' => 'rm -rf /tmp/foo'], $this->context);
+
+        $this->assertFalse($decision->allowed);
+        $this->assertStringContainsString('Denied by rule', $decision->reason ?? '');
+    }
+
+    public function test_mcp_dynamic_tool_check_permissions_paths_through(): void
+    {
+        // Simulates the chatgpt reproduction: an MCP-like tool whose
+        // checkPermissions() returns ask. Without the hookup it would have
+        // been auto-allowed via isReadOnly trust of readOnlyHint; now it must
+        // surface as a prompt.
+        $mcpLikeTool = new class extends BaseTool {
+            public function name(): string { return 'mcp__remote__tool'; }
+            public function description(): string { return ''; }
+            public function inputSchema(): ToolInputSchema {
+                return ToolInputSchema::make(['type' => 'object', 'properties' => []]);
+            }
+            public function call(array $input, ToolUseContext $ctx): ToolResult {
+                return ToolResult::success('ok');
+            }
+            // MCP server (maliciously or mistakenly) declares readOnly.
+            public function isReadOnly(array $input): bool { return true; }
+            public function isConcurrencySafe(array $input): bool { return true; }
+            // MCP default: always ask unless explicitly allowlisted.
+            public function checkPermissions(array $input, ToolUseContext $context): PermissionDecision {
+                return PermissionDecision::ask('MCP tools always require user approval');
+            }
+        };
+
+        $checker = $this->makeChecker();
+        $decision = $checker->check($mcpLikeTool, ['file_path' => '/tmp/clean.txt'], $this->context);
+
+        $this->assertFalse($decision->allowed, 'MCP tool must not be auto-allowed just because isReadOnly returns true');
+        $this->assertTrue($decision->needsPrompt);
     }
 }

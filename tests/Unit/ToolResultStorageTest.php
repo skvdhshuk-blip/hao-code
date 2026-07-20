@@ -129,4 +129,74 @@ class ToolResultStorageTest extends TestCase
         $this->assertSame(120_000, ToolResultStorage::MAX_TOOL_RESULTS_PER_MESSAGE_CHARS);
         $this->assertSame(40_000, ToolResultStorage::MAX_SINGLE_RESULT_CHARS);
     }
+
+    // ─── path-traversal hardening (chatgpt 3rd review #1) ──────────────
+    //
+    // tool_use_id flows verbatim from model/gateway output. A hostile
+    // gateway could return `../../../../escaped` and the old code would
+    // write outside the storage dir. The id is now sanitized before being
+    // used as a filename, and a realpath boundary check guards the
+    // already-existing case too.
+
+    public function test_persist_rejects_traversal_in_tool_use_id(): void
+    {
+        $storage = $this->makeStorage();
+        $victimDir = sys_get_temp_dir() . '/haocode_test_storage_victim_' . uniqid();
+        @mkdir($victimDir, 0755, true);
+        try {
+            $victimFile = $victimDir . '/escaped.txt';
+            $this->assertFileDoesNotExist($victimFile);
+
+            $storage->persist('../../..' . ltrim($victimDir, '/') . '/escaped', 'leaked content');
+
+            $this->assertFileDoesNotExist($victimFile, 'traversal id must NOT write outside storage dir');
+        } finally {
+            @unlink($victimDir . '/escaped.txt');
+            @rmdir($victimDir);
+        }
+    }
+
+    public function test_persist_with_traversal_id_still_writes_inside_storage(): void
+    {
+        // Even with a hostile id, persistence must still succeed inside the
+        // storage dir (sanitized filename). Otherwise large-output handling
+        // silently breaks for any model that emits an unusual id.
+        $storage = $this->makeStorage();
+        $output = str_repeat('x', 50000);
+
+        $result = $storage->persist('../../etc/passwd', $output);
+
+        $this->assertNotNull($result, 'sanitized persist should still succeed');
+        $this->assertFileExists($result['filepath']);
+        // The file lives inside the storage directory tree (after sanitization
+        // the filename is `____etc_passwd.txt`).
+        $realFile = realpath($result['filepath']);
+        $this->assertNotFalse($realFile);
+        $this->assertStringContainsString('haocode/sessions', $realFile);
+    }
+
+    public function test_persist_preserves_safe_id_unchanged(): void
+    {
+        // Benign ids must pass through verbatim — no hashing that would hurt
+        // debuggability.
+        $storage = $this->makeStorage();
+
+        $result = $storage->persist('toolu_abc123', str_repeat('x', 50000));
+
+        $this->assertNotNull($result);
+        $this->assertStringEndsWith('/toolu_abc123.txt', $result['filepath']);
+    }
+
+    public function test_persist_normalizes_slashes_in_id(): void
+    {
+        // `call_abc/def` from a gateway should be sanitized to a single file,
+        // not interpreted as a subpath.
+        $storage = $this->makeStorage();
+
+        $result = $storage->persist('call_abc/def', str_repeat('x', 50000));
+
+        $this->assertNotNull($result);
+        $this->assertStringEndsWith('/call_abc_def.txt', $result['filepath']);
+        $this->assertFileExists($result['filepath']);
+    }
 }

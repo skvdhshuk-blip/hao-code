@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace HaoCode\Services\Hitl;
 
+use HaoCode\Services\Permissions\SensitivePathGuard;
+
 /**
  * Deterministic risk classifier for the smart HITL mode.
  *
@@ -34,28 +36,10 @@ final class HitlPolicy
     ];
 
     /** Input keys whose string values may reference paths or shell commands. */
-    private const PATH_LIKE_KEYS = [
-        'file_path', 'path', 'notebook_path', 'target_file', 'old_path', 'new_path',
-        'directory', 'dir', 'pattern', 'command', 'patch',
-    ];
+    private const PATH_LIKE_KEYS = SensitivePathGuard::PATH_LIKE_KEYS;
 
     /** Credential/secret material that no mode may touch automatically (R1). */
-    private const SENSITIVE_PATTERNS = [
-        '/(^|[\/\s])\.ssh(\/|$)/i' => 'SSH directory',
-        '/(^|[\/\s])\.aws(\/|$)/i' => 'AWS credentials directory',
-        '/(^|[\/\s])\.gnupg(\/|$)/i' => 'GnuPG directory',
-        '/(^|[\/\s])\.env([._-]|$)/i' => 'dotenv file',
-        '/(^|[\/\s])credentials?([._\/-]|$)/i' => 'credentials file',
-        '/(^|[\/\s])id_(rsa|dsa|ecdsa|ed25519)(\.|$)/i' => 'SSH private key',
-        '/\.(pem|key|p12|pfx|jks|keystore)($|\/)/i' => 'key/certificate material',
-        '/keychains?([\/\.]|$)/i' => 'OS keychain',
-        '/(^|[\/\s])\.netrc($|\/)/i' => 'netrc file',
-        '/(^|[\/\s])\.npmrc($|\/)/i' => 'npmrc file',
-        '/(^|[\/\s])\.pypirc($|\/)/i' => 'pypirc file',
-        '/runtime-state\.json/i' => 'adapter runtime state holding secrets',
-        '/\bsecurity\s+find-(generic|internet)-password\b/i' => 'macOS keychain extraction',
-        '/\/proc\/[^\s\/]*\/environ\b/i' => 'process environment harvesting',
-    ];
+    private const SENSITIVE_PATTERNS = SensitivePathGuard::SENSITIVE_PATTERNS;
 
     /**
      * Shell obfuscation / arbitrary-execution markers.

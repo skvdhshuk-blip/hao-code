@@ -42,6 +42,26 @@ class PermissionChecker
             return PermissionDecision::allow();
         }
 
+        // Sensitive-path hard red line (chatgpt 3rd review #3): applies to
+        // every tool's path-like inputs regardless of permission mode (except
+        // BypassPermissions above). Read/Grep/Glob of ~/.ssh/id_rsa, .env,
+        // ~/.aws/credentials etc. is denied before any policy or tool-specific
+        // check can allow it. This used to be enforced only inside
+        // HitlPolicy::classifyAction, which never runs for tools that reached
+        // the isReadOnly → allow fast path — so the red line was effectively
+        // bypassable. Also covers Bash commands like `cat ~/.ssh/id_rsa` via
+        // the `command` key in PATH_LIKE_KEYS.
+        $sensitiveHit = SensitivePathGuard::check($tool->name(), $input);
+        if ($sensitiveHit !== null) {
+            $this->denialTracker->record(
+                $tool->name(),
+                $this->summarizeInput($input),
+                "sensitive-path: {$sensitiveHit}",
+            );
+
+            return PermissionDecision::deny("Blocked by sensitive-path guard: {$sensitiveHit}");
+        }
+
         // Plan mode: deny write operations
         if ($mode === PermissionMode::Plan && ! $tool->isReadOnly($input)) {
             $this->denialTracker->record($tool->name(), $this->summarizeInput($input), 'plan mode');
@@ -74,6 +94,18 @@ class PermissionChecker
         $policyDecision = $this->checkPolicy($tool, $input, $context, $policyAutoAllow);
         if ($policyDecision !== null) {
             return $this->maybeDowngradeAsk($policyDecision);
+        }
+
+        // Tool-specific permission gate (chatgpt 3rd review #2):
+        // ToolInterface::checkPermissions() was effectively dead on the main
+        // path — only the MCP server-side ToolAdapter called it. MCP dynamic
+        // tools use it to force ask() (overriding the readOnlyHint annotation
+        // that would otherwise let PermissionChecker auto-allow). A tool deny
+        // or ask short-circuits here; a tool allow falls through so explicit
+        // deny rules and dangerous-pattern checks still apply below.
+        $toolDecision = $tool->checkPermissions($input, $context);
+        if (! $toolDecision->allowed) {
+            return $this->maybeDowngradeAsk($toolDecision);
         }
 
         // Check explicit deny rules first — deny always takes precedence

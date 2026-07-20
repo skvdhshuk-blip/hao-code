@@ -27,6 +27,53 @@ class SandboxTest extends TestCase
         $this->removeDir($cwd);
     }
 
+    public function test_upload_cwd_does_not_follow_symlinks_to_host_files(): void
+    {
+        // Regression for chatgpt 3rd review #4: a symlink inside the project
+        // directory that points at a file outside the project root must not
+        // have its target copied into the sandbox. PHP's SplFileInfo reports
+        // such a link as isFile()=true AND isLink()=true, so the old isFile()
+        // gate happily read the target's contents.
+        $outsideDir = $this->tmpDir('haocode-symlink-target-');
+        $secretFile = $outsideDir.'/id_rsa';
+        file_put_contents($secretFile, 'SECRET-HOST-KEY-CONTENT');
+
+        $cwd = $this->tmpDir('haocode-symlink-host-');
+        $regularFile = $cwd.'/regular.txt';
+        file_put_contents($regularFile, 'public project content');
+
+        // project/leak.txt -> outsideDir/id_rsa  (malicious symlink)
+        $leakLink = $cwd.'/leak.txt';
+        if (! @symlink($secretFile, $leakLink)) {
+            $this->removeDir($cwd);
+            $this->removeDir($outsideDir);
+            $this->markTestSkipped('Symbolic links are unavailable on this host.');
+        }
+
+        try {
+            $runtime = SandboxManager::create(SandboxConfig::local(sync: 'upload-cwd'), $cwd);
+
+            // The regular file must have been synced.
+            $this->assertSame('public project content', $runtime->backend->readFile('/workspace/regular.txt'));
+
+            // The symlink must NOT have been followed — readFile must fail
+            // (file does not exist in sandbox), and even if it did, the
+            // secret content must not be readable.
+            try {
+                $leaked = $runtime->backend->readFile('/workspace/leak.txt');
+                $this->assertStringNotContainsString('SECRET-HOST-KEY-CONTENT', $leaked, 'symlink target must not be copied into the sandbox');
+            } catch (\RuntimeException $e) {
+                // Expected: leak.txt was not synced.
+                $this->addToAssertionCount(1);
+            }
+
+            $runtime->close();
+        } finally {
+            $this->removeDir($cwd);
+            $this->removeDir($outsideDir);
+        }
+    }
+
     public function test_sandbox_tools_resolve_relative_paths_inside_remote_cwd(): void
     {
         $runtime = SandboxManager::create(SandboxConfig::local());

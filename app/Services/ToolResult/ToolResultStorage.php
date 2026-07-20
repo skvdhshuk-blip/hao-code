@@ -58,7 +58,13 @@ class ToolResultStorage
             return null;
         }
 
-        $filepath = $this->storageDir . '/' . $toolUseId . '.txt';
+        // The physical filename must never contain the raw tool_use_id: that
+        // id flows from model/gateway output and can include traversal tokens
+        // (e.g. `../../../../escaped`). Sanitize to a safe charset and verify
+        // the resolved path stays inside the storage directory. The business
+        // key (seenIds / replacements) still uses the original id, so replay
+        // stability and message-budget bookkeeping are unaffected.
+        $filepath = $this->safeStoragePath($toolUseId);
 
         if (file_put_contents($filepath, $output) === false) {
             return null;
@@ -79,6 +85,43 @@ class ToolResultStorage
             'preview' => $preview,
             'message' => $message,
         ];
+    }
+
+    /**
+     * Build a filesystem path for a tool result, hardened against traversal.
+     *
+     * Strips every byte outside [A-Za-z0-9_-] from the tool_use_id so that
+     * path separators, dots and glob metacharacters cannot escape the storage
+     * directory. A canonical-path boundary check is layered on top as
+     * defense-in-depth: even if a future caller bypasses this helper, an
+     * already-existing file outside storageDir would be refused.
+     */
+    private function safeStoragePath(string $toolUseId): string
+    {
+        $safe = preg_replace('/[^A-Za-z0-9_-]/', '_', $toolUseId);
+        if ($safe === null || $safe === '') {
+            // preg_replace only returns null on internal failure; empty result
+            // means the id was entirely hostile bytes. Fall back to a hash so
+            // we still produce a stable, unique filename.
+            $safe = hash('sha256', $toolUseId);
+        }
+
+        $filepath = $this->storageDir . '/' . $safe . '.txt';
+
+        $realDir = realpath($this->storageDir);
+        $normalizedDir = $realDir !== false ? $realDir : rtrim($this->storageDir, '/');
+        $realFile = realpath($filepath);
+        if (
+            $realFile !== false
+            && $realFile !== $normalizedDir
+            && ! str_starts_with($realFile, $normalizedDir . DIRECTORY_SEPARATOR)
+        ) {
+            throw new \RuntimeException(
+                'Refusing to persist tool result outside storage directory.',
+            );
+        }
+
+        return $filepath;
     }
 
     /**
