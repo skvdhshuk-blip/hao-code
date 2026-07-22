@@ -28,7 +28,7 @@
         "internal": false,
         "methods": {
             "__construct": {
-                "signature": "public function __construct(string $name = \"default\", ?string $model = null, ?string $apiKey = null, ?string $baseUrl = null, ?string $providerType = null, ?int $maxTokens = null, int $maxTurns = 50, ?string $systemPrompt = null, ?string $appendSystemPrompt = null, bool $thinkingEnabled = false, int $thinkingBudget = 10000, string $permissionMode = \"default\", array $allowedTools = [], array $disallowedTools = [], array $tools = [], array $skills = [], ?HaoCode\\Sdk\\Sandbox\\SandboxConfig $sandbox = null, ?HaoCode\\Sdk\\CredentialPool $credentialPool = null, ?bool $oauthBearer = null, string $memorySummaryLevel = \"l0\", ?string $memoryStoragePath = null, array $skillDirectories = [], bool $recursiveSkillDiscovery = false, array $interruptOn = [], bool $enableAskUser = false, ?HaoCode\\Sdk\\Memory\\MemoryStoreInterface $memoryStore = null, ?string $hitlMode = null, ?string $hitlReviewModel = null, ?string $hitlAllowlistPath = null, bool $ephemeral = true, array $headers = [])",
+                "signature": "public function __construct(string $name = \"default\", ?string $model = null, ?string $apiKey = null, ?string $baseUrl = null, ?string $providerType = null, ?int $maxTokens = null, int $maxTurns = 50, ?string $systemPrompt = null, ?string $appendSystemPrompt = null, bool $thinkingEnabled = false, int $thinkingBudget = 10000, string $permissionMode = \"default\", array $allowedTools = [], array $disallowedTools = [], array $tools = [], array $skills = [], ?HaoCode\\Sdk\\Sandbox\\SandboxConfig $sandbox = null, ?HaoCode\\Sdk\\CredentialPool $credentialPool = null, ?bool $oauthBearer = null, string $memorySummaryLevel = \"l0\", ?string $memoryStoragePath = null, array $skillDirectories = [], bool $recursiveSkillDiscovery = false, array $interruptOn = [], bool $enableAskUser = false, ?HaoCode\\Sdk\\Memory\\MemoryStoreInterface $memoryStore = null, ?string $hitlMode = null, ?string $hitlReviewModel = null, ?string $hitlAllowlistPath = null, bool $ephemeral = true, array $headers = [], bool $webfetchAllowPrivateNetworks = false, array $webfetchPrivateAllowList = [], int $webfetchMaxBytes = 5242880, ?string $sessionId = null, bool $continueSession = false, int $structuredMaxRetries = 1)",
                 "api": true,
                 "internal": false
             },
@@ -96,6 +96,11 @@
             },
             "baseUrl": {
                 "signature": "public readonly ?string $baseUrl",
+                "api": true,
+                "internal": false
+            },
+            "continueSession": {
+                "signature": "public readonly bool $continueSession",
                 "api": true,
                 "internal": false
             },
@@ -204,6 +209,11 @@
                 "api": true,
                 "internal": false
             },
+            "sessionId": {
+                "signature": "public readonly ?string $sessionId",
+                "api": true,
+                "internal": false
+            },
             "skillDirectories": {
                 "signature": "public readonly array $skillDirectories",
                 "api": true,
@@ -211,6 +221,11 @@
             },
             "skills": {
                 "signature": "public readonly array $skills",
+                "api": true,
+                "internal": false
+            },
+            "structuredMaxRetries": {
+                "signature": "public readonly int $structuredMaxRetries",
                 "api": true,
                 "internal": false
             },
@@ -231,6 +246,21 @@
             },
             "tools": {
                 "signature": "public readonly array $tools",
+                "api": true,
+                "internal": false
+            },
+            "webfetchAllowPrivateNetworks": {
+                "signature": "public readonly bool $webfetchAllowPrivateNetworks",
+                "api": true,
+                "internal": false
+            },
+            "webfetchMaxBytes": {
+                "signature": "public readonly int $webfetchMaxBytes",
+                "api": true,
+                "internal": false
+            },
+            "webfetchPrivateAllowList": {
+                "signature": "public readonly array $webfetchPrivateAllowList",
                 "api": true,
                 "internal": false
             }
@@ -394,6 +424,11 @@
                 "signature": "public function __construct(?string $apiKey = null, ?string $model = null, ?string $baseUrl = null, ?string $providerType = null, ?int $maxTokens = null, ?string $cwd = null, int $maxTurns = 50, ?float $maxBudgetUsd = null, string $permissionMode = \"default\", array $allowedTools = [], array $disallowedTools = [], ?string $systemPrompt = null, ?string $appendSystemPrompt = null, bool $thinkingEnabled = false, int $thinkingBudget = 10000, mixed $onText = null, mixed $onThinking = null, mixed $onToolStart = null, mixed $onToolComplete = null, mixed $onTurnStart = null, bool $ephemeral = true, array $tools = [], array $skills = [], ?HaoCode\\Sdk\\AbortController $abortController = null, ?string $sessionId = null, bool $continueSession = false, ?array $responseSchema = null, ?HaoCode\\Sdk\\CredentialPool $credentialPool = null, ?HaoCode\\Sdk\\Sandbox\\SandboxConfig $sandbox = null, string $memorySummaryLevel = \"l0\", ?string $memoryStoragePath = null, array $skillDirectories = [], bool $recursiveSkillDiscovery = false, array $interruptOn = [], bool $enableAskUser = false, ?HaoCode\\Sdk\\Memory\\MemoryStoreInterface $memoryStore = null, ?string $hitlMode = null, ?string $hitlReviewModel = null, ?string $hitlAllowlistPath = null, ?bool $oauthBearer = null, array $images = [], array $headers = [], int $structuredMaxRetries = 1, bool $webfetchAllowPrivateNetworks = false, array $webfetchPrivateAllowList = [], int $webfetchMaxBytes = 5242880)",
                 "api": false,
                 "internal": false
+            },
+            "additionalToolFilter": {
+                "signature": "public function additionalToolFilter() : ?callable",
+                "api": false,
+                "internal": true
             },
             "effectiveWorkingDirectory": {
                 "signature": "public function effectiveWorkingDirectory() : ?string",

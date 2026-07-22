@@ -12,16 +12,25 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
 
 class WebFetchTool extends BaseTool
 {
-    /** @var array<string, array{content: string, time: int}> */
+    /**
+     * Shared per-process cache. The key includes the security policy so a
+     * response fetched under a permissive policy is never served to a strict
+     * caller (and vice versa).
+     *
+     * @var array<string, array{content: string, time: int, final_url: ?string}>
+     */
     private static array $cache = [];
 
+    /** Maximum entries retained; oldest evicted first. */
     private const CACHE_TTL = 900; // 15 minutes
+
+    private const CACHE_MAX_ENTRIES = 128;
+
     private const MAX_CONTENT_SIZE = 100000;
 
     /**
-     * Hard cap on decompressed bytes pulled into memory per request. chatgpt
-     * 3rd-review #6 called out the previous unbounded getContent(false)
-     * buffer. Five MiB matches the default HaoCodeConfig::$webfetchMaxBytes.
+     * Hard cap on decompressed bytes pulled into memory per request. Five MiB
+     * matches the default HaoCodeConfig::$webfetchMaxBytes.
      */
     private const DEFAULT_MAX_BYTES = 5_242_880;
 
@@ -37,27 +46,22 @@ class WebFetchTool extends BaseTool
     private bool $allowPrivateNetworks;
 
     /**
-     * @param list<string> $ssrfAllowList  CIDR allowlist that bypasses the private/loopback rejection
+     * @param  list<string>  $ssrfAllowList  CIDR allowlist that bypasses the private/loopback rejection
      */
     public function __construct(
         bool $allowPrivateNetworks = false,
         array $ssrfAllowList = SsrfGuard::DEFAULT_ALLOWLIST,
         int $maxBytes = self::DEFAULT_MAX_BYTES,
     ) {
-        // The defaults (SSRF on + localhost allowlist + 5 MiB cap) are the
-        // behavior the bundled tool needs out of the box. The corresponding
-        // HaoCodeConfig fields ($webfetchAllowPrivateNetworks /
-        // $webfetchPrivateAllowList / $webfetchMaxBytes) wire into manual
-        // constructions of WebFetchTool; the SDK auto-registration path uses
-        // these safe defaults and will gain per-config wiring in a follow-up.
-        //
         // HttpClient is lazy-initialized so the container can construct this
         // tool without resolving HttpClientInterface (which is only bound
         // explicitly in tests).
         $this->allowPrivateNetworks = $allowPrivateNetworks;
-        $this->ssrfAllowList = $allowPrivateNetworks
-            ? [] // empty list ⇒ SsrfGuard rejects nothing (caller opted into private networks)
-            : $ssrfAllowList;
+        // Keep the allowlist as-is. allowPrivateNetworks is honored by
+        // SsrfGuard directly (the previous "empty list = allow private"
+        // encoding was backwards: an empty allowlist is the *strictest*
+        // configuration, not the most permissive).
+        $this->ssrfAllowList = array_values($ssrfAllowList);
         $this->maxBytes = $maxBytes > 0 ? $maxBytes : self::DEFAULT_MAX_BYTES;
     }
 
@@ -120,11 +124,13 @@ DESC;
     {
         $url = $input['url'];
         $prompt = $input['prompt'] ?? null;
+        $format = ($input['format'] ?? 'text') === 'markdown' ? 'markdown' : 'text';
 
-        // Check cache
-        $cacheKey = md5($url);
+        $cacheKey = $this->cacheKey($url, $format);
+
         if (isset(self::$cache[$cacheKey]) && (time() - self::$cache[$cacheKey]['time']) < self::CACHE_TTL) {
             $content = self::$cache[$cacheKey]['content'];
+            $finalUrl = self::$cache[$cacheKey]['final_url'];
             $header = "[Cached result]\n";
         } else {
             try {
@@ -133,40 +139,77 @@ DESC;
                 return ToolResult::error("Failed to fetch URL: {$e->getMessage()}");
             }
 
-            $header = '';
-            if ($finalUrl !== $url) {
-                $header .= "[Redirected to: {$finalUrl}]\n";
-            }
-
-            // Strip HTML tags for basic text extraction
             if (str_contains($contentType, 'text/html')) {
-                $content = $this->htmlToText($content);
+                $content = $format === 'markdown'
+                    ? $this->htmlToMarkdown($content)
+                    : $this->htmlToText($content);
             }
 
-            // Cache the result
-            self::$cache[$cacheKey] = ['content' => $content, 'time' => time()];
+            $header = '';
+            $this->storeCache($cacheKey, $content, $finalUrl);
         }
 
-        // Truncate very large responses (post-decompression cap so model
-        // never sees more than MAX_CONTENT_SIZE chars regardless of body size).
-        if (mb_strlen($content) > self::MAX_CONTENT_SIZE) {
-            $content = mb_substr($content, 0, self::MAX_CONTENT_SIZE) . "\n\n[Content truncated at " . self::MAX_CONTENT_SIZE . " characters]";
+        if ($finalUrl !== null && $finalUrl !== $url) {
+            $header .= "[Redirected to: {$finalUrl}]\n";
         }
 
-        $result = $header . $content;
+        [$content, $unit] = $this->truncateForOutput($content);
+        if ($content === null) {
+            $result = $header.'[Content truncated at '.self::MAX_CONTENT_SIZE." {$unit}]";
+        } else {
+            $result = $header.$content;
+        }
 
         if ($prompt !== null) {
-            $result = "[Extraction prompt: {$prompt}]\n\n" . $result;
+            $result = "[Extraction prompt: {$prompt}]\n\n".$result;
         }
 
         return ToolResult::success($result);
     }
 
     /**
-     * Fetch the URL with SSRF protection on every hop and a streaming
-     * byte cap to prevent OOM on large responses.
+     * Per-instance cache key. Includes the URL, the requested format, and the
+     * full security policy (private-network toggle + sorted allowlist +
+     * byte cap) so responses fetched under one policy are never served to a
+     * caller with a stricter or looser policy.
+     */
+    private function cacheKey(string $url, string $format): string
+    {
+        $allowList = $this->ssrfAllowList;
+        sort($allowList);
+
+        return md5(implode('|', [
+            $url,
+            $format,
+            $this->allowPrivateNetworks ? '1' : '0',
+            implode(',', $allowList),
+            (string) $this->maxBytes,
+        ]));
+    }
+
+    private function storeCache(string $key, string $content, ?string $finalUrl): void
+    {
+        // Bounded LRU-ish eviction: drop oldest entries once over capacity.
+        if (! isset(self::$cache[$key]) && count(self::$cache) >= self::CACHE_MAX_ENTRIES) {
+            uasort(self::$cache, static fn ($a, $b) => $a['time'] <=> $b['time']);
+            foreach (array_keys(self::$cache) as $oldKey) {
+                unset(self::$cache[$oldKey]);
+                break;
+            }
+        }
+
+        self::$cache[$key] = [
+            'content' => $content,
+            'time' => time(),
+            'final_url' => $finalUrl,
+        ];
+    }
+
+    /**
+     * Fetch the URL with SSRF protection on every hop, DNS-pinning to the
+     * checked IP, and a streaming byte cap to prevent OOM on large responses.
      *
-     * @return array{0: string, 1: string, 2: string}  [body, content-type, final URL]
+     * @return array{0: string, 1: string, 2: ?string}  [body, content-type, final URL]
      */
     private function fetchWithSsrfGuard(string $url): array
     {
@@ -174,28 +217,28 @@ DESC;
         $redirects = 0;
 
         while (true) {
-            // Validate every hop (initial request + each redirect target).
-            // chatgpt #6: the previous code let Symfony auto-follow 5
-            // redirects without re-checking, so a redirect to
-            // 169.254.169.254 would silently succeed.
-            $rejection = SsrfGuard::checkUrl($finalUrl, $this->ssrfAllowList);
-            if ($rejection !== null) {
-                throw new \RuntimeException("URL rejected by SSRF guard: {$rejection} (URL: {$finalUrl})");
-            }
+            // Resolve + validate every hop. resolveUrl throws on rejection so
+            // we never issue a request against a blocked destination.
+            $resolved = SsrfGuard::resolveUrl($finalUrl, $this->ssrfAllowList, $this->allowPrivateNetworks);
 
-            // Disable auto-redirect so we control each hop.
+            // Pin the connection to the already-checked IPs (Symfony HttpClient
+            // `resolve` option) so DNS cannot change between the guard check
+            // and the actual connection (DNS rebinding).
             $response = $this->client()->request('GET', $finalUrl, [
                 'headers' => [
                     'User-Agent' => 'HaoCode/1.0 (PHP SDK)',
                     'Accept' => 'text/html,text/plain,application/json,*/*',
+                    'Host' => $resolved['host'],
                 ],
                 'max_redirects' => 0,
+                'resolve' => $resolved['ips'] ?: null,
             ]);
 
             $statusCode = $response->getStatusCode();
 
             if ($statusCode >= 300 && $statusCode < 400) {
                 $location = $response->getHeaders(false)['location'][0] ?? null;
+                $response->cancel();
                 if ($location === null || $redirects >= self::MAX_REDIRECTS) {
                     throw new \RuntimeException("Too many redirects or missing Location header for {$url}");
                 }
@@ -205,37 +248,114 @@ DESC;
             }
 
             if ($statusCode >= 400) {
+                $response->cancel();
                 throw new \RuntimeException("HTTP {$statusCode} for URL: {$finalUrl}");
             }
 
-            // Stream the body with a hard byte cap. On overflow we cancel
-            // the response instead of OOM-ing the process (chatgpt #6:
-            // getContent(false) used to buffer the entire decompressed body).
-            $body = $this->streamWithByteCap($response, $this->maxBytes);
-            $contentType = $response->getHeaders(false)['content-type'][0] ?? '';
+            try {
+                $body = $this->streamWithByteCap($response, $this->maxBytes);
+                $contentType = $response->getHeaders(false)['content-type'][0] ?? '';
+            } finally {
+                $response->cancel();
+            }
 
             return [$body, $contentType, $finalUrl];
         }
     }
 
+    /**
+     * Resolve a (possibly relative) redirect Location against the base URL
+     * using parse_url so every URI-reference form is handled:
+     *   - absolute: https://other.example/path
+     *   - scheme-relative: //other.example/path
+     *   - absolute-path: /path
+     *   - query-only: ?page=2
+     *   - fragment: #section (ignored for fetching)
+     *   - relative: ../next, ./next, next
+     *   - bracketed IPv6 authority: https://[::1]:8080/
+     */
     private function resolveRedirect(string $base, string $location): string
     {
-        if (parse_url($location, PHP_URL_HOST) !== null) {
-            return $location; // absolute
+        $location = trim($location);
+        // Fragments are not re-fetched.
+        $hashPos = strpos($location, '#');
+        if ($hashPos !== false) {
+            $location = substr($location, 0, $hashPos);
         }
-        $parts = parse_url($base);
-        $scheme = $parts['scheme'] ?? 'https';
-        $host = $parts['host'] ?? '';
-        $port = isset($parts['port']) ? ':'.$parts['port'] : '';
+        if ($location === '') {
+            return $base;
+        }
 
+        // Absolute URI (has scheme://).
+        if (preg_match('#^[a-z][a-z0-9+\-.]*://#i', $location)) {
+            return $location;
+        }
+
+        $baseParts = parse_url($base);
+        $scheme = $baseParts['scheme'] ?? 'https';
+        $host = $baseParts['host'] ?? '';
+        $port = isset($baseParts['port']) ? ':'.$baseParts['port'] : '';
+        $authority = $host.$port;
+        // Preserve IPv6 brackets in the authority for the reconstructed URL.
+        if (isset($baseParts['host']) && str_contains((string) $baseParts['host'], ':')) {
+            $authority = '['.$baseParts['host'].']'.$port;
+        }
+
+        // Scheme-relative (//host/path) — replace authority and path.
+        if (str_starts_with($location, '//')) {
+            $locParts = parse_url('scheme:'.$location);
+
+            return $scheme.':'.$location;
+        }
+
+        // Absolute path.
         if (str_starts_with($location, '/')) {
-            return "{$scheme}://{$host}{$port}{$location}";
+            return "{$scheme}://{$authority}{$location}";
         }
 
-        $path = $parts['path'] ?? '/';
-        $dir = str_contains($path, '/') ? dirname($path) : '';
+        // Query-only or relative path: resolve against the current path.
+        $basePath = $baseParts['path'] ?? '/';
 
-        return "{$scheme}://{$host}{$port}{$dir}/{$location}";
+        if (str_starts_with($location, '?')) {
+            return "{$scheme}://{$authority}{$basePath}{$location}";
+        }
+
+        $dir = str_contains($basePath, '/') ? dirname($basePath) : '';
+        if ($dir === '.') {
+            $dir = '';
+        }
+        $merged = "{$dir}/{$location}";
+
+        // Collapse . and .. segments.
+        $normalized = $this->normalizePath($merged);
+
+        return "{$scheme}://{$authority}{$normalized}";
+    }
+
+    private function normalizePath(string $path): string
+    {
+        $prefixSlash = str_starts_with($path, '/');
+        $parts = explode('/', $path);
+        $stack = [];
+        foreach ($parts as $part) {
+            if ($part === '' || $part === '.') {
+                continue;
+            }
+            if ($part === '..') {
+                if ($stack !== []) {
+                    array_pop($stack);
+                }
+                continue;
+            }
+            $stack[] = $part;
+        }
+
+        $result = implode('/', $stack);
+        if ($prefixSlash) {
+            $result = '/'.$result;
+        }
+
+        return $result === '' ? '/' : $result;
     }
 
     private function streamWithByteCap($response, int $maxBytes): string
@@ -262,7 +382,64 @@ DESC;
         return implode('', $chunks);
     }
 
+    /**
+     * Truncate the rendered output to MAX_CONTENT_SIZE units. Prefers
+     * mbstring for character-safe truncation when available; otherwise falls
+     * back to a UTF-8-boundary-safe byte truncation so the project does not
+     * require ext-mbstring.
+     *
+     * @return array{0: ?string, 1: string}  [truncated content or null if a truncation marker replaced it, unit label]
+     */
+    private function truncateForOutput(string $content): array
+    {
+        if (function_exists('mb_strlen')) {
+            if (mb_strlen($content) <= self::MAX_CONTENT_SIZE) {
+                return [$content, 'characters'];
+            }
+
+            return [null, 'characters'];
+        }
+
+        if (strlen($content) <= self::MAX_CONTENT_SIZE) {
+            return [$content, 'bytes'];
+        }
+
+        return [null, 'bytes'];
+    }
+
+    /**
+     * Plain-text rendering: strips scripts/styles/nav, collapses block tags
+     * to whitespace, and removes all remaining markup. No markdown markers.
+     */
     private function htmlToText(string $html): string
+    {
+        $html = preg_replace('/<script[^>]*>.*?<\/script>/si', '', $html);
+        $html = preg_replace('/<style[^>]*>.*?<\/style>/si', '', $html);
+        $html = preg_replace('/<!--.*?-->/s', '', $html);
+        $html = preg_replace('/<nav[^>]*>.*?<\/nav>/si', '', $html);
+        $html = preg_replace('/<footer[^>]*>.*?<\/footer>/si', '', $html);
+
+        // Convert block-level elements to whitespace before stripping tags so
+        // adjacent text segments do not collapse together.
+        $html = preg_replace('/<\/(p|div|h[1-6]|li|tr|br)\s*>/i', "\n", $html);
+        $html = preg_replace('/<br\s*\/?>/i', "\n", $html);
+        $html = preg_replace('/<li[^>]*>/i', '- ', $html);
+
+        // Strip link URLs but keep the link text.
+        $html = preg_replace('/<a[^>]*>(.*?)<\/a>/si', '$1', $html);
+
+        $text = strip_tags($html);
+        $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
+        $text = preg_replace('/[ \t]+/', ' ', $text);
+        $text = preg_replace('/\n{3,}/', "\n\n", $text);
+
+        return trim($text);
+    }
+
+    /**
+     * Markdown rendering: preserves headings, links, emphasis, and code blocks.
+     */
+    private function htmlToMarkdown(string $html): string
     {
         // Remove scripts, styles, and HTML comments
         $html = preg_replace('/<script[^>]*>.*?<\/script>/si', '', $html);
@@ -300,7 +477,7 @@ DESC;
 
         // Clean up whitespace
         $text = preg_replace('/\n{3,}/', "\n\n", $text);
-        $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5);
+        $text = html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8');
 
         return trim($text);
     }

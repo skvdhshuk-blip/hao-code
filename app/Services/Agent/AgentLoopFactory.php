@@ -22,6 +22,7 @@ use HaoCode\Tools\Memory\MemoryReadTool;
 use HaoCode\Tools\Memory\MemoryWriteTool;
 use HaoCode\Tools\AskUserQuestion\AskUserQuestionTool;
 use HaoCode\Tools\Skill\SkillDefinition;
+use HaoCode\Tools\Skill\SkillLoader;
 use HaoCode\Tools\Skill\SkillTool;
 use HaoCode\Tools\ToolRegistry;
 use HaoCode\Tools\ToolUseContext;
@@ -49,6 +50,7 @@ class AgentLoopFactory
         bool $ephemeral = false,
         bool $afterFork = false,
         bool $readOnly = false,
+        ?callable $additionalToolFilter = null,
     ): AgentLoop {
         if ($readOnly && $runContext === null) {
             $projectDirectory = ($workingDirectory ?? getcwd()) ?: '/';
@@ -72,8 +74,19 @@ class AgentLoopFactory
             $toolFilter,
             $additionalTools !== [] || $runContext !== null,
         );
+        // Register additional tools (SDK custom tools, sandbox replacements,
+        // dynamic MCP tools). These honor disallowedTools and sandbox-derived
+        // restrictions, but NOT the allowedTools whitelist: a caller who
+        // passes `tools: [...]` clearly intends those tools to be available,
+        // and the public examples rely on that. The dedicated additional-tool
+        // filter excludes only explicitly denied or sandbox-incompatible
+        // tools, so a custom tool supplied without an allowedTools entry is
+        // still registered.
+        $additionalFilter = $additionalToolFilter ?? static fn (string $name): bool => true;
         foreach ($additionalTools as $tool) {
-            $toolRegistry->register($tool);
+            if ($additionalFilter($tool->name())) {
+                $toolRegistry->register($tool);
+            }
         }
 
         if ($runContext !== null) {

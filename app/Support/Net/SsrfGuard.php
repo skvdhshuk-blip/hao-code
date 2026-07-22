@@ -11,12 +11,16 @@ namespace HaoCode\Support\Net;
  * link-local / cloud-metadata destinations before any connection is opened.
  * Redirect targets are re-checked the same way (each hop must pass).
  *
+ * Resolved addresses are exposed via {@see resolveUrl()} so callers can pin
+ * the HTTP client to an already-checked IP, closing the DNS-rebinding window
+ * between the guard check and the actual connection.
+ *
  * This is the hand-rolled equivalent of Symfony's NoPrivateNetworkHttpClient
  * (which the project cannot pull in because composer require fails in the
  * build environment). It uses PHP's built-in filter_var flags plus a small
- * IPv6 private-range check, which covers everything chatgpt's 3rd-review #6
- * called out: 127.0.0.0/8, ::1, RFC1918, 169.254.169.254 (cloud metadata),
- * link-local fe80::/10, unique-local fc00::/7, 0.0.0.0, etc.
+ * IPv6 private-range check, which covers 127.0.0.0/8, ::1, RFC1918,
+ * 169.254.169.254 (cloud metadata), link-local fe80::/10, unique-local
+ * fc00::/7, 0.0.0.0, etc.
  *
  * @internal
  */
@@ -35,63 +39,73 @@ final class SsrfGuard
      * Resolve and validate a URL. Returns null on success, or a
      * human-readable rejection reason.
      *
-     * @param list<string> $allowList
+     * @param  list<string>  $allowList
      */
-    public static function checkUrl(string $url, array $allowList = self::DEFAULT_ALLOWLIST): ?string
-    {
-        $parsed = parse_url($url);
-        if ($parsed === false || ! isset($parsed['host']) || $parsed['host'] === '') {
-            return 'Could not parse URL host.';
+    public static function checkUrl(
+        string $url,
+        array $allowList = self::DEFAULT_ALLOWLIST,
+        bool $allowPrivateNetworks = false,
+    ): ?string {
+        return self::inspectUrl($url, $allowList, $allowPrivateNetworks)['rejection'];
+    }
+
+    /**
+     * Resolve and validate a URL, returning the exact addresses that passed.
+     *
+     * Callers should pin the HTTP request to one of these IPs (e.g. via
+     * Symfony HttpClient's `resolve` option) so DNS cannot change between
+     * the guard check and the network connection.
+     *
+     * @param  list<string>  $allowList
+     * @return array{host: string, ips: list<string>}
+     *
+     * @throws \RuntimeException when the URL is rejected
+     */
+    public static function resolveUrl(
+        string $url,
+        array $allowList = self::DEFAULT_ALLOWLIST,
+        bool $allowPrivateNetworks = false,
+    ): array {
+        $result = self::inspectUrl($url, $allowList, $allowPrivateNetworks);
+        if ($result['rejection'] !== null) {
+            throw new \RuntimeException($result['rejection']);
         }
 
-        $scheme = strtolower($parsed['scheme'] ?? '');
-        if ($scheme !== 'http' && $scheme !== 'https') {
-            return "Scheme '{$scheme}' is not allowed (http/https only).";
-        }
-
-        $host = $parsed['host'];
-        // Bracketed IPv6 (e.g. [::1]) — strip brackets for IP checks.
-        if (str_starts_with($host, '[') && str_ends_with($host, ']')) {
-            $host = substr($host, 1, -1);
-        }
-
-        // If the host is already a literal IP, check directly. Otherwise
-        // resolve via DNS and check every returned address (IPv4 + IPv6).
-        $ips = self::resolveHostIps($host);
-        if ($ips === []) {
-            return "Could not resolve host '{$host}'.";
-        }
-
-        foreach ($ips as $ip) {
-            $rejection = self::checkIp($ip, $allowList);
-            if ($rejection !== null) {
-                return $rejection;
-            }
-        }
-
-        return null;
+        return [
+            'host' => $result['host'],
+            'ips' => $result['ips'],
+        ];
     }
 
     /**
      * Reject loopback / private / reserved / link-local IPs unless they
      * match the allowlist. Returns null on success.
      *
-     * @param list<string> $allowList
+     * @param  list<string>  $allowList
      */
-    public static function checkIp(string $ip, array $allowList = self::DEFAULT_ALLOWLIST): ?string
-    {
-        // Allowlist short-circuit. IpUtils is in symfony/http-foundation,
-        // which we can't depend on, so we implement CIDR matching manually
-        // for the common cases (full-IPv4 octets and /128 IPv6).
+    public static function checkIp(
+        string $ip,
+        array $allowList = self::DEFAULT_ALLOWLIST,
+        bool $allowPrivateNetworks = false,
+    ): ?string {
+        $flags = FILTER_FLAG_IPV4 | FILTER_FLAG_IPV6;
+        if (filter_var($ip, FILTER_VALIDATE_IP, $flags) === false) {
+            return "Resolved value '{$ip}' is not a valid IP.";
+        }
+
+        // Allowlist short-circuit. A matching CIDR is always accepted,
+        // even when the caller opted out of private networks entirely.
         foreach ($allowList as $cidr) {
             if (self::ipMatchesCidr($ip, $cidr)) {
                 return null;
             }
         }
 
-        $flags = FILTER_FLAG_IPV4 | FILTER_FLAG_IPV6;
-        if (filter_var($ip, FILTER_VALIDATE_IP, $flags) === false) {
-            return "Resolved value '{$ip}' is not a valid IP.";
+        if ($allowPrivateNetworks) {
+            // Caller explicitly accepted private/loopback ranges. We still
+            // require the value to be a syntactically valid IP (checked above)
+            // but no longer reject RFC1918 / loopback / link-local / reserved.
+            return null;
         }
 
         // FILTER_FLAG_NO_PRIV_RANGE | FILTER_FLAG_NO_RES_RANGE rejects:
@@ -106,6 +120,47 @@ final class SsrfGuard
         }
 
         return null;
+    }
+
+    /**
+     * @param  list<string>  $allowList
+     * @return array{host: string, ips: list<string>, rejection: ?string}
+     */
+    private static function inspectUrl(string $url, array $allowList, bool $allowPrivateNetworks): array
+    {
+        $parsed = parse_url($url);
+        if ($parsed === false || ! isset($parsed['host']) || $parsed['host'] === '') {
+            return ['host' => '', 'ips' => [], 'rejection' => 'Could not parse URL host.'];
+        }
+
+        $scheme = strtolower($parsed['scheme'] ?? '');
+        if ($scheme !== 'http' && $scheme !== 'https') {
+            $host = $parsed['host'];
+
+            return ['host' => $host, 'ips' => [], 'rejection' => "Scheme '{$scheme}' is not allowed (http/https only)."];
+        }
+
+        $host = $parsed['host'];
+        // Bracketed IPv6 (e.g. [::1]) — strip brackets for IP checks.
+        if (str_starts_with($host, '[') && str_ends_with($host, ']')) {
+            $host = substr($host, 1, -1);
+        }
+
+        // If the host is already a literal IP, check directly. Otherwise
+        // resolve via DNS and check every returned address (IPv4 + IPv6).
+        $ips = self::resolveHostIps($host);
+        if ($ips === []) {
+            return ['host' => $host, 'ips' => [], 'rejection' => "Could not resolve host '{$host}'."];
+        }
+
+        foreach ($ips as $ip) {
+            $rejection = self::checkIp($ip, $allowList, $allowPrivateNetworks);
+            if ($rejection !== null) {
+                return ['host' => $host, 'ips' => $ips, 'rejection' => $rejection];
+            }
+        }
+
+        return ['host' => $host, 'ips' => $ips, 'rejection' => null];
     }
 
     /**
@@ -142,58 +197,67 @@ final class SsrfGuard
     }
 
     /**
-     * Minimal CIDR matcher covering the cases we ship in DEFAULT_ALLOWLIST
-     * (IPv4 a.b.c.d/n and full IPv6 ::1/128). General-purpose CIDR matching
-     * without symfony/http-foundation is verbose; we only need enough to
-     * honor the localhost exception.
+     * Binary CIDR matching for IPv4 and IPv6 using inet_pton().
+     *
+     * Handles arbitrary legal prefixes (not just /32 and /128), exact-IP
+     * entries (no slash), /0, and non-byte-aligned prefixes. Malformed CIDRs
+     * and prefix/family mismatches fail closed (return false) rather than
+     * performing unsafe shifts that overflow on 32-bit PHP.
      */
     private static function ipMatchesCidr(string $ip, string $cidr): bool
     {
-        if (! str_contains($cidr, '/')) {
-            return $ip === $cidr;
+        $ipBin = @inet_pton($ip);
+        if ($ipBin === false) {
+            return false;
         }
-        [$subnet, $prefixStr] = explode('/', $cidr, 2);
+
+        // Exact address entry (no slash).
+        if (! str_contains($cidr, '/')) {
+            $candidateBin = @inet_pton($cidr);
+
+            return $candidateBin !== false && $ipBin === $candidateBin;
+        }
+
+        $parts = explode('/', $cidr, 2);
+        if (count($parts) !== 2 || ! preg_match('/^[0-9]+$/', $parts[1])) {
+            return false;
+        }
+        [$subnet, $prefixStr] = $parts;
         $prefix = (int) $prefixStr;
 
-        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false
-            && filter_var($subnet, FILTER_VALIDATE_IP, FILTER_FLAG_IPV4) !== false) {
-            $ipLong = ip2long($ip);
-            $subnetLong = ip2long($subnet);
-            if ($ipLong === false || $subnetLong === false) {
-                return false;
-            }
-            $mask = $prefix === 0 ? 0 : ((1 << 32) - (1 << (32 - $prefix)));
-
-            return ($ipLong & $mask) === ($subnetLong & $mask);
+        $subnetBin = @inet_pton($subnet);
+        if ($subnetBin === false) {
+            return false;
         }
 
-        if (filter_var($ip, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false
-            && filter_var($subnet, FILTER_VALIDATE_IP, FILTER_FLAG_IPV6) !== false) {
-            $ipBin = inet_pton($ip);
-            $subnetBin = inet_pton($subnet);
-            if ($ipBin === false || $subnetBin === false) {
-                return false;
-            }
-
-            // Match byte-by-byte against /128 prefix (the only case we ship).
-            $totalBits = strlen($ipBin) * 8; // 128 for IPv6
-            if ($prefix >= $totalBits) {
-                return $ipBin === $subnetBin;
-            }
-            $fullBytes = intdiv($prefix, 8);
-            $remainderBits = $prefix % 8;
-
-            if (substr($ipBin, 0, $fullBytes) !== substr($subnetBin, 0, $fullBytes)) {
-                return false;
-            }
-            if ($remainderBits === 0) {
-                return true;
-            }
-            $mask = (0xFF << (8 - $remainderBits)) & 0xFF;
-
-            return (ord($ipBin[$fullBytes]) & $mask) === (ord($subnetBin[$fullBytes]) & $mask);
+        // Family mismatch (IPv4 address vs IPv6 CIDR or vice versa).
+        if (strlen($ipBin) !== strlen($subnetBin)) {
+            return false;
         }
 
-        return false;
+        $totalBits = strlen($ipBin) * 8; // 32 for IPv4, 128 for IPv6
+        if ($prefix < 0 || $prefix > $totalBits) {
+            return false;
+        }
+        if ($prefix === 0) {
+            return true;
+        }
+        if ($prefix === $totalBits) {
+            return $ipBin === $subnetBin;
+        }
+
+        $fullBytes = intdiv($prefix, 8);
+        $remainderBits = $prefix % 8;
+
+        if ($fullBytes > 0 && substr($ipBin, 0, $fullBytes) !== substr($subnetBin, 0, $fullBytes)) {
+            return false;
+        }
+        if ($remainderBits === 0) {
+            return true;
+        }
+
+        $mask = (0xFF << (8 - $remainderBits)) & 0xFF;
+
+        return (ord($ipBin[$fullBytes]) & $mask) === (ord($subnetBin[$fullBytes]) & $mask);
     }
 }

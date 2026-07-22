@@ -123,6 +123,60 @@ class AgentTest extends TestCase
         $this->assertSame(['Editor-Version' => 'vscode/1.96.0'], $restored->headers);
     }
 
+    /**
+     * The WebFetch security policy and session/structured fields must survive
+     * Agent → config → Agent round-trips so a configured Agent run actually
+     * honors them. Before v1.13.2 these fields existed on HaoCodeConfig but
+     * were silently dropped by fromConfig/toConfig.
+     */
+    public function test_webfetch_session_and_structured_fields_round_trip(): void
+    {
+        $original = new Agent(
+            name: 'webfetch-agent',
+            webfetchAllowPrivateNetworks: true,
+            webfetchPrivateAllowList: ['192.168.0.0/16', '10.0.0.0/8'],
+            webfetchMaxBytes: 1_048_576,
+            sessionId: 'sess-abc',
+            continueSession: true,
+            structuredMaxRetries: 3,
+        );
+
+        $config = $original->toConfig();
+        $this->assertTrue($config->webfetchAllowPrivateNetworks);
+        $this->assertSame(['192.168.0.0/16', '10.0.0.0/8'], $config->webfetchPrivateAllowList);
+        $this->assertSame(1_048_576, $config->webfetchMaxBytes);
+        $this->assertSame('sess-abc', $config->sessionId);
+        $this->assertTrue($config->continueSession);
+        $this->assertSame(3, $config->structuredMaxRetries);
+
+        $restored = Agent::fromConfig($config, name: 'webfetch-agent');
+        $this->assertTrue($restored->webfetchAllowPrivateNetworks);
+        $this->assertSame(['192.168.0.0/16', '10.0.0.0/8'], $restored->webfetchPrivateAllowList);
+        $this->assertSame(1_048_576, $restored->webfetchMaxBytes);
+        $this->assertSame('sess-abc', $restored->sessionId);
+        $this->assertTrue($restored->continueSession);
+        $this->assertSame(3, $restored->structuredMaxRetries);
+    }
+
+    /**
+     * Immutable with*() operations must carry the new passthrough fields
+     * forward — otherwise changing the model would silently reset the WebFetch
+     * policy.
+     */
+    public function test_with_model_preserves_webfetch_passthrough(): void
+    {
+        $agent = new Agent(
+            name: 'wf',
+            webfetchAllowPrivateNetworks: true,
+            webfetchMaxBytes: 2_097_152,
+        );
+
+        $rebuilt = $agent->withModel('claude-opus-4');
+        $this->assertSame('claude-opus-4', $rebuilt->model);
+        $this->assertTrue($rebuilt->webfetchAllowPrivateNetworks);
+        $this->assertSame(2_097_152, $rebuilt->webfetchMaxBytes);
+    }
+
     public function test_as_tool_returns_a_tool_with_given_name_and_description(): void
     {
         $agent = new Agent(name: 'specialist');

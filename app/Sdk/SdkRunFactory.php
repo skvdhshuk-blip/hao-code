@@ -14,6 +14,7 @@ use HaoCode\Sdk\Sandbox\SandboxManager;
 use HaoCode\Tools\Mcp\ListMcpResourcesTool;
 use HaoCode\Tools\Mcp\McpDynamicTool;
 use HaoCode\Tools\Mcp\ReadMcpResourceTool;
+use HaoCode\Tools\WebFetch\WebFetchTool;
 
 /** @internal */
 final class SdkRunFactory
@@ -64,7 +65,21 @@ final class SdkRunFactory
         try {
             [$mcpTools, $mcpConnectionManager] = self::loadMcpTools($config, $runContext->projectDirectory);
             $additionalTools = $sandboxRuntime?->tools() ?? [];
-            $additionalTools = array_merge($additionalTools, $mcpTools, $config->tools);
+            // Register a WebFetchTool constructed from the run's WebFetch
+            // security policy (private-network toggle + CIDR allowlist + byte
+            // cap) only when the run actually allows WebFetch. This keeps the
+            // safe default — a plain query() exposes no tools — intact while
+            // still honoring webfetchAllowPrivateNetworks etc. once WebFetch
+            // is opted into. User-supplied WebFetch in $config->tools is
+            // appended afterwards and overrides this one.
+            if (self::allowsWebFetch($config)) {
+                $additionalTools[] = self::buildWebFetchTool($config);
+            }
+            $additionalTools = array_merge(
+                $additionalTools,
+                $mcpTools,
+                $config->tools,
+            );
 
             $loop = $factory->createIsolated(
                 toolFilter: $config->toolFilter(),
@@ -73,6 +88,7 @@ final class SdkRunFactory
                 streamingClient: $provider,
                 runContext: $runContext,
                 ephemeral: $config->ephemeral,
+                additionalToolFilter: $config->additionalToolFilter(),
             );
         } catch (\Throwable $e) {
             $sandboxRuntime?->close();
@@ -164,6 +180,41 @@ final class SdkRunFactory
             null => $settings->getProviderType(),
             default => 'anthropic',
         };
+    }
+
+    /**
+     * Build a WebFetchTool honoring the run's WebFetch security policy.
+     *
+     * The default loopback allowlist (127.0.0.0/8 and ::1/128) is always kept
+     * so local dev servers keep working; the caller's webfetchPrivateAllowList
+     * adds to it rather than replacing it.
+     */
+    private static function buildWebFetchTool(HaoCodeConfig $config): WebFetchTool
+    {
+        $allowList = array_values(array_unique(array_merge(
+            \HaoCode\Support\Net\SsrfGuard::DEFAULT_ALLOWLIST,
+            $config->webfetchPrivateAllowList,
+        )));
+
+        return new WebFetchTool(
+            allowPrivateNetworks: $config->webfetchAllowPrivateNetworks,
+            ssrfAllowList: $allowList,
+            maxBytes: $config->webfetchMaxBytes,
+        );
+    }
+
+    /**
+     * WebFetch is registered only when the run opted into it explicitly —
+     * either via an allowedTools entry or a wildcard — so the safe default
+     * (plain query() exposes no tools) is preserved.
+     */
+    private static function allowsWebFetch(HaoCodeConfig $config): bool
+    {
+        if ($config->sandbox === null && in_array('*', $config->allowedTools, true)) {
+            return true;
+        }
+
+        return in_array('WebFetch', $config->allowedTools, true);
     }
 
     /**

@@ -583,6 +583,38 @@ class HaoCodeConfig
     }
 
     /**
+     * Filter for additional tools (SDK custom tools, sandbox replacements,
+     * MCP tools). Applies only disallowedTools and sandbox restrictions —
+     * NOT the allowedTools whitelist — because a caller who explicitly passes
+     * `tools: [...]` intends those tools to be available even when they are
+     * not also listed in allowedTools (the documented usage pattern).
+     *
+     * Returns null when neither disallowedTools nor a sandbox is configured,
+     * so the common case stays allocation-free.
+     *
+     * @internal
+     */
+    public function additionalToolFilter(): ?callable
+    {
+        if ($this->disallowedTools === [] && $this->sandbox === null) {
+            return null;
+        }
+
+        return function (string $toolName): bool {
+            if ($this->sandbox !== null) {
+                if (in_array($toolName, self::sandboxLocalOnlyToolsToDisable(), true)) {
+                    return false;
+                }
+                if ($toolName === 'Bash' && ! $this->sandbox->enablesBash()) {
+                    return false;
+                }
+            }
+
+            return ! in_array($toolName, $this->disallowedTools, true);
+        };
+    }
+
+    /**
      * @internal
      *
      * @return string[]

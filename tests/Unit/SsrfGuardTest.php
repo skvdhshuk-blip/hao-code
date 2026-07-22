@@ -120,4 +120,87 @@ class SsrfGuardTest extends TestCase
         $this->assertNotNull(SsrfGuard::checkUrl('not a url at all'));
         $this->assertNotNull(SsrfGuard::checkUrl('https://'));
     }
+
+    /**
+     * allowPrivateNetworks=true must actually permit RFC1918/loopback/etc.
+     * The previous implementation set an empty allowlist, which SsrfGuard
+     * treats as the strictest configuration, so the flag was a no-op.
+     */
+    public function test_check_ip_allow_private_networks_flag_permits_rfc1918(): void
+    {
+        $this->assertNull(SsrfGuard::checkIp('10.0.0.1', [], true));
+        $this->assertNull(SsrfGuard::checkIp('192.168.1.1', [], true));
+        $this->assertNull(SsrfGuard::checkIp('127.0.0.1', [], true));
+        $this->assertNull(SsrfGuard::checkIp('169.254.169.254', [], true));
+
+        // Default (flag off) still rejects.
+        $this->assertNotNull(SsrfGuard::checkIp('10.0.0.1'));
+    }
+
+    public function test_check_ip_allow_private_networks_still_rejects_invalid(): void
+    {
+        // Garbage is rejected regardless of the flag — it must be a valid IP first.
+        $this->assertNotNull(SsrfGuard::checkIp('not-an-ip', [], true));
+    }
+
+    public function test_check_url_allow_private_networks_flag_applies_to_resolved_hosts(): void
+    {
+        // Literal private IP via checkUrl: rejected by default, allowed with flag.
+        $this->assertNotNull(SsrfGuard::checkUrl('http://10.0.0.1/', [], false));
+        $this->assertNull(SsrfGuard::checkUrl('http://10.0.0.1/', [], true));
+    }
+
+    /**
+     * resolveUrl exposes the addresses that passed validation so the HTTP
+     * client can pin the connection, closing the DNS-rebinding window.
+     */
+    public function test_resolve_url_returns_host_and_ips_for_literal_ip(): void
+    {
+        $resolved = SsrfGuard::resolveUrl('http://127.0.0.1/');
+        $this->assertSame('127.0.0.1', $resolved['host']);
+        $this->assertSame(['127.0.0.1'], $resolved['ips']);
+    }
+
+    public function test_resolve_url_throws_on_rejected_url(): void
+    {
+        $this->expectException(\RuntimeException::class);
+        SsrfGuard::resolveUrl('http://169.254.169.254/latest/meta-data/');
+    }
+
+    /**
+     * CIDR matching must support arbitrary legal prefixes — not just /32 and
+     * /128 — and fail closed on malformed input. The v1.13.1 IPv4 path used
+     * `(1 << 32)` which overflows on 32-bit PHP.
+     */
+    public function test_custom_allowlist_matches_arbitrary_v4_prefix(): void
+    {
+        // 10.0.0.0/24 covers 10.0.0.1 .. 10.0.0.254, not 10.0.1.1.
+        $this->assertNull(SsrfGuard::checkIp('10.0.0.5', ['10.0.0.0/24']));
+        $this->assertNotNull(SsrfGuard::checkIp('10.0.1.5', ['10.0.0.0/24']));
+    }
+
+    public function test_custom_allowlist_matches_arbitrary_v6_prefix(): void
+    {
+        // fc00::/7 covers all unique-local addresses.
+        $this->assertNull(SsrfGuard::checkIp('fd00::1', ['fc00::/7']));
+        // 2001:db8::/32 is documentation range; it is public so the allowlist
+        // is irrelevant — confirmed by checkIp accepting it with no allowlist.
+        $this->assertNull(SsrfGuard::checkIp('2001:db8::1', ['fc00::/7']));
+    }
+
+    public function test_custom_allowlist_matches_zero_prefix(): void
+    {
+        // 0.0.0.0/0 matches every IPv4 (including private) — explicit opt-in.
+        $this->assertNull(SsrfGuard::checkIp('10.1.2.3', ['0.0.0.0/0']));
+        $this->assertNull(SsrfGuard::checkIp('8.8.8.8', ['0.0.0.0/0']));
+    }
+
+    public function test_custom_allowlist_rejects_malformed_cidr(): void
+    {
+        // Malformed CIDR fails closed (no match) → private IP still rejected.
+        $this->assertNotNull(SsrfGuard::checkIp('10.0.0.1', ['10.0.0.0/99']));
+        $this->assertNotNull(SsrfGuard::checkIp('10.0.0.1', ['not-a-cidr/abc']));
+        // Family mismatch.
+        $this->assertNotNull(SsrfGuard::checkIp('10.0.0.1', ['::1/128']));
+    }
 }

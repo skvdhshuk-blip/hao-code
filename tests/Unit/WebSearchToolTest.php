@@ -5,6 +5,8 @@ namespace Tests\Unit;
 use HaoCode\Tools\WebSearch\WebSearchTool;
 use HaoCode\Tools\ToolUseContext;
 use PHPUnit\Framework\TestCase;
+use Symfony\Component\HttpClient\MockHttpClient;
+use Symfony\Component\HttpClient\Response\MockResponse;
 
 class WebSearchToolTest extends TestCase
 {
@@ -170,5 +172,116 @@ class WebSearchToolTest extends TestCase
     {
         $schema = $this->tool->inputSchema()->toJsonSchema();
         $this->assertContains('query', $schema['required']);
+    }
+
+    // ─── domain-boundary matching (private hostMatchesDomain) ─────────────
+    // The previous test suite reimplemented filtering in an anonymous subclass
+    // using str_ends_with, which silently treated notexample.com as matching
+    // example.com. These tests hit the real production method.
+
+    public function test_host_matches_domain_rejects_suffix_lookalike(): void
+    {
+        // notexample.com must NOT match example.com.
+        $this->assertFalse($this->invoke('hostMatchesDomain', 'notexample.com', 'example.com'));
+    }
+
+    public function test_host_matches_domain_accepts_exact_match(): void
+    {
+        $this->assertTrue($this->invoke('hostMatchesDomain', 'example.com', 'example.com'));
+    }
+
+    public function test_host_matches_domain_accepts_real_subdomain(): void
+    {
+        $this->assertTrue($this->invoke('hostMatchesDomain', 'docs.example.com', 'example.com'));
+        $this->assertTrue($this->invoke('hostMatchesDomain', 'a.b.example.com', 'example.com'));
+    }
+
+    public function test_host_matches_domain_rejects_different_tld(): void
+    {
+        $this->assertFalse($this->invoke('hostMatchesDomain', 'example.com.evil.com', 'example.com'));
+    }
+
+    // ─── normalizeDomains accepts URL / wildcard / case forms ─────────────
+
+    public function test_normalize_domains_strips_wildcard_and_url_forms(): void
+    {
+        $normalized = $this->invoke('normalizeDomains', [
+            '*.example.com',
+            'https://Foo.Com/path',
+            'BAR.ORG',
+            '',
+            123,
+            'bare.example.net',
+        ]);
+
+        $this->assertSame(['example.com', 'foo.com', 'bar.org', 'bare.example.net'], $normalized);
+    }
+
+    // ─── filterResults applies allowed + blocked with boundary semantics ──
+
+    public function test_filter_results_applies_allowed_and_blocked_boundaries(): void
+    {
+        $results = [
+            ['title' => 'A', 'url' => 'https://example.com/a', 'snippet' => ''],
+            ['title' => 'B', 'url' => 'https://docs.example.com/b', 'snippet' => ''],
+            ['title' => 'C', 'url' => 'https://notexample.com/c', 'snippet' => ''],
+            ['title' => 'D', 'url' => 'https://other.com/d', 'snippet' => ''],
+        ];
+
+        // allowed = example.com → A, B pass (exact + real subdomain);
+        // C (notexample.com — suffix lookalike) and D rejected.
+        $allowedOnly = $this->invoke('filterResults', $results, ['example.com'], []);
+        $this->assertSame(
+            ['https://example.com/a', 'https://docs.example.com/b'],
+            array_column($allowedOnly, 'url'),
+        );
+
+        // blocked = example.com → A, B removed; C (notexample.com — NOT a
+        // match, so not blocked) and D kept.
+        $blockedOnly = $this->invoke('filterResults', $results, [], ['example.com']);
+        $this->assertSame(
+            ['https://notexample.com/c', 'https://other.com/d'],
+            array_column($blockedOnly, 'url'),
+        );
+    }
+
+    // ─── Symfony HttpClient migration invariants ──────────────────────────
+
+    public function test_source_uses_symfony_http_client_not_curl(): void
+    {
+        // WebSearch previously called curl_init() directly and disabled TLS.
+        // After the migration it must use Symfony HttpClient exclusively.
+        $source = file_get_contents((new \ReflectionClass(WebSearchTool::class))->getFileName());
+        $this->assertStringNotContainsString('curl_init', $source);
+        $this->assertStringNotContainsString('CURLOPT_SSL_VERIFYPEER', $source);
+        $this->assertStringContainsString('Symfony\\Component\\HttpClient', $source);
+    }
+
+    public function test_call_returns_no_results_message_when_all_filtered_out(): void
+    {
+        // Inject a search backend (via MockHttpClient) that returns only
+        // blocked-domain hits. The previous implementation returned an empty
+        // "Search results for: …" header because the empty check ran before
+        // filtering.
+        $ddgHtml = '<a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fblocked.example.com%2Fa">A</a>'
+            .'<a class="result__snippet" href="">s</a>';
+
+        $tool = new WebSearchTool;
+        $tool->setClient(new MockHttpClient(function (string $method, string $url) use ($ddgHtml) {
+            if (str_contains($url, 'duckduckgo')) {
+                return new MockResponse($ddgHtml, ['http_code' => 200]);
+            }
+
+            // Google fallback returns a 503 so fetchHtml yields null.
+            return new MockResponse('', ['http_code' => 503]);
+        }));
+
+        $result = $tool->call([
+            'query' => 'test',
+            'blocked_domains' => ['example.com'],
+        ], new ToolUseContext(sys_get_temp_dir(), 'test'));
+
+        $this->assertStringNotContainsString('Search results for', $result->output);
+        $this->assertStringContainsString('No search results found', $result->output);
     }
 }

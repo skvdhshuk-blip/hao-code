@@ -155,6 +155,55 @@ class Agent
          * @var array<string, string>
          */
         public readonly array $headers = [],
+
+        /**
+         * Whether WebFetch may reach private/loopback/reserved IP ranges.
+         * Mirrors {@see HaoCodeConfig::$webfetchAllowPrivateNetworks}.
+         *
+         * @api
+         */
+        public readonly bool $webfetchAllowPrivateNetworks = false,
+
+        /**
+         * CIDR allowlist that bypasses the WebFetch SSRF guard.
+         * Mirrors {@see HaoCodeConfig::$webfetchPrivateAllowList}.
+         *
+         * @api
+         *
+         * @var list<string>
+         */
+        public readonly array $webfetchPrivateAllowList = [],
+
+        /**
+         * Hard cap on decompressed response bytes per WebFetch request.
+         * Mirrors {@see HaoCodeConfig::$webfetchMaxBytes}.
+         *
+         * @api
+         */
+        public readonly int $webfetchMaxBytes = 5_242_880,
+
+        /**
+         * Session ID to resume. Mirrors {@see HaoCodeConfig::$sessionId}.
+         *
+         * @api
+         */
+        public readonly ?string $sessionId = null,
+
+        /**
+         * Continue the most recent session in the working directory.
+         * Mirrors {@see HaoCodeConfig::$continueSession}.
+         *
+         * @api
+         */
+        public readonly bool $continueSession = false,
+
+        /**
+         * Number of retry attempts when structured output fails JSON or
+         * schema validation. Mirrors {@see HaoCodeConfig::$structuredMaxRetries}.
+         *
+         * @api
+         */
+        public readonly int $structuredMaxRetries = 1,
     ) {}
 
     /**
@@ -258,6 +307,12 @@ class Agent
             hitlAllowlistPath: $this->hitlAllowlistPath,
             ephemeral: $this->ephemeral,
             headers: $this->headers,
+            webfetchAllowPrivateNetworks: $this->webfetchAllowPrivateNetworks,
+            webfetchPrivateAllowList: $this->webfetchPrivateAllowList,
+            webfetchMaxBytes: $this->webfetchMaxBytes,
+            sessionId: $this->sessionId,
+            continueSession: $this->continueSession,
+            structuredMaxRetries: $this->structuredMaxRetries,
         );
     }
 
@@ -300,6 +355,12 @@ class Agent
             hitlAllowlistPath: $config->hitlAllowlistPath,
             ephemeral: $config->ephemeral,
             headers: $config->headers,
+            webfetchAllowPrivateNetworks: $config->webfetchAllowPrivateNetworks,
+            webfetchPrivateAllowList: $config->webfetchPrivateAllowList,
+            webfetchMaxBytes: $config->webfetchMaxBytes,
+            sessionId: $config->sessionId,
+            continueSession: $config->continueSession,
+            structuredMaxRetries: $config->structuredMaxRetries,
         );
     }
 
@@ -353,6 +414,12 @@ class Agent
             'hitlAllowlistPath' => $this->hitlAllowlistPath,
             'ephemeral' => $this->ephemeral,
             'headers' => $this->headers,
+            'webfetchAllowPrivateNetworks' => $this->webfetchAllowPrivateNetworks,
+            'webfetchPrivateAllowList' => $this->webfetchPrivateAllowList,
+            'webfetchMaxBytes' => $this->webfetchMaxBytes,
+            'sessionId' => $this->sessionId,
+            'continueSession' => $this->continueSession,
+            'structuredMaxRetries' => $this->structuredMaxRetries,
         ];
     }
 }
