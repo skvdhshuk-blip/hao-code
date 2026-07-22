@@ -51,6 +51,7 @@ class AgentLoopFactory
         bool $afterFork = false,
         bool $readOnly = false,
         ?callable $additionalToolFilter = null,
+        ?ToolRegistry $parentToolRegistry = null,
     ): AgentLoop {
         if ($readOnly && $runContext === null) {
             $projectDirectory = ($workingDirectory ?? getcwd()) ?: '/';
@@ -68,26 +69,35 @@ class AgentLoopFactory
         }
 
         // Build tool registry with optional filtering
-        $parentRegistry = $this->container->make(ToolRegistry::class);
+        // Child loops must derive from the parent's already-filtered registry.
+        // Rebuilding from the process-global registry would let a child agent
+        // regain tools denied by the SDK run and would replace sandbox tool
+        // implementations with their host equivalents.
+        $parentRegistry = $parentToolRegistry ?? $this->container->make(ToolRegistry::class);
         $toolRegistry = $this->buildToolRegistry(
             $parentRegistry,
             $toolFilter,
             $additionalTools !== [] || $runContext !== null,
         );
         // Register additional tools (SDK custom tools, sandbox replacements,
-        // dynamic MCP tools). These honor disallowedTools and sandbox-derived
-        // restrictions, but NOT the allowedTools whitelist: a caller who
-        // passes `tools: [...]` clearly intends those tools to be available,
-        // and the public examples rely on that. The dedicated additional-tool
-        // filter excludes only explicitly denied or sandbox-incompatible
-        // tools, so a custom tool supplied without an allowedTools entry is
-        // still registered.
-        $additionalFilter = $additionalToolFilter ?? static fn (string $name): bool => true;
+        // dynamic MCP tools) through the same final capability filter as the
+        // built-in registry. Keep the explicit additionalToolFilter hook for
+        // compatibility, but use toolFilter as the defense-in-depth default
+        // when callers do not provide one.
+        $additionalFilter = $additionalToolFilter ?? $toolFilter ?? static fn (string $name): bool => true;
+        if ($toolFilter !== null && $additionalToolFilter !== null) {
+            $additionalFilter = static function (string $name) use ($toolFilter, $additionalToolFilter): bool {
+                return $toolFilter($name) && $additionalToolFilter($name);
+            };
+        }
         foreach ($additionalTools as $tool) {
             if ($additionalFilter($tool->name())) {
                 $toolRegistry->register($tool);
             }
         }
+
+        $parentTools = $parentToolRegistry?->getAllTools();
+        $parentAllows = static fn (string $name): bool => $parentTools === null || isset($parentTools[$name]);
 
         if ($runContext !== null) {
             $memoryStore = $runContext->memoryStore ?? new JsonMemoryStore;
@@ -99,14 +109,15 @@ class AgentLoopFactory
                 new MemoryWriteTool($memoryStore),
                 new MemoryDeleteTool($memoryStore),
             ] as $memoryTool) {
-                if (in_array($memoryTool->name(), $runContext->memoryTools, true)
+                if ($parentAllows($memoryTool->name())
+                    && in_array($memoryTool->name(), $runContext->memoryTools, true)
                     && ($toolFilter === null || $toolFilter($memoryTool->name()))) {
                     $toolRegistry->register($memoryTool);
                 }
             }
         }
 
-        if ($runContext?->enableAskUser) {
+        if ($runContext?->enableAskUser && $parentAllows('AskUserQuestion')) {
             $toolRegistry->register(new AskUserQuestionTool);
         }
 
@@ -114,7 +125,7 @@ class AgentLoopFactory
             $settings = $runContext->settings;
             $permissionChecker = new PermissionChecker($settings, new DenialTracker());
             $hookExecutor = new HookExecutor($runContext->projectDirectory);
-            if ($toolFilter === null || $toolFilter('Skill')) {
+            if ($parentAllows('Skill') && ($toolFilter === null || $toolFilter('Skill'))) {
                 $toolRegistry->register(new SkillTool(
                     skillLoader: $runContext->skillLoader,
                     forkRunner: function (string $prompt, SkillDefinition $skill, ToolUseContext $context): string {
@@ -147,6 +158,7 @@ class AgentLoopFactory
                             runContext: $childContext,
                             ephemeral: ! ($childContext->interruptOn !== [] || $childContext->enableAskUser),
                             afterFork: true,
+                            parentToolRegistry: $context->toolRegistry,
                         );
                         $loop->setMaxTurns(20);
 
@@ -154,7 +166,7 @@ class AgentLoopFactory
                     },
                 ));
             }
-            if ($toolFilter === null || $toolFilter('Config')) {
+            if ($parentAllows('Config') && ($toolFilter === null || $toolFilter('Config'))) {
                 $toolRegistry->register(new ConfigTool($settings));
             }
             $contextBuilder = new ContextBuilder(

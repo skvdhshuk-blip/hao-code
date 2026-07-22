@@ -216,6 +216,7 @@ class AgentLoop
             shouldAbort: fn (): bool => $this->cancellationToken->isCancelled(),
             runContext: $this->runContext,
             provider: $this->provider,
+            toolRegistry: $this->toolRegistry,
         );
         $resolution = (new HumanInterruptCoordinator($this->sessionManager, $this->toolOrchestrator))->resolve(
             $interruptId,
@@ -455,6 +456,7 @@ class AgentLoop
                 shouldAbort: fn (): bool => $this->cancellationToken->isCancelled(),
                 runContext: $this->runContext,
                 provider: $this->provider,
+                toolRegistry: $this->toolRegistry,
             );
             $streamingExecutor->setContext($context, $onToolStart, $onToolComplete);
 

@@ -136,13 +136,14 @@ class WebFetchToolTest extends TestCase
     public function test_markdown_format_preserves_headings_and_links(): void
     {
         $html = '<h1>Title</h1><p>See <a href="https://example.com">docs</a>.</p>';
+        $tool = new WebFetchTool(ssrfAllowList: ['127.0.0.1/32']);
         $client = new MockHttpClient([
             new MockResponse($html, ['http_code' => 200, 'response_headers' => ['content-type' => 'text/html']]),
         ]);
-        $this->tool->setClient($client);
+        $tool->setClient($client);
 
-        $result = $this->tool->call(
-            ['url' => 'http://localhost:9999/page', 'format' => 'markdown'],
+        $result = $tool->call(
+            ['url' => 'http://127.0.0.1:9999/page', 'format' => 'markdown'],
             $this->context,
         );
 
@@ -154,13 +155,14 @@ class WebFetchToolTest extends TestCase
     public function test_text_format_strips_markdown_markers(): void
     {
         $html = '<h1>Title</h1><p>See <a href="https://example.com">docs</a>.</p>';
+        $tool = new WebFetchTool(ssrfAllowList: ['127.0.0.1/32']);
         $client = new MockHttpClient([
             new MockResponse($html, ['http_code' => 200, 'response_headers' => ['content-type' => 'text/html']]),
         ]);
-        $this->tool->setClient($client);
+        $tool->setClient($client);
 
-        $result = $this->tool->call(
-            ['url' => 'http://localhost:9999/page2', 'format' => 'text'],
+        $result = $tool->call(
+            ['url' => 'http://127.0.0.1:9999/page2', 'format' => 'text'],
             $this->context,
         );
 
@@ -181,7 +183,7 @@ class WebFetchToolTest extends TestCase
         // Both tools must be able to reach loopback (the mock host), so the
         // difference under test is the allowPrivateNetworks flag in the cache
         // key — not whether the request is allowed at all.
-        $loopback = ['127.0.0.1/8', '::1/128'];
+        $loopback = ['127.0.0.1/32'];
         $strict = new WebFetchTool(allowPrivateNetworks: false, ssrfAllowList: $loopback, maxBytes: 1024);
         $strictCalls = 0;
         $strict->setClient(new MockHttpClient(function () use ($html, &$strictCalls) {
@@ -199,8 +201,8 @@ class WebFetchToolTest extends TestCase
         }));
 
         // Same URL, different policies — two distinct fetches.
-        $strict->call(['url' => 'http://localhost:9999/same'], $this->context);
-        $permissive->call(['url' => 'http://localhost:9999/same'], $this->context);
+        $strict->call(['url' => 'http://127.0.0.1:9999/same'], $this->context);
+        $permissive->call(['url' => 'http://127.0.0.1:9999/same'], $this->context);
 
         $this->assertSame(1, $strictCalls, 'strict policy must fetch on its own');
         $this->assertSame(1, $permissiveCalls, 'permissive policy must not hit the strict cache');
@@ -215,10 +217,11 @@ class WebFetchToolTest extends TestCase
 
             return new MockResponse($html, ['http_code' => 200, 'response_headers' => ['content-type' => 'text/html']]);
         });
-        $this->tool->setClient($client);
+        $tool = new WebFetchTool(ssrfAllowList: ['127.0.0.1/32']);
+        $tool->setClient($client);
 
-        $this->tool->call(['url' => 'http://localhost:9999/cache-hit'], $this->context);
-        $this->tool->call(['url' => 'http://localhost:9999/cache-hit'], $this->context);
+        $tool->call(['url' => 'http://127.0.0.1:9999/cache-hit'], $this->context);
+        $tool->call(['url' => 'http://127.0.0.1:9999/cache-hit'], $this->context);
 
         $this->assertSame(1, $calls, 'second identical call must be served from cache');
     }
@@ -240,6 +243,20 @@ class WebFetchToolTest extends TestCase
         $this->assertSame('https://example.com/foo/bar?page=2', $method->invoke($tool, $base, '?page=2'));
         // Fragment-only references collapse to the base (no re-fetch).
         $this->assertSame($base, $method->invoke($tool, $base, '#section'));
+        $this->assertSame('https://example.com/foo/bar', $method->invoke($tool, $base, 'bar#section'));
+        $this->assertSame('https://example.com/foo/qux', $method->invoke($tool, 'https://example.com/foo/', 'qux'));
+        $this->assertSame('https://example.com/next', $method->invoke($tool, 'https://example.com', 'next'));
+        $this->assertSame('https://[::1]:8080/foo/bar', $method->invoke($tool, 'https://[::1]:8080/foo/', 'bar'));
+        $this->assertSame('https://[::1]:8080/next', $method->invoke($tool, 'https://[::1]:8080/foo', '../next'));
+        $this->assertSame('https://example.com/foo/g/', $method->invoke($tool, 'https://example.com/foo/bar', 'g/'));
+        $this->assertSame('https://example.com/', $method->invoke($tool, 'https://example.com/foo/bar', '../'));
+        $this->assertSame('https://other.example/y', $method->invoke($tool, $base, 'https://other.example/x/../y#fragment'));
+        $this->assertSame('https://other.example/y', $method->invoke($tool, $base, '//other.example/x/../y#fragment'));
+        $this->assertSame('https://user:pass@example.com/foo/next', $method->invoke(
+            $tool,
+            'https://user:pass@example.com/foo/page',
+            'next',
+        ));
     }
 
     public function test_normalize_path_collapses_dots(): void
@@ -258,17 +275,44 @@ class WebFetchToolTest extends TestCase
 
     public function test_byte_cap_aborts_oversized_response(): void
     {
-        $tool = new WebFetchTool(allowPrivateNetworks: false, ssrfAllowList: ['127.0.0.1/8', '::1/128'], maxBytes: 16);
+        $tool = new WebFetchTool(allowPrivateNetworks: false, ssrfAllowList: ['127.0.0.1/32'], maxBytes: 16);
         $tool->setClient(new MockHttpClient([
             new MockResponse(str_repeat('x', 1024), ['http_code' => 200, 'response_headers' => ['content-type' => 'text/plain']]),
         ]));
 
-        $result = $tool->call(['url' => 'http://localhost:9999/huge'], $this->context);
+        $result = $tool->call(['url' => 'http://127.0.0.1:9999/huge'], $this->context);
         $this->assertTrue($result->isError);
         $this->assertStringContainsString('exceeded', $result->output);
     }
 
-    // ─── DNS pinning: HttpClient receives the resolved IPs ────────────────
+    public function test_output_truncation_keeps_prefix_and_marker(): void
+    {
+        $prefix = str_repeat('a', 100_000);
+        $tool = new WebFetchTool(ssrfAllowList: ['127.0.0.1/32']);
+        $tool->setClient(new MockHttpClient([
+            new MockResponse($prefix.'TAIL', ['http_code' => 200, 'response_headers' => ['content-type' => 'text/plain']]),
+        ]));
+
+        $result = $tool->call(['url' => 'http://127.0.0.1:9999/truncate'], $this->context);
+
+        $this->assertFalse($result->isError);
+        $this->assertStringStartsWith($prefix, $result->output);
+        $this->assertStringContainsString('[Content truncated at 100000 characters]', $result->output);
+        $this->assertStringNotContainsString('TAIL', $result->output);
+    }
+
+    public function test_byte_fallback_does_not_cut_utf8_character(): void
+    {
+        $method = (new \ReflectionClass($this->tool))->getMethod('truncateUtf8ByBytes');
+        $method->setAccessible(true);
+        $content = str_repeat('a', 99_999).'界';
+        $prefix = $method->invoke($this->tool, $content, 100_000);
+
+        $this->assertSame(99_999, strlen($prefix));
+        $this->assertTrue((bool) preg_match('//u', $prefix));
+    }
+
+    // ─── DNS pinning: HttpClient receives a hostname → checked IP map ────
 
     public function test_call_does_not_disable_tls_or_use_curl(): void
     {
@@ -278,5 +322,60 @@ class WebFetchToolTest extends TestCase
         $source = file_get_contents((new \ReflectionClass(WebFetchTool::class))->getFileName());
         $this->assertStringNotContainsString('curl_init', $source);
         $this->assertStringNotContainsString('CURLOPT_SSL_VERIFYPEER', $source);
+    }
+
+    public function test_request_pins_one_checked_ip_without_manual_host_header(): void
+    {
+        $optionsSeen = null;
+        $tool = new WebFetchTool(ssrfAllowList: ['127.0.0.1/32']);
+        $tool->setClient(new MockHttpClient(function (string $method, string $url, array $options) use (&$optionsSeen) {
+            $optionsSeen = $options;
+
+            return new MockResponse('ok', [
+                'http_code' => 200,
+                'response_headers' => ['content-type' => 'text/plain'],
+            ]);
+        }));
+
+        $result = $tool->call(['url' => 'http://127.0.0.1:8080/pinned'], $this->context);
+
+        $this->assertFalse($result->isError);
+        $this->assertIsArray($optionsSeen);
+        $this->assertSame(['127.0.0.1' => '127.0.0.1'], $optionsSeen['resolve']);
+        $this->assertSame('*', $optionsSeen['no_proxy']);
+        $this->assertArrayNotHasKey('Host', $optionsSeen['headers']);
+    }
+
+    public function test_request_pins_hostname_to_checked_ip_and_preserves_port(): void
+    {
+        // Exercise the exact options builder without depending on the runner's
+        // DNS configuration (localhost is intentionally not resolved in some
+        // CI sandboxes).
+        $method = (new \ReflectionClass($this->tool))->getMethod('requestOptions');
+        $method->setAccessible(true);
+        $options = $method->invoke($this->tool, [
+            'host' => 'localhost',
+            'ips' => ['127.0.0.1'],
+        ]);
+
+        $this->assertSame(['localhost' => '127.0.0.1'], $options['resolve']);
+        $this->assertSame('*', $options['no_proxy']);
+        $this->assertArrayNotHasKey('Host', $options['headers']);
+    }
+
+    public function test_prompt_is_reported_as_focus_not_extraction(): void
+    {
+        $tool = new WebFetchTool(ssrfAllowList: ['127.0.0.1/32']);
+        $tool->setClient(new MockHttpClient([
+            new MockResponse('full page', ['http_code' => 200, 'response_headers' => ['content-type' => 'text/plain']]),
+        ]));
+
+        $result = $tool->call([
+            'url' => 'http://127.0.0.1:9999/focus',
+            'prompt' => 'look for invoices',
+        ], $this->context);
+
+        $this->assertStringContainsString('[Requested focus: look for invoices]', $result->output);
+        $this->assertStringContainsString('full page', $result->output);
     }
 }

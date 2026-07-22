@@ -179,6 +179,7 @@ echo "── Example 1: One-shot query with tools ──\n\n";
 $result = HaoCode::query(
     'Get the PHP coding standards for our team.',
     new HaoCodeConfig(
+        allowedTools: ['GetCodingStandards'],
         tools: [new CodingStandardsTool()],
         maxTurns: 5,
         onToolStart: fn (string $name, array $input) => print("  ⚙ {$name}\n"),
@@ -195,7 +196,7 @@ echo "── Example 2: Streaming code review ──\n\n";
 foreach (HaoCode::stream(
     'Review the recent code changes using the code-review skill.',
     new HaoCodeConfig(
-        allowedTools: ['Skill'],
+        allowedTools: ['Skill', 'GetCodingStandards', 'GetGitDiffSummary'],
         tools: [new CodingStandardsTool(), new GitDiffSummaryTool()],
         skills: [$reviewSkill],
         maxTurns: 10,
@@ -215,6 +216,7 @@ foreach (HaoCode::stream(
 echo "\n── Example 3: Multi-turn conversation ──\n\n";
 
 $conv = HaoCode::conversation(new HaoCodeConfig(
+    allowedTools: ['GetCodingStandards'],
     tools: [new CodingStandardsTool()],
     maxTurns: 5,
     appendSystemPrompt: 'You are a senior code reviewer. Be concise.',

@@ -543,6 +543,7 @@ class SdkE2ETest extends TestCase
         chdir($this->projectDir);
 
         $result = HaoCode::query("What's the weather in Tokyo?", new HaoCodeConfig(
+            allowedTools: ['GetWeather'],
             tools: [$customTool],
         ));
 
@@ -655,6 +656,7 @@ class SdkE2ETest extends TestCase
         };
 
         $config = new HaoCodeConfig(
+            allowedTools: ['Noop'],
             tools: [$tool],
             abortController: $abort,
             sessionId: 'test_session_123',
@@ -923,6 +925,7 @@ class SdkE2ETest extends TestCase
         chdir($this->projectDir);
 
         $result = HaoCode::query('Try the failing tool', new HaoCodeConfig(
+            allowedTools: ['FailTool'],
             tools: [$failingTool],
         ));
 
@@ -986,7 +989,7 @@ class SdkE2ETest extends TestCase
         chdir($this->projectDir);
 
         $result = HaoCode::query('Export all users to a file', new HaoCodeConfig(
-            allowedTools: ['Write'],
+            allowedTools: ['Write', 'QueryDB'],
             permissionMode: 'bypass_permissions',
             tools: [$dbTool],
         ));
@@ -1105,6 +1108,7 @@ class SdkE2ETest extends TestCase
         chdir($this->projectDir);
 
         $conv = HaoCode::conversation(new HaoCodeConfig(
+            allowedTools: ['CartAdd'],
             permissionMode: 'bypass_permissions',
             tools: [$statefulTool],
         ));
@@ -1217,6 +1221,7 @@ class SdkE2ETest extends TestCase
         chdir($this->projectDir);
 
         $result = HaoCode::query('Use both tools', new HaoCodeConfig(
+            allowedTools: ['ToolAlpha', 'ToolBeta'],
             tools: [$toolA, $toolB],
         ));
 
@@ -1403,7 +1408,7 @@ class SdkE2ETest extends TestCase
         chdir($this->projectDir);
 
         $result = HaoCode::query('Run a full health check', new HaoCodeConfig(
-            allowedTools: ['Skill'],
+            allowedTools: ['Skill', 'CheckDB'],
             skills: [
                 new SdkSkill(
                     name: 'health-check',

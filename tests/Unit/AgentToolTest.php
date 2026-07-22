@@ -5,6 +5,7 @@ namespace Tests\Unit;
 use HaoCode\Services\Agent\AgentLoop;
 use HaoCode\Services\Agent\AgentLoopFactory;
 use HaoCode\Tools\Agent\AgentTool;
+use HaoCode\Tools\ToolRegistry;
 use HaoCode\Tools\ToolUseContext;
 use PHPUnit\Framework\TestCase;
 
@@ -164,6 +165,28 @@ class AgentToolTest extends TestCase
         $result = $tool->call(
             ['prompt' => 'Inspect a relative file'],
             new ToolUseContext('/tmp/parent-project', 'session-1'),
+        );
+
+        $this->assertFalse($result->isError);
+    }
+
+    public function test_it_derives_the_child_from_the_parent_tool_registry(): void
+    {
+        $loop = $this->makeLoop('done');
+        $parentRegistry = new ToolRegistry;
+        $factory = $this->createMock(AgentLoopFactory::class);
+        $factory->expects($this->once())
+            ->method('createIsolated')
+            ->willReturnCallback(function (...$arguments) use ($loop, $parentRegistry): AgentLoop {
+                $this->assertSame($parentRegistry, $arguments[9] ?? null);
+
+                return $loop;
+            });
+
+        $tool = new AgentTool($factory);
+        $result = $tool->call(
+            ['prompt' => 'Inspect the repository'],
+            new ToolUseContext('/tmp/parent-project', 'session-1', toolRegistry: $parentRegistry),
         );
 
         $this->assertFalse($result->isError);

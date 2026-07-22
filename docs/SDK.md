@@ -2,7 +2,8 @@
 
 Use hao-code as a framework-free PHP library to embed an AI coding agent in your application.
 
-This document describes the current `v1.15.0` source release.
+This document describes the `v1.18.1` source line. Published package versions
+are identified by Git tags and Packagist.
 
 ```bash
 composer require sk-wang/hao-code
@@ -126,6 +127,10 @@ foreach (Runner::stream($agent, 'Stream the review', new RunOptions(
 a new instance. `Agent::fromConfig()` / `Agent::toConfig()` convert between an
 `Agent` and a legacy `HaoCodeConfig`, and `Agent::asTool()` exposes the agent
 as a tool for another agent (see [Agent Teams](#agent-teams)).
+The legacy `sessionId`, `continueSession`, and `structuredMaxRetries` Agent
+properties remain accepted for source compatibility, but are facade-level
+options and are not applied by `Runner`; configure them on `HaoCodeConfig` when
+using `HaoCode::query()`/`structured()`.
 
 The `HaoCode` facade delegates to these primitives: `HaoCode::query()` and
 `HaoCode::stream()` build an `Agent` + `RunOptions` from the given
@@ -413,8 +418,8 @@ configured output tokens and a safety margin before sending a request.
 | `appendSystemPrompt` | `?string` | `null` | Append text to the default system prompt |
 | `responseSchema` | `?array` | `null` | Override the schema used by `structured()` |
 | `structuredMaxRetries` | `int` | `1` | Number of times `structured()` retries the model when its JSON fails schema validation. Each retry appends the validator's error paths to the prompt. `0` fails fast and throws `StructuredResultValidationException` on the first violation. |
-| `webfetchAllowPrivateNetworks` | `bool` | `false` | Allow WebFetch to reach RFC1918 / link-local / cloud-metadata endpoints. Loopback (127.0.0.1/8 and ::1/128) is always allowed via the default allowlist so local dev servers keep working. Enable only when you trust the agent and the URLs it will hit. |
-| `webfetchPrivateAllowList` | `list<string>` | `[]` | CIDR allowlist that bypasses the WebFetch SSRF guard (e.g. `['192.168.0.0/16']`). Prefer precise entries over flipping `webfetchAllowPrivateNetworks`. |
+| `webfetchAllowPrivateNetworks` | `bool` | `false` | Allow WebFetch to reach private-like RFC1918, loopback, link-local, and IPv6 ULA ranges. Special-use, multicast, documentation, benchmark, and reserved ranges remain blocked; use an explicit CIDR allowlist for a deliberate exception. |
+| `webfetchPrivateAllowList` | `list<string>` | `[]` | Explicit CIDRs that bypass the WebFetch SSRF guard (for example `['127.0.0.1/32', '192.168.0.0/16']`). The default is empty, so loopback is not implicitly reachable. |
 | `webfetchMaxBytes` | `int` | `5_242_880` | Hard cap on decompressed response bytes per WebFetch request. Responses over the cap are cancelled and surfaced as an error (previously the entire body was buffered, risking OOM). |
 
 ### Tools & Skills
@@ -430,10 +435,10 @@ configured output tokens and a safety margin before sending a request.
 | `images` | `array` | `[]` | Image attachments for multimodal input (one-shot queries and streams). Each item can be a local file path, URL, pre-built content block, or data URI. For conversations, pass images per-send via `Conversation::send()` |
 
 Tools, permission bypass, and durable storage are independent opt-ins. Merely
-| `recursiveSkillDiscovery` | `bool` | `false` | Recursively discover nested Skill packages; shallow same-name packages win |
-
-Tools, permission bypass, and durable storage are independent opt-ins. Merely
 setting `apiKey`, `model`, or another connection option does not change them.
+Custom tools and sandbox replacement tools use the same exact-name
+`allowedTools`/`disallowedTools` filters as built-in tools; list each name
+explicitly or use `allowedTools: ['*']`.
 
 This differs from `v1.7.0`, where an explicitly constructed config defaulted to
 all tools, permission bypass, and durable storage. Existing trusted callers must
@@ -1320,7 +1325,7 @@ effect in a new conversation rather than rewriting an active prefix.
 
 ```php
 $conv = HaoCode::conversation(new HaoCodeConfig(
-    allowedTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep'],
+    allowedTools: ['Read', 'Write', 'Edit', 'Glob', 'Grep', 'MyDatabaseTool'],
     permissionMode: 'bypass_permissions',
     ephemeral: false,
     tools: [new MyDatabaseTool()],
@@ -1598,7 +1603,7 @@ Tools and skills can be used together in a single query:
 
 ```php
 $result = HaoCode::query('Run a full system health check', new HaoCodeConfig(
-    allowedTools: ['Skill', 'Write'],
+    allowedTools: ['Skill', 'Write', 'DatabaseHealthTool', 'CacheHealthTool'],
     permissionMode: 'bypass_permissions',
     // Custom tool — executes PHP code
     tools: [

@@ -217,9 +217,13 @@ final class LocalSandboxBackend implements SandboxBackendInterface
 
         $deadline = microtime(true) + ($timeoutMs / 1000);
         $timedOut = false;
+        $observedExitCode = -1;
         while (true) {
             $status = proc_get_status($process);
             if (! ($status['running'] ?? false)) {
+                $observedExitCode = ($status['signaled'] ?? false)
+                    ? 128 + (int) ($status['termsig'] ?? 0)
+                    : (int) ($status['exitcode'] ?? -1);
                 break;
             }
             if (microtime(true) > $deadline) {
@@ -235,7 +239,11 @@ final class LocalSandboxBackend implements SandboxBackendInterface
             usleep(10000);
         }
 
-        $exitCode = proc_close($process);
+        // On PHP < 8.4, proc_get_status() can reap the child, causing the
+        // subsequent proc_close() to return -1. Prefer the status value that
+        // was captured when the process first stopped.
+        $closedExitCode = proc_close($process);
+        $exitCode = $observedExitCode >= 0 ? $observedExitCode : $closedExitCode;
         $stdout = file_get_contents($stdoutFile) ?: '';
         $stderr = file_get_contents($stderrFile) ?: '';
         @unlink($stdoutFile);

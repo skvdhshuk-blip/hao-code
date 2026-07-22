@@ -19,7 +19,7 @@ use HaoCode\Sdk\ImageContentBlock;
  * stays unchanged and can be reused across many runs.
  *
  * @example
- *   $agent = new Agent(name: 'reviewer', model: 'claude-sonnet-4', tools: [new ReadTool()]);
+ *   $agent = new Agent(name: 'reviewer', model: 'claude-sonnet-4', allowedTools: ['Read'], tools: [new ReadTool()]);
  *   $result = Runner::run($agent, 'Review this file');
  *   echo $result->text;
  *

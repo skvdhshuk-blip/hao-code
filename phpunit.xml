@@ -20,6 +20,7 @@
             -->
             <directory>tests/Services</directory>
             <directory>tests/Provider</directory>
+            <exclude>tests/Provider/AbstractMatrixTest.php</exclude>
             <directory>tests/Tools</directory>
         </testsuite>
     </testsuites>

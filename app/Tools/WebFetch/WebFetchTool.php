@@ -46,7 +46,7 @@ class WebFetchTool extends BaseTool
     private bool $allowPrivateNetworks;
 
     /**
-     * @param  list<string>  $ssrfAllowList  CIDR allowlist that bypasses the private/loopback rejection
+     * @param  list<string>  $ssrfAllowList  CIDR allowlist of explicit SSRF exceptions
      */
     public function __construct(
         bool $allowPrivateNetworks = false,
@@ -88,7 +88,7 @@ class WebFetchTool extends BaseTool
         return <<<DESC
 Fetch content from a URL. Returns the page content as text/markdown.
 Use this tool to read web pages, API documentation, or other online resources.
-Supports an optional `prompt` parameter to extract specific information from the page.
+Supports an optional `prompt` parameter to state a requested focus; the full page content is still returned (this is not extraction).
 Results are cached for 15 minutes.
 DESC;
     }
@@ -104,7 +104,7 @@ DESC;
                 ],
                 'prompt' => [
                     'type' => 'string',
-                    'description' => 'Optional prompt describing what information to extract from the page',
+                    'description' => 'Optional requested focus; the full page content is returned and nothing is extracted',
                 ],
                 'format' => [
                     'type' => 'string',
@@ -153,15 +153,11 @@ DESC;
             $header .= "[Redirected to: {$finalUrl}]\n";
         }
 
-        [$content, $unit] = $this->truncateForOutput($content);
-        if ($content === null) {
-            $result = $header.'[Content truncated at '.self::MAX_CONTENT_SIZE." {$unit}]";
-        } else {
-            $result = $header.$content;
-        }
+        [$content] = $this->truncateForOutput($content);
+        $result = $header.$content;
 
         if ($prompt !== null) {
-            $result = "[Extraction prompt: {$prompt}]\n\n".$result;
+            $result = "[Requested focus: {$prompt}]\n\n".$result;
         }
 
         return ToolResult::success($result);
@@ -224,15 +220,7 @@ DESC;
             // Pin the connection to the already-checked IPs (Symfony HttpClient
             // `resolve` option) so DNS cannot change between the guard check
             // and the actual connection (DNS rebinding).
-            $response = $this->client()->request('GET', $finalUrl, [
-                'headers' => [
-                    'User-Agent' => 'HaoCode/1.0 (PHP SDK)',
-                    'Accept' => 'text/html,text/plain,application/json,*/*',
-                    'Host' => $resolved['host'],
-                ],
-                'max_redirects' => 0,
-                'resolve' => $resolved['ips'] ?: null,
-            ]);
+            $response = $this->client()->request('GET', $finalUrl, $this->requestOptions($resolved));
 
             $statusCode = $response->getStatusCode();
 
@@ -264,6 +252,36 @@ DESC;
     }
 
     /**
+     * Build request options from the already-validated DNS result. Symfony's
+     * `resolve` option is a hostname-to-IP map, not a list of numeric IPs.
+     * Keeping the original URL means the client preserves Host, port and TLS
+     * SNI semantics without a hand-written Host header.
+     *
+     * @param array{host: string, ips: list<string>} $resolved
+     */
+    private function requestOptions(array $resolved): array
+    {
+        $host = trim($resolved['host'], '[]');
+        $ip = $resolved['ips'][0] ?? null;
+        if ($host === '' || ! is_string($ip) || $ip === '') {
+            throw new \RuntimeException('No validated IP available for request.');
+        }
+
+        return [
+            'headers' => [
+                'User-Agent' => 'HaoCode/1.0 (PHP SDK)',
+                'Accept' => 'text/html,text/plain,application/json,*/*',
+            ],
+            'max_redirects' => 0,
+            // Symfony otherwise inherits HTTP(S)_PROXY from the environment.
+            // A proxy resolves the target itself and can bypass the checked
+            // hostname-to-IP mapping, so pinned WebFetch requests go direct.
+            'no_proxy' => '*',
+            'resolve' => [$host => $ip],
+        ];
+    }
+
+    /**
      * Resolve a (possibly relative) redirect Location against the base URL
      * using parse_url so every URI-reference form is handled:
      *   - absolute: https://other.example/path
@@ -277,85 +295,164 @@ DESC;
     private function resolveRedirect(string $base, string $location): string
     {
         $location = trim($location);
-        // Fragments are not re-fetched.
-        $hashPos = strpos($location, '#');
-        if ($hashPos !== false) {
-            $location = substr($location, 0, $hashPos);
-        }
-        if ($location === '') {
-            return $base;
+        $locationParts = parse_url($location);
+        if ($locationParts === false) {
+            throw new \RuntimeException("Invalid redirect Location: {$location}");
         }
 
-        // Absolute URI (has scheme://).
-        if (preg_match('#^[a-z][a-z0-9+\-.]*://#i', $location)) {
-            return $location;
+        // RFC 3986 section 5.2: an absolute URI replaces the base entirely,
+        // but its path still goes through remove_dot_segments.
+        if (isset($locationParts['scheme'])) {
+            if (! isset($locationParts['host'])) {
+                // The SSRF guard will reject non-HTTP opaque URIs; retain the
+                // reference here so redirect resolution does not invent an
+                // authority for forms such as `g:h`.
+                return $this->withoutFragment($location);
+            }
+
+            return $this->formatAbsoluteUri((string) $locationParts['scheme'], $locationParts);
         }
 
         $baseParts = parse_url($base);
-        $scheme = $baseParts['scheme'] ?? 'https';
-        $host = $baseParts['host'] ?? '';
-        $port = isset($baseParts['port']) ? ':'.$baseParts['port'] : '';
-        $authority = $host.$port;
-        // Preserve IPv6 brackets in the authority for the reconstructed URL.
-        if (isset($baseParts['host']) && str_contains((string) $baseParts['host'], ':')) {
-            $authority = '['.$baseParts['host'].']'.$port;
+        if ($baseParts === false || ! isset($baseParts['scheme'], $baseParts['host'])) {
+            throw new \RuntimeException("Invalid base URL: {$base}");
         }
 
-        // Scheme-relative (//host/path) — replace authority and path.
+        $scheme = (string) $baseParts['scheme'];
+        $authority = $this->formatAuthority($baseParts);
+
+        // A network-path reference replaces the authority while retaining the
+        // base scheme (including bracketed IPv6 and an optional port).
         if (str_starts_with($location, '//')) {
-            $locParts = parse_url('scheme:'.$location);
-
-            return $scheme.':'.$location;
+            return $this->formatAbsoluteUri($scheme, $locationParts);
         }
 
-        // Absolute path.
-        if (str_starts_with($location, '/')) {
-            return "{$scheme}://{$authority}{$location}";
+        $basePath = (string) ($baseParts['path'] ?? '');
+        $locationPath = (string) ($locationParts['path'] ?? '');
+
+        if ($locationPath === '') {
+            $path = $basePath === '' ? '/' : $basePath;
+        } elseif (str_starts_with($locationPath, '/')) {
+            $path = $this->normalizePath($locationPath);
+        } else {
+            // Merge with the base path up to and including its last slash.
+            // Unlike dirname(), this preserves a trailing slash: /foo/ + bar
+            // resolves to /foo/bar, as required by RFC 3986.
+            $slash = strrpos($basePath, '/');
+            $prefix = $slash === false ? '/' : substr($basePath, 0, $slash + 1);
+            $path = $this->normalizePath($prefix.$locationPath);
         }
 
-        // Query-only or relative path: resolve against the current path.
-        $basePath = $baseParts['path'] ?? '/';
+        $query = array_key_exists('query', $locationParts)
+            ? '?'.(string) $locationParts['query']
+            : ($locationPath === '' && isset($baseParts['query']) ? '?'.(string) $baseParts['query'] : '');
 
-        if (str_starts_with($location, '?')) {
-            return "{$scheme}://{$authority}{$basePath}{$location}";
+        return "{$scheme}://{$authority}{$path}{$query}";
+    }
+
+    /** @param array<string, mixed> $parts */
+    private function formatAuthority(array $parts): string
+    {
+        $host = trim((string) ($parts['host'] ?? ''), '[]');
+        $authority = '';
+        if (isset($parts['user'])) {
+            $authority .= (string) $parts['user'];
+            if (isset($parts['pass'])) {
+                $authority .= ':'.(string) $parts['pass'];
+            }
+            $authority .= '@';
+        }
+        $authority .= str_contains($host, ':') ? '['.$host.']' : $host;
+        if (isset($parts['port'])) {
+            $authority .= ':'.(int) $parts['port'];
         }
 
-        $dir = str_contains($basePath, '/') ? dirname($basePath) : '';
-        if ($dir === '.') {
-            $dir = '';
+        return $authority;
+    }
+
+    /** @param array<string, mixed> $parts */
+    private function formatAbsoluteUri(string $scheme, array $parts): string
+    {
+        $authority = $this->formatAuthority($parts);
+        if ($authority === '') {
+            throw new \RuntimeException('Redirect URL is missing an authority.');
         }
-        $merged = "{$dir}/{$location}";
 
-        // Collapse . and .. segments.
-        $normalized = $this->normalizePath($merged);
+        $path = isset($parts['path']) && $parts['path'] !== ''
+            ? $this->normalizePath((string) $parts['path'])
+            : '';
+        $query = array_key_exists('query', $parts) ? '?'.(string) $parts['query'] : '';
 
-        return "{$scheme}://{$authority}{$normalized}";
+        return "{$scheme}://{$authority}{$path}{$query}";
+    }
+
+    private function withoutFragment(string $url): string
+    {
+        $hash = strpos($url, '#');
+
+        return $hash === false ? $url : substr($url, 0, $hash);
     }
 
     private function normalizePath(string $path): string
     {
-        $prefixSlash = str_starts_with($path, '/');
-        $parts = explode('/', $path);
-        $stack = [];
-        foreach ($parts as $part) {
-            if ($part === '' || $part === '.') {
+        // RFC 3986 section 5.2.4 remove_dot_segments algorithm. Keeping the
+        // input/output form (rather than treating paths as filesystem names)
+        // preserves repeated slashes, path parameters, and trailing slashes.
+        $input = $path;
+        $output = '';
+
+        while ($input !== '') {
+            if (str_starts_with($input, '../')) {
+                $input = substr($input, 3);
                 continue;
             }
-            if ($part === '..') {
-                if ($stack !== []) {
-                    array_pop($stack);
-                }
+            if (str_starts_with($input, './')) {
+                $input = substr($input, 2);
                 continue;
             }
-            $stack[] = $part;
+            if ($input === '..' || $input === '.') {
+                $input = '';
+                continue;
+            }
+            if (str_starts_with($input, '/../')) {
+                $input = '/'.substr($input, 4);
+                $output = $this->removeLastPathSegment($output);
+                continue;
+            }
+            if ($input === '/..') {
+                $input = '/';
+                $output = $this->removeLastPathSegment($output);
+                continue;
+            }
+            if (str_starts_with($input, '/./')) {
+                $input = '/'.substr($input, 3);
+                continue;
+            }
+            if ($input === '/.') {
+                $input = '/';
+                continue;
+            }
+
+            // Move the first path segment (with its leading slash, when
+            // present) from input to output.
+            $slash = strpos($input, '/', str_starts_with($input, '/') ? 1 : 0);
+            if ($slash === false) {
+                $output .= $input;
+                $input = '';
+            } else {
+                $output .= substr($input, 0, $slash);
+                $input = substr($input, $slash);
+            }
         }
 
-        $result = implode('/', $stack);
-        if ($prefixSlash) {
-            $result = '/'.$result;
-        }
+        return $output === '' ? '/' : $output;
+    }
 
-        return $result === '' ? '/' : $result;
+    private function removeLastPathSegment(string $path): string
+    {
+        $slash = strrpos($path, '/');
+
+        return $slash === false ? '' : substr($path, 0, $slash);
     }
 
     private function streamWithByteCap($response, int $maxBytes): string
@@ -383,28 +480,54 @@ DESC;
     }
 
     /**
-     * Truncate the rendered output to MAX_CONTENT_SIZE units. Prefers
-     * mbstring for character-safe truncation when available; otherwise falls
-     * back to a UTF-8-boundary-safe byte truncation so the project does not
-     * require ext-mbstring.
+     * Truncate the rendered output to MAX_CONTENT_SIZE units while retaining
+     * the useful prefix. The marker is part of the returned content so callers
+     * cannot accidentally replace the page with a marker-only response.
      *
-     * @return array{0: ?string, 1: string}  [truncated content or null if a truncation marker replaced it, unit label]
+     * @return array{0: string, 1: string} [content, unit label]
      */
     private function truncateForOutput(string $content): array
     {
-        if (function_exists('mb_strlen')) {
-            if (mb_strlen($content) <= self::MAX_CONTENT_SIZE) {
+        if (function_exists('mb_strlen') && function_exists('mb_substr')) {
+            if (mb_strlen($content, 'UTF-8') <= self::MAX_CONTENT_SIZE) {
                 return [$content, 'characters'];
             }
 
-            return [null, 'characters'];
+            $prefix = mb_substr($content, 0, self::MAX_CONTENT_SIZE, 'UTF-8');
+            return [$prefix."\n\n[Content truncated at ".self::MAX_CONTENT_SIZE.' characters]', 'characters'];
         }
 
         if (strlen($content) <= self::MAX_CONTENT_SIZE) {
             return [$content, 'bytes'];
         }
 
-        return [null, 'bytes'];
+        $prefix = $this->truncateUtf8ByBytes($content, self::MAX_CONTENT_SIZE);
+        return [$prefix."\n\n[Content truncated at ".self::MAX_CONTENT_SIZE.' bytes]', 'bytes'];
+    }
+
+    private function truncateUtf8ByBytes(string $content, int $limit): string
+    {
+        $length = min(strlen($content), $limit);
+        if ($length === 0) {
+            return '';
+        }
+
+        // Remove a partial UTF-8 sequence at the cut boundary. This keeps
+        // output valid without requiring ext-mbstring; invalid bytes already
+        // present in the source are left untouched.
+        $lead = $length - 1;
+        while ($lead >= 0 && (ord($content[$lead]) & 0xC0) === 0x80) {
+            $lead--;
+        }
+        if ($lead >= 0) {
+            $first = ord($content[$lead]);
+            $expected = $first < 0x80 ? 1 : ($first < 0xE0 ? 2 : ($first < 0xF0 ? 3 : ($first < 0xF8 ? 4 : 1)));
+            if ($expected > $length - $lead) {
+                $length = $lead;
+            }
+        }
+
+        return substr($content, 0, $length);
     }
 
     /**

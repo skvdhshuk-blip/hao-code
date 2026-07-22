@@ -11,26 +11,26 @@ use HaoCode\Tools\Skill\SkillLoader;
  *
  * @internal
  */
-final readonly class AgentRunContext
+final class AgentRunContext
 {
     public function __construct(
-        public string $workingDirectory,
-        public string $projectDirectory,
-        public SettingsManager $settings,
-        public SkillLoader $skillLoader,
-        public CancellationToken $cancellationToken,
-        public array $interruptOn = [],
-        public bool $enableAskUser = false,
-        public ?string $agentId = null,
-        public ?string $teamName = null,
-        public ?array $responseSchema = null,
-        public ?MemoryStoreInterface $memoryStore = null,
-        public bool $includeMemoryInTextOnly = false,
-        public array $memoryTools = [],
-        public string $hitlMode = 'ask',
-        public ?string $hitlReviewModel = null,
-        public ?\HaoCode\Sdk\Sandbox\SandboxConfig $sandbox = null,
-        public ?string $hitlAllowlistPath = null,
+        public readonly string $workingDirectory,
+        public readonly string $projectDirectory,
+        public readonly SettingsManager $settings,
+        public readonly SkillLoader $skillLoader,
+        public readonly CancellationToken $cancellationToken,
+        public readonly array $interruptOn = [],
+        public readonly bool $enableAskUser = false,
+        public readonly ?string $agentId = null,
+        public readonly ?string $teamName = null,
+        public readonly ?array $responseSchema = null,
+        public readonly ?MemoryStoreInterface $memoryStore = null,
+        public readonly bool $includeMemoryInTextOnly = false,
+        public readonly array $memoryTools = [],
+        public readonly string $hitlMode = 'ask',
+        public readonly ?string $hitlReviewModel = null,
+        public readonly ?\HaoCode\Sdk\Sandbox\SandboxConfig $sandbox = null,
+        public readonly ?string $hitlAllowlistPath = null,
     ) {}
 
     public function fork(

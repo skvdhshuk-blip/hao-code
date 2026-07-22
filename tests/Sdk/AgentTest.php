@@ -123,36 +123,40 @@ class AgentTest extends TestCase
         $this->assertSame(['Editor-Version' => 'vscode/1.96.0'], $restored->headers);
     }
 
-    /**
-     * The WebFetch security policy and session/structured fields must survive
-     * Agent → config → Agent round-trips so a configured Agent run actually
-     * honors them. Before v1.13.2 these fields existed on HaoCodeConfig but
-     * were silently dropped by fromConfig/toConfig.
-     */
-    public function test_webfetch_session_and_structured_fields_round_trip(): void
+    public function test_webfetch_fields_round_trip(): void
     {
         $original = new Agent(
             name: 'webfetch-agent',
             webfetchAllowPrivateNetworks: true,
             webfetchPrivateAllowList: ['192.168.0.0/16', '10.0.0.0/8'],
             webfetchMaxBytes: 1_048_576,
-            sessionId: 'sess-abc',
-            continueSession: true,
-            structuredMaxRetries: 3,
         );
 
         $config = $original->toConfig();
         $this->assertTrue($config->webfetchAllowPrivateNetworks);
         $this->assertSame(['192.168.0.0/16', '10.0.0.0/8'], $config->webfetchPrivateAllowList);
         $this->assertSame(1_048_576, $config->webfetchMaxBytes);
-        $this->assertSame('sess-abc', $config->sessionId);
-        $this->assertTrue($config->continueSession);
-        $this->assertSame(3, $config->structuredMaxRetries);
 
         $restored = Agent::fromConfig($config, name: 'webfetch-agent');
         $this->assertTrue($restored->webfetchAllowPrivateNetworks);
         $this->assertSame(['192.168.0.0/16', '10.0.0.0/8'], $restored->webfetchPrivateAllowList);
         $this->assertSame(1_048_576, $restored->webfetchMaxBytes);
+    }
+
+    public function test_deprecated_facade_fields_round_trip_for_backward_compatibility(): void
+    {
+        $original = new Agent(
+            sessionId: 'sess-abc',
+            continueSession: true,
+            structuredMaxRetries: 3,
+        );
+
+        $config = $original->toConfig();
+        $this->assertSame('sess-abc', $config->sessionId);
+        $this->assertTrue($config->continueSession);
+        $this->assertSame(3, $config->structuredMaxRetries);
+
+        $restored = Agent::fromConfig($config);
         $this->assertSame('sess-abc', $restored->sessionId);
         $this->assertTrue($restored->continueSession);
         $this->assertSame(3, $restored->structuredMaxRetries);

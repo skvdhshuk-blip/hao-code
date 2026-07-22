@@ -184,21 +184,14 @@ final class SdkRunFactory
 
     /**
      * Build a WebFetchTool honoring the run's WebFetch security policy.
-     *
-     * The default loopback allowlist (127.0.0.0/8 and ::1/128) is always kept
-     * so local dev servers keep working; the caller's webfetchPrivateAllowList
-     * adds to it rather than replacing it.
+     * The caller's CIDR list is passed through exactly; there is no implicit
+     * loopback exception.
      */
     private static function buildWebFetchTool(HaoCodeConfig $config): WebFetchTool
     {
-        $allowList = array_values(array_unique(array_merge(
-            \HaoCode\Support\Net\SsrfGuard::DEFAULT_ALLOWLIST,
-            $config->webfetchPrivateAllowList,
-        )));
-
         return new WebFetchTool(
             allowPrivateNetworks: $config->webfetchAllowPrivateNetworks,
-            ssrfAllowList: $allowList,
+            ssrfAllowList: $config->webfetchPrivateAllowList,
             maxBytes: $config->webfetchMaxBytes,
         );
     }
@@ -210,11 +203,9 @@ final class SdkRunFactory
      */
     private static function allowsWebFetch(HaoCodeConfig $config): bool
     {
-        if ($config->sandbox === null && in_array('*', $config->allowedTools, true)) {
-            return true;
-        }
+        $filter = $config->toolFilter();
 
-        return in_array('WebFetch', $config->allowedTools, true);
+        return $filter === null || $filter('WebFetch');
     }
 
     /**

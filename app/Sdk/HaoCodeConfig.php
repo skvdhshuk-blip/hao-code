@@ -466,10 +466,10 @@ class HaoCodeConfig
         public readonly int $structuredMaxRetries = 1,
 
         /**
-         * Allow WebFetch to reach private networks (RFC1918, link-local,
-         * cloud-metadata 169.254.169.254, etc.). Defaults to false — SSRF
-         * protection is on. Loopback (127.0.0.1/8 and ::1/128) is always
-         * allowed via the default allowlist so local dev servers keep working.
+         * Allow WebFetch to reach private-like networks (RFC1918, loopback,
+         * link-local, and IPv6 ULA). Special-use, multicast, documentation,
+         * benchmark, and reserved ranges remain blocked; use the explicit
+         * CIDR allowlist for deliberate exceptions. Disabled by default.
          *
          * Enable only when you trust the agent and the URLs it will hit.
          *
@@ -479,8 +479,10 @@ class HaoCodeConfig
 
         /**
          * CIDR allowlist that bypasses the WebFetch SSRF guard (e.g.
-         * ['192.168.0.0/16', '10.0.0.0/8']). Empty by default — use
-         * precise entries instead of flipping webfetchAllowPrivateNetworks.
+         * ['127.0.0.1/32', '192.168.0.0/16']). The default is empty; entries
+         * are explicit exceptions and are not augmented implicitly. Prefer
+         * precise entries instead of enabling webfetchAllowPrivateNetworks
+         * globally.
          *
          * @api
          *
@@ -584,34 +586,17 @@ class HaoCodeConfig
 
     /**
      * Filter for additional tools (SDK custom tools, sandbox replacements,
-     * MCP tools). Applies only disallowedTools and sandbox restrictions —
-     * NOT the allowedTools whitelist — because a caller who explicitly passes
-     * `tools: [...]` intends those tools to be available even when they are
-     * not also listed in allowedTools (the documented usage pattern).
+     * MCP tools).
      *
-     * Returns null when neither disallowedTools nor a sandbox is configured,
-     * so the common case stays allocation-free.
+     * This remains a separate internal compatibility method, but it must use
+     * the same final capability contract as the built-in tool registry:
+     * allowedTools, disallowedTools, and sandbox restrictions all apply.
      *
      * @internal
      */
     public function additionalToolFilter(): ?callable
     {
-        if ($this->disallowedTools === [] && $this->sandbox === null) {
-            return null;
-        }
-
-        return function (string $toolName): bool {
-            if ($this->sandbox !== null) {
-                if (in_array($toolName, self::sandboxLocalOnlyToolsToDisable(), true)) {
-                    return false;
-                }
-                if ($toolName === 'Bash' && ! $this->sandbox->enablesBash()) {
-                    return false;
-                }
-            }
-
-            return ! in_array($toolName, $this->disallowedTools, true);
-        };
+        return $this->toolFilter();
     }
 
     /**

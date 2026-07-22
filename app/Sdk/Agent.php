@@ -16,6 +16,7 @@ use HaoCode\Sdk\Sandbox\SandboxConfig;
  *   $agent = new Agent(
  *       name: 'code-reviewer',
  *       model: 'claude-sonnet-4',
+ *       allowedTools: ['Read', 'Grep'],
  *       tools: [new ReadTool(), new GrepTool()],
  *       maxTurns: 50,
  *   );
@@ -157,7 +158,9 @@ class Agent
         public readonly array $headers = [],
 
         /**
-         * Whether WebFetch may reach private/loopback/reserved IP ranges.
+         * Whether WebFetch may reach private-like RFC1918, loopback,
+         * link-local, and IPv6 ULA ranges. Special-use and reserved ranges
+         * still require an explicit CIDR allowlist.
          * Mirrors {@see HaoCodeConfig::$webfetchAllowPrivateNetworks}.
          *
          * @api
@@ -165,7 +168,8 @@ class Agent
         public readonly bool $webfetchAllowPrivateNetworks = false,
 
         /**
-         * CIDR allowlist that bypasses the WebFetch SSRF guard.
+         * CIDR allowlist that bypasses the WebFetch SSRF guard. The default is
+         * empty; entries are explicit exceptions.
          * Mirrors {@see HaoCodeConfig::$webfetchPrivateAllowList}.
          *
          * @api
@@ -183,25 +187,35 @@ class Agent
         public readonly int $webfetchMaxBytes = 5_242_880,
 
         /**
-         * Session ID to resume. Mirrors {@see HaoCodeConfig::$sessionId}.
+         * Legacy facade option retained for backward compatibility.
+         * Runner does not resume sessions from an Agent definition; use
+         * {@see HaoCode::resume()} or HaoCodeConfig with the HaoCode facade.
          *
          * @api
+         * @deprecated Session continuity is a facade/run concern and this
+         *             property is scheduled for removal in v2.
          */
         public readonly ?string $sessionId = null,
 
         /**
-         * Continue the most recent session in the working directory.
-         * Mirrors {@see HaoCodeConfig::$continueSession}.
+         * Legacy facade option retained for backward compatibility.
+         * Runner does not continue sessions from an Agent definition; use
+         * {@see HaoCode::continueLatest()} instead.
          *
          * @api
+         * @deprecated Session continuity is a facade/run concern and this
+         *             property is scheduled for removal in v2.
          */
         public readonly bool $continueSession = false,
 
         /**
-         * Number of retry attempts when structured output fails JSON or
-         * schema validation. Mirrors {@see HaoCodeConfig::$structuredMaxRetries}.
+         * Legacy facade option retained for backward compatibility.
+         * Runner has no structured-output operation; configure retries through
+         * HaoCodeConfig when calling {@see HaoCode::structured()}.
          *
          * @api
+         * @deprecated Structured retry policy is a facade/run concern and this
+         *             property is scheduled for removal in v2.
          */
         public readonly int $structuredMaxRetries = 1,
     ) {}

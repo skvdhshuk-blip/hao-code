@@ -6,6 +6,7 @@ use HaoCode\Tools\WebSearch\WebSearchTool;
 use HaoCode\Tools\ToolUseContext;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\HttpClient\MockHttpClient;
+use Symfony\Component\HttpClient\Exception\TransportException;
 use Symfony\Component\HttpClient\Response\MockResponse;
 
 class WebSearchToolTest extends TestCase
@@ -26,6 +27,27 @@ class WebSearchToolTest extends TestCase
         $m = $this->ref->getMethod($method);
         $m->setAccessible(true);
         return $m->invoke($this->tool, ...$args);
+    }
+
+    private function callWithResponses(array $responses): \HaoCode\Tools\ToolResult
+    {
+        $tool = new WebSearchTool;
+        $tool->setClient(new MockHttpClient($responses));
+
+        return $tool->call(
+            ['query' => 'test'],
+            new ToolUseContext(sys_get_temp_dir(), 'test'),
+        );
+    }
+
+    private function emptyDdgHtml(): string
+    {
+        return '<div class="no-results">No results.</div>';
+    }
+
+    private function emptyGoogleHtml(): string
+    {
+        return '<div>Your search did not match any documents.</div>';
     }
 
     // ─── name / description / isReadOnly ─────────────────────────────────
@@ -272,8 +294,7 @@ class WebSearchToolTest extends TestCase
                 return new MockResponse($ddgHtml, ['http_code' => 200]);
             }
 
-            // Google fallback returns a 503 so fetchHtml yields null.
-            return new MockResponse('', ['http_code' => 503]);
+            return new MockResponse($this->emptyGoogleHtml(), ['http_code' => 200]);
         }));
 
         $result = $tool->call([
@@ -283,5 +304,155 @@ class WebSearchToolTest extends TestCase
 
         $this->assertStringNotContainsString('Search results for', $result->output);
         $this->assertStringContainsString('No search results found', $result->output);
+        $this->assertFalse($result->isError);
+    }
+
+    public function test_ddg_title_and_url_are_results_without_a_snippet(): void
+    {
+        $result = $this->callWithResponses([
+            new MockResponse(
+                '<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fddg">DDG title</a>',
+                ['http_code' => 200],
+            ),
+        ]);
+
+        $this->assertFalse($result->isError);
+        $this->assertStringContainsString('[DDG title](https://example.com/ddg)', $result->output);
+    }
+
+    public function test_google_title_and_url_are_results_without_a_snippet(): void
+    {
+        $result = $this->callWithResponses([
+            new MockResponse($this->emptyDdgHtml(), ['http_code' => 200]),
+            new MockResponse(
+                '<a href="/url?q=https%3A%2F%2Fexample.com%2Fgoogle&amp;sa=U">Google title</a>',
+                ['http_code' => 200],
+            ),
+        ]);
+
+        $this->assertFalse($result->isError);
+        $this->assertStringContainsString('[Google title](https://example.com/google)', $result->output);
+    }
+
+    public function test_fallback_returns_google_results_when_ddg_has_http_error(): void
+    {
+        $result = $this->callWithResponses([
+            new MockResponse('SECRET_DDG_BODY', ['http_code' => 503]),
+            new MockResponse(
+                '<a href="/url?q=https%3A%2F%2Fexample.com%2Ffallback">Fallback title</a>',
+                ['http_code' => 200],
+            ),
+        ]);
+
+        $this->assertFalse($result->isError);
+        $this->assertStringContainsString('Fallback title', $result->output);
+        $this->assertStringNotContainsString('SECRET_DDG_BODY', $result->output);
+    }
+
+    public function test_both_explicit_empty_backends_return_success(): void
+    {
+        $result = $this->callWithResponses([
+            new MockResponse($this->emptyDdgHtml(), ['http_code' => 200]),
+            new MockResponse($this->emptyGoogleHtml(), ['http_code' => 200]),
+        ]);
+
+        $this->assertFalse($result->isError);
+        $this->assertStringContainsString('No search results found', $result->output);
+    }
+
+    public function test_two_blank_success_bodies_are_parse_errors(): void
+    {
+        $result = $this->callWithResponses([
+            new MockResponse('', ['http_code' => 200]),
+            new MockResponse("\n", ['http_code' => 200]),
+        ]);
+
+        $this->assertTrue($result->isError);
+        $this->assertStringContainsString('DuckDuckGo=parse_error', $result->output);
+        $this->assertStringContainsString('Google=parse_error', $result->output);
+    }
+
+    public function test_http_error_without_usable_results_is_reported_without_body(): void
+    {
+        $result = $this->callWithResponses([
+            new MockResponse('SECRET_HTTP_BODY', ['http_code' => 503]),
+            new MockResponse($this->emptyGoogleHtml(), ['http_code' => 200]),
+        ]);
+
+        $this->assertTrue($result->isError);
+        $this->assertStringContainsString('DuckDuckGo=http_error', $result->output);
+        $this->assertStringNotContainsString('SECRET_HTTP_BODY', $result->output);
+    }
+
+    public function test_transport_error_without_usable_results_is_reported(): void
+    {
+        $transportResponse = new MockResponse((function () {
+            throw new TransportException('SECRET_TRANSPORT_BODY');
+            yield '';
+        })(), ['http_code' => 200]);
+
+        $result = $this->callWithResponses([
+            $transportResponse,
+            new MockResponse($this->emptyGoogleHtml(), ['http_code' => 200]),
+        ]);
+
+        $this->assertTrue($result->isError);
+        $this->assertStringContainsString('DuckDuckGo=transport_error', $result->output);
+        $this->assertStringNotContainsString('SECRET_TRANSPORT_BODY', $result->output);
+    }
+
+    public function test_oversized_response_is_transport_error(): void
+    {
+        $result = $this->callWithResponses([
+            new MockResponse(str_repeat('x', 2_097_153), ['http_code' => 200]),
+            new MockResponse($this->emptyGoogleHtml(), ['http_code' => 200]),
+        ]);
+
+        $this->assertTrue($result->isError);
+        $this->assertStringContainsString('DuckDuckGo=transport_error', $result->output);
+    }
+
+    public function test_captcha_page_is_parse_error(): void
+    {
+        $result = $this->callWithResponses([
+            new MockResponse('<div class="g-recaptcha">challenge</div>', ['http_code' => 200]),
+            new MockResponse($this->emptyGoogleHtml(), ['http_code' => 200]),
+        ]);
+
+        $this->assertTrue($result->isError);
+        $this->assertStringContainsString('DuckDuckGo=parse_error', $result->output);
+    }
+
+    public function test_google_captcha_page_is_parse_error(): void
+    {
+        $result = $this->callWithResponses([
+            new MockResponse($this->emptyDdgHtml(), ['http_code' => 200]),
+            new MockResponse('<form action="/sorry/index"><div>captcha</div></form>', ['http_code' => 200]),
+        ]);
+
+        $this->assertTrue($result->isError);
+        $this->assertStringContainsString('Google=parse_error', $result->output);
+    }
+
+    public function test_unknown_google_layout_is_parse_error(): void
+    {
+        $result = $this->callWithResponses([
+            new MockResponse($this->emptyDdgHtml(), ['http_code' => 200]),
+            new MockResponse('<main>Unexpected search markup</main>', ['http_code' => 200]),
+        ]);
+
+        $this->assertTrue($result->isError);
+        $this->assertStringContainsString('Google=parse_error', $result->output);
+    }
+
+    public function test_unknown_ddg_layout_is_parse_error(): void
+    {
+        $result = $this->callWithResponses([
+            new MockResponse('<main>Unexpected search markup</main>', ['http_code' => 200]),
+            new MockResponse($this->emptyGoogleHtml(), ['http_code' => 200]),
+        ]);
+
+        $this->assertTrue($result->isError);
+        $this->assertStringContainsString('DuckDuckGo=parse_error', $result->output);
     }
 }

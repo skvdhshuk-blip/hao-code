@@ -34,6 +34,7 @@ use HaoCode\Services\Settings\SettingsManager;
  *
  *   // 6. Custom tools
  *   HaoCode::query('Look up order #123', new HaoCodeConfig(
+ *       allowedTools: ['LookupOrder'],
  *       tools: [new LookupOrderTool()],
  *   ));
  *

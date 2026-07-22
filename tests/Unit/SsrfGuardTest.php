@@ -54,17 +54,46 @@ class SsrfGuardTest extends TestCase
         ];
     }
 
-    public function test_default_allowlist_permits_loopback_v4(): void
+    /**
+     * These addresses are not ordinary public WebFetch destinations even
+     * though some PHP filter versions classify them as globally routable.
+     *
+     * @dataProvider specialUseIpProvider
+     */
+    public function test_check_ip_rejects_special_use_ranges_even_when_private_networks_enabled(string $ip): void
     {
-        // The DEFAULT_ALLOWLIST lets 127.0.0.1 through so local dev servers
-        // (the user's own machine) keep working.
-        $this->assertNull(SsrfGuard::checkIp('127.0.0.1', SsrfGuard::DEFAULT_ALLOWLIST));
-        $this->assertNull(SsrfGuard::checkIp('127.255.0.1', SsrfGuard::DEFAULT_ALLOWLIST));
+        $this->assertNotNull(SsrfGuard::checkIp($ip, [], true), "expected special-use rejection for {$ip}");
     }
 
-    public function test_default_allowlist_permits_loopback_v6(): void
+    public static function specialUseIpProvider(): array
     {
-        $this->assertNull(SsrfGuard::checkIp('::1', SsrfGuard::DEFAULT_ALLOWLIST));
+        return [
+            'shared cgnat' => ['100.64.0.1'],
+            'ipv4 documentation 1' => ['192.0.2.1'],
+            'benchmark' => ['198.18.0.1'],
+            'ipv4 documentation 2' => ['198.51.100.1'],
+            'ipv4 documentation 3' => ['203.0.113.1'],
+            'ipv4 multicast' => ['224.0.0.1'],
+            'ipv6 documentation' => ['2001:db8::1'],
+            'ipv6 benchmark' => ['2001:2::1'],
+            'ipv6 deprecated site-local' => ['fec0::1'],
+            'ipv6 multicast' => ['ff02::1'],
+            'ipv6 srv6 sid space' => ['5f00::1'],
+            'ipv6 unallocated 4000 range' => ['4000::1'],
+            'ipv6 unallocated 8000 range' => ['8000::1'],
+        ];
+    }
+
+    public function test_default_allowlist_is_empty_and_rejects_loopback_v4(): void
+    {
+        $this->assertSame([], SsrfGuard::DEFAULT_ALLOWLIST);
+        $this->assertNotNull(SsrfGuard::checkIp('127.0.0.1', SsrfGuard::DEFAULT_ALLOWLIST));
+        $this->assertNotNull(SsrfGuard::checkIp('127.255.0.1', SsrfGuard::DEFAULT_ALLOWLIST));
+    }
+
+    public function test_default_allowlist_rejects_loopback_v6(): void
+    {
+        $this->assertNotNull(SsrfGuard::checkIp('::1', SsrfGuard::DEFAULT_ALLOWLIST));
     }
 
     public function test_default_allowlist_does_not_permit_rfc1918(): void
@@ -100,9 +129,12 @@ class SsrfGuardTest extends TestCase
         $this->assertNotNull($rejection);
     }
 
-    public function test_check_url_accepts_localhost_with_default_allowlist(): void
+    public function test_check_url_requires_explicit_localhost_allowlist(): void
     {
         $rejection = SsrfGuard::checkUrl('http://127.0.0.1:8080/', SsrfGuard::DEFAULT_ALLOWLIST);
+        $this->assertNotNull($rejection);
+
+        $rejection = SsrfGuard::checkUrl('http://127.0.0.1:8080/', ['127.0.0.1/32']);
         $this->assertNull($rejection);
     }
 
@@ -143,6 +175,12 @@ class SsrfGuardTest extends TestCase
         $this->assertNotNull(SsrfGuard::checkIp('not-an-ip', [], true));
     }
 
+    public function test_explicit_allowlist_can_override_special_use_rejection(): void
+    {
+        $this->assertNull(SsrfGuard::checkIp('100.64.0.1', ['100.64.0.0/10']));
+        $this->assertNull(SsrfGuard::checkIp('ff02::1', ['ff00::/8']));
+    }
+
     public function test_check_url_allow_private_networks_flag_applies_to_resolved_hosts(): void
     {
         // Literal private IP via checkUrl: rejected by default, allowed with flag.
@@ -156,7 +194,7 @@ class SsrfGuardTest extends TestCase
      */
     public function test_resolve_url_returns_host_and_ips_for_literal_ip(): void
     {
-        $resolved = SsrfGuard::resolveUrl('http://127.0.0.1/');
+        $resolved = SsrfGuard::resolveUrl('http://127.0.0.1/', ['127.0.0.1/32']);
         $this->assertSame('127.0.0.1', $resolved['host']);
         $this->assertSame(['127.0.0.1'], $resolved['ips']);
     }
@@ -183,9 +221,9 @@ class SsrfGuardTest extends TestCase
     {
         // fc00::/7 covers all unique-local addresses.
         $this->assertNull(SsrfGuard::checkIp('fd00::1', ['fc00::/7']));
-        // 2001:db8::/32 is documentation range; it is public so the allowlist
-        // is irrelevant — confirmed by checkIp accepting it with no allowlist.
-        $this->assertNull(SsrfGuard::checkIp('2001:db8::1', ['fc00::/7']));
+        // Documentation space is blocked unless explicitly allowlisted.
+        $this->assertNotNull(SsrfGuard::checkIp('2001:db8::1', ['fc00::/7']));
+        $this->assertNull(SsrfGuard::checkIp('2001:db8::1', ['2001:db8::/32']));
     }
 
     public function test_custom_allowlist_matches_zero_prefix(): void

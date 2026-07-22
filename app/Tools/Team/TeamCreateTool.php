@@ -322,6 +322,7 @@ PREAMBLE;
             ),
             afterFork: true,
             readOnly: $readOnly || $agentDef->readOnly,
+            parentToolRegistry: $context->toolRegistry,
         );
         $effectiveMaxTurns = $maxTurns ?? $agentDef->maxTurns;
         if ($effectiveMaxTurns !== null) {

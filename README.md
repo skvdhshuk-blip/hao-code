@@ -550,7 +550,10 @@ $result = HaoCode::query('Check order A123', new HaoCodeConfig(
 ));
 ```
 
-By default `SdkTool` is treated as read-only. Override `isReadOnly()` and return `false` for stateful or mutating tools.
+Custom tools and sandbox replacement tools are exposed only when their exact
+names appear in `allowedTools` (or when `allowedTools: ['*']` is used);
+`disallowedTools` always wins. By default `SdkTool` is treated as read-only.
+Override `isReadOnly()` and return `false` for stateful or mutating tools.
 
 ## Custom Skills
 
@@ -686,7 +689,8 @@ application-owned store.
 
 ## Version
 
-The current release is `v1.13.1`. Notable changes since `v1.10.0`:
+Published versions are identified by Git tags and Packagist. This source line
+is based on `v1.18.1`. Notable changes since `v1.10.0`:
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/

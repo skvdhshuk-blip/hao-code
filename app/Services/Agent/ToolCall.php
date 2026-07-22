@@ -7,14 +7,14 @@ namespace HaoCode\Services\Agent;
  *
  * @internal
  */
-final readonly class ToolCall
+final class ToolCall
 {
     public function __construct(
-        public string $id,
-        public string $name,
-        public array $input,
-        public string $rawInput = '',
-        public ?string $inputError = null,
+        public readonly string $id,
+        public readonly string $name,
+        public readonly array $input,
+        public readonly string $rawInput = '',
+        public readonly ?string $inputError = null,
     ) {}
 
     public function toArray(): array

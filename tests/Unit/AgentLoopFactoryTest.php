@@ -99,40 +99,36 @@ class AgentLoopFactoryTest extends TestCase
     }
 
     /**
-     * additionalTools must honor an explicit disallowedTools entry (the caller
-     * said "not this tool") but must NOT be dropped merely because the tool is
-     * absent from the allowedTools whitelist — otherwise passing `tools: [...]`
-     * without also listing each tool in allowedTools (the documented pattern)
-     * would silently unregister them.
+     * An explicit additional-tool filter cannot bypass the main capability
+     * filter. This mirrors the two-filter defense-in-depth path in
+     * AgentLoopFactory::createIsolated().
      */
-    public function test_additional_tools_respect_disallowed_but_not_whitelist(): void
+    public function test_additional_tools_apply_the_main_filter_before_the_hook(): void
     {
         $allowed = $this->createMock(\HaoCode\Contracts\ToolInterface::class);
         $allowed->method('name')->willReturn('AllowedTool');
-        $denied = $this->createMock(\HaoCode\Contracts\ToolInterface::class);
-        $denied->method('name')->willReturn('DeniedTool');
+        $notWhitelisted = $this->createMock(\HaoCode\Contracts\ToolInterface::class);
+        $notWhitelisted->method('name')->willReturn('NotWhitelistedTool');
+        $hookDenied = $this->createMock(\HaoCode\Contracts\ToolInterface::class);
+        $hookDenied->method('name')->willReturn('HookDeniedTool');
 
-        $additionalToolFilter = static fn (string $name): bool => $name !== 'DeniedTool';
+        $toolFilter = static fn (string $name): bool => in_array($name, ['AllowedTool', 'HookDeniedTool'], true);
+        $additionalToolFilter = static fn (string $name): bool => $name !== 'HookDeniedTool';
 
-        $toolRegistry = new ToolRegistry();
         $factory = new AgentLoopFactory(container: $this->buildContainer(new ToolRegistry()));
-
-        $method = new \ReflectionMethod($factory, 'createIsolated');
-        // We only need the registry-building portion; bypass the full loop by
-        // invoking buildToolRegistry + the additionalTools loop directly.
-        $buildRegistry = new \ReflectionMethod($factory, 'buildToolRegistry');
-        $registry = $buildRegistry->invoke($factory, $toolRegistry, null, true);
-
-        // Replicate the additionalTools registration loop from createIsolated.
-        $additionalTools = [$allowed, $denied];
-        foreach ($additionalTools as $tool) {
-            if ($additionalToolFilter($tool->name())) {
-                $registry->register($tool);
-            }
-        }
+        $loop = $factory->createIsolated(
+            toolFilter: $toolFilter,
+            additionalTools: [$allowed, $notWhitelisted, $hookDenied],
+            streamingClient: $this->createMock(StreamingClient::class),
+            additionalToolFilter: $additionalToolFilter,
+        );
+        $registryProperty = new \ReflectionProperty($loop, 'toolRegistry');
+        /** @var ToolRegistry $registry */
+        $registry = $registryProperty->getValue($loop);
 
         $this->assertNotNull($registry->getTool('AllowedTool'));
-        $this->assertNull($registry->getTool('DeniedTool'));
+        $this->assertNull($registry->getTool('NotWhitelistedTool'));
+        $this->assertNull($registry->getTool('HookDeniedTool'));
     }
 
     private function buildContainer(ToolRegistry $toolRegistry): object

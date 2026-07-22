@@ -173,6 +173,7 @@ DESC;
                     $agentDef->interruptOn,
                 ),
                 readOnly: $agentDef->readOnly,
+                parentToolRegistry: $context->toolRegistry,
             );
             if ($agentDef->maxTurns !== null) {
                 $subLoop->setMaxTurns($agentDef->maxTurns);
@@ -328,6 +329,7 @@ DESC;
             ),
             afterFork: true,
             readOnly: $agentDef->readOnly,
+            parentToolRegistry: $context->toolRegistry,
         );
         if ($agentDef->maxTurns !== null) {
             $subLoop->setMaxTurns($agentDef->maxTurns);

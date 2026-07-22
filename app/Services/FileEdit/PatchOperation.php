@@ -5,7 +5,7 @@ namespace HaoCode\Services\FileEdit;
 /**
  * Represents a single file operation within a patch envelope.
  */
-readonly class PatchOperation
+class PatchOperation
 {
     /**
      * @param  string  $type  'add' | 'update' | 'delete'
@@ -14,9 +14,9 @@ readonly class PatchOperation
      * @param  string|null  $newContent  Full content for add operations
      */
     public function __construct(
-        public string $type,
-        public string $path,
-        public ?array $hunks,
-        public ?string $newContent,
+        public readonly string $type,
+        public readonly string $path,
+        public readonly ?array $hunks,
+        public readonly ?string $newContent,
     ) {}
 }

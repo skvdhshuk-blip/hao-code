@@ -27,6 +27,7 @@ class ToolUseContext
         ?FileStateCache $fileStateCache = null,
         public readonly ?AgentRunContext $runContext = null,
         public readonly ?LlmProvider $provider = null,
+        public readonly ?ToolRegistry $toolRegistry = null,
     ) {
         $this->onProgress = $onProgress;
         $this->shouldAbort = $shouldAbort;
