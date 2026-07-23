@@ -2,9 +2,13 @@
 
 namespace Tests\Unit;
 
+use HaoCode\Services\Api\AnthropicProvider;
 use HaoCode\Services\Api\ForkSafeProvider;
+use HaoCode\Services\Api\PooledProvider;
 use HaoCode\Services\Api\StreamingClient;
 use HaoCode\Services\Settings\SettingsManager;
+use HaoCode\Sdk\Credential;
+use HaoCode\Sdk\CredentialPool;
 use PHPUnit\Framework\TestCase;
 
 class ForkSafeProviderTest extends TestCase
@@ -32,6 +36,26 @@ class ForkSafeProviderTest extends TestCase
         );
         $this->assertSame('child-model', $this->readPrivate($fresh, 'connectionConfig')['model']);
         $this->assertSame('explicit-key', $this->readPrivate($fresh, 'connectionConfig')['apiKey']);
+    }
+
+    public function test_pooled_provider_rebinds_a_settings_aware_inner_provider_after_fork(): void
+    {
+        $inner = new AnthropicProvider(
+            apiKey: 'parent-key',
+            model: 'parent-model',
+            baseUrl: 'https://example.test',
+        );
+        $pool = new CredentialPool;
+        $pool->add('anthropic', new Credential('pool-key'));
+        $provider = new PooledProvider($inner, $pool, 'anthropic');
+        $settings = new SettingsManager;
+        $settings->set('model', 'child-model');
+
+        $fresh = $provider->freshAfterFork($settings);
+        $freshInner = $this->readPrivate($fresh, 'inner');
+
+        $this->assertNotSame($inner, $freshInner);
+        $this->assertSame($settings, $this->readPrivate($freshInner, 'settingsManager'));
     }
 
     private function readPrivate(object $object, string $property): mixed

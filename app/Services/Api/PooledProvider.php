@@ -2,6 +2,7 @@
 
 namespace HaoCode\Services\Api;
 
+use HaoCode\Services\Settings\SettingsManager;
 use HaoCode\Sdk\Credential;
 use HaoCode\Sdk\CredentialPool;
 use HaoCode\Sdk\RateLimitTracker;
@@ -18,7 +19,7 @@ use HaoCode\Sdk\RateLimitTracker;
  * The decorator remains outside the wire-format providers and retries the same
  * normalized request with a fresh provider instance when a key is exhausted.
  */
-class PooledProvider implements ForkSafeProvider
+class PooledProvider implements ForkSafeProvider, SettingsAwareProvider
 {
     private array $lastRateLimitHeaders = [];
 
@@ -103,8 +104,21 @@ class PooledProvider implements ForkSafeProvider
 
     public function freshAfterFork(?\HaoCode\Services\Settings\SettingsManager $settingsManager = null): LlmProvider
     {
-        $inner = $this->inner instanceof ForkSafeProvider
-            ? $this->inner->freshAfterFork($settingsManager)
+        if ($this->inner instanceof ForkSafeProvider) {
+            $inner = $this->inner->freshAfterFork($settingsManager);
+        } elseif ($settingsManager !== null && $this->inner instanceof SettingsAwareProvider) {
+            $inner = $this->inner->withSettingsManager($settingsManager);
+        } else {
+            $inner = $this->inner;
+        }
+
+        return new self($inner, $this->pool, $this->providerName, $this->rateLimitTracker);
+    }
+
+    public function withSettingsManager(SettingsManager $settingsManager): self
+    {
+        $inner = $this->inner instanceof SettingsAwareProvider
+            ? $this->inner->withSettingsManager($settingsManager)
             : $this->inner;
 
         return new self($inner, $this->pool, $this->providerName, $this->rateLimitTracker);

@@ -76,7 +76,14 @@ final class SdkRuntime
     {
         if (self::$container !== null) {
             if ($storagePath !== null) {
-                self::$container->useStoragePath($storagePath);
+                $current = rtrim(self::$container->storagePath(), '/\\');
+                $requested = rtrim($storagePath, '/\\');
+                if ($requested !== $current) {
+                    throw new \LogicException(
+                        'SdkRuntime storage path cannot be changed after the runtime has booted. '
+                        .'Call SdkRuntime::reset() before booting with a different path.',
+                    );
+                }
             }
 
             return self::$container;
@@ -212,6 +219,7 @@ final class SdkRuntime
         ));
         $app->singleton(BackgroundAgentManager::class, fn (Container $app) => new BackgroundAgentManager(
             $app->storagePath('app/haocode/background-agents'),
+            $app->make(\HaoCode\Services\Task\TaskManager::class),
         ));
         $app->singleton(TeamManager::class, fn (Container $app) => new TeamManager(
             $app->storagePath('app/haocode/teams'),

@@ -31,7 +31,7 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
  * equivalent to Anthropic's cache_control breakpoints, so caller-supplied
  * cache_control hints are stripped during translation.
  */
-class OpenAiProvider implements ApiKeyAwareProvider
+class OpenAiProvider implements ApiKeyAwareProvider, SettingsAwareProvider
 {
     private HttpClientInterface $httpClient;
     private int $maxRetries = 3;

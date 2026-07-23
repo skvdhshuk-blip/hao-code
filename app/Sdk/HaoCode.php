@@ -189,7 +189,8 @@ class HaoCode
         $checkpoint = is_array($state['checkpoint'] ?? null) ? $state['checkpoint'] : [];
         $pendingInterrupt = HumanInterrupt::fromArray($state['interrupt'] ?? []);
         $parentLink = $sessionManager->findInterruptParentLink($sessionId, $interruptId);
-        $conversation = self::resume($sessionId, $config);
+        $resumeConfig = self::restoreSourceAgentWorkingDirectory($config, $pendingInterrupt);
+        $conversation = self::resume($sessionId, $resumeConfig);
         try {
             try {
                 $result = $conversation->resumeInterrupt($interruptId, $decisions);
@@ -210,8 +211,11 @@ class HaoCode
                 throw $e;
             }
             if ($pendingInterrupt->sourceAgentId !== null) {
-                \HaoCode\Support\Runtime\SdkRuntime::app(\HaoCode\Services\Agent\BackgroundAgentManager::class)
-                    ->markCompleted($pendingInterrupt->sourceAgentId, $result->text);
+                $backgroundAgents = \HaoCode\Support\Runtime\SdkRuntime::app(
+                    \HaoCode\Services\Agent\BackgroundAgentManager::class,
+                );
+                $backgroundAgents->markCompleted($pendingInterrupt->sourceAgentId, $result->text);
+                $backgroundAgents->finalizeStoredWorktree($pendingInterrupt->sourceAgentId);
                 \HaoCode\Support\Runtime\SdkRuntime::app(\HaoCode\Services\Task\TaskManager::class)
                     ->update($pendingInterrupt->sourceAgentId, 'completed', $result->text);
             }
@@ -258,7 +262,8 @@ class HaoCode
         $state = $sessionManager->getInterruptState($sessionId, $interruptId);
         $pendingInterrupt = HumanInterrupt::fromArray($state['interrupt'] ?? []);
         $parentLink = $sessionManager->findInterruptParentLink($sessionId, $interruptId);
-        $conversation = self::resume($sessionId, $config);
+        $resumeConfig = self::restoreSourceAgentWorkingDirectory($config, $pendingInterrupt);
+        $conversation = self::resume($sessionId, $resumeConfig);
         try {
             $final = null;
             foreach ($conversation->streamResumeInterrupt($interruptId, $decisions) as $message) {
@@ -289,8 +294,11 @@ class HaoCode
                 return;
             }
             if ($pendingInterrupt->sourceAgentId !== null) {
-                \HaoCode\Support\Runtime\SdkRuntime::app(\HaoCode\Services\Agent\BackgroundAgentManager::class)
-                    ->markCompleted($pendingInterrupt->sourceAgentId, $final->text);
+                $backgroundAgents = \HaoCode\Support\Runtime\SdkRuntime::app(
+                    \HaoCode\Services\Agent\BackgroundAgentManager::class,
+                );
+                $backgroundAgents->markCompleted($pendingInterrupt->sourceAgentId, $final->text);
+                $backgroundAgents->finalizeStoredWorktree($pendingInterrupt->sourceAgentId);
                 \HaoCode\Support\Runtime\SdkRuntime::app(\HaoCode\Services\Task\TaskManager::class)
                     ->update($pendingInterrupt->sourceAgentId, 'completed', $final->text ?? '');
             }
@@ -331,6 +339,37 @@ class HaoCode
         }
 
         return self::resume($sessionId, $config);
+    }
+
+    private static function restoreSourceAgentWorkingDirectory(
+        HaoCodeConfig $config,
+        HumanInterrupt $interrupt,
+    ): HaoCodeConfig {
+        if ($interrupt->sourceAgentId === null) {
+            return $config;
+        }
+
+        $agent = \HaoCode\Support\Runtime\SdkRuntime::app(
+            \HaoCode\Services\Agent\BackgroundAgentManager::class,
+        )->get($interrupt->sourceAgentId);
+        $worktreePath = $agent['worktree_path'] ?? null;
+        if (! is_string($worktreePath) || $worktreePath === '') {
+            return $config;
+        }
+        if (! is_dir($worktreePath)) {
+            throw new \RuntimeException(
+                "Cannot resume background agent {$interrupt->sourceAgentId}: "
+                ."its worktree no longer exists at {$worktreePath}.",
+            );
+        }
+        if ($config->cwd === $worktreePath) {
+            return $config;
+        }
+
+        $values = get_object_vars($config);
+        $values['cwd'] = $worktreePath;
+
+        return new HaoCodeConfig(...$values);
     }
 
     /**

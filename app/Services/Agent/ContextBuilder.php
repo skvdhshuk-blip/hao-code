@@ -37,6 +37,7 @@ class ContextBuilder
         private readonly ?string $workingDirectory = null,
         private readonly bool $textOnly = false,
         private readonly bool $includeMemoryInTextOnly = false,
+        private readonly bool $omitProjectInstructions = false,
     ) {}
 
     public function buildSystemPrompt(): array
@@ -66,9 +67,11 @@ class ContextBuilder
         $prompt .= $this->getEnvironmentContext();
 
         // Load memory files (HAOCODE.md / CLAUDE.md)
-        $memoryContent = $this->loadMemoryFiles();
-        if ($memoryContent) {
-            $prompt .= "\n\n# Project Instructions (from memory files)\n\n" . $memoryContent;
+        if (! $this->omitProjectInstructions) {
+            $memoryContent = $this->loadMemoryFiles();
+            if ($memoryContent) {
+                $prompt .= "\n\n# Project Instructions (from memory files)\n\n" . $memoryContent;
+            }
         }
 
         $prompt = $this->appendLongTermMemory($prompt);

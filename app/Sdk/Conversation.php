@@ -368,7 +368,8 @@ class Conversation
                 }
             } elseif ($type === 'interrupt_pending' && isset($entry['checkpoint']['assistant_message'])) {
                 $history->addAssistantMessage($entry['checkpoint']['assistant_message']);
-            } elseif ($type === 'interrupt_resolved' && ! empty($entry['tool_results'])) {
+            } elseif (in_array($type, ['interrupt_resolved', 'interrupt_cancelled'], true)
+                && ! empty($entry['tool_results'])) {
                 $history->addToolResultMessage($entry['tool_results']);
             }
         }

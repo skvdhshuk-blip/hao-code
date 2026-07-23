@@ -3,6 +3,8 @@
 namespace Tests\Unit;
 
 use HaoCode\Services\Agent\BackgroundAgentManager;
+use HaoCode\Sdk\HumanActionRequest;
+use HaoCode\Sdk\HumanInterrupt;
 use HaoCode\Tools\Agent\SendMessageTool;
 use HaoCode\Tools\ToolUseContext;
 use PHPUnit\Framework\TestCase;
@@ -84,6 +86,27 @@ class SendMessageToolTest extends TestCase
 
         $this->assertTrue($result->isError);
         $this->assertSame('dead', $this->manager->get('agent_demo')['status']);
+        $this->assertSame(0, $this->manager->get('agent_demo')['pending_messages']);
+    }
+
+    public function test_it_rejects_messages_while_agent_waits_for_interrupt_resume(): void
+    {
+        $this->manager->create('agent_demo', 'Inspect repo', 'Explore');
+        $this->manager->markWaitingForInput('agent_demo', new HumanInterrupt(
+            'int-child',
+            'session-child',
+            [new HumanActionRequest('call-1', 'Bash', [], 'Review')],
+            date('c'),
+            'agent_demo',
+        ));
+
+        $result = $this->tool->call([
+            'to' => 'agent_demo',
+            'message' => 'This would otherwise be orphaned.',
+        ], $this->context);
+
+        $this->assertTrue($result->isError);
+        $this->assertStringContainsString('resume the interrupt first', $result->output);
         $this->assertSame(0, $this->manager->get('agent_demo')['pending_messages']);
     }
 }

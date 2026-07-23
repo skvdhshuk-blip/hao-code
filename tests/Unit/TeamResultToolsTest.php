@@ -92,6 +92,34 @@ class TeamResultToolsTest extends TestCase
         (new TeamCollectTool($this->collector))->call(['name' => 'research'], new ToolUseContext('/tmp', 'test'));
     }
 
+    public function test_collect_does_not_surface_stale_interrupt_after_completion(): void
+    {
+        $this->teams->create('research', [
+            ['role' => 'docs', 'agent_type' => 'Explore', 'prompt' => 'Read docs'],
+        ]);
+        $this->agents->create('research_docs', 'Read docs', 'Explore');
+        $interrupt = new HumanInterrupt(
+            'int-team',
+            'session-team-child',
+            [new HumanActionRequest('call-team', 'Write', [], 'Review write')],
+            date('c'),
+            'research_docs',
+            'research',
+        );
+        $this->agents->markWaitingForInput('research_docs', $interrupt);
+        $this->agents->markCompleted('research_docs', 'Finished after resume.');
+
+        $result = (new TeamCollectTool($this->collector))->call(
+            ['name' => 'research'],
+            new ToolUseContext('/tmp', 'test'),
+        );
+        $payload = json_decode($result->output, true);
+
+        $this->assertFalse($result->isError);
+        $this->assertNull($payload['members'][0]['pending_interrupt']);
+        $this->assertSame('completed', $payload['members'][0]['status']);
+    }
+
     private function seedTeam(): void
     {
         $this->teams->create('research', [

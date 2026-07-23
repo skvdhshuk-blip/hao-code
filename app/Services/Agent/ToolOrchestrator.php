@@ -220,7 +220,13 @@ class ToolOrchestrator
 
         foreach ($toolUseBlocks as $origIdx => $block) {
             $tool = $this->toolRegistry->getTool($block['name']);
-            if ($tool && $tool->isConcurrencySafe($block['input'] ?? []) && $tool->isReadOnly($block['input'] ?? [])) {
+            $classificationInput = $block['input'] ?? [];
+            if ($tool?->name() === 'Agent') {
+                $classificationInput = $tool->backfillObservableInput($classificationInput, $context);
+            }
+            if ($tool
+                && $tool->isConcurrencySafe($classificationInput)
+                && $tool->isReadOnly($classificationInput)) {
                 $safeBlocks[$origIdx] = $block;
             } else {
                 $unsafeBlocks[$origIdx] = $block;

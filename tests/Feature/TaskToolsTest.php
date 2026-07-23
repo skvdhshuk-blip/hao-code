@@ -3,7 +3,10 @@
 namespace Tests\Feature;
 
 use HaoCode\Services\Agent\BackgroundAgentManager;
+use HaoCode\Services\Session\SessionManager;
 use HaoCode\Services\Task\TaskManager;
+use HaoCode\Sdk\HumanActionRequest;
+use HaoCode\Sdk\HumanInterrupt;
 use HaoCode\Tools\Task\TaskCreateTool;
 use HaoCode\Tools\Task\TaskGetTool;
 use HaoCode\Tools\Task\TaskListTool;
@@ -18,7 +21,9 @@ class TaskToolsTest extends TestCase
     private TaskManager $manager;
     private string $tmpDir;
     private string $agentTmpDir;
+    private string $sessionTmpDir;
     private BackgroundAgentManager $backgroundAgentManager;
+    private SessionManager $sessionManager;
 
     protected function setUp(): void
     {
@@ -41,6 +46,12 @@ class TaskToolsTest extends TestCase
         mkdir($this->agentTmpDir, 0755, true);
         $this->backgroundAgentManager = new BackgroundAgentManager($this->agentTmpDir);
         $this->app->instance(BackgroundAgentManager::class, $this->backgroundAgentManager);
+
+        $this->sessionTmpDir = sys_get_temp_dir().'/session_tools_test_'.uniqid();
+        mkdir($this->sessionTmpDir, 0755, true);
+        config(['haocode.session_path' => $this->sessionTmpDir]);
+        $this->sessionManager = new SessionManager();
+        $this->app->instance(SessionManager::class, $this->sessionManager);
     }
 
     protected function tearDown(): void
@@ -54,6 +65,10 @@ class TaskToolsTest extends TestCase
             @unlink($agentFile);
         }
         @rmdir($this->agentTmpDir);
+        foreach (glob($this->sessionTmpDir.'/*') ?: [] as $sessionFile) {
+            @unlink($sessionFile);
+        }
+        @rmdir($this->sessionTmpDir);
     }
 
     // ─── TaskCreateTool ───────────────────────────────────────────────────
@@ -305,5 +320,38 @@ class TaskToolsTest extends TestCase
         $this->assertFalse($result->isError);
         $this->assertStringContainsString('Stop requested', $result->output);
         $this->assertTrue($this->backgroundAgentManager->isStopRequested('agent_demo'));
+    }
+
+    public function test_stop_tool_cancels_waiting_interrupt_instead_of_setting_orphan_stop_flag(): void
+    {
+        $this->manager->createWithId('agent_demo', 'Repo agent', 'Running');
+        $this->backgroundAgentManager->create('agent_demo', 'Inspect repo', 'Explore');
+        $interrupt = new HumanInterrupt(
+            'int-child',
+            $this->sessionManager->getSessionId(),
+            [new HumanActionRequest('call-1', 'Bash', [], 'Review')],
+            date('c'),
+            'agent_demo',
+        );
+        $this->sessionManager->recordPendingInterrupt(
+            $interrupt->toArray(),
+            ['assistant_message' => ['role' => 'assistant', 'content' => []]],
+        );
+        $this->backgroundAgentManager->markWaitingForInput('agent_demo', $interrupt);
+
+        $result = (new TaskStopTool)->call(['id' => 'agent_demo'], $this->context);
+
+        $this->assertFalse($result->isError);
+        $this->assertStringContainsString('pending interrupt was cancelled', $result->output);
+        $this->assertSame('completed', $this->backgroundAgentManager->get('agent_demo')['status']);
+        $this->assertFalse($this->backgroundAgentManager->isStopRequested('agent_demo'));
+        $this->assertSame('completed', $this->manager->get('agent_demo')->status);
+        $this->assertSame(
+            'interrupt_cancelled',
+            $this->sessionManager->getInterruptState(
+                $this->sessionManager->getSessionId(),
+                'int-child',
+            )['type'],
+        );
     }
 }

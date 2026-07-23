@@ -4,6 +4,7 @@ namespace HaoCode\Services\Agent;
 
 use HaoCode\Services\Api\LlmProvider;
 use HaoCode\Services\Api\ForkSafeProvider;
+use HaoCode\Services\Api\SettingsAwareProvider;
 use HaoCode\Services\Api\StreamingClient;
 use HaoCode\Services\Compact\ContextCompactor;
 use HaoCode\Services\Cost\CostTracker;
@@ -52,11 +53,27 @@ class AgentLoopFactory
         bool $readOnly = false,
         ?callable $additionalToolFilter = null,
         ?ToolRegistry $parentToolRegistry = null,
+        ?string $model = null,
+        ?string $appendSystemPrompt = null,
+        bool $omitProjectInstructions = false,
     ): AgentLoop {
-        if ($readOnly && $runContext === null) {
+        $requiresScopedContext = $readOnly
+            || $model !== null
+            || (is_string($appendSystemPrompt) && trim($appendSystemPrompt) !== '')
+            || $omitProjectInstructions;
+
+        if ($runContext !== null && $requiresScopedContext) {
+            $runContext = $runContext->fork(
+                workingDirectory: $workingDirectory,
+                readOnly: $readOnly,
+                omitProjectInstructions: $omitProjectInstructions,
+            );
+        } elseif ($runContext === null && $requiresScopedContext) {
             $projectDirectory = ($workingDirectory ?? getcwd()) ?: '/';
             $settings = clone $this->container->make(SettingsManager::class);
-            $settings->set('permission_mode', 'plan');
+            if ($readOnly) {
+                $settings->set('permission_mode', 'plan');
+            }
             $runContext = new AgentRunContext(
                 $projectDirectory,
                 $projectDirectory,
@@ -65,7 +82,21 @@ class AgentLoopFactory
                 new CancellationToken(),
                 memoryStore: new JsonMemoryStore($settings->getMemoryStoragePath()),
                 memoryTools: ['MemoryRead'],
+                omitProjectInstructions: $omitProjectInstructions,
             );
+        }
+
+        if ($runContext !== null) {
+            if ($model !== null) {
+                $runContext->settings->set('model', $model);
+            }
+            if (is_string($appendSystemPrompt) && trim($appendSystemPrompt) !== '') {
+                $existing = trim((string) $runContext->settings->getAppendSystemPrompt());
+                $runContext->settings->set(
+                    'append_system_prompt',
+                    $existing === '' ? trim($appendSystemPrompt) : $existing."\n\n".trim($appendSystemPrompt),
+                );
+            }
         }
 
         // Build tool registry with optional filtering
@@ -179,6 +210,7 @@ class AgentLoopFactory
                 workingDirectory: $runContext->projectDirectory,
                 textOnly: $toolRegistry->getAllTools() === [],
                 includeMemoryInTextOnly: $runContext->includeMemoryInTextOnly,
+                omitProjectInstructions: $runContext->omitProjectInstructions,
             );
         } else {
             $settings = $this->container->make(SettingsManager::class);
@@ -192,9 +224,12 @@ class AgentLoopFactory
         $client = $streamingClient ?? $this->container->make(StreamingClient::class);
         if ($afterFork && $client instanceof ForkSafeProvider) {
             $client = $client->freshAfterFork($runContext?->settings);
-        }
-        if ($streamingClient === null && $runContext !== null) {
+        } elseif ($runContext !== null && $client instanceof SettingsAwareProvider) {
             $client = $client->withSettingsManager($settings);
+        } elseif ($model !== null && $streamingClient !== null) {
+            throw new \RuntimeException(
+                'Agent model override requires a settings-aware provider.',
+            );
         }
         $queryEngine = new QueryEngine($client, $toolRegistry, $tracer, $settings);
 

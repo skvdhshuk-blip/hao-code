@@ -174,6 +174,37 @@ class WebFetchToolTest extends TestCase
         $this->assertStringContainsString('docs', $result->output);
     }
 
+    /**
+     * @dataProvider htmlMediaTypeProvider
+     */
+    public function test_html_media_type_is_case_insensitive(string $contentType): void
+    {
+        $tool = new WebFetchTool(ssrfAllowList: ['127.0.0.1/32']);
+        $tool->setClient(new MockHttpClient([
+            new MockResponse('<h1>Converted</h1>', [
+                'http_code' => 200,
+                'response_headers' => ['content-type' => $contentType],
+            ]),
+        ]));
+
+        $result = $tool->call(
+            ['url' => 'http://127.0.0.1:9999/media-'.md5($contentType), 'format' => 'text'],
+            $this->context,
+        );
+
+        $this->assertFalse($result->isError);
+        $this->assertStringContainsString('Converted', $result->output);
+        $this->assertStringNotContainsString('<h1>', $result->output);
+    }
+
+    public static function htmlMediaTypeProvider(): array
+    {
+        return [
+            ['Text/HTML; Charset=UTF-8'],
+            ['APPLICATION/XHTML+XML; charset=utf-8'],
+        ];
+    }
+
     // ─── cache isolation across security policies ─────────────────────────
 
     public function test_cache_is_isolated_by_security_policy(): void

@@ -3,6 +3,7 @@
 namespace HaoCode\Tools\Task;
 
 use HaoCode\Services\Agent\BackgroundAgentManager;
+use HaoCode\Services\Session\SessionManager;
 use HaoCode\Services\Task\TaskManager;
 use HaoCode\Tools\BaseTool;
 use HaoCode\Tools\ToolInputSchema;
@@ -38,9 +39,42 @@ class TaskStopTool extends BaseTool
             return ToolResult::error($e->getMessage());
         }
 
+        if (($agent['status'] ?? null) === 'waiting_for_input') {
+            $sessionId = $agent['child_session_id'] ?? null;
+            $interruptId = $agent['pending_interrupt']['id'] ?? null;
+            if (! is_string($sessionId) || $sessionId === ''
+                || ! is_string($interruptId) || $interruptId === '') {
+                return ToolResult::error(
+                    "Background agent {$input['id']} has an invalid pending interrupt state.",
+                );
+            }
+            try {
+                \HaoCode\Support\Runtime\SdkRuntime::app(SessionManager::class)->cancelInterrupt(
+                    $sessionId,
+                    $interruptId,
+                    'Background task stopped by user.',
+                );
+            } catch (\Throwable $e) {
+                return ToolResult::error("Failed to cancel pending interrupt: {$e->getMessage()}");
+            }
+
+            $message = 'Stopped by user while waiting for human input.';
+            $backgroundAgentManager->markCompleted($input['id'], $message);
+            $backgroundAgentManager->finalizeStoredWorktree($input['id']);
+            \HaoCode\Support\Runtime\SdkRuntime::app(TaskManager::class)
+                ->update($input['id'], 'completed', $message);
+
+            return ToolResult::success("Background agent {$input['id']} stopped and its pending interrupt was cancelled.");
+        }
+
         if ($agent !== null && !in_array($agent['status'] ?? '', ['completed', 'error', 'dead'], true)) {
             $backgroundAgentManager->requestStop($input['id']);
-            \HaoCode\Support\Runtime\SdkRuntime::app(TaskManager::class)->update($input['id'], 'in_progress', 'Stop requested by user.');
+            \HaoCode\Support\Runtime\SdkRuntime::app(TaskManager::class)->transition(
+                $input['id'],
+                ['pending', 'in_progress'],
+                'in_progress',
+                'Stop requested by user.',
+            );
 
             return ToolResult::success("Stop requested for background agent {$input['id']}.");
         }

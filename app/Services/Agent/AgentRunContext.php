@@ -31,6 +31,7 @@ final class AgentRunContext
         public readonly ?string $hitlReviewModel = null,
         public readonly ?\HaoCode\Sdk\Sandbox\SandboxConfig $sandbox = null,
         public readonly ?string $hitlAllowlistPath = null,
+        public readonly bool $omitProjectInstructions = false,
     ) {}
 
     public function fork(
@@ -39,6 +40,7 @@ final class AgentRunContext
         ?array $interruptOn = null,
         ?string $agentId = null,
         ?string $teamName = null,
+        ?bool $omitProjectInstructions = null,
     ): self
     {
         $settings = clone $this->settings;
@@ -64,6 +66,7 @@ final class AgentRunContext
             $this->hitlReviewModel,
             $this->sandbox,
             $this->hitlAllowlistPath,
+            $omitProjectInstructions ?? $this->omitProjectInstructions,
         );
     }
 }

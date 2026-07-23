@@ -9,6 +9,8 @@ use HaoCode\Sdk\HumanDecision;
 use HaoCode\Sdk\HumanInterrupt;
 use HaoCode\Sdk\HumanInterruptException;
 use HaoCode\Sdk\Message;
+use HaoCode\Services\Agent\BackgroundAgentManager;
+use HaoCode\Support\Runtime\SdkRuntime;
 use PHPUnit\Framework\TestCase;
 
 final class HumanInterruptTest extends TestCase
@@ -73,5 +75,60 @@ final class HumanInterruptTest extends TestCase
         $this->expectExceptionMessage('HaoCodeConfig is required to resume an interrupt');
 
         iterator_to_array(HaoCode::streamResumeInterrupt('session-1', 'interrupt-1', []));
+    }
+
+    public function test_background_interrupt_resume_restores_the_retained_worktree_cwd(): void
+    {
+        $root = sys_get_temp_dir().'/haocode-interrupt-worktree-'.bin2hex(random_bytes(4));
+        $storage = $root.'/storage';
+        $worktree = $root.'/.claude/worktrees/agent-a1b2c3d4';
+        mkdir($worktree, 0755, true);
+        SdkRuntime::reset();
+        SdkRuntime::boot(dirname(__DIR__, 2), $storage);
+        SdkRuntime::app(BackgroundAgentManager::class)->create(
+            'agent_demo',
+            'Modify the repository',
+            'general-purpose',
+            worktreePath: $worktree,
+            worktreeBranch: 'agent-a1b2c3d4',
+        );
+        $config = new HaoCodeConfig(cwd: $root, ephemeral: false);
+        $interrupt = new HumanInterrupt(
+            'int-worktree',
+            'session-worktree',
+            [],
+            date('c'),
+            'agent_demo',
+        );
+        $method = new \ReflectionMethod(HaoCode::class, 'restoreSourceAgentWorkingDirectory');
+        $method->setAccessible(true);
+
+        try {
+            /** @var HaoCodeConfig $restored */
+            $restored = $method->invoke(null, $config, $interrupt);
+
+            $this->assertNotSame($config, $restored);
+            $this->assertSame($root, $config->cwd);
+            $this->assertSame($worktree, $restored->cwd);
+        } finally {
+            SdkRuntime::reset();
+            $this->removeDirectory($root);
+        }
+    }
+
+    private function removeDirectory(string $directory): void
+    {
+        if (! is_dir($directory)) {
+            return;
+        }
+
+        $iterator = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($directory, \FilesystemIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::CHILD_FIRST,
+        );
+        foreach ($iterator as $item) {
+            $item->isDir() ? @rmdir($item->getPathname()) : @unlink($item->getPathname());
+        }
+        @rmdir($directory);
     }
 }

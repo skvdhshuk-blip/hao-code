@@ -178,6 +178,24 @@ class TaskManagerTest extends TestCase
         $this->assertGreaterThanOrEqual($beforeUpdate, $updated->updatedAt);
     }
 
+    public function test_transition_does_not_regress_completed_task_to_in_progress(): void
+    {
+        $manager = $this->makeManager();
+        $task = $manager->createWithId('agent_demo', 'Agent', 'Running');
+        $manager->update($task->id, 'completed', 'Finished first');
+
+        $result = $manager->transition(
+            $task->id,
+            ['pending'],
+            'in_progress',
+            'Late parent update',
+        );
+
+        $this->assertSame('completed', $result->status);
+        $this->assertSame('Finished first', $result->result);
+        $this->assertSame('completed', $manager->get($task->id)->status);
+    }
+
     // ─── stop ─────────────────────────────────────────────────────────────
 
     public function test_stop_marks_task_as_completed_with_message(): void

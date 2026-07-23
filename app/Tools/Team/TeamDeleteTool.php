@@ -4,6 +4,7 @@ namespace HaoCode\Tools\Team;
 
 use HaoCode\Services\Agent\BackgroundAgentManager;
 use HaoCode\Services\Agent\TeamManager;
+use HaoCode\Services\Session\SessionManager;
 use HaoCode\Services\Task\TaskManager;
 use HaoCode\Tools\BaseTool;
 use HaoCode\Tools\ToolInputSchema;
@@ -16,6 +17,7 @@ class TeamDeleteTool extends BaseTool
         private readonly TeamManager $teamManager,
         private readonly BackgroundAgentManager $backgroundAgentManager,
         private readonly TaskManager $taskManager,
+        private readonly ?SessionManager $sessionManager = null,
     ) {}
 
     public function name(): string
@@ -62,6 +64,74 @@ DESC;
         $members = $team['members'] ?? [];
         $stopped = [];
         $alreadyStopped = [];
+        $states = [];
+        $waitingInterrupts = [];
+
+        foreach ($members as $member) {
+            $agentId = $member['agent_id'];
+            $agent = $this->backgroundAgentManager->refreshStatus($agentId);
+            $states[$agentId] = $agent;
+            if (($agent['status'] ?? null) !== 'waiting_for_input') {
+                continue;
+            }
+
+            $sessionId = $agent['child_session_id'] ?? null;
+            $interruptId = $agent['pending_interrupt']['id'] ?? null;
+            if (! is_string($sessionId) || $sessionId === ''
+                || ! is_string($interruptId) || $interruptId === '') {
+                return ToolResult::error(
+                    "Cannot delete team '{$name}': member {$agentId} has an invalid pending interrupt state.",
+                );
+            }
+            $waitingInterrupts[] = [
+                'session_id' => $sessionId,
+                'interrupt_id' => $interruptId,
+            ];
+        }
+
+        $couldNotStop = [];
+        foreach ($members as $member) {
+            $agentId = $member['agent_id'];
+            $agent = $states[$agentId] ?? null;
+            $status = $agent['status'] ?? 'unknown';
+            if (! in_array($status, ['running', 'idle', 'pending'], true)) {
+                continue;
+            }
+
+            $this->backgroundAgentManager->requestStop($agentId);
+            $terminated = $this->backgroundAgentManager->terminateProcess($agentId);
+            $latest = $this->waitForTerminalState($agentId, $terminated ? 0 : 750);
+            if ($latest !== null && in_array(
+                $latest['status'] ?? null,
+                ['running', 'idle', 'pending'],
+                true,
+            )) {
+                $couldNotStop[] = $agentId;
+
+                continue;
+            }
+            $stopped[] = $member['role'];
+        }
+        if ($couldNotStop !== []) {
+            return ToolResult::error(
+                "Cannot delete team '{$name}': stop was requested but shutdown could not be confirmed for "
+                .implode(', ', $couldNotStop).'. Retry after the agents reach a terminal state.',
+            );
+        }
+
+        foreach ($waitingInterrupts as $pending) {
+            try {
+                $this->sessions()->cancelInterrupt(
+                    $pending['session_id'],
+                    $pending['interrupt_id'],
+                    "Team '{$name}' deleted.",
+                );
+            } catch (\Throwable $e) {
+                return ToolResult::error(
+                    "Cannot delete team '{$name}': failed to cancel member interrupt: {$e->getMessage()}",
+                );
+            }
+        }
 
         foreach ($members as $member) {
             $agentId = $member['agent_id'];
@@ -69,29 +139,14 @@ DESC;
 
             if ($agent === null) {
                 $alreadyStopped[] = $member['role'];
-
-                continue;
-            }
-
-            $status = $agent['status'] ?? 'unknown';
-
-            // Signal the agent to stop if it's running
-            if (in_array($status, ['running', 'idle', 'pending'], true)) {
-                $this->backgroundAgentManager->requestStop($agentId);
-
-                // Also send SIGTERM if the PID is alive
-                $pid = (int) ($agent['pid'] ?? 0);
-                if ($pid > 0 && function_exists('posix_kill') && posix_kill($pid, 0)) {
-                    posix_kill($pid, SIGTERM);
+            } else {
+                if (! in_array($member['role'], $stopped, true)) {
+                    $alreadyStopped[] = $member['role'];
                 }
 
-                $stopped[] = $member['role'];
-            } else {
-                $alreadyStopped[] = $member['role'];
+                // Clean up background agent state and mailbox files
+                $this->backgroundAgentManager->delete($agentId);
             }
-
-            // Clean up background agent state and mailbox files
-            $this->backgroundAgentManager->delete($agentId);
 
             // Clean up task entry
             $this->taskManager->update($agentId, 'completed', 'Team deleted.');
@@ -110,6 +165,31 @@ DESC;
         }
 
         return ToolResult::success(implode("\n", $lines));
+    }
+
+    private function waitForTerminalState(string $agentId, int $waitMilliseconds): ?array
+    {
+        $deadline = microtime(true) + (max(0, $waitMilliseconds) / 1000);
+        do {
+            $state = $this->backgroundAgentManager->refreshStatus($agentId);
+            if ($state === null || ! in_array(
+                $state['status'] ?? null,
+                ['running', 'idle', 'pending'],
+                true,
+            )) {
+                return $state;
+            }
+            if (microtime(true) >= $deadline) {
+                return $state;
+            }
+            usleep(20_000);
+        } while (true);
+    }
+
+    private function sessions(): SessionManager
+    {
+        return $this->sessionManager
+            ?? \HaoCode\Support\Runtime\SdkRuntime::app(SessionManager::class);
     }
 
     public function isReadOnly(array $input): bool

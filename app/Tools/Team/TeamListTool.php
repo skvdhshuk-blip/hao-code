@@ -77,7 +77,9 @@ DESC;
             $agent = $this->backgroundAgentManager->refreshStatus($agentId);
             $status = $agent['status'] ?? 'unknown';
             $pending = $agent['pending_messages'] ?? 0;
-            $pendingLabel = $pending > 0 ? "{$pending} msgs queued" : 'idle';
+            $pendingLabel = $status === 'waiting_for_input'
+                ? 'resume interrupt required'
+                : ($pending > 0 ? "{$pending} msgs queued" : 'idle');
 
             $line = "  {$member['role']} [{$agentId}] {$status} · {$pendingLabel}";
 

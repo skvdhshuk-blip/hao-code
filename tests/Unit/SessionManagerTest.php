@@ -315,6 +315,77 @@ class SessionManagerTest extends TestCase
         $this->assertSame('int-durable', $pending[0]['interrupt']['id']);
     }
 
+    public function test_pending_interrupt_can_be_cancelled_and_cannot_be_claimed(): void
+    {
+        $manager = new SessionManager;
+        $interrupt = [
+            'id' => 'int-cancel',
+            'session_id' => $manager->getSessionId(),
+            'actions' => [['id' => 'call-1', 'tool_name' => 'Bash']],
+            'created_at' => date('c'),
+        ];
+        $manager->recordPendingInterrupt(
+            $interrupt,
+            ['assistant_message' => ['role' => 'assistant', 'content' => []]],
+        );
+
+        $manager->cancelInterrupt(
+            $manager->getSessionId(),
+            'int-cancel',
+            'Background task stopped.',
+        );
+
+        $state = $manager->getInterruptState($manager->getSessionId(), 'int-cancel');
+        $this->assertSame('interrupt_cancelled', $state['type']);
+        $this->assertSame('call-1', $state['tool_results'][0]['tool_use_id']);
+        $this->assertTrue($state['tool_results'][0]['is_error']);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('already cancelled');
+        $manager->claimInterrupt($manager->getSessionId(), 'int-cancel', []);
+    }
+
+    public function test_cancelling_child_interrupt_also_cancels_pending_parent_chain(): void
+    {
+        $manager = new SessionManager;
+        $parentSession = 'parent-'.bin2hex(random_bytes(4));
+        $childSession = 'child-'.bin2hex(random_bytes(4));
+
+        $manager->switchToSession($parentSession);
+        $manager->recordPendingInterrupt([
+            'id' => 'int-parent',
+            'session_id' => $parentSession,
+            'actions' => [['id' => 'parent-call', 'tool_name' => 'Agent']],
+            'created_at' => date('c'),
+        ], ['assistant_message' => ['role' => 'assistant', 'content' => []]]);
+
+        $manager->switchToSession($childSession);
+        $manager->recordPendingInterrupt([
+            'id' => 'int-child',
+            'session_id' => $childSession,
+            'actions' => [['id' => 'child-call', 'tool_name' => 'Bash']],
+            'created_at' => date('c'),
+        ], ['assistant_message' => ['role' => 'assistant', 'content' => []]]);
+        $manager->recordInterruptParentLink(
+            $childSession,
+            'int-child',
+            $parentSession,
+            'int-parent',
+            'parent-call',
+        );
+
+        $manager->cancelInterrupt($childSession, 'int-child', 'Background task stopped.');
+
+        $this->assertSame(
+            'interrupt_cancelled',
+            $manager->getInterruptState($childSession, 'int-child')['type'],
+        );
+        $this->assertSame(
+            'interrupt_cancelled',
+            $manager->getInterruptState($parentSession, 'int-parent')['type'],
+        );
+    }
+
     public function test_recorded_entry_includes_timestamp_and_session_id(): void
     {
         $manager = new SessionManager;

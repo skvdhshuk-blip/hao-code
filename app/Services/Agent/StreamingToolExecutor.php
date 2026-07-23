@@ -73,6 +73,9 @@ class StreamingToolExecutor
 
         $tool = $this->toolRegistry->getTool($block['name']);
         $input = $block['input'] ?? [];
+        if ($tool?->name() === 'Agent') {
+            $input = $tool->backfillObservableInput($input, $this->context);
+        }
         $isSafe = $tool
             && $tool->isConcurrencySafe($input)
             && $tool->isReadOnly($input);

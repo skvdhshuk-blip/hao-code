@@ -16,7 +16,7 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
  * behind {@see LlmProvider} so a second wire format (OpenAI Responses) can
  * coexist without touching the call sites.
  */
-class AnthropicProvider implements ApiKeyAwareProvider
+class AnthropicProvider implements ApiKeyAwareProvider, SettingsAwareProvider
 {
     private HttpClientInterface $httpClient;
     private int $maxRetries = 3;

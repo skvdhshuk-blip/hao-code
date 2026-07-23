@@ -101,17 +101,26 @@ DESC;
     public function call(array $input, ToolUseContext $context): ToolResult
     {
         $prompt = $input['prompt'];
-        $agentTypeName = $input['subagent_type'] ?? 'general-purpose';
+        $hasExplicitAgentType = array_key_exists('subagent_type', $input)
+            && $input['subagent_type'] !== null;
+        $agentTypeName = $hasExplicitAgentType
+            ? trim((string) $input['subagent_type'])
+            : 'general-purpose';
 
         // Resolve agent definition
         $allAgents = AgentLoader::loadAll($context->workingDirectory);
-        $agentDef = $allAgents[$agentTypeName] ?? BuiltInAgents::get('general-purpose');
+        $agentDef = $allAgents[$agentTypeName] ?? null;
+        if ($agentDef === null) {
+            return ToolResult::error("Unknown agent type: {$agentTypeName}");
+        }
+        try {
+            $model = AgentModelResolver::resolve($input['model'] ?? null, $agentDef->model);
+        } catch (\InvalidArgumentException $e) {
+            return ToolResult::error($e->getMessage());
+        }
 
         // Check if agent should always run in background
         $background = $input['run_in_background'] ?? $agentDef->background;
-
-        // Build system prompt from definition
-        $systemPrompt = $this->buildSystemPrompt($agentDef);
 
         // Handle worktree isolation
         $worktreePath = null;
@@ -128,37 +137,27 @@ DESC;
         if ($background) {
             return $this->runInBackground(
                 prompt: $prompt,
-                systemPrompt: $systemPrompt,
                 agentDef: $agentDef,
+                model: $model,
                 description: $input['description'] ?? null,
                 name: $input['name'] ?? null,
                 context: $context,
                 worktreePath: $worktreePath,
+                worktreeBranch: $worktreeBranch,
             );
         }
 
-        $result = $this->runSync($prompt, $systemPrompt, $agentDef, $context, $worktreePath);
+        $result = $this->runSync($prompt, $agentDef, $model, $context, $worktreePath);
 
-        // Clean up worktree if no changes were made
-        if ($worktreePath !== null) {
-            $hasChanges = $this->worktreeHasChanges($worktreePath);
-            if (!$hasChanges) {
-                $this->cleanupWorktree($worktreePath);
-            } else {
-                $result = ToolResult::success(
-                    $result->output . "\n\nWorktree with changes at: {$worktreePath} (branch: {$worktreeBranch})",
-                    $result->metadata,
-                );
-            }
-        }
-
-        return $result;
+        return $worktreePath === null || $worktreeBranch === null
+            ? $result
+            : $this->finalizeSyncWorktree($result, $worktreePath, $worktreeBranch);
     }
 
     private function runSync(
         string $prompt,
-        array $systemPrompt,
         AgentDefinition $agentDef,
+        ?string $model,
         ToolUseContext $context,
         ?string $worktreePath = null,
     ): ToolResult {
@@ -174,13 +173,16 @@ DESC;
                 ),
                 readOnly: $agentDef->readOnly,
                 parentToolRegistry: $context->toolRegistry,
+                model: $model,
+                appendSystemPrompt: $agentDef->systemPrompt,
+                omitProjectInstructions: $agentDef->omitClaudeMd,
             );
             if ($agentDef->maxTurns !== null) {
                 $subLoop->setMaxTurns($agentDef->maxTurns);
             }
 
             $result = $subLoop->run(
-                userInput: $this->buildSubAgentPrompt($prompt, $systemPrompt),
+                userInput: $prompt,
                 onTextDelta: null,
             );
 
@@ -198,15 +200,20 @@ DESC;
 
     private function runInBackground(
         string $prompt,
-        array $systemPrompt,
         AgentDefinition $agentDef,
+        ?string $model,
         ?string $description,
         ?string $name,
         ToolUseContext $context,
         ?string $worktreePath = null,
+        ?string $worktreeBranch = null,
     ): ToolResult {
         if (!function_exists('pcntl_fork')) {
-            return $this->runSync($prompt, $systemPrompt, $agentDef, $context, $worktreePath);
+            $result = $this->runSync($prompt, $agentDef, $model, $context, $worktreePath);
+
+            return $worktreePath === null || $worktreeBranch === null
+                ? $result
+                : $this->finalizeSyncWorktree($result, $worktreePath, $worktreeBranch);
         }
 
         $subject = $description ?: ucfirst($agentDef->agentType) . ' background agent';
@@ -216,9 +223,13 @@ DESC;
             agentDef: $agentDef,
             description: $description,
             subject: $subject,
+            worktreePath: $worktreePath,
+            worktreeBranch: $worktreeBranch,
         );
         if ($claim instanceof ToolResult) {
-            return $claim;
+            return $worktreePath === null || $worktreeBranch === null
+                ? $claim
+                : $this->finalizeSyncWorktree($claim, $worktreePath, $worktreeBranch);
         }
         $taskId = $claim;
 
@@ -228,23 +239,38 @@ DESC;
             $this->tasks()->remove($taskId);
             $this->backgroundAgents()->delete($taskId);
 
-            return $this->runSync($prompt, $systemPrompt, $agentDef, $context, $worktreePath);
+            $result = $this->runSync($prompt, $agentDef, $model, $context, $worktreePath);
+
+            return $worktreePath === null || $worktreeBranch === null
+                ? $result
+                : $this->finalizeSyncWorktree($result, $worktreePath, $worktreeBranch);
         }
 
         if ($pid === 0) {
+            $waitingForInput = false;
             try {
-                $this->executeBackgroundAgent($taskId, $prompt, $systemPrompt, $agentDef, $context, $worktreePath);
+                $this->executeBackgroundAgent($taskId, $prompt, $agentDef, $model, $context, $worktreePath);
             } catch (\HaoCode\Sdk\HumanInterruptException) {
                 // The child checkpoint is durable; the controller will surface it.
+                $waitingForInput = true;
             } catch (\Throwable $e) {
                 $this->backgroundAgents()->markError($taskId, $e->getMessage());
                 $this->tasks()->update($taskId, 'completed', 'Background agent error: ' . $e->getMessage());
+            } finally {
+                if (! $waitingForInput && $worktreePath !== null && $worktreeBranch !== null) {
+                    $this->finalizeBackgroundWorktree($taskId);
+                }
             }
             exit(0);
         }
 
         $this->backgroundAgents()->attachProcess($taskId, $pid);
-        $this->tasks()->update($taskId, 'in_progress', 'Background agent is running.');
+        $this->tasks()->transition(
+            $taskId,
+            ['pending'],
+            'in_progress',
+            'Background agent is running.',
+        );
 
         return ToolResult::success(
             "Background agent started: {$taskId} (PID: {$pid})\n" .
@@ -266,6 +292,8 @@ DESC;
         AgentDefinition $agentDef,
         ?string $description,
         string $subject,
+        ?string $worktreePath,
+        ?string $worktreeBranch,
     ): string|ToolResult {
         $attempts = $name === null ? 10 : 1;
         for ($attempt = 0; $attempt < $attempts; $attempt++) {
@@ -278,6 +306,8 @@ DESC;
                     prompt: $prompt,
                     agentType: $agentDef->agentType,
                     description: $description,
+                    worktreePath: $worktreePath,
+                    worktreeBranch: $worktreeBranch,
                 );
                 try {
                     $this->tasks()->createWithId(
@@ -304,18 +334,17 @@ DESC;
         return ToolResult::error('Unable to allocate a unique background agent ID.');
     }
 
-    private function buildSystemPrompt(AgentDefinition $agentDef): array
-    {
-        return [[
-            'type' => 'text',
-            'text' => $agentDef->systemPrompt,
-        ]];
-    }
-
     public function isReadOnly(array $input): bool
     {
+        if (($input['isolation'] ?? null) === 'worktree') {
+            return false;
+        }
+
         $agentType = $input['subagent_type'] ?? 'general-purpose';
-        $agentDef = BuiltInAgents::get($agentType);
+        $projectDirectory = is_string($input['__haocode_project_directory'] ?? null)
+            ? $input['__haocode_project_directory']
+            : (getcwd() ?: '/');
+        $agentDef = AgentLoader::loadAll($projectDirectory)[$agentType] ?? null;
 
         return $agentDef?->readOnly ?? false;
     }
@@ -335,25 +364,18 @@ DESC;
         return $name . ' agent';
     }
 
-    private function buildSubAgentPrompt(string $prompt, array $systemPrompt): string
+    public function backfillObservableInput(array $input, ToolUseContext $context): array
     {
-        $instruction = trim(implode("\n\n", array_map(
-            fn(array $block) => (string) ($block['text'] ?? ''),
-            array_filter($systemPrompt, fn(array $block) => ($block['type'] ?? '') === 'text'),
-        )));
+        $input['__haocode_project_directory'] = $context->workingDirectory;
 
-        if ($instruction === '') {
-            return $prompt;
-        }
-
-        return $instruction . "\n\nTask:\n" . $prompt;
+        return $input;
     }
 
     private function executeBackgroundAgent(
         string $taskId,
         string $prompt,
-        array $systemPrompt,
         AgentDefinition $agentDef,
+        ?string $model,
         ToolUseContext $context,
         ?string $worktreePath = null,
     ): void {
@@ -370,16 +392,23 @@ DESC;
             afterFork: true,
             readOnly: $agentDef->readOnly,
             parentToolRegistry: $context->toolRegistry,
+            model: $model,
+            appendSystemPrompt: $agentDef->systemPrompt,
+            omitProjectInstructions: $agentDef->omitClaudeMd,
         );
         if ($agentDef->maxTurns !== null) {
             $subLoop->setMaxTurns($agentDef->maxTurns);
         }
 
-        $initialPrompt = $this->buildSubAgentPrompt($prompt, $systemPrompt);
         $this->backgroundAgents()->markRunning($taskId);
-        $this->tasks()->update($taskId, 'in_progress', 'Background agent is processing its initial task.');
+        $this->tasks()->transition(
+            $taskId,
+            ['pending'],
+            'in_progress',
+            'Background agent is processing its initial task.',
+        );
 
-        $lastResponse = $this->runBackgroundTurn($subLoop, $taskId, $initialPrompt);
+        $lastResponse = $this->runBackgroundTurn($subLoop, $taskId, $prompt);
         $idleSince = time();
         $idleTimeout = max(30, (int) \HaoCode\Support\Runtime\SdkRuntime::config('haocode.background_agent_idle_timeout', 300));
         $pollMicros = max(100_000, ((int) \HaoCode\Support\Runtime\SdkRuntime::config('haocode.background_agent_poll_interval_ms', 250)) * 1000);
@@ -504,14 +533,92 @@ DESC;
     private function worktreeHasChanges(string $worktreePath): bool
     {
         $status = trim(shell_exec("cd " . escapeshellarg($worktreePath) . " && git status --porcelain 2>/dev/null") ?? '');
+        if ($status !== '') {
+            return true;
+        }
 
-        return $status !== '';
+        $parent = dirname($worktreePath, 3);
+        $worktreeHead = trim(shell_exec(
+            'cd '.escapeshellarg($worktreePath).' && git rev-parse HEAD 2>/dev/null',
+        ) ?? '');
+        $parentHead = trim(shell_exec(
+            'cd '.escapeshellarg($parent).' && git rev-parse HEAD 2>/dev/null',
+        ) ?? '');
+
+        return $worktreeHead === '' || $parentHead === '' || $worktreeHead !== $parentHead;
     }
 
-    private function cleanupWorktree(string $worktreePath): void
+    private function finalizeSyncWorktree(
+        ToolResult $result,
+        string $worktreePath,
+        string $worktreeBranch,
+    ): ToolResult {
+        if ($this->worktreeHasChanges($worktreePath)) {
+            return new ToolResult(
+                $result->output."\n\nWorktree with changes at: {$worktreePath} (branch: {$worktreeBranch})",
+                $result->isError,
+                ($result->metadata ?? []) + [
+                    'worktreePath' => $worktreePath,
+                    'worktreeBranch' => $worktreeBranch,
+                    'worktreeRetained' => true,
+                ],
+            );
+        }
+
+        if ($this->cleanupWorktree($worktreePath, $worktreeBranch)) {
+            return $result;
+        }
+
+        return new ToolResult(
+            $result->output."\n\nWarning: failed to remove worktree {$worktreePath} (branch: {$worktreeBranch}).",
+            $result->isError,
+            ($result->metadata ?? []) + [
+                'worktreePath' => $worktreePath,
+                'worktreeBranch' => $worktreeBranch,
+                'worktreeRetained' => true,
+            ],
+        );
+    }
+
+    private function finalizeBackgroundWorktree(string $taskId): void
+    {
+        $this->backgroundAgents()->finalizeStoredWorktree($taskId);
+    }
+
+    private function cleanupWorktree(string $worktreePath, string $branch): bool
     {
         $parent = dirname($worktreePath, 3); // .claude/worktrees/<branch> -> project
-        shell_exec("cd " . escapeshellarg($parent) . " && git worktree remove " . escapeshellarg($worktreePath) . " --force 2>/dev/null");
+        $removeOutput = [];
+        $removeCode = 0;
+        exec(
+            "cd ".escapeshellarg($parent)
+            ." && git worktree remove ".escapeshellarg($worktreePath)." --force 2>&1",
+            $removeOutput,
+            $removeCode,
+        );
+        if ($removeCode !== 0) {
+            return false;
+        }
+
+        $branchOutput = [];
+        $branchCode = 0;
+        $branchExistsCode = 0;
+        exec(
+            'cd '.escapeshellarg($parent)
+            .' && git show-ref --verify --quiet '.escapeshellarg('refs/heads/'.$branch),
+            $branchOutput,
+            $branchExistsCode,
+        );
+        if ($branchExistsCode === 0) {
+            exec(
+                "cd ".escapeshellarg($parent)
+                ." && git branch -D ".escapeshellarg($branch)." 2>&1",
+                $branchOutput,
+                $branchCode,
+            );
+        }
+
+        return $branchCode === 0;
     }
 
     private function backgroundAgents(): BackgroundAgentManager

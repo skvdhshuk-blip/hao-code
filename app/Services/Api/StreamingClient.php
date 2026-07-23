@@ -19,7 +19,7 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
  * preserved so QueryEngine, SessionTitleService, and existing tests
  * that mock StreamingClient keep working.
  */
-class StreamingClient implements ApiKeyAwareProvider, ForkSafeProvider
+class StreamingClient implements ApiKeyAwareProvider, ForkSafeProvider, SettingsAwareProvider
 {
     private AnthropicProvider $anthropic;
     private OpenAiProvider $openai;

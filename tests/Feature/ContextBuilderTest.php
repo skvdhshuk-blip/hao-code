@@ -188,6 +188,37 @@ class ContextBuilderTest extends TestCase
         }
     }
 
+    public function test_project_instructions_can_be_omitted_for_specialized_agents(): void
+    {
+        $workingDirectory = sys_get_temp_dir().'/haocode_omit_instructions_'.uniqid('', true);
+        mkdir($workingDirectory, 0755, true);
+        file_put_contents($workingDirectory.'/AGENTS.md', 'This project-only instruction must be omitted.');
+
+        try {
+            $builder = new ContextBuilder(
+                $this->makeSettings(['appendPrompt' => 'Specialized agent system instructions.']),
+                $this->createMock(ToolRegistry::class),
+                $this->makeSessionMemory(),
+                $this->makeSkillLoader(),
+                $this->makeGitContext(),
+                null,
+                $workingDirectory,
+                false,
+                false,
+                true,
+            );
+
+            $text = $builder->buildSystemPrompt()[0]['text'];
+
+            $this->assertStringContainsString('Specialized agent system instructions.', $text);
+            $this->assertStringNotContainsString('This project-only instruction must be omitted.', $text);
+            $this->assertStringNotContainsString('# Project Instructions', $text);
+        } finally {
+            unlink($workingDirectory.'/AGENTS.md');
+            rmdir($workingDirectory);
+        }
+    }
+
     public function test_text_only_prompt_omits_coding_agent_context(): void
     {
         $settings = $this->makeSettings(['appendPrompt' => 'Keep the answer factual.']);

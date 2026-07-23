@@ -27,7 +27,7 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
  *   - Usage arrives on the final delta only when `stream_options.include_usage`
  *     is set; we always request it.
  */
-class OpenAiChatProvider implements ApiKeyAwareProvider
+class OpenAiChatProvider implements ApiKeyAwareProvider, SettingsAwareProvider
 {
     private HttpClientInterface $httpClient;
     private bool $useNativeStream;

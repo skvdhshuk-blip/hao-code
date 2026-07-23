@@ -3,13 +3,20 @@
 namespace Tests\Unit;
 
 use HaoCode\Services\Agent\AgentLoopFactory;
+use HaoCode\Services\Agent\AgentRunContext;
+use HaoCode\Services\Agent\CancellationToken;
 use HaoCode\Services\Agent\ContextBuilder;
 use HaoCode\Services\Agent\QueryEngine;
 use HaoCode\Services\Agent\ToolOrchestrator;
+use HaoCode\Services\Api\LlmProvider;
+use HaoCode\Services\Api\SettingsAwareProvider;
 use HaoCode\Services\Api\StreamingClient;
 use HaoCode\Services\Hooks\HookExecutor;
 use HaoCode\Services\Permissions\PermissionChecker;
+use HaoCode\Services\Settings\SettingsManager;
+use HaoCode\Sdk\Memory\JsonMemoryStore;
 use HaoCode\Sdk\SdkTool;
+use HaoCode\Tools\Skill\SkillLoader;
 use HaoCode\Tools\ToolRegistry;
 use HaoCode\Tools\TodoWrite\TodoWriteTool;
 use Tests\TestCase;
@@ -176,6 +183,89 @@ class AgentLoopFactoryTest extends TestCase
         $this->assertNull($registry->getTool('HookDeniedTool'));
     }
 
+    public function test_agent_overrides_are_scoped_to_child_settings_and_provider(): void
+    {
+        $root = sys_get_temp_dir().'/haocode-agent-factory-settings-'.bin2hex(random_bytes(4));
+        mkdir($root, 0755, true);
+        $parentSettings = new SettingsManager($root);
+        $parentSettings->set('api_base_url', 'https://api.anthropic.com');
+        $parentSettings->set('append_system_prompt', 'Parent append');
+        $runContext = new AgentRunContext(
+            workingDirectory: $root,
+            projectDirectory: $root,
+            settings: $parentSettings,
+            skillLoader: new SkillLoader($root),
+            cancellationToken: new CancellationToken(),
+            memoryStore: new JsonMemoryStore($root.'/memory'),
+        );
+        $provider = new class implements SettingsAwareProvider {
+            public ?SettingsManager $settings = null;
+
+            public function withSettingsManager(SettingsManager $settingsManager): LlmProvider
+            {
+                $copy = clone $this;
+                $copy->settings = $settingsManager;
+
+                return $copy;
+            }
+
+            public function streamMessages(
+                array $systemPrompt,
+                array $messages,
+                array $tools,
+                ?callable $onRawEvent = null,
+                ?callable $shouldAbort = null,
+            ): \Generator {
+                if (false) {
+                    yield;
+                }
+            }
+
+            public function getLastRateLimitHeaders(): array
+            {
+                return [];
+            }
+        };
+
+        try {
+            $factory = new AgentLoopFactory(container: $this->buildContainer(new ToolRegistry()));
+            $loop = $factory->createIsolated(
+                workingDirectory: $root,
+                streamingClient: $provider,
+                runContext: $runContext,
+                model: 'claude-haiku-4-20250514',
+                appendSystemPrompt: 'Child agent instructions',
+                omitProjectInstructions: true,
+            );
+
+            $contextProperty = new \ReflectionProperty($loop, 'runContext');
+            /** @var AgentRunContext $childContext */
+            $childContext = $contextProperty->getValue($loop);
+            $this->assertNotSame($runContext, $childContext);
+            $this->assertSame('claude-haiku-4-20250514', $childContext->settings->getModel());
+            $this->assertSame(
+                "Parent append\n\nChild agent instructions",
+                $childContext->settings->getAppendSystemPrompt(),
+            );
+            $this->assertTrue($childContext->omitProjectInstructions);
+            $this->assertNotSame(
+                $childContext->settings->getModel(),
+                $parentSettings->getModel(),
+            );
+
+            $providerProperty = new \ReflectionProperty($loop, 'provider');
+            $childProvider = $providerProperty->getValue($loop);
+            $this->assertSame($childContext->settings, $childProvider->settings);
+
+            $builderProperty = new \ReflectionProperty($loop, 'contextBuilder');
+            $builder = $builderProperty->getValue($loop);
+            $omitProperty = new \ReflectionProperty($builder, 'omitProjectInstructions');
+            $this->assertTrue($omitProperty->getValue($builder));
+        } finally {
+            $this->removeDirectory($root);
+        }
+    }
+
     private function buildContainer(ToolRegistry $toolRegistry): object
     {
         $queryEngine = $this->createMock(QueryEngine::class);
@@ -220,5 +310,20 @@ class AgentLoopFactoryTest extends TestCase
                 };
             }
         };
+    }
+
+    private function removeDirectory(string $directory): void
+    {
+        if (! is_dir($directory)) {
+            return;
+        }
+        $iterator = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($directory, \FilesystemIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::CHILD_FIRST,
+        );
+        foreach ($iterator as $item) {
+            $item->isDir() ? @rmdir($item->getPathname()) : @unlink($item->getPathname());
+        }
+        @rmdir($directory);
     }
 }

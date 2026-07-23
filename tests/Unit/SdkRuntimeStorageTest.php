@@ -36,6 +36,17 @@ class SdkRuntimeStorageTest extends TestCase
         $this->assertFileExists($this->storagePath.'/app/haocode/tasks/tasks.json');
     }
 
+    public function test_runtime_rejects_storage_path_hot_switch_after_boot(): void
+    {
+        SdkRuntime::app(TaskManager::class);
+        $newPath = $this->storagePath.'-other';
+
+        $this->expectException(\LogicException::class);
+        $this->expectExceptionMessage('storage path cannot be changed');
+
+        SdkRuntime::boot(dirname(__DIR__, 2), $newPath);
+    }
+
     private function removeDirectory(string $directory): void
     {
         if (! is_dir($directory)) {

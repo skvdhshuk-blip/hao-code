@@ -324,7 +324,7 @@ class SessionManager
     {
         $latest = null;
         foreach ($this->loadSession($sessionId) as $entry) {
-            if (in_array($entry['type'] ?? null, ['interrupt_pending', 'interrupt_resolving', 'interrupt_resolved'], true)
+            if (in_array($entry['type'] ?? null, ['interrupt_pending', 'interrupt_resolving', 'interrupt_resolved', 'interrupt_cancelled'], true)
                 && ($entry['interrupt']['id'] ?? null) === $interruptId) {
                 $latest = $entry;
             }
@@ -398,6 +398,87 @@ class SessionManager
         } finally {
             flock($handle, LOCK_UN);
             fclose($handle);
+        }
+    }
+
+    /** @internal */
+    public function cancelInterrupt(string $sessionId, string $interruptId, string $reason): void
+    {
+        $this->cancelInterruptChain($sessionId, $interruptId, $reason, []);
+    }
+
+    /**
+     * @param array<string, true> $visited
+     */
+    private function cancelInterruptChain(
+        string $sessionId,
+        string $interruptId,
+        string $reason,
+        array $visited,
+    ): void
+    {
+        $sessionId = $this->validateSessionId($sessionId);
+        $chainKey = $sessionId.':'.$interruptId;
+        if (isset($visited[$chainKey])) {
+            throw new \RuntimeException("Interrupt parent cycle detected at {$interruptId}.");
+        }
+        $visited[$chainKey] = true;
+
+        $path = $this->sessionPath.'/'.$sessionId.'.jsonl';
+        $handle = @fopen($path, 'r+');
+        if ($handle === false) {
+            throw new \RuntimeException("Session not found: {$sessionId}");
+        }
+
+        try {
+            if (! flock($handle, LOCK_EX)) {
+                throw new \RuntimeException('Could not lock session interrupt checkpoint.');
+            }
+            $latest = $this->findLatestInterruptEntry($handle, $interruptId);
+            if (($latest['type'] ?? null) !== 'interrupt_cancelled'
+                && ($latest['type'] ?? null) !== 'interrupt_pending') {
+                $state = str_replace('interrupt_', '', (string) ($latest['type'] ?? 'missing'));
+                throw new \RuntimeException("Interrupt {$interruptId} cannot be cancelled from state {$state}.");
+            }
+
+            if (($latest['type'] ?? null) === 'interrupt_pending') {
+                $toolResults = [];
+                foreach ($latest['interrupt']['actions'] ?? [] as $action) {
+                    $actionId = is_array($action) ? (string) ($action['id'] ?? '') : '';
+                    if ($actionId === '') {
+                        continue;
+                    }
+                    $toolResults[] = [
+                        'type' => 'tool_result',
+                        'tool_use_id' => $actionId,
+                        'content' => 'Cancelled: '.$reason,
+                        'is_error' => true,
+                    ];
+                }
+
+                $this->appendJsonLine($handle, [
+                    'timestamp' => date('c'),
+                    'session_id' => $sessionId,
+                    'cwd' => $latest['cwd'] ?? $this->currentWorkingDirectory ?? (getcwd() ?: null),
+                    'type' => 'interrupt_cancelled',
+                    'interrupt' => $latest['interrupt'],
+                    'tool_results' => $toolResults,
+                    'reason' => $reason,
+                ]);
+            }
+        } finally {
+            flock($handle, LOCK_UN);
+            fclose($handle);
+        }
+
+        $parent = $this->findInterruptParentLink($sessionId, $interruptId);
+        if ($parent !== null) {
+            $this->cancelInterruptChain(
+                (string) $parent['parent_session_id'],
+                (string) $parent['parent_interrupt_id'],
+                $reason,
+                $visited,
+            );
         }
     }
 
@@ -558,7 +639,7 @@ class SessionManager
         while (($line = fgets($handle)) !== false) {
             $entry = json_decode($line, true);
             if (is_array($entry)
-                && in_array($entry['type'] ?? null, ['interrupt_pending', 'interrupt_resolving', 'interrupt_resolved'], true)
+                && in_array($entry['type'] ?? null, ['interrupt_pending', 'interrupt_resolving', 'interrupt_resolved', 'interrupt_cancelled'], true)
                 && ($entry['interrupt']['id'] ?? null) === $interruptId) {
                 $latest = $entry;
             }

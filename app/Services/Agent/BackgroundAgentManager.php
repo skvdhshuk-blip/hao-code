@@ -2,14 +2,35 @@
 
 namespace HaoCode\Services\Agent;
 
+use HaoCode\Services\Task\TaskManager;
 use HaoCode\Support\StateIdentifier;
 
 class BackgroundAgentManager
 {
     private const RESULT_LIMIT = 100000;
 
+    /** @var array<int, \WeakReference> */
+    private static array $signalReapers = [];
+
+    private static bool $signalReaperInstalled = false;
+
+    private static mixed $previousSigchldHandler = null;
+
+    /** @var array<int, array{id: string, token: string}> */
+    private array $ownedProcesses = [];
+
+    /** @var array<int, array{id: string, token: string}> */
+    private array $exitedProcesses = [];
+
+    private bool $reapingProcessHandles = false;
+
+    private bool $reapAgain = false;
+
+    private bool $processingExitedChildren = false;
+
     public function __construct(
         private readonly ?string $storagePath = null,
+        private readonly ?TaskManager $taskManager = null,
     ) {
         $this->ensureStoragePath();
     }
@@ -20,41 +41,53 @@ class BackgroundAgentManager
         string $agentType,
         ?string $description = null,
         ?int $pid = null,
+        ?string $worktreePath = null,
+        ?string $worktreeBranch = null,
     ): array {
         $id = StateIdentifier::backgroundAgentId($id);
 
-        return $this->withAgentLock($id, LOCK_EX, function () use ($id, $prompt, $agentType, $description, $pid): array {
-            if (is_file($this->statePath($id)) || is_file($this->mailboxPath($id))) {
-                throw new \InvalidArgumentException("Background agent '{$id}' already exists.");
-            }
+        return $this->withAgentLock(
+            $id,
+            LOCK_EX,
+            function () use ($id, $prompt, $agentType, $description, $pid, $worktreePath, $worktreeBranch): array {
+                if (is_file($this->statePath($id)) || is_file($this->mailboxPath($id))) {
+                    throw new \InvalidArgumentException("Background agent '{$id}' already exists.");
+                }
 
-            $state = [
-                'id' => $id,
-                'prompt' => $prompt,
-                'description' => $description,
-                'agent_type' => $agentType,
-                'pid' => $pid,
-                'status' => 'pending',
-                'pending_messages' => 0,
-                'stop_requested' => false,
-                'last_message_at' => null,
-                'last_result' => null,
-                'error' => null,
-                'created_at' => time(),
-                'updated_at' => time(),
-            ];
+                $state = [
+                    'id' => $id,
+                    'prompt' => $prompt,
+                    'description' => $description,
+                    'agent_type' => $agentType,
+                    'pid' => $pid,
+                    'process_start_time' => $pid !== null ? $this->processStartTime($pid) : null,
+                    'process_token' => null,
+                    'status' => 'pending',
+                    'pending_messages' => 0,
+                    'stop_requested' => false,
+                    'last_message_at' => null,
+                    'last_result' => null,
+                    'error' => null,
+                    'worktree_path' => $worktreePath,
+                    'worktree_branch' => $worktreeBranch,
+                    'worktree_retained' => $worktreePath !== null,
+                    'worktree_cleanup_error' => null,
+                    'created_at' => time(),
+                    'updated_at' => time(),
+                ];
 
-            try {
-                $this->writeJsonAtomically($this->statePath($id), $state);
-                $this->writeJsonAtomically($this->mailboxPath($id), []);
-            } catch (\Throwable $e) {
-                @unlink($this->statePath($id));
-                @unlink($this->mailboxPath($id));
-                throw $e;
-            }
+                try {
+                    $this->writeJsonAtomically($this->statePath($id), $state);
+                    $this->writeJsonAtomically($this->mailboxPath($id), []);
+                } catch (\Throwable $e) {
+                    @unlink($this->statePath($id));
+                    @unlink($this->mailboxPath($id));
+                    throw $e;
+                }
 
-            return $state;
-        });
+                return $state;
+            },
+        );
     }
 
     public function delete(string $id): void
@@ -68,6 +101,7 @@ class BackgroundAgentManager
 
     public function get(string $id): ?array
     {
+        $this->reapExitedChildren();
         $id = StateIdentifier::backgroundAgentId($id);
 
         return $this->withAgentLock($id, LOCK_SH, function () use ($id): ?array {
@@ -80,6 +114,7 @@ class BackgroundAgentManager
      */
     public function list(): array
     {
+        $this->reapExitedChildren();
         $states = [];
 
         foreach (glob($this->storageRoot().'/*.state.json') ?: [] as $path) {
@@ -102,20 +137,40 @@ class BackgroundAgentManager
 
     public function attachProcess(string $id, int $pid): ?array
     {
-        return $this->mutateState($id, function (array $state) use ($pid) {
+        $id = StateIdentifier::backgroundAgentId($id);
+        $token = bin2hex(random_bytes(16));
+        $startTime = $this->processStartTime($pid);
+        $state = $this->mutateState($id, function (array $state) use ($pid, $token, $startTime) {
+            if (in_array($state['status'] ?? null, ['completed', 'error', 'dead', 'waiting_for_input'], true)) {
+                return $state;
+            }
+
             $state['pid'] = $pid;
+            $state['process_start_time'] = $startTime;
+            $state['process_token'] = $token;
             if (($state['status'] ?? null) === 'pending') {
                 $state['status'] = 'running';
             }
 
             return $state;
         });
+
+        // A child may persist a terminal state just before it actually exits.
+        // Track it even when process metadata is no longer attached so a later
+        // non-blocking reap cannot miss that small window.
+        $this->ownedProcesses[$pid] = ['id' => $id, 'token' => $token];
+        $this->registerSignalReaper();
+        $this->reapExitedChildren();
+
+        return $state;
     }
 
     public function markRunning(string $id): ?array
     {
         return $this->mutateState($id, function (array $state) {
             $state['status'] = 'running';
+            $state['error'] = null;
+            $this->clearInterruptState($state);
 
             return $state;
         });
@@ -128,6 +183,7 @@ class BackgroundAgentManager
             $state['child_session_id'] = $interrupt->sessionId;
             $state['pending_interrupt'] = $interrupt->toArray();
             $state['error'] = null;
+            $this->clearProcessState($state);
 
             return $state;
         });
@@ -139,6 +195,7 @@ class BackgroundAgentManager
             $state['last_result'] = $this->truncate($result, self::RESULT_LIMIT);
             $state['status'] = 'idle';
             $state['error'] = null;
+            $this->clearInterruptState($state);
 
             return $state;
         });
@@ -151,6 +208,9 @@ class BackgroundAgentManager
             if ($result !== null) {
                 $state['last_result'] = $this->truncate($result, self::RESULT_LIMIT);
             }
+            $state['error'] = null;
+            $this->clearInterruptState($state);
+            $this->clearProcessState($state);
 
             return $state;
         });
@@ -161,6 +221,8 @@ class BackgroundAgentManager
         return $this->mutateState($id, function (array $state) use ($error) {
             $state['status'] = 'error';
             $state['error'] = $this->truncate($error, 4000);
+            $this->clearInterruptState($state);
+            $this->clearProcessState($state);
 
             return $state;
         });
@@ -173,6 +235,8 @@ class BackgroundAgentManager
             if ($error !== null && ($state['error'] ?? null) === null) {
                 $state['error'] = $this->truncate($error, 4000);
             }
+            $this->clearInterruptState($state);
+            $this->clearProcessState($state);
 
             return $state;
         });
@@ -181,6 +245,7 @@ class BackgroundAgentManager
     /** Refresh a process-backed state and persist a terminal dead status. */
     public function refreshStatus(string $id): ?array
     {
+        $this->reapExitedChildren();
         $state = $this->get($id);
         if ($state === null) {
             return null;
@@ -192,15 +257,39 @@ class BackgroundAgentManager
             return $state;
         }
 
-        if (! function_exists('posix_kill')) {
-            return $state;
-        }
-
-        if (@posix_kill($pid, 0)) {
+        $alive = $this->processIsAlive($state);
+        if ($alive === null || $alive) {
             return $state;
         }
 
         return $this->markDead($id, 'Background agent process is no longer running.');
+    }
+
+    public function terminateProcess(string $id, int $signal = 15, int $waitMilliseconds = 1000): bool
+    {
+        $state = $this->get($id);
+        if ($state === null || ! $this->canSignal($state) || ! function_exists('posix_kill')) {
+            return false;
+        }
+
+        $pid = (int) $state['pid'];
+        if (! @posix_kill($pid, $signal)) {
+            return false;
+        }
+        if (! function_exists('pcntl_waitpid')) {
+            return true;
+        }
+
+        $deadline = microtime(true) + (max(0, $waitMilliseconds) / 1000);
+        do {
+            $this->reapExitedChildren();
+            if (! isset($this->ownedProcesses[$pid])) {
+                return true;
+            }
+            usleep(10_000);
+        } while (microtime(true) < $deadline);
+
+        return false;
     }
 
     public function requestStop(string $id): ?array
@@ -225,6 +314,15 @@ class BackgroundAgentManager
             $state = $this->readJson($this->statePath($id));
             if ($state === null) {
                 return null;
+            }
+            $status = $state['status'] ?? 'unknown';
+            if ($status === 'waiting_for_input') {
+                throw new \InvalidArgumentException(
+                    "Background agent {$id} is waiting for human input; resume the interrupt first.",
+                );
+            }
+            if (in_array($status, ['completed', 'error', 'dead'], true)) {
+                throw new \InvalidArgumentException("Background agent {$id} is no longer running.");
             }
 
             $entry = [
@@ -271,6 +369,108 @@ class BackgroundAgentManager
 
             return $popped;
         });
+    }
+
+    public function finalizeWorktree(
+        string $id,
+        bool $retained,
+        ?string $notice = null,
+        ?string $error = null,
+    ): ?array {
+        return $this->mutateState($id, function (array $state) use ($retained, $notice, $error): array {
+            $state['worktree_retained'] = $retained;
+            $state['worktree_cleanup_error'] = $error;
+            if (! $retained) {
+                $state['worktree_path'] = null;
+                $state['worktree_branch'] = null;
+            }
+            if ($notice !== null) {
+                $current = trim((string) ($state['last_result'] ?? ''));
+                if (! str_contains($current, $notice)) {
+                    $state['last_result'] = $this->truncate(
+                        $current === '' ? $notice : $current."\n\n".$notice,
+                        self::RESULT_LIMIT,
+                    );
+                }
+            }
+
+            return $state;
+        });
+    }
+
+    public function finalizeStoredWorktree(string $id): ?array
+    {
+        $state = $this->get($id);
+        if ($state === null) {
+            return null;
+        }
+
+        $path = $state['worktree_path'] ?? null;
+        $branch = $state['worktree_branch'] ?? null;
+        if (! is_string($path) || $path === '' || ! is_string($branch) || $branch === '') {
+            return $state;
+        }
+        if (! $this->isManagedWorktree($path, $branch)) {
+            return $this->finalizeWorktree(
+                $id,
+                retained: true,
+                error: 'Refused to finalize an invalid managed worktree path.',
+            );
+        }
+
+        if (is_dir($path)) {
+            if ($this->worktreeHasChanges($path)) {
+                return $this->finalizeWorktree(
+                    $id,
+                    retained: true,
+                    notice: "Worktree retained at: {$path} (branch: {$branch})",
+                );
+            }
+        }
+
+        $parent = dirname($path, 3);
+        $removeOutput = [];
+        $removeCode = 0;
+        exec(
+            'cd '.escapeshellarg($parent)
+            .' && git worktree remove '.escapeshellarg($path).' --force 2>&1',
+            $removeOutput,
+            $removeCode,
+        );
+        if ($removeCode !== 0 && ! is_dir($path)) {
+            exec('cd '.escapeshellarg($parent).' && git worktree prune 2>/dev/null');
+            $removeCode = 0;
+        }
+
+        $branchOutput = [];
+        $branchCode = 0;
+        if ($removeCode === 0) {
+            $branchExistsCode = 0;
+            exec(
+                'cd '.escapeshellarg($parent)
+                .' && git show-ref --verify --quiet '.escapeshellarg('refs/heads/'.$branch),
+                $branchOutput,
+                $branchExistsCode,
+            );
+            if ($branchExistsCode === 0) {
+                exec(
+                    'cd '.escapeshellarg($parent)
+                    .' && git branch -D '.escapeshellarg($branch).' 2>&1',
+                    $branchOutput,
+                    $branchCode,
+                );
+            }
+        }
+
+        if ($removeCode === 0 && $branchCode === 0) {
+            return $this->finalizeWorktree($id, retained: false);
+        }
+
+        return $this->finalizeWorktree(
+            $id,
+            retained: true,
+            error: 'Failed to remove the temporary worktree and branch.',
+        );
     }
 
     private function mutateState(string $id, callable $callback): ?array
@@ -386,6 +586,224 @@ class BackgroundAgentManager
     {
         if (! is_dir($this->storageRoot()) && ! mkdir($this->storageRoot(), 0755, true) && ! is_dir($this->storageRoot())) {
             throw new \RuntimeException("Unable to create background agent storage: {$this->storageRoot()}");
+        }
+    }
+
+    private function clearInterruptState(array &$state): void
+    {
+        unset($state['pending_interrupt'], $state['child_session_id']);
+    }
+
+    private function clearProcessState(array &$state): void
+    {
+        $state['pid'] = null;
+        $state['process_start_time'] = null;
+        $state['process_token'] = null;
+    }
+
+    private function processIsAlive(array $state): ?bool
+    {
+        $pid = (int) ($state['pid'] ?? 0);
+        if ($pid <= 0 || ! function_exists('posix_kill')) {
+            return null;
+        }
+        if (! @posix_kill($pid, 0)) {
+            return false;
+        }
+
+        $expectedStart = $state['process_start_time'] ?? null;
+        if (! is_string($expectedStart) || $expectedStart === '') {
+            return true;
+        }
+
+        $actualStart = $this->processStartTime($pid);
+        if ($actualStart === null) {
+            return null;
+        }
+
+        return hash_equals($expectedStart, $actualStart);
+    }
+
+    private function canSignal(array $state): bool
+    {
+        $pid = (int) ($state['pid'] ?? 0);
+        $token = $state['process_token'] ?? null;
+        if ($pid <= 0 || ! is_string($token) || $token === '') {
+            return false;
+        }
+
+        $owned = $this->ownedProcesses[$pid] ?? null;
+
+        return is_array($owned)
+            && hash_equals($owned['token'], $token)
+            && $this->processIsAlive($state) === true;
+    }
+
+    private function processStartTime(int $pid): ?string
+    {
+        if ($pid <= 0 || ! function_exists('shell_exec')) {
+            return null;
+        }
+
+        $value = shell_exec('ps -o lstart= -p '.(int) $pid.' 2>/dev/null');
+        $value = is_string($value) ? trim($value) : '';
+
+        return $value !== '' ? $value : null;
+    }
+
+    private function isManagedWorktree(string $path, string $branch): bool
+    {
+        return preg_match('/^agent-[a-f0-9]{8}$/', $branch) === 1
+            && basename($path) === $branch
+            && basename(dirname($path)) === 'worktrees'
+            && basename(dirname($path, 2)) === '.claude';
+    }
+
+    private function worktreeHasChanges(string $path): bool
+    {
+        $status = trim((string) shell_exec(
+            'cd '.escapeshellarg($path).' && git status --porcelain 2>/dev/null',
+        ));
+        if ($status !== '') {
+            return true;
+        }
+
+        $parent = dirname($path, 3);
+        $worktreeHead = trim((string) shell_exec(
+            'cd '.escapeshellarg($path).' && git rev-parse HEAD 2>/dev/null',
+        ));
+        $parentHead = trim((string) shell_exec(
+            'cd '.escapeshellarg($parent).' && git rev-parse HEAD 2>/dev/null',
+        ));
+
+        // Preserve on uncertainty. A clean worktree can still contain committed
+        // agent work, which must not be deleted with the temporary branch.
+        return $worktreeHead === '' || $parentHead === '' || $worktreeHead !== $parentHead;
+    }
+
+    private function reapExitedChildren(): void
+    {
+        $this->reapExitedProcessHandles();
+        if ($this->processingExitedChildren) {
+            return;
+        }
+
+        $this->processingExitedChildren = true;
+        try {
+            while ($this->exitedProcesses !== []) {
+                $owned = array_shift($this->exitedProcesses);
+                $state = $this->mutateState($owned['id'], function (array $state): array {
+                    if (in_array($state['status'] ?? null, ['pending', 'running', 'idle'], true)) {
+                        $state['status'] = 'dead';
+                        $state['error'] ??= 'Background agent process exited before recording a terminal state.';
+                        $this->clearProcessState($state);
+                    }
+
+                    return $state;
+                });
+                if (($state['status'] ?? null) === 'dead') {
+                    $this->taskManager?->update(
+                        $owned['id'],
+                        'completed',
+                        (string) ($state['error'] ?? 'Background agent process exited.'),
+                    );
+                }
+                if (in_array($state['status'] ?? null, ['completed', 'error', 'dead'], true)) {
+                    $this->finalizeStoredWorktree($owned['id']);
+                }
+            }
+        } finally {
+            $this->processingExitedChildren = false;
+        }
+    }
+
+    private function reapExitedProcessHandles(): void
+    {
+        if ($this->ownedProcesses === [] || ! function_exists('pcntl_waitpid')) {
+            return;
+        }
+        if ($this->reapingProcessHandles) {
+            $this->reapAgain = true;
+
+            return;
+        }
+
+        $this->reapingProcessHandles = true;
+        try {
+            do {
+                $this->reapAgain = false;
+                foreach ($this->ownedProcesses as $pid => $owned) {
+                    $waited = @pcntl_waitpid($pid, $status, WNOHANG);
+                    if ($waited === -1) {
+                        $interrupted = defined('PCNTL_EINTR')
+                            && function_exists('pcntl_get_last_error')
+                            && pcntl_get_last_error() === constant('PCNTL_EINTR');
+                        if (! $interrupted) {
+                            unset($this->ownedProcesses[$pid]);
+                        }
+
+                        continue;
+                    }
+                    if ($waited !== $pid) {
+                        continue;
+                    }
+
+                    unset($this->ownedProcesses[$pid]);
+                    $this->exitedProcesses[] = $owned;
+                }
+            } while ($this->reapAgain);
+        } finally {
+            $this->reapingProcessHandles = false;
+        }
+    }
+
+    private function registerSignalReaper(): void
+    {
+        if (! function_exists('pcntl_signal')
+            || ! function_exists('pcntl_signal_get_handler')
+            || ! function_exists('pcntl_async_signals')
+            || ! defined('SIGCHLD')) {
+            return;
+        }
+
+        self::$signalReapers[spl_object_id($this)] = \WeakReference::create($this);
+        if (self::$signalReaperInstalled) {
+            return;
+        }
+
+        $previous = pcntl_signal_get_handler(constant('SIGCHLD'));
+        if (defined('SIG_IGN') && $previous === constant('SIG_IGN')) {
+            // The host already asks the OS to auto-reap all children.
+            return;
+        }
+
+        self::$previousSigchldHandler = $previous;
+        $installed = pcntl_signal(
+            constant('SIGCHLD'),
+            static function (int $signal, array $info = []): void {
+                foreach (self::$signalReapers as $id => $reference) {
+                    $manager = $reference->get();
+                    if (! $manager instanceof self) {
+                        unset(self::$signalReapers[$id]);
+
+                        continue;
+                    }
+                    // Only waitpid and enqueue here. File locks and state
+                    // transitions remain in the normal manager call stack.
+                    $manager->reapExitedProcessHandles();
+                }
+
+                $previous = self::$previousSigchldHandler;
+                if (is_callable($previous)) {
+                    $previous($signal, $info);
+                }
+            },
+        );
+        if ($installed) {
+            // Background-agent ownership requires prompt SIGCHLD delivery.
+            // Existing callable SIGCHLD handlers are preserved above.
+            pcntl_async_signals(true);
+            self::$signalReaperInstalled = true;
         }
     }
 

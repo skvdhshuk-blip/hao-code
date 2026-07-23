@@ -88,13 +88,22 @@ DESC;
         if (in_array($agent['status'] ?? '', ['completed', 'error', 'dead'], true)) {
             return ToolResult::error("Background agent {$to} is no longer running.");
         }
+        if (($agent['status'] ?? null) === 'waiting_for_input') {
+            return ToolResult::error(
+                "Background agent {$to} is waiting for human input; resume the interrupt first.",
+            );
+        }
 
-        $message = $this->backgroundAgentManager->queueMessage(
-            id: $to,
-            message: $input['message'],
-            summary: $input['summary'] ?? null,
-            from: $context->sessionId,
-        );
+        try {
+            $message = $this->backgroundAgentManager->queueMessage(
+                id: $to,
+                message: $input['message'],
+                summary: $input['summary'] ?? null,
+                from: $context->sessionId,
+            );
+        } catch (\InvalidArgumentException $e) {
+            return ToolResult::error($e->getMessage());
+        }
 
         if ($message === null) {
             return ToolResult::error("Failed to queue a message for {$to}");
@@ -133,18 +142,26 @@ DESC;
             $agentId = $member['agent_id'];
             $agent = $this->backgroundAgentManager->refreshStatus($agentId);
 
-            if ($agent === null || in_array($agent['status'] ?? '', ['completed', 'error', 'dead'], true)) {
+            if ($agent === null || in_array(
+                $agent['status'] ?? '',
+                ['completed', 'error', 'dead', 'waiting_for_input'],
+                true,
+            )) {
                 $skipped++;
 
                 continue;
             }
 
-            $result = $this->backgroundAgentManager->queueMessage(
-                id: $agentId,
-                message: $message,
-                summary: $summary,
-                from: $context->sessionId,
-            );
+            try {
+                $result = $this->backgroundAgentManager->queueMessage(
+                    id: $agentId,
+                    message: $message,
+                    summary: $summary,
+                    from: $context->sessionId,
+                );
+            } catch (\InvalidArgumentException) {
+                $result = null;
+            }
 
             if ($result !== null) {
                 $sent++;

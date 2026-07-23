@@ -25,6 +25,7 @@ final class TeamResultCollector
             $status = $agent['status'] ?? 'unknown';
             $result = $agent['last_result'] ?? null;
             $error = $agent['error'] ?? null;
+            $waitingForInput = $status === 'waiting_for_input';
             $outcome = match (true) {
                 is_string($result) && trim($result) !== '' => 'succeeded',
                 in_array($status, ['error', 'dead', 'completed'], true) => 'failed',
@@ -41,8 +42,8 @@ final class TeamResultCollector
                 'outcome' => $outcome,
                 'result' => $result,
                 'error' => $error,
-                'pending_interrupt' => $agent['pending_interrupt'] ?? null,
-                'child_session_id' => $agent['child_session_id'] ?? null,
+                'pending_interrupt' => $waitingForInput ? ($agent['pending_interrupt'] ?? null) : null,
+                'child_session_id' => $waitingForInput ? ($agent['child_session_id'] ?? null) : null,
             ];
         }
 

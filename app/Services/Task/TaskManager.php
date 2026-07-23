@@ -112,6 +112,36 @@ class TaskManager
         });
     }
 
+    /**
+     * Compare-and-set a task status without allowing a stale writer to
+     * overwrite a state that has already advanced.
+     *
+     * @param string[] $expectedStatuses
+     */
+    public function transition(
+        string $id,
+        array $expectedStatuses,
+        string $status,
+        ?string $result = null,
+    ): ?Task {
+        $id = StateIdentifier::taskId($id);
+
+        return $this->mutateTasks(function (array &$tasks) use ($id, $expectedStatuses, $status, $result): ?Task {
+            $task = $tasks[$id] ?? null;
+            if ($task === null || ! in_array($task->status, $expectedStatuses, true)) {
+                return $task;
+            }
+
+            $tasks[$id] = $task->with(
+                status: $status,
+                result: $result,
+                updatedAt: time(),
+            );
+
+            return $tasks[$id];
+        });
+    }
+
     public function stop(string $id): ?Task
     {
         return $this->update($id, 'completed', 'Stopped by user');

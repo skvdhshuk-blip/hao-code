@@ -2,10 +2,12 @@
 
 namespace Tests\Unit;
 
+use HaoCode\Services\Agent\AgentLoop;
 use HaoCode\Services\Agent\AgentLoopFactory;
 use HaoCode\Services\Agent\BackgroundAgentManager;
 use HaoCode\Services\Agent\TeamManager;
 use HaoCode\Services\Task\TaskManager;
+use HaoCode\Tools\Agent\BuiltInAgents;
 use HaoCode\Tools\Team\TeamCreateTool;
 use HaoCode\Tools\ToolUseContext;
 use PHPUnit\Framework\TestCase;
@@ -45,6 +47,75 @@ class TeamCreateToolTest extends TestCase
         $this->assertTrue($result->isError);
         $this->assertStringContainsString('collide after normalization', $result->output);
         $this->assertFileDoesNotExist($this->root.'/teams/reviewers.team.json');
+    }
+
+    public function test_rejects_unknown_member_agent_type_before_creating_manifest(): void
+    {
+        $tool = new TeamCreateTool(
+            $this->createMock(AgentLoopFactory::class),
+            new TeamManager($this->root.'/teams'),
+            new BackgroundAgentManager($this->root.'/agents'),
+            new TaskManager($this->root.'/tasks'),
+        );
+
+        $result = $tool->call([
+            'name' => 'reviewers',
+            'task' => 'Review the release',
+            'members' => [
+                ['role' => 'reviewer', 'agent_type' => 'Exlpore'],
+            ],
+        ], new ToolUseContext('/tmp', 'test'));
+
+        $this->assertTrue($result->isError);
+        $this->assertStringContainsString('Unknown agent type: Exlpore', $result->output);
+        $this->assertFileDoesNotExist($this->root.'/teams/reviewers.team.json');
+        $this->assertNull((new BackgroundAgentManager($this->root.'/agents'))->get('reviewers_reviewer'));
+        $this->assertNull((new TaskManager($this->root.'/tasks'))->get('reviewers_reviewer'));
+    }
+
+    public function test_member_execution_applies_model_system_prompt_and_omit_instructions(): void
+    {
+        $agents = new BackgroundAgentManager($this->root.'/agents');
+        $tasks = new TaskManager($this->root.'/tasks');
+        $agents->create('reviewers_reader', 'Review the release', 'Explore');
+        $agents->requestStop('reviewers_reader');
+        $tasks->createWithId('reviewers_reader', 'Reader', 'Reviewing');
+        $definition = BuiltInAgents::get('Explore');
+        $loop = $this->createMock(AgentLoop::class);
+        $loop->method('run')->willReturn('Done');
+        $factory = $this->createMock(AgentLoopFactory::class);
+        $factory->expects($this->once())
+            ->method('createIsolated')
+            ->willReturnCallback(function (...$arguments) use ($loop, $definition): AgentLoop {
+                $this->assertSame('claude-opus-4-20250514', $arguments[10] ?? null);
+                $this->assertSame($definition->systemPrompt, $arguments[11] ?? null);
+                $this->assertTrue($arguments[12] ?? false);
+
+                return $loop;
+            });
+        $tool = new TeamCreateTool(
+            $factory,
+            new TeamManager($this->root.'/teams'),
+            $agents,
+            $tasks,
+        );
+        $method = new \ReflectionMethod($tool, 'executeBackgroundAgent');
+        $method->setAccessible(true);
+
+        $method->invoke(
+            $tool,
+            'reviewers_reader',
+            'reviewers',
+            'Review the release',
+            $definition,
+            'claude-opus-4-20250514',
+            new ToolUseContext('/tmp', 'controller'),
+            false,
+            1,
+        );
+
+        $this->assertSame('completed', $agents->get('reviewers_reader')['status']);
+        $this->assertSame('completed', $tasks->get('reviewers_reader')->status);
     }
 
     private function removeDirectory(string $directory): void

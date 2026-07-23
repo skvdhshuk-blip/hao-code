@@ -8,7 +8,7 @@ use HaoCode\Services\Agent\TeamManager;
 use HaoCode\Services\Task\TaskManager;
 use HaoCode\Tools\Agent\AgentDefinition;
 use HaoCode\Tools\Agent\AgentLoader;
-use HaoCode\Tools\Agent\BuiltInAgents;
+use HaoCode\Tools\Agent\AgentModelResolver;
 use HaoCode\Tools\BaseTool;
 use HaoCode\Tools\ToolInputSchema;
 use HaoCode\Tools\ToolResult;
@@ -159,19 +159,37 @@ DESC;
             }
         }
 
+        $allAgents = AgentLoader::loadAll($context->workingDirectory);
+        $resolvedAgents = [];
+        foreach ($members as $index => $member) {
+            $agentTypeName = trim((string) ($member['agent_type'] ?? 'general-purpose'));
+            $agentDef = $allAgents[$agentTypeName] ?? null;
+            if ($agentDef === null) {
+                return ToolResult::error("Unknown agent type: {$agentTypeName}");
+            }
+            try {
+                $model = AgentModelResolver::resolve($member['model'] ?? null, $agentDef->model);
+            } catch (\InvalidArgumentException $e) {
+                return ToolResult::error($e->getMessage());
+            }
+            $resolvedAgents[$agentIds[$index]] = [
+                'definition' => $agentDef,
+                'model' => $model,
+            ];
+        }
+
         try {
             // Persist the manifest and claim every member ID before any child
             // process starts. Manager-level locks close the check/create race.
             $team = $this->teamManager->create($name, $members);
             $teamCreated = true;
             $roster = $this->buildRoster($team['members']);
-            $allAgents = AgentLoader::loadAll($context->workingDirectory);
             $claimed = [];
             foreach ($team['members'] as $member) {
                 $agentId = $member['agent_id'];
-                $agentTypeName = $member['agent_type'] ?? 'general-purpose';
-                $agentDef = $allAgents[$agentTypeName] ?? BuiltInAgents::get('general-purpose');
-                $fullPrompt = $this->buildMemberPrompt($member, $name, $task, $roster, $agentDef);
+                /** @var AgentDefinition $agentDef */
+                $agentDef = $resolvedAgents[$agentId]['definition'];
+                $fullPrompt = $this->buildMemberPrompt($member, $name, $task, $roster);
                 $this->backgroundAgentManager->create(
                     id: $agentId,
                     prompt: $fullPrompt,
@@ -213,18 +231,33 @@ DESC;
 
         foreach ($team['members'] as $member) {
             $agentId = $member['agent_id'];
-            $agentTypeName = $member['agent_type'] ?? 'general-purpose';
-            $agentDef = $allAgents[$agentTypeName] ?? BuiltInAgents::get('general-purpose');
+            /** @var AgentDefinition $agentDef */
+            $agentDef = $resolvedAgents[$agentId]['definition'];
+            $model = $resolvedAgents[$agentId]['model'];
 
             // Build composite prompt with team context
-            $fullPrompt = $this->buildMemberPrompt($member, $name, $task, $roster, $agentDef);
+            $fullPrompt = $this->buildMemberPrompt($member, $name, $task, $roster);
 
             // Fork the background agent process
-            $result = $this->forkMember($agentId, $name, $fullPrompt, $agentDef, $context, $readOnly, $maxTurns);
+            $result = $this->forkMember(
+                $agentId,
+                $name,
+                $fullPrompt,
+                $agentDef,
+                $model,
+                $context,
+                $readOnly,
+                $maxTurns,
+            );
             if ($result['success']) {
                 $spawned[] = ['role' => $member['role'], 'agent_id' => $agentId, 'pid' => $result['pid']];
                 $this->backgroundAgentManager->attachProcess($agentId, $result['pid']);
-                $this->taskManager->update($agentId, 'in_progress', 'Background agent is running.');
+                $this->taskManager->transition(
+                    $agentId,
+                    ['pending'],
+                    'in_progress',
+                    'Background agent is running.',
+                );
             } else {
                 $failed[] = ['role' => $member['role'], 'agent_id' => $agentId, 'error' => $result['error']];
                 $this->backgroundAgentManager->markError($agentId, $result['error']);
@@ -281,9 +314,8 @@ DESC;
         string $teamName,
         string $task,
         string $roster,
-        AgentDefinition $agentDef,
     ): string {
-        $preamble = <<<PREAMBLE
+        return <<<PREAMBLE
 You are the "{$member['role']}" member of team "{$teamName}".
 
 Your teammates:
@@ -294,13 +326,6 @@ Team objective: {$task}
 Your role-specific instructions:
 {$member['prompt']}
 PREAMBLE;
-
-        // Prepend agent definition system prompt if available
-        if (trim($agentDef->systemPrompt) !== '') {
-            return $agentDef->systemPrompt . "\n\n" . $preamble;
-        }
-
-        return $preamble;
     }
 
     /**
@@ -311,6 +336,7 @@ PREAMBLE;
         string $teamName,
         string $prompt,
         AgentDefinition $agentDef,
+        ?string $model,
         ToolUseContext $context,
         bool $readOnly,
         ?int $maxTurns,
@@ -329,7 +355,16 @@ PREAMBLE;
         if ($pid === 0) {
             // Child process: run the background agent
             try {
-                $this->executeBackgroundAgent($agentId, $teamName, $prompt, $agentDef, $context, $readOnly, $maxTurns);
+                $this->executeBackgroundAgent(
+                    $agentId,
+                    $teamName,
+                    $prompt,
+                    $agentDef,
+                    $model,
+                    $context,
+                    $readOnly,
+                    $maxTurns,
+                );
             } catch (\HaoCode\Sdk\HumanInterruptException) {
                 // Durable child interrupt is surfaced by TeamAwait/TeamCollect.
             } catch (\Throwable $e) {
@@ -347,6 +382,7 @@ PREAMBLE;
         string $teamName,
         string $prompt,
         AgentDefinition $agentDef,
+        ?string $model,
         ToolUseContext $context,
         bool $readOnly,
         ?int $maxTurns,
@@ -366,6 +402,9 @@ PREAMBLE;
             afterFork: true,
             readOnly: $readOnly || $agentDef->readOnly,
             parentToolRegistry: $context->toolRegistry,
+            model: $model,
+            appendSystemPrompt: $agentDef->systemPrompt,
+            omitProjectInstructions: $agentDef->omitClaudeMd,
         );
         $effectiveMaxTurns = $maxTurns ?? $agentDef->maxTurns;
         if ($effectiveMaxTurns !== null) {
@@ -373,7 +412,12 @@ PREAMBLE;
         }
 
         $this->backgroundAgentManager->markRunning($agentId);
-        $this->taskManager->update($agentId, 'in_progress', 'Processing initial task.');
+        $this->taskManager->transition(
+            $agentId,
+            ['pending'],
+            'in_progress',
+            'Processing initial task.',
+        );
 
         $lastResponse = $this->runTurn($subLoop, $agentId, $prompt);
         $idleSince = time();

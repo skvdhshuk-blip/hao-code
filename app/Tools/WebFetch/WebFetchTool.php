@@ -143,7 +143,8 @@ DESC;
                 return ToolResult::error("Failed to fetch URL: {$e->getMessage()}");
             }
 
-            if (str_contains($contentType, 'text/html')) {
+            $mediaType = strtolower(trim(explode(';', $contentType, 2)[0]));
+            if (in_array($mediaType, ['text/html', 'application/xhtml+xml'], true)) {
                 $content = $format === 'markdown'
                     ? $this->htmlToMarkdown($content)
                     : $this->htmlToText($content);
