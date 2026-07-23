@@ -634,7 +634,9 @@ $config = new HaoCodeConfig(
 
 Runtime data is stored under `~/.haocode/storage` by default when installed
 through Composer. Set `HAOCODE_STORAGE_PATH` for an application-specific
-runtime directory.
+runtime directory. Background Agent, Team, and Task state is isolated under
+`app/haocode/background-agents`, `app/haocode/teams`, and
+`app/haocode/tasks` inside that runtime directory.
 
 Long-term memory uses compact `l0` summaries in the system prompt by default;
 `l1` provides a larger overview and `l2` injects original content. Supplying
@@ -690,7 +692,7 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.18.1`. Notable changes since `v1.10.0`:
+is based on `v1.18.3`. Notable changes since `v1.10.0`:
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/

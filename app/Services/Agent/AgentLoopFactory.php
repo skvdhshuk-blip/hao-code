@@ -252,7 +252,11 @@ class AgentLoopFactory
 
         foreach ($parent->getAllTools() as $tool) {
             if ($filter === null || $filter($tool->name())) {
-                $filtered->register(clone $tool);
+                // SdkTool's public contract does not require cloneability.
+                // Clone when the object supports it so mutable tool state is
+                // isolated; otherwise retain the valid shared instance.
+                $reflection = new \ReflectionObject($tool);
+                $filtered->register($reflection->isCloneable() ? clone $tool : $tool);
             }
         }
 

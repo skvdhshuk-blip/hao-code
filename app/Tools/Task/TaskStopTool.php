@@ -26,13 +26,17 @@ class TaskStopTool extends BaseTool
                 'id' => ['type' => 'string', 'description' => 'The task ID to stop'],
             ],
             'required' => ['id'],
-        ], ['id' => 'required|string']);
+        ], ['id' => 'required|string|regex:/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/']);
     }
 
     public function call(array $input, ToolUseContext $context): ToolResult
     {
         $backgroundAgentManager = \HaoCode\Support\Runtime\SdkRuntime::app(BackgroundAgentManager::class);
-        $agent = $backgroundAgentManager->refreshStatus($input['id']);
+        try {
+            $agent = $backgroundAgentManager->refreshStatus($input['id']);
+        } catch (\InvalidArgumentException $e) {
+            return ToolResult::error($e->getMessage());
+        }
 
         if ($agent !== null && !in_array($agent['status'] ?? '', ['completed', 'error', 'dead'], true)) {
             $backgroundAgentManager->requestStop($input['id']);

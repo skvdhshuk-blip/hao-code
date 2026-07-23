@@ -42,7 +42,7 @@ DESC;
                 ],
             ],
         ], [
-            'name' => 'nullable|string',
+            'name' => 'nullable|string|regex:/^[a-z0-9][a-z0-9_-]{0,31}$/',
         ]);
     }
 
@@ -51,7 +51,11 @@ DESC;
         $name = $input['name'] ?? null;
 
         if ($name !== null) {
-            return $this->showTeamDetail($name);
+            try {
+                return $this->showTeamDetail($name);
+            } catch (\InvalidArgumentException $e) {
+                return ToolResult::error($e->getMessage());
+            }
         }
 
         return $this->showAllTeams();

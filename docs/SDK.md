@@ -2,7 +2,7 @@
 
 Use hao-code as a framework-free PHP library to embed an AI coding agent in your application.
 
-This document describes the `v1.18.1` source line. Published package versions
+This document describes the `v1.18.3` source line. Published package versions
 are identified by Git tags and Packagist.
 
 ```bash
@@ -1310,6 +1310,11 @@ mutating files, including through Bash commands; this is enforced by the
 permission layer rather than relying on prompts.
 Use `SendMessage` only while a member is `running` or `idle`, and call
 `TeamDelete` when the team is no longer needed.
+
+Agent IDs and team names are restricted to filesystem-safe identifiers and
+cannot overwrite an existing background run. Their manifests, mailboxes, and
+task records are stored below the configured runtime storage path in
+`app/haocode/background-agents`, `app/haocode/teams`, and `app/haocode/tasks`.
 
 ---
 

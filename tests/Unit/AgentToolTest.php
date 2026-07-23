@@ -4,6 +4,9 @@ namespace Tests\Unit;
 
 use HaoCode\Services\Agent\AgentLoop;
 use HaoCode\Services\Agent\AgentLoopFactory;
+use HaoCode\Services\Agent\BackgroundAgentManager;
+use HaoCode\Services\Task\TaskManager;
+use HaoCode\Tools\Agent\BuiltInAgents;
 use HaoCode\Tools\Agent\AgentTool;
 use HaoCode\Tools\ToolRegistry;
 use HaoCode\Tools\ToolUseContext;
@@ -56,6 +59,34 @@ class AgentToolTest extends TestCase
         $result = $tool->call(['prompt' => 'Do something'], $this->context());
         $this->assertTrue($result->isError);
         $this->assertStringContainsString('sub crashed', $result->output);
+    }
+
+    public function test_named_background_agent_cannot_overwrite_existing_state(): void
+    {
+        $root = sys_get_temp_dir().'/haocode-agent-tool-test-'.bin2hex(random_bytes(4));
+        $agents = new BackgroundAgentManager($root.'/agents');
+        $tasks = new TaskManager($root.'/tasks');
+        $agents->create('agent_demo', 'Original prompt', 'general-purpose');
+        $tool = new AgentTool($this->makeFactory(), $agents, $tasks);
+
+        $method = new \ReflectionMethod($tool, 'claimBackgroundAgent');
+        $method->setAccessible(true);
+        $result = $method->invoke(
+            $tool,
+            'agent_demo',
+            'Replacement prompt',
+            BuiltInAgents::get('general-purpose'),
+            'Replacement',
+            'Replacement task',
+        );
+
+        $this->assertInstanceOf(\HaoCode\Tools\ToolResult::class, $result);
+        $this->assertTrue($result->isError);
+        $this->assertStringContainsString('already exists', $result->output);
+        $this->assertSame('Original prompt', $agents->get('agent_demo')['prompt']);
+        $this->assertNull($tasks->get('agent_demo'));
+
+        $this->removeDirectory($root);
     }
 
     // ─── metadata ─────────────────────────────────────────────────────────
@@ -190,5 +221,21 @@ class AgentToolTest extends TestCase
         );
 
         $this->assertFalse($result->isError);
+    }
+
+    private function removeDirectory(string $directory): void
+    {
+        if (! is_dir($directory)) {
+            return;
+        }
+
+        $iterator = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($directory, \FilesystemIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::CHILD_FIRST,
+        );
+        foreach ($iterator as $item) {
+            $item->isDir() ? @rmdir($item->getPathname()) : @unlink($item->getPathname());
+        }
+        @rmdir($directory);
     }
 }

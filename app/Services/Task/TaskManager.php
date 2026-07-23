@@ -2,61 +2,81 @@
 
 namespace HaoCode\Services\Task;
 
+use HaoCode\Support\StateIdentifier;
+
 /**
  * Manages background task lifecycle with persistent state.
  */
 class TaskManager
 {
-    private string $storagePath;
+    private readonly string $storagePath;
 
     /** @var array<string, Task> */
     private array $tasks = [];
 
-    public function __construct()
+    public function __construct(?string $storagePath = null)
     {
-        $this->storagePath = sys_get_temp_dir() . '/haocode_tasks';
-        if (!is_dir($this->storagePath)) {
-            mkdir($this->storagePath, 0755, true);
+        $this->storagePath = rtrim($storagePath ?? sys_get_temp_dir().'/haocode_tasks', '/');
+        if (! is_dir($this->storagePath) && ! mkdir($this->storagePath, 0755, true) && ! is_dir($this->storagePath)) {
+            throw new \RuntimeException("Unable to create task storage: {$this->storagePath}");
         }
-        $this->loadTasks();
+
+        // Persist the existing 24-hour cleanup under the same lock used by
+        // every read-modify-write operation.
+        $this->mutateTasks(static fn (array &$tasks) => null);
     }
 
     public function create(string $subject, string $activeForm, ?string $description = null): Task
     {
-        return $this->createWithId(
-            id: 'task_' . bin2hex(random_bytes(4)),
-            subject: $subject,
-            activeForm: $activeForm,
-            description: $description,
-        );
+        for ($attempt = 0; $attempt < 10; $attempt++) {
+            try {
+                return $this->createWithId(
+                    id: 'task_'.bin2hex(random_bytes(4)),
+                    subject: $subject,
+                    activeForm: $activeForm,
+                    description: $description,
+                );
+            } catch (\InvalidArgumentException $e) {
+                if (! str_contains($e->getMessage(), 'already exists')) {
+                    throw $e;
+                }
+            }
+        }
+
+        throw new \RuntimeException('Unable to allocate a unique task ID.');
     }
 
     public function createWithId(string $id, string $subject, string $activeForm, ?string $description = null): Task
     {
-        $this->loadTasks();
+        $id = StateIdentifier::taskId($id);
 
-        $timestamp = time();
-        $task = new Task(
-            id: $id,
-            subject: $subject,
-            activeForm: $activeForm,
-            description: $description,
-            status: 'pending',
-            createdAt: $timestamp,
-            updatedAt: $timestamp,
-        );
+        return $this->mutateTasks(function (array &$tasks) use ($id, $subject, $activeForm, $description): Task {
+            if (isset($tasks[$id])) {
+                throw new \InvalidArgumentException("Task '{$id}' already exists.");
+            }
 
-        $this->tasks[$task->id] = $task;
-        $this->persist();
+            $timestamp = time();
+            $task = new Task(
+                id: $id,
+                subject: $subject,
+                activeForm: $activeForm,
+                description: $description,
+                status: 'pending',
+                createdAt: $timestamp,
+                updatedAt: $timestamp,
+            );
+            $tasks[$id] = $task;
 
-        return $task;
+            return $task;
+        });
     }
 
     public function get(string $id): ?Task
     {
-        $this->loadTasks();
+        $id = StateIdentifier::taskId($id);
+        $tasks = $this->readTasks();
 
-        return $this->tasks[$id] ?? null;
+        return $tasks[$id] ?? null;
     }
 
     /**
@@ -64,29 +84,32 @@ class TaskManager
      */
     public function list(?string $status = null): array
     {
-        $this->loadTasks();
-
-        $tasks = array_values($this->tasks);
-        if ($status) {
-            $tasks = array_filter($tasks, fn($t) => $t->status === $status);
+        $tasks = array_values($this->readTasks());
+        if ($status !== null && $status !== '') {
+            $tasks = array_values(array_filter($tasks, fn (Task $task): bool => $task->status === $status));
         }
+
         return $tasks;
     }
 
     public function update(string $id, string $status, ?string $result = null): ?Task
     {
-        $this->loadTasks();
+        $id = StateIdentifier::taskId($id);
 
-        $task = $this->tasks[$id] ?? null;
-        if (!$task) return null;
+        return $this->mutateTasks(function (array &$tasks) use ($id, $status, $result): ?Task {
+            $task = $tasks[$id] ?? null;
+            if ($task === null) {
+                return null;
+            }
 
-        $this->tasks[$id] = $task->with(
-            status: $status,
-            result: $result,
-            updatedAt: time(),
-        );
-        $this->persist();
-        return $this->tasks[$id];
+            $tasks[$id] = $task->with(
+                status: $status,
+                result: $result,
+                updatedAt: time(),
+            );
+
+            return $tasks[$id];
+        });
     }
 
     public function stop(string $id): ?Task
@@ -96,48 +119,143 @@ class TaskManager
 
     public function remove(string $id): bool
     {
-        $this->loadTasks();
+        $id = StateIdentifier::taskId($id);
 
-        if (!isset($this->tasks[$id])) return false;
-        unset($this->tasks[$id]);
-        $this->persist();
-        return true;
+        return $this->mutateTasks(function (array &$tasks) use ($id): bool {
+            if (! isset($tasks[$id])) {
+                return false;
+            }
+
+            unset($tasks[$id]);
+
+            return true;
+        });
     }
 
-    private function persist(): void
+    /**
+     * @return array<string, Task>
+     */
+    private function readTasks(): array
     {
-        $data = [];
-        foreach ($this->tasks as $id => $task) {
-            $data[$id] = $task->toArray();
+        return $this->withLock(LOCK_SH, function (): array {
+            $tasks = $this->readTasksFile();
+            $this->removeExpired($tasks);
+            $this->tasks = $tasks;
+
+            return $tasks;
+        });
+    }
+
+    private function mutateTasks(callable $callback): mixed
+    {
+        return $this->withLock(LOCK_EX, function () use ($callback): mixed {
+            $tasks = $this->readTasksFile();
+            $this->removeExpired($tasks);
+            $result = $callback($tasks);
+            $this->persistTasks($tasks);
+            $this->tasks = $tasks;
+
+            return $result;
+        });
+    }
+
+    /**
+     * @return array<string, Task>
+     */
+    private function readTasksFile(): array
+    {
+        $file = $this->storagePath.'/tasks.json';
+        if (! is_file($file)) {
+            return [];
         }
-        file_put_contents(
-            $this->storagePath . '/tasks.json',
-            json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE),
-            LOCK_EX,
-        );
-    }
 
-    private function loadTasks(): void
-    {
-        $file = $this->storagePath . '/tasks.json';
-        $this->tasks = [];
+        $raw = file_get_contents($file);
+        if ($raw === false) {
+            throw new \RuntimeException('Unable to read task state.');
+        }
+        if ($raw === '') {
+            return [];
+        }
 
-        if (!file_exists($file)) return;
+        try {
+            $data = json_decode($raw, true, 512, JSON_THROW_ON_ERROR);
+        } catch (\JsonException $e) {
+            throw new \RuntimeException('Task state is not valid JSON.', previous: $e);
+        }
+        if (! is_array($data)) {
+            throw new \RuntimeException('Task state must be a JSON object.');
+        }
 
-        $data = json_decode(file_get_contents($file), true) ?: [];
+        $tasks = [];
         foreach ($data as $id => $taskData) {
-            $this->tasks[$id] = Task::fromArray($taskData);
-        }
-
-        // Clean up tasks older than 24 hours
-        $cutoff = time() - 86400;
-        $changed = false;
-        foreach ($this->tasks as $id => $task) {
-            if ($task->createdAt < $cutoff) {
-                unset($this->tasks[$id]);
-                $changed = true;
+            if (is_array($taskData)) {
+                $tasks[(string) $id] = Task::fromArray($taskData);
             }
         }
-        if ($changed) $this->persist();
+
+        return $tasks;
+    }
+
+    /**
+     * @param array<string, Task> $tasks
+     */
+    private function removeExpired(array &$tasks): void
+    {
+        $cutoff = time() - 86400;
+        foreach ($tasks as $id => $task) {
+            if ($task->createdAt < $cutoff) {
+                unset($tasks[$id]);
+            }
+        }
+    }
+
+    /**
+     * @param array<string, Task> $tasks
+     */
+    private function persistTasks(array $tasks): void
+    {
+        $data = [];
+        foreach ($tasks as $id => $task) {
+            $data[$id] = $task->toArray();
+        }
+
+        $json = json_encode($data, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_THROW_ON_ERROR);
+        $temporary = tempnam($this->storagePath, '.haocode-');
+        if ($temporary === false) {
+            throw new \RuntimeException('Unable to create a temporary task state file.');
+        }
+
+        try {
+            $written = file_put_contents($temporary, $json);
+            if ($written !== strlen($json)) {
+                throw new \RuntimeException('Unable to write task state.');
+            }
+            if (! rename($temporary, $this->storagePath.'/tasks.json')) {
+                throw new \RuntimeException('Unable to replace task state.');
+            }
+        } finally {
+            if (is_file($temporary)) {
+                @unlink($temporary);
+            }
+        }
+    }
+
+    private function withLock(int $operation, callable $callback): mixed
+    {
+        $handle = fopen($this->storagePath.'/tasks.lock', 'c+');
+        if ($handle === false) {
+            throw new \RuntimeException('Unable to open task state lock.');
+        }
+
+        try {
+            if (! flock($handle, $operation)) {
+                throw new \RuntimeException('Unable to lock task state.');
+            }
+
+            return $callback();
+        } finally {
+            flock($handle, LOCK_UN);
+            fclose($handle);
+        }
     }
 }

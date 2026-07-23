@@ -110,6 +110,58 @@ class TeamManagerTest extends TestCase
         $this->assertFalse($this->manager->delete('ghost'));
     }
 
+    public function test_rejects_path_traversal_team_names(): void
+    {
+        $outsidePath = dirname($this->tempDir).'/escape.team.json';
+        @unlink($outsidePath);
+
+        try {
+            $this->manager->create('../escape', [['role' => 'reviewer']]);
+            $this->fail('Expected an invalid team name exception.');
+        } catch (\InvalidArgumentException $e) {
+            $this->assertSame('Invalid team name.', $e->getMessage());
+        }
+
+        $this->assertFileDoesNotExist($outsidePath);
+    }
+
+    public function test_rejects_invalid_team_names_on_read_paths(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Invalid team name.');
+
+        $this->manager->get('../../escape');
+    }
+
+    public function test_create_does_not_overwrite_an_existing_team(): void
+    {
+        $this->manager->create('reviewers', [['role' => 'first']]);
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage("Team 'reviewers' already exists.");
+
+        $this->manager->create('reviewers', [['role' => 'second']]);
+    }
+
+    public function test_create_rejects_roles_that_collide_after_normalization(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Team member roles collide after normalization.');
+
+        $this->manager->create('reviewers', [
+            ['role' => 'QA Lead'],
+            ['role' => 'qa-lead'],
+        ]);
+    }
+
+    public function test_member_agent_id_rejects_roles_that_normalize_to_empty(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Invalid team member role.');
+
+        TeamManager::memberAgentId('reviewers', '!!!');
+    }
+
     public function test_member_agent_id_generates_deterministic_ids(): void
     {
         $this->assertSame('team_architect', TeamManager::memberAgentId('team', 'architect'));

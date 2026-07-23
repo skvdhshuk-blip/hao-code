@@ -226,6 +226,47 @@ class WebFetchToolTest extends TestCase
         $this->assertSame(1, $calls, 'second identical call must be served from cache');
     }
 
+    public function test_cache_stores_only_the_truncated_rendered_output(): void
+    {
+        $tool = new WebFetchTool(ssrfAllowList: ['127.0.0.1/32']);
+        $tool->setClient(new MockHttpClient([
+            new MockResponse(str_repeat('x', 200_000), [
+                'http_code' => 200,
+                'response_headers' => ['content-type' => 'text/plain'],
+            ]),
+        ]));
+
+        $tool->call(['url' => 'http://127.0.0.1:9999/cache-truncated'], $this->context);
+
+        $cache = $this->ref->getStaticPropertyValue('cache');
+        $entry = reset($cache);
+        $this->assertIsArray($entry);
+        $this->assertLessThan(101_000, strlen($entry['content']));
+        $this->assertStringContainsString('[Content truncated at 100000 characters]', $entry['content']);
+    }
+
+    public function test_cache_evicts_entries_to_stay_within_total_byte_budget(): void
+    {
+        $cache = [];
+        for ($index = 0; $index < 40; $index++) {
+            $cache["entry{$index}"] = [
+                'content' => str_repeat('x', 1_000_000),
+                'time' => time() - 10 + $index,
+                'final_url' => null,
+            ];
+        }
+        $this->ref->setStaticPropertyValue('cache', $cache);
+
+        $method = $this->ref->getMethod('storeCache');
+        $method->setAccessible(true);
+        $method->invoke($this->tool, 'new-entry', 'fresh', null);
+
+        $stored = $this->ref->getStaticPropertyValue('cache');
+        $bytes = array_sum(array_map(static fn (array $entry): int => strlen($entry['content']), $stored));
+        $this->assertLessThanOrEqual(32 * 1024 * 1024, $bytes);
+        $this->assertArrayHasKey('new-entry', $stored);
+    }
+
     // ─── redirect resolution per RFC 3986 reference types ─────────────────
 
     public function test_resolve_redirect_handles_relative_references(): void
@@ -361,6 +402,63 @@ class WebFetchToolTest extends TestCase
         $this->assertSame(['localhost' => '127.0.0.1'], $options['resolve']);
         $this->assertSame('*', $options['no_proxy']);
         $this->assertArrayNotHasKey('Host', $options['headers']);
+    }
+
+    public function test_request_fails_over_to_the_next_validated_ip_on_transport_error(): void
+    {
+        $resolves = [];
+        $calls = 0;
+        $tool = new WebFetchTool;
+        $tool->setClient(new MockHttpClient(function (string $method, string $url, array $options) use (&$resolves, &$calls) {
+            $resolves[] = $options['resolve'];
+            $calls++;
+
+            return $calls === 1
+                ? new MockResponse('', ['error' => 'connection failed'])
+                : new MockResponse('ok', ['http_code' => 200, 'response_headers' => ['content-type' => 'text/plain']]);
+        }));
+
+        $method = (new \ReflectionClass($tool))->getMethod('requestValidatedUrl');
+        $method->setAccessible(true);
+        $response = $method->invoke($tool, 'https://example.com/path', [
+            'host' => 'example.com',
+            'ips' => ['203.0.113.10', '203.0.113.11'],
+        ]);
+
+        $this->assertSame('ok', $response['body']);
+        $this->assertSame([
+            ['example.com' => '203.0.113.10'],
+            ['example.com' => '203.0.113.11'],
+        ], $resolves);
+    }
+
+    public function test_request_does_not_fail_over_after_an_http_response(): void
+    {
+        $calls = 0;
+        $tool = new WebFetchTool;
+        $tool->setClient(new MockHttpClient(function () use (&$calls) {
+            $calls++;
+
+            return new MockResponse('unavailable', ['http_code' => 503]);
+        }));
+
+        $method = (new \ReflectionClass($tool))->getMethod('requestValidatedUrl');
+        $method->setAccessible(true);
+
+        try {
+            $method->invoke($tool, 'https://example.com/path', [
+                'host' => 'example.com',
+                'ips' => ['203.0.113.10', '203.0.113.11'],
+            ]);
+            $this->fail('Expected an HTTP error.');
+        } catch (\ReflectionException $e) {
+            throw $e;
+        } catch (\Throwable $e) {
+            $exception = $e instanceof \ReflectionException ? $e : ($e->getPrevious() ?? $e);
+            $this->assertStringContainsString('HTTP 503', $exception->getMessage());
+        }
+
+        $this->assertSame(1, $calls);
     }
 
     public function test_prompt_is_reported_as_focus_not_extraction(): void

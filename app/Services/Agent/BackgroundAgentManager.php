@@ -2,6 +2,8 @@
 
 namespace HaoCode\Services\Agent;
 
+use HaoCode\Support\StateIdentifier;
+
 class BackgroundAgentManager
 {
     private const RESULT_LIMIT = 100000;
@@ -19,42 +21,58 @@ class BackgroundAgentManager
         ?string $description = null,
         ?int $pid = null,
     ): array {
-        $state = [
-            'id' => $id,
-            'prompt' => $prompt,
-            'description' => $description,
-            'agent_type' => $agentType,
-            'pid' => $pid,
-            'status' => 'pending',
-            'pending_messages' => 0,
-            'stop_requested' => false,
-            'last_message_at' => null,
-            'last_result' => null,
-            'error' => null,
-            'created_at' => time(),
-            'updated_at' => time(),
-        ];
+        $id = StateIdentifier::backgroundAgentId($id);
 
-        $this->writeJson($this->statePath($id), $state);
-        $this->writeJson($this->mailboxPath($id), []);
+        return $this->withAgentLock($id, LOCK_EX, function () use ($id, $prompt, $agentType, $description, $pid): array {
+            if (is_file($this->statePath($id)) || is_file($this->mailboxPath($id))) {
+                throw new \InvalidArgumentException("Background agent '{$id}' already exists.");
+            }
 
-        return $state;
+            $state = [
+                'id' => $id,
+                'prompt' => $prompt,
+                'description' => $description,
+                'agent_type' => $agentType,
+                'pid' => $pid,
+                'status' => 'pending',
+                'pending_messages' => 0,
+                'stop_requested' => false,
+                'last_message_at' => null,
+                'last_result' => null,
+                'error' => null,
+                'created_at' => time(),
+                'updated_at' => time(),
+            ];
+
+            try {
+                $this->writeJsonAtomically($this->statePath($id), $state);
+                $this->writeJsonAtomically($this->mailboxPath($id), []);
+            } catch (\Throwable $e) {
+                @unlink($this->statePath($id));
+                @unlink($this->mailboxPath($id));
+                throw $e;
+            }
+
+            return $state;
+        });
     }
 
     public function delete(string $id): void
     {
-        @unlink($this->statePath($id));
-        @unlink($this->mailboxPath($id));
+        $id = StateIdentifier::backgroundAgentId($id);
+        $this->withAgentLock($id, LOCK_EX, function () use ($id): void {
+            @unlink($this->statePath($id));
+            @unlink($this->mailboxPath($id));
+        });
     }
 
     public function get(string $id): ?array
     {
-        $path = $this->statePath($id);
-        if (! is_file($path)) {
-            return null;
-        }
+        $id = StateIdentifier::backgroundAgentId($id);
 
-        return $this->readJson($path) ?? null;
+        return $this->withAgentLock($id, LOCK_SH, function () use ($id): ?array {
+            return $this->readJson($this->statePath($id));
+        });
     }
 
     /**
@@ -65,7 +83,13 @@ class BackgroundAgentManager
         $states = [];
 
         foreach (glob($this->storageRoot().'/*.state.json') ?: [] as $path) {
-            $state = $this->readJson($path);
+            $file = basename($path);
+            $id = substr($file, 0, -strlen('.state.json'));
+            try {
+                $state = $this->get($id);
+            } catch (\InvalidArgumentException) {
+                continue;
+            }
             if (is_array($state)) {
                 $states[] = $state;
             }
@@ -195,84 +219,67 @@ class BackgroundAgentManager
 
     public function queueMessage(string $id, string $message, ?string $summary = null, string $from = 'controller'): ?array
     {
-        if ($this->get($id) === null) {
-            return null;
-        }
+        $id = StateIdentifier::backgroundAgentId($id);
 
-        $entry = [
-            'from' => $from,
-            'summary' => $summary,
-            'message' => $message,
-            'created_at' => time(),
-        ];
+        return $this->withAgentLock($id, LOCK_EX, function () use ($id, $message, $summary, $from): ?array {
+            $state = $this->readJson($this->statePath($id));
+            if ($state === null) {
+                return null;
+            }
 
-        $messageCount = $this->withLockedMailbox($id, function (array &$messages) use ($entry) {
+            $entry = [
+                'from' => $from,
+                'summary' => $summary,
+                'message' => $message,
+                'created_at' => time(),
+            ];
+            $messages = $this->readJson($this->mailboxPath($id)) ?? [];
             $messages[] = $entry;
+            $messageCount = count($messages);
 
-            return count($messages);
-        });
-
-        $state = $this->mutateState($id, function (array $state) use ($messageCount) {
             $state['pending_messages'] = $messageCount;
             $state['last_message_at'] = time();
+            $state['updated_at'] = time();
 
-            return $state;
+            $this->writeJsonAtomically($this->mailboxPath($id), $messages);
+            $this->writeJsonAtomically($this->statePath($id), $state);
+
+            return $entry + ['pending_messages' => $messageCount];
         });
-
-        if ($state === null) {
-            return null;
-        }
-
-        return $entry + ['pending_messages' => $messageCount];
     }
 
     public function popNextMessage(string $id): ?array
     {
-        if ($this->get($id) === null) {
-            return null;
-        }
+        $id = StateIdentifier::backgroundAgentId($id);
 
-        $popped = null;
-        $messageCount = $this->withLockedMailbox($id, function (array &$messages) use (&$popped) {
+        return $this->withAgentLock($id, LOCK_EX, function () use ($id): ?array {
+            $state = $this->readJson($this->statePath($id));
+            if ($state === null) {
+                return null;
+            }
+
+            $messages = $this->readJson($this->mailboxPath($id)) ?? [];
             $popped = array_shift($messages) ?: null;
+            if ($popped === null) {
+                return null;
+            }
 
-            return count($messages);
+            $state['pending_messages'] = count($messages);
+            $state['updated_at'] = time();
+            $this->writeJsonAtomically($this->mailboxPath($id), $messages);
+            $this->writeJsonAtomically($this->statePath($id), $state);
+
+            return $popped;
         });
-
-        if ($popped === null) {
-            return null;
-        }
-
-        $this->mutateState($id, function (array $state) use ($messageCount) {
-            $state['pending_messages'] = $messageCount;
-
-            return $state;
-        });
-
-        return $popped;
     }
 
     private function mutateState(string $id, callable $callback): ?array
     {
-        $path = $this->statePath($id);
-        if (! is_file($path)) {
-            return null;
-        }
+        $id = StateIdentifier::backgroundAgentId($id);
 
-        $handle = fopen($path, 'c+');
-        if ($handle === false) {
-            throw new \RuntimeException("Unable to open background agent state for {$id}");
-        }
-
-        try {
-            if (! flock($handle, LOCK_EX)) {
-                throw new \RuntimeException("Unable to lock background agent state for {$id}");
-            }
-
-            rewind($handle);
-            $raw = stream_get_contents($handle);
-            $current = json_decode($raw === false || $raw === '' ? 'null' : $raw, true);
-            if (! is_array($current)) {
+        return $this->withAgentLock($id, LOCK_EX, function () use ($id, $callback): ?array {
+            $current = $this->readJson($this->statePath($id));
+            if ($current === null) {
                 return null;
             }
 
@@ -282,61 +289,18 @@ class BackgroundAgentManager
             }
 
             $next['updated_at'] = time();
-            rewind($handle);
-            ftruncate($handle, 0);
-            fwrite($handle, (string) json_encode(
-                $next,
-                JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES,
-            ));
-            fflush($handle);
+            $this->writeJsonAtomically($this->statePath($id), $next);
 
             return $next;
-        } finally {
-            flock($handle, LOCK_UN);
-            fclose($handle);
-        }
-    }
-
-    private function withLockedMailbox(string $id, callable $callback): mixed
-    {
-        $path = $this->mailboxPath($id);
-        if (! is_file($path)) {
-            $this->writeJson($path, []);
-        }
-
-        $handle = fopen($path, 'c+');
-        if ($handle === false) {
-            throw new \RuntimeException("Unable to open mailbox for {$id}");
-        }
-
-        try {
-            if (! flock($handle, LOCK_EX)) {
-                throw new \RuntimeException("Unable to lock mailbox for {$id}");
-            }
-
-            rewind($handle);
-            $raw = stream_get_contents($handle);
-            $messages = json_decode($raw === false || $raw === '' ? '[]' : $raw, true);
-            if (! is_array($messages)) {
-                $messages = [];
-            }
-
-            $result = $callback($messages);
-
-            rewind($handle);
-            ftruncate($handle, 0);
-            fwrite($handle, json_encode($messages, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE));
-            fflush($handle);
-            flock($handle, LOCK_UN);
-
-            return $result;
-        } finally {
-            fclose($handle);
-        }
+        });
     }
 
     private function readJson(string $path): ?array
     {
+        if (! is_file($path)) {
+            return null;
+        }
+
         $raw = file_get_contents($path);
         if ($raw === false || $raw === '') {
             return null;
@@ -347,23 +311,70 @@ class BackgroundAgentManager
         return is_array($decoded) ? $decoded : null;
     }
 
-    private function writeJson(string $path, array $payload): void
+    private function writeJsonAtomically(string $path, array $payload): void
     {
-        file_put_contents(
-            $path,
-            json_encode($payload, JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE),
-            LOCK_EX,
+        $json = json_encode(
+            $payload,
+            JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR,
         );
+        $temporary = tempnam($this->storageRoot(), '.haocode-');
+        if ($temporary === false) {
+            throw new \RuntimeException('Unable to create a temporary state file.');
+        }
+
+        try {
+            $written = file_put_contents($temporary, $json);
+            if ($written !== strlen($json)) {
+                throw new \RuntimeException("Unable to write state file: {$path}");
+            }
+            if (! rename($temporary, $path)) {
+                throw new \RuntimeException("Unable to replace state file: {$path}");
+            }
+        } finally {
+            if (is_file($temporary)) {
+                @unlink($temporary);
+            }
+        }
+    }
+
+    private function withAgentLock(string $id, int $operation, callable $callback): mixed
+    {
+        $handle = fopen($this->lockPath($id), 'c+');
+        if ($handle === false) {
+            throw new \RuntimeException("Unable to open background agent lock for {$id}");
+        }
+
+        try {
+            if (! flock($handle, $operation)) {
+                throw new \RuntimeException("Unable to lock background agent state for {$id}");
+            }
+
+            return $callback();
+        } finally {
+            flock($handle, LOCK_UN);
+            fclose($handle);
+        }
     }
 
     private function statePath(string $id): string
     {
+        $id = StateIdentifier::backgroundAgentId($id);
+
         return $this->storageRoot()."/{$id}.state.json";
     }
 
     private function mailboxPath(string $id): string
     {
+        $id = StateIdentifier::backgroundAgentId($id);
+
         return $this->storageRoot()."/{$id}.mailbox.json";
+    }
+
+    private function lockPath(string $id): string
+    {
+        $id = StateIdentifier::backgroundAgentId($id);
+
+        return $this->storageRoot()."/{$id}.lock";
     }
 
     private function storageRoot(): string
@@ -373,8 +384,8 @@ class BackgroundAgentManager
 
     private function ensureStoragePath(): void
     {
-        if (! is_dir($this->storageRoot())) {
-            mkdir($this->storageRoot(), 0755, true);
+        if (! is_dir($this->storageRoot()) && ! mkdir($this->storageRoot(), 0755, true) && ! is_dir($this->storageRoot())) {
+            throw new \RuntimeException("Unable to create background agent storage: {$this->storageRoot()}");
         }
     }
 

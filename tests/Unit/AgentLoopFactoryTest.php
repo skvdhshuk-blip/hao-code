@@ -9,6 +9,7 @@ use HaoCode\Services\Agent\ToolOrchestrator;
 use HaoCode\Services\Api\StreamingClient;
 use HaoCode\Services\Hooks\HookExecutor;
 use HaoCode\Services\Permissions\PermissionChecker;
+use HaoCode\Sdk\SdkTool;
 use HaoCode\Tools\ToolRegistry;
 use HaoCode\Tools\TodoWrite\TodoWriteTool;
 use Tests\TestCase;
@@ -78,6 +79,50 @@ class AgentLoopFactoryTest extends TestCase
         $clonedRegistry = $method->invoke($factory, $toolRegistry, null, true);
 
         $this->assertNotSame($toolRegistry->getTool('TodoWrite'), $clonedRegistry->getTool('TodoWrite'));
+    }
+
+    public function test_non_cloneable_sdk_tools_remain_available_in_child_registry(): void
+    {
+        $tool = new class extends SdkTool {
+            private function __clone() {}
+
+            public function name(): string { return 'NonCloneable'; }
+            public function description(): string { return 'A valid non-cloneable SDK tool'; }
+            public function parameters(): array { return []; }
+            public function handle(array $input): string { return 'ok'; }
+        };
+        $registry = new ToolRegistry();
+        $registry->register($tool);
+
+        $factory = new AgentLoopFactory(container: $this->buildContainer($registry));
+        $method = new \ReflectionMethod($factory, 'buildToolRegistry');
+        $childRegistry = $method->invoke($factory, $registry, null, true);
+
+        $this->assertSame($tool, $childRegistry->getTool('NonCloneable'));
+    }
+
+    public function test_cloneable_stateful_sdk_tools_receive_independent_child_instances(): void
+    {
+        $tool = new class extends SdkTool {
+            public int $calls = 0;
+
+            public function name(): string { return 'Stateful'; }
+            public function description(): string { return 'A stateful SDK tool'; }
+            public function parameters(): array { return []; }
+            public function handle(array $input): string { return (string) ++$this->calls; }
+        };
+        $registry = new ToolRegistry();
+        $registry->register($tool);
+
+        $factory = new AgentLoopFactory(container: $this->buildContainer($registry));
+        $method = new \ReflectionMethod($factory, 'buildToolRegistry');
+        $childRegistry = $method->invoke($factory, $registry, null, true);
+        $childTool = $childRegistry->getTool('Stateful');
+
+        $this->assertNotSame($tool, $childTool);
+        $childTool->handle([]);
+        $this->assertSame(0, $tool->calls);
+        $this->assertSame(1, $childTool->calls);
     }
 
     /**

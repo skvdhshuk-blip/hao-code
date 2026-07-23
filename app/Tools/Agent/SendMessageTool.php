@@ -52,7 +52,7 @@ DESC;
             ],
             'required' => ['to', 'message'],
         ], [
-            'to' => 'required|string',
+            'to' => 'required|string|max:133',
             'message' => 'required|string|min:1',
             'summary' => 'nullable|string',
         ]);
@@ -64,15 +64,23 @@ DESC;
 
         // Team broadcast: "team:myteam"
         if (str_starts_with($to, 'team:')) {
-            return $this->broadcastToTeam(
-                teamName: substr($to, 5),
-                message: $input['message'],
-                summary: $input['summary'] ?? null,
-                context: $context,
-            );
+            try {
+                return $this->broadcastToTeam(
+                    teamName: substr($to, 5),
+                    message: $input['message'],
+                    summary: $input['summary'] ?? null,
+                    context: $context,
+                );
+            } catch (\InvalidArgumentException $e) {
+                return ToolResult::error($e->getMessage());
+            }
         }
 
-        $agent = $this->backgroundAgentManager->refreshStatus($to);
+        try {
+            $agent = $this->backgroundAgentManager->refreshStatus($to);
+        } catch (\InvalidArgumentException $e) {
+            return ToolResult::error($e->getMessage());
+        }
         if ($agent === null) {
             return ToolResult::error("Background agent not found: {$to}");
         }

@@ -121,8 +121,14 @@ DESC;
             return $member;
         }, $members);
 
-        // Check team doesn't already exist
-        if ($this->teamManager->get($name) !== null) {
+        // Check team doesn't already exist. The manager repeats validation for
+        // callers that bypass tool-schema validation.
+        try {
+            $existingTeam = $this->teamManager->get($name);
+        } catch (\InvalidArgumentException $e) {
+            return ToolResult::error($e->getMessage());
+        }
+        if ($existingTeam !== null) {
             return ToolResult::error("Team '{$name}' already exists. Delete it first or choose a different name.");
         }
 
@@ -133,22 +139,75 @@ DESC;
             return ToolResult::error('Duplicate roles found: ' . implode(', ', array_unique($duplicates)));
         }
 
+        $teamCreated = false;
+        try {
+            $agentIds = array_map(
+                static fn (array $member): string => TeamManager::memberAgentId($name, $member['role']),
+                $members,
+            );
+        } catch (\InvalidArgumentException $e) {
+            return ToolResult::error($e->getMessage());
+        }
+        if (count($agentIds) !== count(array_unique($agentIds, SORT_STRING))) {
+            return ToolResult::error('Team member roles collide after normalization.');
+        }
+
         // Check for agent ID collisions with existing background agents
-        foreach ($members as $member) {
-            $agentId = TeamManager::memberAgentId($name, $member['role']);
+        foreach ($agentIds as $agentId) {
             if ($this->backgroundAgentManager->get($agentId) !== null) {
                 return ToolResult::error("Background agent '{$agentId}' already exists. Delete it or choose a different role name.");
             }
         }
 
-        // Persist team manifest
-        $team = $this->teamManager->create($name, $members);
+        try {
+            // Persist the manifest and claim every member ID before any child
+            // process starts. Manager-level locks close the check/create race.
+            $team = $this->teamManager->create($name, $members);
+            $teamCreated = true;
+            $roster = $this->buildRoster($team['members']);
+            $allAgents = AgentLoader::loadAll($context->workingDirectory);
+            $claimed = [];
+            foreach ($team['members'] as $member) {
+                $agentId = $member['agent_id'];
+                $agentTypeName = $member['agent_type'] ?? 'general-purpose';
+                $agentDef = $allAgents[$agentTypeName] ?? BuiltInAgents::get('general-purpose');
+                $fullPrompt = $this->buildMemberPrompt($member, $name, $task, $roster, $agentDef);
+                $this->backgroundAgentManager->create(
+                    id: $agentId,
+                    prompt: $fullPrompt,
+                    agentType: $agentDef->agentType,
+                    description: "Team '{$name}' member: {$member['role']}",
+                );
+                try {
+                    $this->taskManager->createWithId(
+                        id: $agentId,
+                        subject: "[{$name}] {$member['role']}",
+                        activeForm: 'Running as team member',
+                        description: $fullPrompt,
+                    );
+                } catch (\Throwable $e) {
+                    $this->backgroundAgentManager->delete($agentId);
+                    throw $e;
+                }
+                $claimed[] = $agentId;
+            }
+        } catch (\Throwable $e) {
+            foreach ($claimed ?? [] as $agentId) {
+                $this->backgroundAgentManager->delete($agentId);
+                $this->taskManager->remove($agentId);
+            }
+            if ($teamCreated) {
+                try {
+                    $this->teamManager->delete($name);
+                } catch (\Throwable) {
+                    // The original claim failure is the actionable error.
+                }
+            }
 
-        // Build teammate roster for preamble injection
-        $roster = $this->buildRoster($team['members']);
+            return ToolResult::error("Failed to create team: {$e->getMessage()}");
+        }
 
-        // Spawn each member
-        $allAgents = AgentLoader::loadAll($context->workingDirectory);
+        // Spawn each member after every ID has been claimed.
         $spawned = [];
         $failed = [];
 
@@ -159,22 +218,6 @@ DESC;
 
             // Build composite prompt with team context
             $fullPrompt = $this->buildMemberPrompt($member, $name, $task, $roster, $agentDef);
-
-            // Create background agent state
-            $this->backgroundAgentManager->create(
-                id: $agentId,
-                prompt: $fullPrompt,
-                agentType: $agentDef->agentType,
-                description: "Team '{$name}' member: {$member['role']}",
-            );
-
-            // Create task for tracking
-            $this->taskManager->createWithId(
-                id: $agentId,
-                subject: "[{$name}] {$member['role']}",
-                activeForm: "Running as team member",
-                description: $fullPrompt,
-            );
 
             // Fork the background agent process
             $result = $this->forkMember($agentId, $name, $fullPrompt, $agentDef, $context, $readOnly, $maxTurns);

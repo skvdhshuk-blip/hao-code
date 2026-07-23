@@ -18,36 +18,17 @@ class TaskManagerTest extends TestCase
 
     protected function tearDown(): void
     {
-        // Remove all test task files
         if (is_dir($this->tempDir)) {
-            $file = $this->tempDir . '/tasks.json';
-            if (file_exists($file)) {
-                unlink($file);
+            foreach (glob($this->tempDir.'/*') ?: [] as $file) {
+                @unlink($file);
             }
-            rmdir($this->tempDir);
+            @rmdir($this->tempDir);
         }
     }
 
     private function makeManager(): TaskManager
     {
-        // Override storage path via reflection to use our isolated temp dir
-        $manager = new TaskManager;
-        $ref = new \ReflectionClass($manager);
-        $prop = $ref->getProperty('storagePath');
-        $prop->setAccessible(true);
-        $prop->setValue($manager, $this->tempDir);
-
-        // Ensure directory exists
-        if (!is_dir($this->tempDir)) {
-            mkdir($this->tempDir, 0755, true);
-        }
-
-        // Clear any tasks loaded from default location
-        $tasks = $ref->getProperty('tasks');
-        $tasks->setAccessible(true);
-        $tasks->setValue($manager, []);
-
-        return $manager;
+        return new TaskManager($this->tempDir);
     }
 
     // ─── create ───────────────────────────────────────────────────────────
@@ -81,6 +62,27 @@ class TaskManagerTest extends TestCase
 
         $this->assertSame('agent_demo', $task->id);
         $this->assertSame('agent_demo', $manager->get('agent_demo')?->id);
+    }
+
+    public function test_create_with_id_rejects_duplicates(): void
+    {
+        $manager = $this->makeManager();
+        $manager->createWithId('agent_demo', 'First', 'Working');
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage("Task 'agent_demo' already exists.");
+
+        $manager->createWithId('agent_demo', 'Second', 'Working');
+    }
+
+    public function test_rejects_unsafe_task_ids(): void
+    {
+        $manager = $this->makeManager();
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Invalid task ID.');
+
+        $manager->createWithId('../escape', 'Task', 'Working');
     }
 
     public function test_created_task_is_retrievable_via_get(): void
@@ -234,14 +236,7 @@ class TaskManagerTest extends TestCase
         $manager1 = $this->makeManager();
         $task = $manager1->create('Survive me', 'Surviving');
 
-        // Create a second manager pointing to same directory
         $manager2 = $this->makeManager();
-
-        // Load from file by re-initializing
-        $ref = new \ReflectionClass($manager2);
-        $loadMethod = $ref->getMethod('loadTasks');
-        $loadMethod->setAccessible(true);
-        $loadMethod->invoke($manager2);
 
         $retrieved = $manager2->get($task->id);
         $this->assertNotNull($retrieved);
@@ -271,14 +266,6 @@ class TaskManagerTest extends TestCase
         file_put_contents($this->tempDir . '/tasks.json', json_encode($data));
 
         $manager = $this->makeManager();
-        $ref = new \ReflectionClass($manager);
-        $tasksRef = $ref->getProperty('tasks');
-        $tasksRef->setAccessible(true);
-        $tasksRef->setValue($manager, []);
-
-        $loadMethod = $ref->getMethod('loadTasks');
-        $loadMethod->setAccessible(true);
-        $loadMethod->invoke($manager);
 
         $this->assertNull($manager->get('task_old'));
     }
@@ -303,15 +290,37 @@ class TaskManagerTest extends TestCase
         file_put_contents($this->tempDir . '/tasks.json', json_encode($data));
 
         $manager = $this->makeManager();
-        $ref = new \ReflectionClass($manager);
-        $tasksRef = $ref->getProperty('tasks');
-        $tasksRef->setAccessible(true);
-        $tasksRef->setValue($manager, []);
-
-        $loadMethod = $ref->getMethod('loadTasks');
-        $loadMethod->setAccessible(true);
-        $loadMethod->invoke($manager);
 
         $this->assertNotNull($manager->get('task_recent'));
+    }
+
+    public function test_concurrent_creates_do_not_lose_updates(): void
+    {
+        if (! function_exists('pcntl_fork')) {
+            $this->markTestSkipped('pcntl extension is required for the concurrency regression test.');
+        }
+
+        $children = [];
+        for ($worker = 0; $worker < 2; $worker++) {
+            $pid = pcntl_fork();
+            if ($pid === 0) {
+                $manager = new TaskManager($this->tempDir);
+                for ($index = 0; $index < 20; $index++) {
+                    $manager->createWithId("worker{$worker}_{$index}", 'Concurrent task', 'Working');
+                }
+                exit(0);
+            }
+
+            $this->assertGreaterThan(0, $pid);
+            $children[] = $pid;
+        }
+
+        foreach ($children as $pid) {
+            pcntl_waitpid($pid, $status);
+            $this->assertTrue(pcntl_wifexited($status));
+            $this->assertSame(0, pcntl_wexitstatus($status));
+        }
+
+        $this->assertCount(40, (new TaskManager($this->tempDir))->list());
     }
 }

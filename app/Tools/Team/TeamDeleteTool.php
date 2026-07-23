@@ -42,14 +42,18 @@ DESC;
             ],
             'required' => ['name'],
         ], [
-            'name' => 'required|string',
+            'name' => 'required|string|regex:/^[a-z0-9][a-z0-9_-]{0,31}$/',
         ]);
     }
 
     public function call(array $input, ToolUseContext $context): ToolResult
     {
         $name = $input['name'];
-        $team = $this->teamManager->get($name);
+        try {
+            $team = $this->teamManager->get($name);
+        } catch (\InvalidArgumentException $e) {
+            return ToolResult::error($e->getMessage());
+        }
 
         if ($team === null) {
             return ToolResult::error("Team not found: {$name}");

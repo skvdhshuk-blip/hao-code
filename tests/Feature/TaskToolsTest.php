@@ -33,14 +33,7 @@ class TaskToolsTest extends TestCase
         $this->tmpDir = sys_get_temp_dir() . '/task_tools_test_' . uniqid();
         mkdir($this->tmpDir, 0755, true);
 
-        $this->manager = new TaskManager;
-        $ref = new \ReflectionClass($this->manager);
-        $pathProp = $ref->getProperty('storagePath');
-        $pathProp->setAccessible(true);
-        $pathProp->setValue($this->manager, $this->tmpDir);
-        $tasksProp = $ref->getProperty('tasks');
-        $tasksProp->setAccessible(true);
-        $tasksProp->setValue($this->manager, []);
+        $this->manager = new TaskManager($this->tmpDir);
 
         $this->app->instance(TaskManager::class, $this->manager);
 
@@ -53,8 +46,9 @@ class TaskToolsTest extends TestCase
     protected function tearDown(): void
     {
         parent::tearDown();
-        $file = $this->tmpDir . '/tasks.json';
-        if (file_exists($file)) unlink($file);
+        foreach (glob($this->tmpDir.'/*') ?: [] as $file) {
+            @unlink($file);
+        }
         @rmdir($this->tmpDir);
         foreach (glob($this->agentTmpDir . '/*') ?: [] as $agentFile) {
             @unlink($agentFile);

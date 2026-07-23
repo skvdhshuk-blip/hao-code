@@ -93,7 +93,7 @@ DESC;
             'subagent_type' => 'nullable|string',
             'model' => 'nullable|string|in:sonnet,opus,haiku',
             'run_in_background' => 'nullable|boolean',
-            'name' => 'nullable|string',
+            'name' => 'nullable|string|regex:/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/',
             'isolation' => 'nullable|string|in:worktree',
         ]);
     }
@@ -209,22 +209,18 @@ DESC;
             return $this->runSync($prompt, $systemPrompt, $agentDef, $context, $worktreePath);
         }
 
-        $taskId = $name ?? ('agent_' . bin2hex(random_bytes(4)));
         $subject = $description ?: ucfirst($agentDef->agentType) . ' background agent';
-
-        $this->tasks()->createWithId(
-            id: $taskId,
-            subject: $subject,
-            activeForm: 'Running background agent',
-            description: $prompt,
-        );
-
-        $this->backgroundAgents()->create(
-            id: $taskId,
+        $claim = $this->claimBackgroundAgent(
+            name: $name,
             prompt: $prompt,
-            agentType: $agentDef->agentType,
+            agentDef: $agentDef,
             description: $description,
+            subject: $subject,
         );
+        if ($claim instanceof ToolResult) {
+            return $claim;
+        }
+        $taskId = $claim;
 
         $pid = pcntl_fork();
 
@@ -262,6 +258,50 @@ DESC;
                 'pid' => $pid,
             ],
         );
+    }
+
+    private function claimBackgroundAgent(
+        ?string $name,
+        string $prompt,
+        AgentDefinition $agentDef,
+        ?string $description,
+        string $subject,
+    ): string|ToolResult {
+        $attempts = $name === null ? 10 : 1;
+        for ($attempt = 0; $attempt < $attempts; $attempt++) {
+            $taskId = $name ?? ('agent_'.bin2hex(random_bytes(4)));
+            try {
+                // Claim the file-backed agent ID first. Task creation is also
+                // lock-protected; roll the claim back if its ID is occupied.
+                $this->backgroundAgents()->create(
+                    id: $taskId,
+                    prompt: $prompt,
+                    agentType: $agentDef->agentType,
+                    description: $description,
+                );
+                try {
+                    $this->tasks()->createWithId(
+                        id: $taskId,
+                        subject: $subject,
+                        activeForm: 'Running background agent',
+                        description: $prompt,
+                    );
+                } catch (\Throwable $e) {
+                    $this->backgroundAgents()->delete($taskId);
+                    throw $e;
+                }
+
+                return $taskId;
+            } catch (\InvalidArgumentException $e) {
+                if ($name !== null) {
+                    return ToolResult::error($e->getMessage());
+                }
+            } catch (\Throwable $e) {
+                return ToolResult::error("Failed to create background agent: {$e->getMessage()}");
+            }
+        }
+
+        return ToolResult::error('Unable to allocate a unique background agent ID.');
     }
 
     private function buildSystemPrompt(AgentDefinition $agentDef): array

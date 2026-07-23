@@ -7,6 +7,7 @@ use HaoCode\Services\Agent\BackgroundAgentManager;
 use HaoCode\Services\Agent\ContextBuilder;
 use HaoCode\Services\Agent\MessageHistory;
 use HaoCode\Services\Agent\QueryEngine;
+use HaoCode\Services\Agent\TeamManager;
 use HaoCode\Services\Agent\ToolOrchestrator;
 use HaoCode\Services\Api\StreamingClient;
 use HaoCode\Services\Compact\ContextCompactor;
@@ -206,8 +207,15 @@ final class SdkRuntime
         $app->singleton(SkillLoader::class);
         $app->singleton(CostTracker::class);
         $app->singleton(\HaoCode\Services\FileHistory\FileHistoryManager::class);
-        $app->singleton(\HaoCode\Services\Task\TaskManager::class);
-        $app->singleton(BackgroundAgentManager::class);
+        $app->singleton(\HaoCode\Services\Task\TaskManager::class, fn (Container $app) => new \HaoCode\Services\Task\TaskManager(
+            $app->storagePath('app/haocode/tasks'),
+        ));
+        $app->singleton(BackgroundAgentManager::class, fn (Container $app) => new BackgroundAgentManager(
+            $app->storagePath('app/haocode/background-agents'),
+        ));
+        $app->singleton(TeamManager::class, fn (Container $app) => new TeamManager(
+            $app->storagePath('app/haocode/teams'),
+        ));
         $app->singleton(GitContext::class);
         $app->singleton(McpServerConfigManager::class);
         $app->singleton(McpConnectionManager::class, fn (Container $app) => new McpConnectionManager(

@@ -8,6 +8,7 @@ use HaoCode\Tools\ToolInputSchema;
 use HaoCode\Tools\ToolResult;
 use HaoCode\Tools\ToolUseContext;
 use Symfony\Component\HttpClient\HttpClient;
+use Symfony\Contracts\HttpClient\Exception\TransportExceptionInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
 class WebFetchTool extends BaseTool
@@ -25,6 +26,8 @@ class WebFetchTool extends BaseTool
     private const CACHE_TTL = 900; // 15 minutes
 
     private const CACHE_MAX_ENTRIES = 128;
+
+    private const CACHE_MAX_BYTES = 33_554_432; // 32 MiB
 
     private const MAX_CONTENT_SIZE = 100000;
 
@@ -127,8 +130,9 @@ DESC;
         $format = ($input['format'] ?? 'text') === 'markdown' ? 'markdown' : 'text';
 
         $cacheKey = $this->cacheKey($url, $format);
+        $this->purgeExpiredCache();
 
-        if (isset(self::$cache[$cacheKey]) && (time() - self::$cache[$cacheKey]['time']) < self::CACHE_TTL) {
+        if (isset(self::$cache[$cacheKey])) {
             $content = self::$cache[$cacheKey]['content'];
             $finalUrl = self::$cache[$cacheKey]['final_url'];
             $header = "[Cached result]\n";
@@ -145,6 +149,7 @@ DESC;
                     : $this->htmlToText($content);
             }
 
+            [$content] = $this->truncateForOutput($content);
             $header = '';
             $this->storeCache($cacheKey, $content, $finalUrl);
         }
@@ -153,7 +158,6 @@ DESC;
             $header .= "[Redirected to: {$finalUrl}]\n";
         }
 
-        [$content] = $this->truncateForOutput($content);
         $result = $header.$content;
 
         if ($prompt !== null) {
@@ -185,13 +189,20 @@ DESC;
 
     private function storeCache(string $key, string $content, ?string $finalUrl): void
     {
-        // Bounded LRU-ish eviction: drop oldest entries once over capacity.
-        if (! isset(self::$cache[$key]) && count(self::$cache) >= self::CACHE_MAX_ENTRIES) {
+        $this->purgeExpiredCache();
+        $entryBytes = strlen($content);
+        if ($entryBytes > self::CACHE_MAX_BYTES) {
+            return;
+        }
+
+        unset(self::$cache[$key]);
+        while (self::$cache !== [] && (
+            count(self::$cache) >= self::CACHE_MAX_ENTRIES
+            || $this->cacheBytes() + $entryBytes > self::CACHE_MAX_BYTES
+        )) {
             uasort(self::$cache, static fn ($a, $b) => $a['time'] <=> $b['time']);
-            foreach (array_keys(self::$cache) as $oldKey) {
-                unset(self::$cache[$oldKey]);
-                break;
-            }
+            $oldKey = array_key_first(self::$cache);
+            unset(self::$cache[$oldKey]);
         }
 
         self::$cache[$key] = [
@@ -199,6 +210,24 @@ DESC;
             'time' => time(),
             'final_url' => $finalUrl,
         ];
+    }
+
+    private function purgeExpiredCache(): void
+    {
+        $cutoff = time() - self::CACHE_TTL;
+        foreach (self::$cache as $key => $entry) {
+            if (($entry['time'] ?? 0) <= $cutoff) {
+                unset(self::$cache[$key]);
+            }
+        }
+    }
+
+    private function cacheBytes(): int
+    {
+        return array_sum(array_map(
+            static fn (array $entry): int => strlen($entry['content']),
+            self::$cache,
+        ));
     }
 
     /**
@@ -217,16 +246,14 @@ DESC;
             // we never issue a request against a blocked destination.
             $resolved = SsrfGuard::resolveUrl($finalUrl, $this->ssrfAllowList, $this->allowPrivateNetworks);
 
-            // Pin the connection to the already-checked IPs (Symfony HttpClient
-            // `resolve` option) so DNS cannot change between the guard check
-            // and the actual connection (DNS rebinding).
-            $response = $this->client()->request('GET', $finalUrl, $this->requestOptions($resolved));
-
-            $statusCode = $response->getStatusCode();
+            // Pin each connection to an already-checked IP. Transport failures
+            // may try the next validated address, while an HTTP response is
+            // authoritative and never triggers address failover.
+            $result = $this->requestValidatedUrl($finalUrl, $resolved);
+            $statusCode = $result['status'];
 
             if ($statusCode >= 300 && $statusCode < 400) {
-                $location = $response->getHeaders(false)['location'][0] ?? null;
-                $response->cancel();
+                $location = $result['location'];
                 if ($location === null || $redirects >= self::MAX_REDIRECTS) {
                     throw new \RuntimeException("Too many redirects or missing Location header for {$url}");
                 }
@@ -235,20 +262,62 @@ DESC;
                 continue;
             }
 
-            if ($statusCode >= 400) {
-                $response->cancel();
-                throw new \RuntimeException("HTTP {$statusCode} for URL: {$finalUrl}");
-            }
-
-            try {
-                $body = $this->streamWithByteCap($response, $this->maxBytes);
-                $contentType = $response->getHeaders(false)['content-type'][0] ?? '';
-            } finally {
-                $response->cancel();
-            }
-
-            return [$body, $contentType, $finalUrl];
+            return [$result['body'], $result['content_type'], $finalUrl];
         }
+    }
+
+    /**
+     * @param array{host: string, ips: list<string>} $resolved
+     * @return array{status: int, location: ?string, body: string, content_type: string}
+     */
+    private function requestValidatedUrl(string $url, array $resolved): array
+    {
+        $lastTransportError = null;
+        foreach ($resolved['ips'] as $ip) {
+            if (! is_string($ip) || $ip === '') {
+                continue;
+            }
+
+            $response = null;
+            try {
+                $response = $this->client()->request('GET', $url, $this->requestOptions($resolved, $ip));
+                $statusCode = $response->getStatusCode();
+                $headers = $response->getHeaders(false);
+
+                if ($statusCode >= 300 && $statusCode < 400) {
+                    return [
+                        'status' => $statusCode,
+                        'location' => $headers['location'][0] ?? null,
+                        'body' => '',
+                        'content_type' => '',
+                    ];
+                }
+
+                if ($statusCode >= 400) {
+                    throw new \RuntimeException("HTTP {$statusCode} for URL: {$url}");
+                }
+
+                return [
+                    'status' => $statusCode,
+                    'location' => null,
+                    'body' => $this->streamWithByteCap($response, $this->maxBytes),
+                    'content_type' => $headers['content-type'][0] ?? '',
+                ];
+            } catch (TransportExceptionInterface $e) {
+                $lastTransportError = $e;
+            } finally {
+                $response?->cancel();
+            }
+        }
+
+        if ($lastTransportError !== null) {
+            throw new \RuntimeException(
+                "Transport failed for URL after trying all validated IPs: {$lastTransportError->getMessage()}",
+                previous: $lastTransportError,
+            );
+        }
+
+        throw new \RuntimeException('No validated IP available for request.');
     }
 
     /**
@@ -259,10 +328,10 @@ DESC;
      *
      * @param array{host: string, ips: list<string>} $resolved
      */
-    private function requestOptions(array $resolved): array
+    private function requestOptions(array $resolved, ?string $validatedIp = null): array
     {
         $host = trim($resolved['host'], '[]');
-        $ip = $resolved['ips'][0] ?? null;
+        $ip = $validatedIp ?? ($resolved['ips'][0] ?? null);
         if ($host === '' || ! is_string($ip) || $ip === '') {
             throw new \RuntimeException('No validated IP available for request.');
         }
