@@ -6,8 +6,6 @@ use HaoCode\Services\Permissions\PermissionMode;
 
 class SettingsManager
 {
-    private const DEFAULT_MODEL = 'claude-sonnet-4-20250514';
-
     private const DEFAULT_BASE_URL = 'https://api.anthropic.com';
 
     private const DEFAULT_MAX_TOKENS = 16384;
@@ -48,10 +46,10 @@ class SettingsManager
         $model = $runtimeModel
             ?? $providerConfig['model']
             ?? $settingsModel
-            ?? \HaoCode\Support\Runtime\SdkRuntime::config('haocode.model', self::DEFAULT_MODEL);
+            ?? \HaoCode\Support\Runtime\SdkRuntime::config('haocode.model', ModelCatalog::SONNET);
 
         if (! is_string($model) || trim($model) === '') {
-            $model = self::DEFAULT_MODEL;
+            $model = ModelCatalog::SONNET;
         }
 
         // Kimi's Anthropic-compatible coding endpoint expects its own model name.
@@ -654,14 +652,7 @@ class SettingsManager
      */
     public static function getAvailableModels(): array
     {
-        return [
-            'kimi-for-coding',
-            'claude-sonnet-4-20250514',
-            'claude-opus-4-20250514',
-            'claude-haiku-4-20250514',
-            'claude-3-5-sonnet-20241022',
-            'claude-3-5-haiku-20241022',
-        ];
+        return ModelCatalog::availableModels();
     }
 
     private function isKimiCodingEndpoint(): bool

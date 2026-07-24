@@ -714,7 +714,7 @@ class SdkE2ETest extends TestCase
         $this->assertInstanceOf(StreamingClient::class, $client);
 
         // With model override → returns custom StreamingClient
-        $config2 = new HaoCodeConfig(model: 'claude-opus-4-20250514');
+        $config2 = new HaoCodeConfig(model: 'claude-opus-4-8');
         $client2 = $method->invoke(null, $config2);
         $this->assertInstanceOf(StreamingClient::class, $client2);
 
@@ -2123,7 +2123,23 @@ JSON),
                 'content' => 'child',
             ]),
             MockAnthropicSse::textResponse('Gated child completed.'),
-            MockAnthropicSse::textResponse('Gated parent completed.'),
+            function (array $payload): MockResponse {
+                $agentToolUses = 0;
+                foreach ($payload['messages'] ?? [] as $message) {
+                    if (($message['role'] ?? null) !== 'assistant') {
+                        continue;
+                    }
+                    foreach ($message['content'] ?? [] as $block) {
+                        if (($block['type'] ?? null) === 'tool_use'
+                            && ($block['id'] ?? null) === 'gated-agent') {
+                            $agentToolUses++;
+                        }
+                    }
+                }
+                $this->assertSame(1, $agentToolUses);
+
+                return MockAnthropicSse::textResponse('Gated parent completed.');
+            },
         ]);
         chdir($this->projectDir);
         $config = new HaoCodeConfig(
@@ -2146,6 +2162,14 @@ JSON),
         } catch (HumanInterruptException $e) {
             $childInterrupt = $e->interrupt;
         }
+        $childState = \HaoCode\Support\Runtime\SdkRuntime::app(
+            \HaoCode\Services\Session\SessionManager::class,
+        )->getInterruptState($childInterrupt->sessionId, $childInterrupt->id);
+        $snapshot = $childState['checkpoint']['run_snapshot'] ?? null;
+        $this->assertIsArray($snapshot);
+        $this->assertSame('general-purpose', $snapshot['agent_type']);
+        $this->assertSame(realpath($this->projectDir), realpath($snapshot['cwd']));
+        $this->assertSame(49, $snapshot['max_turns_remaining']);
 
         $result = HaoCode::resumeInterrupt($childInterrupt->sessionId, $childInterrupt->id, [
             HumanDecision::approve('gated-child-write'),

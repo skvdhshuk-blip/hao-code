@@ -3,6 +3,7 @@
 namespace HaoCode\Services\Session;
 
 use HaoCode\Services\Api\SimpleCompletionClient;
+use HaoCode\Services\Settings\ModelCatalog;
 use HaoCode\Services\Settings\SettingsManager;
 
 /**
@@ -14,7 +15,6 @@ use HaoCode\Services\Settings\SettingsManager;
  */
 class AwaySummaryService
 {
-    private const HAIKU_MODEL = 'claude-haiku-4-20250514';
     private const MAX_MESSAGES = 30;
 
     private const PROMPT = <<<'PROMPT'
@@ -129,7 +129,7 @@ PROMPT;
             return '';
         }
 
-        return $this->isKimiCodingEndpoint() ? 'kimi-for-coding' : self::HAIKU_MODEL;
+        return $this->isKimiCodingEndpoint() ? 'kimi-for-coding' : ModelCatalog::HAIKU;
     }
 
     private function shouldPreferLocalGeneration(): bool

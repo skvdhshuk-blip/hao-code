@@ -92,6 +92,30 @@ class TeamResultToolsTest extends TestCase
         (new TeamCollectTool($this->collector))->call(['name' => 'research'], new ToolUseContext('/tmp', 'test'));
     }
 
+    public function test_waiting_member_with_stale_result_remains_pending(): void
+    {
+        $this->teams->create('research', [
+            ['role' => 'docs', 'agent_type' => 'Explore', 'prompt' => 'Read docs'],
+        ]);
+        $this->agents->create('research_docs', 'Read docs', 'Explore');
+        $this->agents->recordResult('research_docs', 'Result from a previous turn.');
+        $interrupt = new HumanInterrupt(
+            'int-team-stale',
+            'session-team-child',
+            [new HumanActionRequest('call-team', 'Write', [], 'Review write')],
+            date('c'),
+            'research_docs',
+            'research',
+        );
+        $this->agents->markWaitingForInput('research_docs', $interrupt);
+
+        $payload = $this->collector->collect('research');
+
+        $this->assertSame(1, $payload['summary']['pending']);
+        $this->assertSame(0, $payload['summary']['succeeded']);
+        $this->assertSame('pending', $payload['members'][0]['outcome']);
+    }
+
     public function test_collect_does_not_surface_stale_interrupt_after_completion(): void
     {
         $this->teams->create('research', [

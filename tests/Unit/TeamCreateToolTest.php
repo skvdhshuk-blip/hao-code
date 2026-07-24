@@ -26,6 +26,24 @@ class TeamCreateToolTest extends TestCase
         $this->removeDirectory($this->root);
     }
 
+    public function test_schema_accepts_explicit_inherit_model(): void
+    {
+        $tool = new TeamCreateTool(
+            $this->createMock(AgentLoopFactory::class),
+            new TeamManager($this->root.'/teams'),
+            new BackgroundAgentManager($this->root.'/agents'),
+            new TaskManager($this->root.'/tasks'),
+        );
+
+        $validated = $tool->inputSchema()->validate([
+            'name' => 'reviewers',
+            'task' => 'Review the release',
+            'members' => [['role' => 'reviewer', 'model' => 'inherit']],
+        ]);
+
+        $this->assertSame('inherit', $validated['members'][0]['model']);
+    }
+
     public function test_rejects_member_roles_that_collide_after_normalization(): void
     {
         $tool = new TeamCreateTool(
@@ -87,7 +105,7 @@ class TeamCreateToolTest extends TestCase
         $factory->expects($this->once())
             ->method('createIsolated')
             ->willReturnCallback(function (...$arguments) use ($loop, $definition): AgentLoop {
-                $this->assertSame('claude-opus-4-20250514', $arguments[10] ?? null);
+                $this->assertSame('claude-opus-4-8', $arguments[10] ?? null);
                 $this->assertSame($definition->systemPrompt, $arguments[11] ?? null);
                 $this->assertTrue($arguments[12] ?? false);
 
@@ -108,7 +126,7 @@ class TeamCreateToolTest extends TestCase
             'reviewers',
             'Review the release',
             $definition,
-            'claude-opus-4-20250514',
+            'claude-opus-4-8',
             new ToolUseContext('/tmp', 'controller'),
             false,
             1,

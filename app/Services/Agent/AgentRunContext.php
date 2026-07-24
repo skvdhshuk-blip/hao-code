@@ -32,17 +32,21 @@ final class AgentRunContext
         public readonly ?\HaoCode\Sdk\Sandbox\SandboxConfig $sandbox = null,
         public readonly ?string $hitlAllowlistPath = null,
         public readonly bool $omitProjectInstructions = false,
+        public readonly ?string $agentType = null,
+        public readonly bool $readOnly = false,
     ) {}
 
     public function fork(
         ?string $workingDirectory = null,
-        bool $readOnly = false,
+        ?bool $readOnly = null,
         ?array $interruptOn = null,
         ?string $agentId = null,
         ?string $teamName = null,
         ?bool $omitProjectInstructions = null,
+        ?string $agentType = null,
     ): self
     {
+        $readOnly ??= $this->readOnly;
         $settings = clone $this->settings;
         if ($readOnly) {
             $settings->set('permission_mode', 'plan');
@@ -67,6 +71,8 @@ final class AgentRunContext
             $this->sandbox,
             $this->hitlAllowlistPath,
             $omitProjectInstructions ?? $this->omitProjectInstructions,
+            $agentType ?? $this->agentType,
+            $readOnly,
         );
     }
 }

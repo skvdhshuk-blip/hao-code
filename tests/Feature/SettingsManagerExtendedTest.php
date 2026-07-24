@@ -12,7 +12,7 @@ class SettingsManagerExtendedTest extends TestCase
     {
         // Pin config to known defaults so tests are isolated from the user's environment
         config([
-            'haocode.model'           => 'claude-sonnet-4-20250514',
+            'haocode.model'           => 'claude-sonnet-4-6',
             'haocode.api_base_url'    => 'https://api.anthropic.com',
             'haocode.max_tokens'      => 16384,
             'haocode.permission_mode' => 'default',
@@ -90,7 +90,7 @@ class SettingsManagerExtendedTest extends TestCase
         $manager = $this->makeManager();
         $manager->set('totally_unknown_key', 'value');
         // Should not throw or cause issues
-        $this->assertSame('claude-sonnet-4-20250514', $manager->getModel());
+        $this->assertSame('claude-sonnet-4-6', $manager->getModel());
     }
 
     // ─── getPermissionMode() ──────────────────────────────────────────────
@@ -126,7 +126,7 @@ class SettingsManagerExtendedTest extends TestCase
     {
         $manager = $this->makeManager();
         $manager->set('api_base_url', 'https://api.kimi.com/coding/v1');
-        $manager->set('model', 'claude-sonnet-4-20250514');
+        $manager->set('model', 'claude-sonnet-4-6');
         $this->assertSame('kimi-for-coding', $manager->getModel());
     }
 

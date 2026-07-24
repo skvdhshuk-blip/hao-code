@@ -189,8 +189,12 @@ class HaoCode
         $checkpoint = is_array($state['checkpoint'] ?? null) ? $state['checkpoint'] : [];
         $pendingInterrupt = HumanInterrupt::fromArray($state['interrupt'] ?? []);
         $parentLink = $sessionManager->findInterruptParentLink($sessionId, $interruptId);
-        $resumeConfig = self::restoreSourceAgentWorkingDirectory($config, $pendingInterrupt);
-        $conversation = self::resume($sessionId, $resumeConfig);
+        $runSnapshot = is_array($checkpoint['run_snapshot'] ?? null) ? $checkpoint['run_snapshot'] : [];
+        if (is_array($checkpoint['allowed_tools'] ?? null)) {
+            $runSnapshot['allowed_tools'] = $checkpoint['allowed_tools'];
+        }
+        $resumeConfig = self::restoreInterruptRunConfig($config, $pendingInterrupt, $runSnapshot);
+        $conversation = self::resumeWithSnapshot($sessionId, $resumeConfig, $runSnapshot);
         try {
             try {
                 $result = $conversation->resumeInterrupt($interruptId, $decisions);
@@ -260,10 +264,15 @@ class HaoCode
         /** @var SessionManager $sessionManager */
         $sessionManager = \HaoCode\Support\Runtime\SdkRuntime::app(SessionManager::class);
         $state = $sessionManager->getInterruptState($sessionId, $interruptId);
+        $checkpoint = is_array($state['checkpoint'] ?? null) ? $state['checkpoint'] : [];
         $pendingInterrupt = HumanInterrupt::fromArray($state['interrupt'] ?? []);
         $parentLink = $sessionManager->findInterruptParentLink($sessionId, $interruptId);
-        $resumeConfig = self::restoreSourceAgentWorkingDirectory($config, $pendingInterrupt);
-        $conversation = self::resume($sessionId, $resumeConfig);
+        $runSnapshot = is_array($checkpoint['run_snapshot'] ?? null) ? $checkpoint['run_snapshot'] : [];
+        if (is_array($checkpoint['allowed_tools'] ?? null)) {
+            $runSnapshot['allowed_tools'] = $checkpoint['allowed_tools'];
+        }
+        $resumeConfig = self::restoreInterruptRunConfig($config, $pendingInterrupt, $runSnapshot);
+        $conversation = self::resumeWithSnapshot($sessionId, $resumeConfig, $runSnapshot);
         try {
             $final = null;
             foreach ($conversation->streamResumeInterrupt($interruptId, $decisions) as $message) {
@@ -344,32 +353,99 @@ class HaoCode
     private static function restoreSourceAgentWorkingDirectory(
         HaoCodeConfig $config,
         HumanInterrupt $interrupt,
+        ?array $runSnapshot = null,
     ): HaoCodeConfig {
-        if ($interrupt->sourceAgentId === null) {
-            return $config;
+        $worktreePath = null;
+        if ($interrupt->sourceAgentId !== null) {
+            $agent = \HaoCode\Support\Runtime\SdkRuntime::app(
+                \HaoCode\Services\Agent\BackgroundAgentManager::class,
+            )->get($interrupt->sourceAgentId);
+            $worktreePath = $agent['worktree_path'] ?? null;
         }
-
-        $agent = \HaoCode\Support\Runtime\SdkRuntime::app(
-            \HaoCode\Services\Agent\BackgroundAgentManager::class,
-        )->get($interrupt->sourceAgentId);
-        $worktreePath = $agent['worktree_path'] ?? null;
-        if (! is_string($worktreePath) || $worktreePath === '') {
+        $snapshotCwd = is_string($runSnapshot['cwd'] ?? null) ? $runSnapshot['cwd'] : null;
+        $worktreePath = is_string($worktreePath) && $worktreePath !== '' ? $worktreePath : $snapshotCwd;
+        if (! is_string($worktreePath) || $worktreePath === '' || $worktreePath === $config->cwd) {
             return $config;
         }
         if (! is_dir($worktreePath)) {
             throw new \RuntimeException(
-                "Cannot resume background agent {$interrupt->sourceAgentId}: "
-                ."its worktree no longer exists at {$worktreePath}.",
+                "Cannot resume interrupted agent: its working directory no longer exists at {$worktreePath}.",
             );
         }
-        if ($config->cwd === $worktreePath) {
-            return $config;
+        $base = realpath(($config->cwd ?? getcwd()) ?: '/');
+        $resolvedWorktree = realpath($worktreePath);
+        if ($base !== false && $resolvedWorktree === $base) {
+            $values = get_object_vars($config);
+            $values['cwd'] = $worktreePath;
+
+            return new HaoCodeConfig(...$values);
+        }
+        $parent = realpath(dirname($worktreePath, 3));
+        $managed = preg_match('/^agent-[a-f0-9]{8}$/', basename($worktreePath)) === 1
+            && basename(dirname($worktreePath)) === 'worktrees'
+            && basename(dirname($worktreePath, 2)) === '.claude'
+            && $base !== false
+            && $parent === $base;
+        if ($interrupt->sourceAgentId === null && ! $managed) {
+            throw new \RuntimeException(
+                "Refused to resume interrupted agent in an unmanaged working directory: {$worktreePath}.",
+            );
         }
 
         $values = get_object_vars($config);
         $values['cwd'] = $worktreePath;
 
         return new HaoCodeConfig(...$values);
+    }
+
+    private static function restoreInterruptRunConfig(
+        HaoCodeConfig $config,
+        HumanInterrupt $interrupt,
+        array $runSnapshot,
+    ): HaoCodeConfig {
+        $config = self::restoreSourceAgentWorkingDirectory($config, $interrupt, $runSnapshot);
+        $values = get_object_vars($config);
+        if (is_int($runSnapshot['max_turns_remaining'] ?? null)
+            && $runSnapshot['max_turns_remaining'] > 0) {
+            $values['maxTurns'] = $runSnapshot['max_turns_remaining'];
+        }
+        if (($runSnapshot['read_only'] ?? false) === true) {
+            $values['permissionMode'] = 'plan';
+        }
+        if (is_array($runSnapshot['allowed_tools'] ?? null)) {
+            $snapshotTools = array_values(array_filter(
+                $runSnapshot['allowed_tools'],
+                static fn (mixed $name): bool => is_string($name) && $name !== '',
+            ));
+            $values['allowedTools'] = in_array('*', $config->allowedTools, true)
+                ? $snapshotTools
+                : array_values(array_intersect($snapshotTools, $config->allowedTools));
+        }
+
+        return new HaoCodeConfig(...$values);
+    }
+
+    private static function resumeWithSnapshot(
+        string $sessionId,
+        HaoCodeConfig $config,
+        array $runSnapshot,
+    ): Conversation {
+        /** @var AgentLoopFactory $factory */
+        $factory = \HaoCode\Support\Runtime\SdkRuntime::app(AgentLoopFactory::class);
+        SdkRunFactory::stageResumeSnapshot($config, $runSnapshot);
+        try {
+            $conversation = new Conversation($config, $factory);
+            $conversation->loadSession($sessionId);
+        } catch (\Throwable $e) {
+            if (isset($conversation)) {
+                $conversation->close();
+            }
+            throw $e;
+        } finally {
+            SdkRunFactory::clearResumeSnapshot($config);
+        }
+
+        return $conversation;
     }
 
     /**

@@ -47,7 +47,7 @@ class LiveMatrixTest extends TestCase
             $this->markTestSkipped('ANTHROPIC_API_KEY not set');
         }
 
-        $provider = new AnthropicProvider(apiKey: $key, model: 'claude-3-5-haiku-20241022');
+        $provider = new AnthropicProvider(apiKey: $key, model: 'claude-haiku-4-5-20251001');
         $this->assert_live_response($provider->streamMessages(
             systemPrompt: [],
             messages: [['role' => 'user', 'content' => 'Say hi in one word']],

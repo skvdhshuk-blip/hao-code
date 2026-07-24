@@ -846,7 +846,7 @@ class StreamingClientTest extends TestCase
 
         $client = new StreamingClient(
             apiKey: 'test-key',
-            model: 'claude-sonnet-4-20250514',
+            model: 'claude-sonnet-4-6',
             httpClient: $httpClient,
             thinkingEnabled: true,
             thinkingBudget: 16000,
@@ -880,12 +880,12 @@ class StreamingClientTest extends TestCase
         });
 
         $settings = $this->createMock(\HaoCode\Services\Settings\SettingsManager::class);
-        $settings->method('getModel')->willReturn('claude-opus-4-20250514');
+        $settings->method('getModel')->willReturn('claude-opus-4-8');
         $settings->method('getMaxTokens')->willReturn(32768);
 
         $client = new StreamingClient(
             apiKey: 'test-key',
-            model: 'claude-sonnet-4-20250514', // default, should be overridden
+            model: 'claude-sonnet-4-6', // default, should be overridden
             httpClient: $httpClient,
             settingsManager: $settings,
         );
@@ -897,7 +897,7 @@ class StreamingClientTest extends TestCase
         ));
 
         $decoded = json_decode($capturedBody, true);
-        $this->assertSame('claude-opus-4-20250514', $decoded['model']);
+        $this->assertSame('claude-opus-4-8', $decoded['model']);
         $this->assertSame(32768, $decoded['max_tokens']);
     }
 
@@ -924,7 +924,7 @@ class StreamingClientTest extends TestCase
 
         $client = new StreamingClient(
             apiKey: 'fallback-key',
-            model: 'claude-sonnet-4-20250514',
+            model: 'claude-sonnet-4-6',
             baseUrl: 'https://api.anthropic.com',
             httpClient: $httpClient,
             settingsManager: $settings,
@@ -984,7 +984,7 @@ class StreamingClientTest extends TestCase
 
         $client = new StreamingClient(
             apiKey: 'sk-ant-oat-token',
-            model: 'claude-sonnet-4-20250514',
+            model: 'claude-sonnet-4-6',
             httpClient: $httpClient,
             oauthBearer: true,
         );
@@ -1023,7 +1023,7 @@ class StreamingClientTest extends TestCase
 
         $client = (new StreamingClient(
             apiKey: 'fallback-key',
-            model: 'claude-sonnet-4-20250514',
+            model: 'claude-sonnet-4-6',
             httpClient: $httpClient,
         ))->withSettingsManager($settings);
 
@@ -1054,7 +1054,7 @@ class StreamingClientTest extends TestCase
 
         $client = new StreamingClient(
             apiKey: 'plain-api-key',
-            model: 'claude-sonnet-4-20250514',
+            model: 'claude-sonnet-4-6',
             httpClient: $httpClient,
         );
 
@@ -1083,7 +1083,7 @@ class StreamingClientTest extends TestCase
 
         $client = new StreamingClient(
             apiKey: 'real-key',
-            model: 'claude-sonnet-4-20250514',
+            model: 'claude-sonnet-4-6',
             httpClient: $httpClient,
             headers: [
                 'Editor-Version' => 'vscode/1.96.0',
@@ -1123,7 +1123,7 @@ class StreamingClientTest extends TestCase
 
         $client = (new StreamingClient(
             apiKey: 'real-key',
-            model: 'claude-sonnet-4-20250514',
+            model: 'claude-sonnet-4-6',
             httpClient: $httpClient,
         ))->withSettingsManager($settings);
 

@@ -206,7 +206,7 @@ class ConfigToolTest extends TestCase
         $settings->expects($this->once())
             ->method('getConfiguredProviders')
             ->willReturn([
-                'anthropic' => ['model' => 'claude-sonnet-4-20250514'],
+                'anthropic' => ['model' => 'claude-sonnet-4-6'],
             ]);
         $settings->expects($this->never())->method('set');
         $tool = $this->makeToolWithSettings($settings);

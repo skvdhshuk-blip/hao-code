@@ -442,19 +442,29 @@ class SessionManager
             }
 
             if (($latest['type'] ?? null) === 'interrupt_pending') {
-                $toolResults = [];
-                foreach ($latest['interrupt']['actions'] ?? [] as $action) {
-                    $actionId = is_array($action) ? (string) ($action['id'] ?? '') : '';
+                $checkpoint = is_array($latest['checkpoint'] ?? null) ? $latest['checkpoint'] : [];
+                $toolResults = is_array($checkpoint['results'] ?? null) ? $checkpoint['results'] : [];
+                $blocks = is_array($checkpoint['blocks'] ?? null) ? $checkpoint['blocks'] : [];
+                if ($blocks === []) {
+                    $blocks = $latest['interrupt']['actions'] ?? [];
+                }
+                foreach ($blocks as $index => $block) {
+                    if (array_key_exists($index, $toolResults)) {
+                        continue;
+                    }
+                    $actionId = is_array($block) ? (string) ($block['id'] ?? '') : '';
                     if ($actionId === '') {
                         continue;
                     }
-                    $toolResults[] = [
+                    $toolResults[$index] = [
                         'type' => 'tool_result',
                         'tool_use_id' => $actionId,
                         'content' => 'Cancelled: '.$reason,
                         'is_error' => true,
                     ];
                 }
+                ksort($toolResults);
+                $toolResults = array_values($toolResults);
 
                 $this->appendJsonLine($handle, [
                     'timestamp' => date('c'),

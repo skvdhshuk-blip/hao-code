@@ -69,8 +69,8 @@ DESC;
                 ],
                 'model' => [
                     'type' => 'string',
-                    'description' => 'Optional model override for this agent (sonnet, opus, haiku)',
-                    'enum' => ['sonnet', 'opus', 'haiku'],
+                    'description' => 'Optional model override for this agent (sonnet, opus, haiku, inherit)',
+                    'enum' => ['sonnet', 'opus', 'haiku', 'inherit'],
                 ],
                 'run_in_background' => [
                     'type' => 'boolean',
@@ -91,7 +91,7 @@ DESC;
             'prompt' => 'required|string|min:5',
             'description' => 'required|string',
             'subagent_type' => 'nullable|string',
-            'model' => 'nullable|string|in:sonnet,opus,haiku',
+            'model' => 'nullable|string|in:sonnet,opus,haiku,inherit',
             'run_in_background' => 'nullable|boolean',
             'name' => 'nullable|string|regex:/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/',
             'isolation' => 'nullable|string|in:worktree',
@@ -114,7 +114,11 @@ DESC;
             return ToolResult::error("Unknown agent type: {$agentTypeName}");
         }
         try {
-            $model = AgentModelResolver::resolve($input['model'] ?? null, $agentDef->model);
+            $model = AgentModelResolver::resolve(
+                $input['model'] ?? null,
+                $agentDef->model,
+                $context->runContext?->settings->getProviderType() ?? 'anthropic',
+            );
         } catch (\InvalidArgumentException $e) {
             return ToolResult::error($e->getMessage());
         }
@@ -176,6 +180,7 @@ DESC;
                 model: $model,
                 appendSystemPrompt: $agentDef->systemPrompt,
                 omitProjectInstructions: $agentDef->omitClaudeMd,
+                agentType: $agentDef->agentType,
             );
             if ($agentDef->maxTurns !== null) {
                 $subLoop->setMaxTurns($agentDef->maxTurns);
@@ -395,6 +400,7 @@ DESC;
             model: $model,
             appendSystemPrompt: $agentDef->systemPrompt,
             omitProjectInstructions: $agentDef->omitClaudeMd,
+            agentType: $agentDef->agentType,
         );
         if ($agentDef->maxTurns !== null) {
             $subLoop->setMaxTurns($agentDef->maxTurns);

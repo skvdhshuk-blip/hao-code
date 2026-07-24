@@ -14,6 +14,19 @@ use PHPUnit\Framework\TestCase;
 
 class AgentToolTest extends TestCase
 {
+    public function test_schema_accepts_explicit_inherit_model(): void
+    {
+        $tool = new AgentTool($this->makeFactory());
+
+        $validated = $tool->inputSchema()->validate([
+            'prompt' => 'Investigate the failure',
+            'description' => 'Investigate failure',
+            'model' => 'inherit',
+        ]);
+
+        $this->assertSame('inherit', $validated['model']);
+    }
+
     private function makeFactory(?AgentLoop $loop = null): AgentLoopFactory
     {
         $factory = $this->createMock(AgentLoopFactory::class);
@@ -186,7 +199,7 @@ class AgentToolTest extends TestCase
         $factory->expects($this->once())
             ->method('createIsolated')
             ->willReturnCallback(function (...$arguments) use ($subLoop): AgentLoop {
-                $this->assertSame('claude-haiku-4-20250514', $arguments[10] ?? null);
+                $this->assertSame('claude-haiku-4-5-20251001', $arguments[10] ?? null);
                 $this->assertStringContainsString('file search specialist', $arguments[11] ?? '');
                 $this->assertTrue($arguments[12] ?? false);
 
@@ -214,7 +227,7 @@ class AgentToolTest extends TestCase
         $factory->expects($this->once())
             ->method('createIsolated')
             ->willReturnCallback(function (...$arguments) use ($loop): AgentLoop {
-                $this->assertSame('claude-opus-4-20250514', $arguments[10] ?? null);
+                $this->assertSame('claude-opus-4-8', $arguments[10] ?? null);
 
                 return $loop;
             });

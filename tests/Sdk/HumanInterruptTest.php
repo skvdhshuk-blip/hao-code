@@ -116,6 +116,55 @@ final class HumanInterruptTest extends TestCase
         }
     }
 
+    public function test_sync_child_resume_restores_scoped_run_snapshot(): void
+    {
+        $root = sys_get_temp_dir().'/haocode-sync-interrupt-'.bin2hex(random_bytes(4));
+        $worktree = $root.'/.claude/worktrees/agent-b1c2d3e4';
+        mkdir($worktree, 0755, true);
+        $config = new HaoCodeConfig(
+            cwd: $root,
+            model: 'parent-model',
+            maxTurns: 50,
+            permissionMode: 'default',
+            allowedTools: ['*'],
+            systemPrompt: 'Parent prompt',
+            appendSystemPrompt: 'Parent append',
+            ephemeral: false,
+        );
+        $interrupt = new HumanInterrupt(
+            'int-sync-worktree',
+            'session-sync-worktree',
+            [],
+            date('c'),
+        );
+        $snapshot = [
+            'cwd' => $worktree,
+            'model' => 'child-model',
+            'system_prompt' => 'Child prompt',
+            'append_system_prompt' => 'Child append',
+            'read_only' => true,
+            'max_turns_remaining' => 7,
+            'allowed_tools' => ['Read', 'Grep'],
+        ];
+        $method = new \ReflectionMethod(HaoCode::class, 'restoreInterruptRunConfig');
+        $method->setAccessible(true);
+
+        try {
+            /** @var HaoCodeConfig $restored */
+            $restored = $method->invoke(null, $config, $interrupt, $snapshot);
+
+            $this->assertSame($worktree, $restored->cwd);
+            $this->assertSame('parent-model', $restored->model);
+            $this->assertSame('Parent prompt', $restored->systemPrompt);
+            $this->assertSame('Parent append', $restored->appendSystemPrompt);
+            $this->assertSame('plan', $restored->permissionMode);
+            $this->assertSame(7, $restored->maxTurns);
+            $this->assertSame(['Read', 'Grep'], $restored->allowedTools);
+        } finally {
+            $this->removeDirectory($root);
+        }
+    }
+
     private function removeDirectory(string $directory): void
     {
         if (! is_dir($directory)) {

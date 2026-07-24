@@ -19,6 +19,31 @@ use HaoCode\Tools\WebFetch\WebFetchTool;
 /** @internal */
 final class SdkRunFactory
 {
+    /** @var array<int, array<string, mixed>> */
+    private static array $stagedResumeSnapshots = [];
+
+    /** @internal */
+    public static function stageResumeSnapshot(HaoCodeConfig $config, array $snapshot): void
+    {
+        self::$stagedResumeSnapshots[spl_object_id($config)] = $snapshot;
+    }
+
+    /** @internal */
+    public static function consumeResumeSnapshot(HaoCodeConfig $config): ?array
+    {
+        $id = spl_object_id($config);
+        $snapshot = self::$stagedResumeSnapshots[$id] ?? null;
+        unset(self::$stagedResumeSnapshots[$id]);
+
+        return $snapshot;
+    }
+
+    /** @internal */
+    public static function clearResumeSnapshot(HaoCodeConfig $config): void
+    {
+        unset(self::$stagedResumeSnapshots[spl_object_id($config)]);
+    }
+
     /**
      * Internal adaptation point between the modern Agent/RunOptions pair and
      * the legacy HaoCodeConfig-based run assembly.
@@ -38,18 +63,46 @@ final class SdkRunFactory
         ?RunOptions $options,
         AgentLoopFactory $factory,
         ?StreamingClient $streamingClient = null,
+        ?array $resumeSnapshot = null,
     ): SdkRun {
-        return self::create(($options ?? new RunOptions)->toConfig($agent), $factory, $streamingClient);
+        return self::create(
+            ($options ?? new RunOptions)->toConfig($agent),
+            $factory,
+            $streamingClient,
+            $resumeSnapshot,
+        );
     }
 
     public static function create(
         HaoCodeConfig $config,
         AgentLoopFactory $factory,
         ?StreamingClient $streamingClient = null,
+        ?array $resumeSnapshot = null,
     ): SdkRun {
         $runContext = self::createValidatedRunContext($config);
+        if ($resumeSnapshot !== null) {
+            $runContext = $runContext->fork(
+                workingDirectory: self::snapshotString($resumeSnapshot, 'cwd'),
+                readOnly: (bool) ($resumeSnapshot['read_only'] ?? false),
+                omitProjectInstructions: (bool) ($resumeSnapshot['omit_project_instructions'] ?? false),
+                agentType: self::snapshotString($resumeSnapshot, 'agent_type'),
+            );
+            foreach ([
+                'model' => 'model',
+                'system_prompt' => 'system_prompt',
+                'append_system_prompt' => 'append_system_prompt',
+            ] as $snapshotKey => $settingsKey) {
+                if (array_key_exists($snapshotKey, $resumeSnapshot)) {
+                    $runContext->settings->set($settingsKey, $resumeSnapshot[$snapshotKey]);
+                }
+            }
+        }
         $provider = $streamingClient
-            ?? self::buildStreamingClient($config, $runContext->settings)
+            ?? self::buildStreamingClient(
+                $config,
+                $runContext->settings,
+                self::snapshotString($resumeSnapshot ?? [], 'model'),
+            )
             ?? \HaoCode\Support\Runtime\SdkRuntime::app(StreamingClient::class)->withSettingsManager($runContext->settings);
 
         $providerType = self::resolveProviderType($config, $runContext->settings);
@@ -81,14 +134,24 @@ final class SdkRunFactory
                 $config->tools,
             );
 
+            $toolFilter = $config->toolFilter();
+            if (is_array($resumeSnapshot['allowed_tools'] ?? null)) {
+                $allowed = array_fill_keys($resumeSnapshot['allowed_tools'], true);
+                $configuredFilter = $toolFilter;
+                $toolFilter = static fn (string $name): bool =>
+                    isset($allowed[$name]) && ($configuredFilter === null || $configuredFilter($name));
+            }
+
             $loop = $factory->createIsolated(
-                toolFilter: $config->toolFilter(),
-                workingDirectory: $config->effectiveWorkingDirectory(),
+                toolFilter: $toolFilter,
+                workingDirectory: self::snapshotString($resumeSnapshot ?? [], 'cwd')
+                    ?? $config->effectiveWorkingDirectory(),
                 additionalTools: $additionalTools,
                 streamingClient: $provider,
                 runContext: $runContext,
                 ephemeral: $config->ephemeral,
                 additionalToolFilter: $config->additionalToolFilter(),
+                model: self::snapshotString($resumeSnapshot ?? [], 'model'),
             );
         } catch (\Throwable $e) {
             $sandboxRuntime?->close();
@@ -97,7 +160,8 @@ final class SdkRunFactory
             throw $e;
         }
 
-        $loop->setMaxTurns($config->maxTurns);
+        $remainingTurns = $resumeSnapshot['max_turns_remaining'] ?? null;
+        $loop->setMaxTurns(is_int($remainingTurns) && $remainingTurns > 0 ? $remainingTurns : $config->maxTurns);
         if ($mcpConnectionManager !== null) {
             $loop->setEventPump(static function () use ($mcpConnectionManager): void {
                 $mcpConnectionManager->poll();
@@ -116,6 +180,13 @@ final class SdkRunFactory
         }
 
         return new SdkRun($loop, $sandboxRuntime, $mcpConnectionManager);
+    }
+
+    private static function snapshotString(array $snapshot, string $key): ?string
+    {
+        $value = $snapshot[$key] ?? null;
+
+        return is_string($value) && trim($value) !== '' ? $value : null;
     }
 
     public static function createValidatedRunContext(HaoCodeConfig $config): AgentRunContext
@@ -138,6 +209,7 @@ final class SdkRunFactory
     public static function buildStreamingClient(
         HaoCodeConfig $config,
         ?SettingsManager $settings = null,
+        ?string $modelOverride = null,
     ): ?StreamingClient {
         if ($config->apiKey === null
             && $config->baseUrl === null
@@ -157,7 +229,7 @@ final class SdkRunFactory
 
         return new StreamingClient(
             apiKey: $config->apiKey ?? $settings->getApiKey(),
-            model: $config->model ?? $settings->getModel(),
+            model: $modelOverride ?? $config->model ?? $settings->getModel(),
             baseUrl: $baseUrl,
             maxTokens: $config->maxTokens ?? $settings->getMaxTokens(),
             thinkingEnabled: $config->thinkingEnabled,

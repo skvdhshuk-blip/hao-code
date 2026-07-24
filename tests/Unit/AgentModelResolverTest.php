@@ -10,7 +10,7 @@ class AgentModelResolverTest extends TestCase
     public function test_call_model_takes_precedence_over_definition_model(): void
     {
         $this->assertSame(
-            'claude-opus-4-20250514',
+            'claude-opus-4-8',
             AgentModelResolver::resolve('opus', 'haiku'),
         );
     }
@@ -19,6 +19,12 @@ class AgentModelResolverTest extends TestCase
     {
         $this->assertNull(AgentModelResolver::resolve(null, 'inherit'));
         $this->assertNull(AgentModelResolver::resolve(null, null));
+    }
+
+    public function test_tier_alias_inherits_parent_model_for_non_anthropic_provider(): void
+    {
+        $this->assertNull(AgentModelResolver::resolve('haiku', null, 'openai'));
+        $this->assertNull(AgentModelResolver::resolve('sonnet', null, 'openai_chat'));
     }
 
     public function test_invalid_definition_model_is_rejected_explicitly(): void

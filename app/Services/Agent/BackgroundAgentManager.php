@@ -16,6 +16,8 @@ class BackgroundAgentManager
 
     private static mixed $previousSigchldHandler = null;
 
+    private static ?bool $previousAsyncSignals = null;
+
     /** @var array<int, array{id: string, token: string}> */
     private array $ownedProcesses = [];
 
@@ -426,6 +428,19 @@ class BackgroundAgentManager
                     notice: "Worktree retained at: {$path} (branch: {$branch})",
                 );
             }
+        } else {
+            $uniqueCommits = $this->branchHasUniqueCommits(dirname($path, 3), $branch);
+            if ($uniqueCommits !== false) {
+                $reason = $uniqueCommits === true
+                    ? 'branch contains commits not present on the parent HEAD'
+                    : 'branch history could not be verified safely';
+
+                return $this->finalizeWorktree(
+                    $id,
+                    retained: true,
+                    notice: "Worktree directory is missing; branch retained because {$reason}: {$branch}",
+                );
+            }
         }
 
         $parent = dirname($path, 3);
@@ -681,6 +696,57 @@ class BackgroundAgentManager
         return $worktreeHead === '' || $parentHead === '' || $worktreeHead !== $parentHead;
     }
 
+    private function branchHasUniqueCommits(string $parent, string $branch): ?bool
+    {
+        $output = [];
+        $code = 0;
+        exec(
+            'cd '.escapeshellarg($parent)
+            .' && git show-ref --verify --quiet '.escapeshellarg('refs/heads/'.$branch),
+            $output,
+            $code,
+        );
+        if ($code !== 0) {
+            return false;
+        }
+
+        $output = [];
+        exec(
+            'cd '.escapeshellarg($parent)
+            .' && git rev-list --count HEAD..'.escapeshellarg('refs/heads/'.$branch).' 2>&1',
+            $output,
+            $code,
+        );
+        $count = trim(implode("\n", $output));
+        if ($code !== 0 || ! ctype_digit($count)) {
+            return null;
+        }
+
+        return (int) $count > 0;
+    }
+
+    /** @internal */
+    public static function resetSignalReaper(): void
+    {
+        if (self::$signalReaperInstalled
+            && function_exists('pcntl_signal')
+            && defined('SIGCHLD')) {
+            $handler = self::$previousSigchldHandler;
+            if (! is_callable($handler) && ! is_int($handler)) {
+                $handler = defined('SIG_DFL') ? constant('SIG_DFL') : 0;
+            }
+            pcntl_signal(constant('SIGCHLD'), $handler);
+            if (self::$previousAsyncSignals !== null && function_exists('pcntl_async_signals')) {
+                pcntl_async_signals(self::$previousAsyncSignals);
+            }
+        }
+
+        self::$signalReapers = [];
+        self::$signalReaperInstalled = false;
+        self::$previousSigchldHandler = null;
+        self::$previousAsyncSignals = null;
+    }
+
     private function reapExitedChildren(): void
     {
         $this->reapExitedProcessHandles();
@@ -778,6 +844,7 @@ class BackgroundAgentManager
         }
 
         self::$previousSigchldHandler = $previous;
+        self::$previousAsyncSignals = pcntl_async_signals();
         $installed = pcntl_signal(
             constant('SIGCHLD'),
             static function (int $signal, array $info = []): void {

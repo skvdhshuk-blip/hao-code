@@ -4,6 +4,7 @@ namespace Tests\Unit;
 
 use HaoCode\Services\Api\AnthropicProvider;
 use HaoCode\Services\Api\ForkSafeProvider;
+use HaoCode\Services\Api\LlmProvider;
 use HaoCode\Services\Api\PooledProvider;
 use HaoCode\Services\Api\StreamingClient;
 use HaoCode\Services\Settings\SettingsManager;
@@ -56,6 +57,62 @@ class ForkSafeProviderTest extends TestCase
 
         $this->assertNotSame($inner, $freshInner);
         $this->assertSame($settings, $this->readPrivate($freshInner, 'settingsManager'));
+    }
+
+    public function test_pooled_provider_rejects_scoped_settings_for_unaware_inner_provider(): void
+    {
+        $inner = new class implements LlmProvider {
+            public function streamMessages(
+                array $systemPrompt,
+                array $messages,
+                array $tools,
+                ?callable $onRawEvent = null,
+                ?callable $shouldAbort = null,
+            ): \Generator {
+                if (false) {
+                    yield;
+                }
+            }
+
+            public function getLastRateLimitHeaders(): array
+            {
+                return [];
+            }
+        };
+        $provider = (new PooledProvider($inner, new CredentialPool, 'anthropic'))
+            ->requiringScopedSettings();
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('inner provider is not settings-aware');
+
+        $provider->withSettingsManager(new SettingsManager);
+    }
+
+    public function test_pooled_provider_keeps_unaware_inner_without_scoped_override(): void
+    {
+        $inner = new class implements LlmProvider {
+            public function streamMessages(
+                array $systemPrompt,
+                array $messages,
+                array $tools,
+                ?callable $onRawEvent = null,
+                ?callable $shouldAbort = null,
+            ): \Generator {
+                if (false) {
+                    yield;
+                }
+            }
+
+            public function getLastRateLimitHeaders(): array
+            {
+                return [];
+            }
+        };
+        $provider = new PooledProvider($inner, new CredentialPool, 'anthropic');
+
+        $rebound = $provider->withSettingsManager(new SettingsManager);
+
+        $this->assertSame($inner, $this->readPrivate($rebound, 'inner'));
     }
 
     private function readPrivate(object $object, string $property): mixed

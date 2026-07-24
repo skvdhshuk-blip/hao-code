@@ -28,7 +28,20 @@ class PooledProvider implements ForkSafeProvider, SettingsAwareProvider
         private readonly CredentialPool $pool,
         private readonly string $providerName,
         private readonly ?RateLimitTracker $rateLimitTracker = null,
+        private readonly bool $requireScopedSettings = false,
     ) {}
+
+    /** @internal */
+    public function requiringScopedSettings(): self
+    {
+        return new self(
+            $this->inner,
+            $this->pool,
+            $this->providerName,
+            $this->rateLimitTracker,
+            true,
+        );
+    }
 
     public function streamMessages(
         array $systemPrompt,
@@ -108,20 +121,41 @@ class PooledProvider implements ForkSafeProvider, SettingsAwareProvider
             $inner = $this->inner->freshAfterFork($settingsManager);
         } elseif ($settingsManager !== null && $this->inner instanceof SettingsAwareProvider) {
             $inner = $this->inner->withSettingsManager($settingsManager);
+        } elseif ($settingsManager !== null && $this->requireScopedSettings) {
+            throw new \RuntimeException(
+                'Pooled provider cannot apply scoped settings because the inner provider is not settings-aware.',
+            );
         } else {
             $inner = $this->inner;
         }
 
-        return new self($inner, $this->pool, $this->providerName, $this->rateLimitTracker);
+        return new self(
+            $inner,
+            $this->pool,
+            $this->providerName,
+            $this->rateLimitTracker,
+            $this->requireScopedSettings,
+        );
     }
 
     public function withSettingsManager(SettingsManager $settingsManager): self
     {
+        if (! $this->inner instanceof SettingsAwareProvider && $this->requireScopedSettings) {
+            throw new \RuntimeException(
+                'Pooled provider cannot apply scoped settings because the inner provider is not settings-aware.',
+            );
+        }
         $inner = $this->inner instanceof SettingsAwareProvider
             ? $this->inner->withSettingsManager($settingsManager)
             : $this->inner;
 
-        return new self($inner, $this->pool, $this->providerName, $this->rateLimitTracker);
+        return new self(
+            $inner,
+            $this->pool,
+            $this->providerName,
+            $this->rateLimitTracker,
+            $this->requireScopedSettings,
+        );
     }
 
     private function providerFor(Credential $credential): LlmProvider

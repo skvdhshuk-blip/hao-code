@@ -84,7 +84,7 @@ class HaoCodeConfig
         public readonly ?string $apiKey = null,
 
         /**
-         * Model identifier (e.g., 'claude-sonnet-4-20250514').
+         * Model identifier (e.g., 'claude-sonnet-4-6').
          *
          * @api
          */

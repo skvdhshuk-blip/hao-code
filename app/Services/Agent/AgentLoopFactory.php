@@ -4,6 +4,7 @@ namespace HaoCode\Services\Agent;
 
 use HaoCode\Services\Api\LlmProvider;
 use HaoCode\Services\Api\ForkSafeProvider;
+use HaoCode\Services\Api\PooledProvider;
 use HaoCode\Services\Api\SettingsAwareProvider;
 use HaoCode\Services\Api\StreamingClient;
 use HaoCode\Services\Compact\ContextCompactor;
@@ -56,17 +57,20 @@ class AgentLoopFactory
         ?string $model = null,
         ?string $appendSystemPrompt = null,
         bool $omitProjectInstructions = false,
+        ?string $agentType = null,
     ): AgentLoop {
         $requiresScopedContext = $readOnly
             || $model !== null
             || (is_string($appendSystemPrompt) && trim($appendSystemPrompt) !== '')
-            || $omitProjectInstructions;
+            || $omitProjectInstructions
+            || $agentType !== null;
 
         if ($runContext !== null && $requiresScopedContext) {
             $runContext = $runContext->fork(
                 workingDirectory: $workingDirectory,
                 readOnly: $readOnly,
                 omitProjectInstructions: $omitProjectInstructions,
+                agentType: $agentType,
             );
         } elseif ($runContext === null && $requiresScopedContext) {
             $projectDirectory = ($workingDirectory ?? getcwd()) ?: '/';
@@ -83,6 +87,8 @@ class AgentLoopFactory
                 memoryStore: new JsonMemoryStore($settings->getMemoryStoragePath()),
                 memoryTools: ['MemoryRead'],
                 omitProjectInstructions: $omitProjectInstructions,
+                agentType: $agentType,
+                readOnly: $readOnly,
             );
         }
 
@@ -222,6 +228,9 @@ class AgentLoopFactory
         $tracer = $this->container->make(PhoenixTracer::class);
 
         $client = $streamingClient ?? $this->container->make(StreamingClient::class);
+        if ($model !== null && $client instanceof PooledProvider) {
+            $client = $client->requiringScopedSettings();
+        }
         if ($afterFork && $client instanceof ForkSafeProvider) {
             $client = $client->freshAfterFork($runContext?->settings);
         } elseif ($runContext !== null && $client instanceof SettingsAwareProvider) {

@@ -21,7 +21,7 @@ class SettingsManagerTest extends TestCase
     {
         config([
             'haocode.api_base_url' => 'https://api.kimi.com/coding/',
-            'haocode.model' => 'claude-sonnet-4-20250514',
+            'haocode.model' => 'claude-sonnet-4-6',
         ]);
 
         $settings = new SettingsManager;
@@ -34,12 +34,12 @@ class SettingsManagerTest extends TestCase
     {
         config([
             'haocode.api_base_url' => 'https://api.anthropic.com',
-            'haocode.model' => 'claude-sonnet-4-20250514',
+            'haocode.model' => 'claude-sonnet-4-6',
         ]);
 
         $settings = new SettingsManager;
 
-        $this->assertSame('claude-sonnet-4-20250514', $settings->getModel());
+        $this->assertSame('claude-sonnet-4-6', $settings->getModel());
     }
 
     // ─── runtime overrides ────────────────────────────────────────────────
@@ -49,23 +49,23 @@ class SettingsManagerTest extends TestCase
         config(['haocode.api_base_url' => 'https://api.anthropic.com']);
 
         $settings = new SettingsManager;
-        $settings->set('model', 'claude-haiku-4-20250514');
+        $settings->set('model', 'claude-haiku-4-5-20251001');
 
-        $this->assertSame('claude-haiku-4-20250514', $settings->getModel());
+        $this->assertSame('claude-haiku-4-5-20251001', $settings->getModel());
     }
 
     public function test_set_ignores_unknown_keys(): void
     {
         config([
             'haocode.api_base_url' => 'https://api.anthropic.com',
-            'haocode.model' => 'claude-sonnet-4-20250514',
+            'haocode.model' => 'claude-sonnet-4-6',
         ]);
 
         $settings = new SettingsManager;
         $settings->set('unknown_key', 'anything');
 
         // Should not affect model
-        $this->assertSame('claude-sonnet-4-20250514', $settings->getModel());
+        $this->assertSame('claude-sonnet-4-6', $settings->getModel());
     }
 
     // ─── getBaseUrl ───────────────────────────────────────────────────────
@@ -167,7 +167,7 @@ class SettingsManagerTest extends TestCase
                 'anthropic' => [
                     'api_key' => 'fake-ant-test-key',
                     'api_base_url' => 'https://api.anthropic.com',
-                    'model' => 'claude-sonnet-4-20250514',
+                    'model' => 'claude-sonnet-4-6',
                 ],
                 'zai' => [
                     'api_key' => 'fake-zai-test-key',
@@ -200,7 +200,7 @@ class SettingsManagerTest extends TestCase
     {
         config([
             'haocode.api_base_url' => 'https://api.anthropic.com',
-            'haocode.model' => 'claude-sonnet-4-20250514',
+            'haocode.model' => 'claude-sonnet-4-6',
         ]);
 
         $settings = new SettingsManager;
@@ -350,7 +350,7 @@ class SettingsManagerTest extends TestCase
         ]));
 
         file_put_contents($projectSettingsDir . '/settings.json', json_encode([
-            'model' => 'claude-opus-4-20250514',
+            'model' => 'claude-opus-4-8',
             'max_tokens' => 8192,
         ]));
 
@@ -358,7 +358,7 @@ class SettingsManagerTest extends TestCase
             'haocode.api_key' => '',
             'haocode.api_base_url' => 'https://config.api.example',
             'haocode.max_tokens' => 1024,
-            'haocode.model' => 'claude-sonnet-4-20250514',
+            'haocode.model' => 'claude-sonnet-4-6',
             'haocode.permission_mode' => 'default',
             'haocode.global_settings_path' => $globalDir . '/settings.json',
         ]);
@@ -375,7 +375,7 @@ class SettingsManagerTest extends TestCase
             $this->assertSame('global-api-key', $settings->getApiKey());
             $this->assertSame('https://global.api.example', $settings->getBaseUrl());
             $this->assertSame(8192, $settings->getMaxTokens());
-            $this->assertSame('claude-opus-4-20250514', $settings->getModel());
+            $this->assertSame('claude-opus-4-8', $settings->getModel());
             $this->assertSame(\HaoCode\Services\Permissions\PermissionMode::Plan, $settings->getPermissionMode());
         } finally {
             chdir($origDir);
@@ -404,12 +404,12 @@ class SettingsManagerTest extends TestCase
 
         file_put_contents($globalDir . '/settings.json', json_encode([
             'active_provider' => 'zai',
-            'model' => 'anthropic/claude-sonnet-4-20250514',
+            'model' => 'anthropic/claude-sonnet-4-6',
             'provider' => [
                 'anthropic' => [
                     'api_key' => 'anthropic-key',
                     'api_base_url' => 'https://api.anthropic.com',
-                    'model' => 'claude-sonnet-4-20250514',
+                    'model' => 'claude-sonnet-4-6',
                 ],
                 'zai' => [
                     'api_key' => 'zai-key',
@@ -424,7 +424,7 @@ class SettingsManagerTest extends TestCase
             'haocode.api_key' => '',
             'haocode.api_base_url' => 'https://config.api.example',
             'haocode.max_tokens' => 1024,
-            'haocode.model' => 'claude-sonnet-4-20250514',
+            'haocode.model' => 'claude-sonnet-4-6',
             'haocode.global_settings_path' => $globalDir . '/settings.json',
         ]);
 
@@ -450,7 +450,7 @@ class SettingsManagerTest extends TestCase
         config([
             'haocode.api_key' => '',
             'haocode.api_base_url' => 'https://api.anthropic.com',
-            'haocode.model' => 'claude-sonnet-4-20250514',
+            'haocode.model' => 'claude-sonnet-4-6',
         ]);
 
         $settings = new SettingsManager;
@@ -463,7 +463,7 @@ class SettingsManagerTest extends TestCase
                 'anthropic' => [
                     'api_key' => 'anthropic-key',
                     'api_base_url' => 'https://api.anthropic.com',
-                    'model' => 'claude-sonnet-4-20250514',
+                    'model' => 'claude-sonnet-4-6',
                 ],
                 'zai' => [
                     'api_key' => 'zai-key',
@@ -532,7 +532,7 @@ class SettingsManagerTest extends TestCase
                 'anthropic' => [
                     'api_key' => 'anthropic-key',
                     'api_base_url' => 'https://api.anthropic.com',
-                    'model' => 'claude-sonnet-4-20250514',
+                    'model' => 'claude-sonnet-4-6',
                 ],
             ],
         ], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));

@@ -3,6 +3,7 @@
 namespace HaoCode\Services\Session;
 
 use HaoCode\Services\Api\SimpleCompletionClient;
+use HaoCode\Services\Settings\ModelCatalog;
 use HaoCode\Services\Settings\SettingsManager;
 
 /**
@@ -16,8 +17,6 @@ use HaoCode\Services\Settings\SettingsManager;
 class SessionTitleService
 {
     private const MAX_TEXT = 1000;
-    private const HAIKU_MODEL = 'claude-haiku-4-20250514';
-
     private const PROMPT = <<<'PROMPT'
 Generate a concise, sentence-case title (3-7 words) that captures the main topic or goal of this coding session. The title should be clear enough that the user recognises the session in a list. Use sentence case: capitalise only the first word and proper nouns.
 
@@ -135,7 +134,7 @@ PROMPT;
             return '';
         }
 
-        return $this->isKimiCodingEndpoint() ? 'kimi-for-coding' : self::HAIKU_MODEL;
+        return $this->isKimiCodingEndpoint() ? 'kimi-for-coding' : ModelCatalog::HAIKU;
     }
 
     private function shouldPreferLocalGeneration(): bool

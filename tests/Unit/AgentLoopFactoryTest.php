@@ -233,7 +233,7 @@ class AgentLoopFactoryTest extends TestCase
                 workingDirectory: $root,
                 streamingClient: $provider,
                 runContext: $runContext,
-                model: 'claude-haiku-4-20250514',
+                model: 'claude-haiku-4-5-20251001',
                 appendSystemPrompt: 'Child agent instructions',
                 omitProjectInstructions: true,
             );
@@ -242,7 +242,7 @@ class AgentLoopFactoryTest extends TestCase
             /** @var AgentRunContext $childContext */
             $childContext = $contextProperty->getValue($loop);
             $this->assertNotSame($runContext, $childContext);
-            $this->assertSame('claude-haiku-4-20250514', $childContext->settings->getModel());
+            $this->assertSame('claude-haiku-4-5-20251001', $childContext->settings->getModel());
             $this->assertSame(
                 "Parent append\n\nChild agent instructions",
                 $childContext->settings->getAppendSystemPrompt(),

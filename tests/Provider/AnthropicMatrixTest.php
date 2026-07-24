@@ -19,7 +19,7 @@ class AnthropicMatrixTest extends AbstractMatrixTest
     {
         return new AnthropicProvider(
             apiKey: 'test-key',
-            model: 'claude-3-5-haiku-20241022',
+            model: 'claude-haiku-4-5-20251001',
             httpClient: self::buildMockClient($sseFixturePath),
         );
     }
@@ -28,7 +28,7 @@ class AnthropicMatrixTest extends AbstractMatrixTest
     {
         return new AnthropicProvider(
             apiKey: 'test-key',
-            model: 'claude-3-5-haiku-20241022',
+            model: 'claude-haiku-4-5-20251001',
             httpClient: $client,
         );
     }

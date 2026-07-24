@@ -15,6 +15,7 @@ class BackgroundAgentManagerTest extends TestCase
 
     protected function setUp(): void
     {
+        BackgroundAgentManager::resetSignalReaper();
         $this->tempDir = sys_get_temp_dir() . '/haocode_background_agents_test_' . uniqid();
         mkdir($this->tempDir, 0755, true);
         $this->manager = new BackgroundAgentManager($this->tempDir);
@@ -22,6 +23,7 @@ class BackgroundAgentManagerTest extends TestCase
 
     protected function tearDown(): void
     {
+        BackgroundAgentManager::resetSignalReaper();
         $this->removeDirectory($this->tempDir);
     }
 
@@ -329,6 +331,94 @@ class BackgroundAgentManagerTest extends TestCase
         $this->assertTrue($this->manager->terminateProcess('agent_demo'));
         $this->assertSame('dead', $this->manager->get('agent_demo')['status']);
         $this->assertSame(-1, pcntl_waitpid($pid, $status, WNOHANG));
+    }
+
+    public function test_missing_worktree_directory_keeps_branch_with_commits(): void
+    {
+        $repo = $this->tempDir.'/repo';
+        mkdir($repo, 0755, true);
+        $this->git($repo, 'init');
+        $this->git($repo, 'config user.email test@example.test');
+        $this->git($repo, 'config user.name HaoCode Test');
+        file_put_contents($repo.'/README.md', "root\n");
+        $this->git($repo, 'add README.md');
+        $this->git($repo, 'commit -m initial');
+
+        $branch = 'agent-a1b2c3d4';
+        $worktree = $repo.'/.claude/worktrees/'.$branch;
+        mkdir(dirname($worktree), 0755, true);
+        $this->git($repo, 'worktree add -b '.$branch.' '.escapeshellarg($worktree).' HEAD');
+        file_put_contents($worktree.'/agent.txt', "committed work\n");
+        $this->git($worktree, 'add agent.txt');
+        $this->git($worktree, 'commit -m agent-work');
+        $this->removeDirectory($worktree);
+
+        $this->manager->create(
+            'agent_demo',
+            'Inspect repo',
+            'Explore',
+            worktreePath: $worktree,
+            worktreeBranch: $branch,
+        );
+        $state = $this->manager->finalizeStoredWorktree('agent_demo');
+
+        $this->assertTrue($state['worktree_retained']);
+        $this->assertStringContainsString('branch retained', $state['last_result']);
+        $output = [];
+        exec(
+            'cd '.escapeshellarg($repo)
+            .' && git show-ref --verify --quiet '.escapeshellarg('refs/heads/'.$branch),
+            $output,
+            $code,
+        );
+        $this->assertSame(0, $code);
+    }
+
+    public function test_signal_reaper_restores_host_handler_and_async_mode(): void
+    {
+        if (! function_exists('pcntl_fork')
+            || ! function_exists('pcntl_signal_get_handler')
+            || ! function_exists('pcntl_async_signals')) {
+            $this->markTestSkipped('pcntl signal support is required.');
+        }
+
+        $originalHandler = pcntl_signal_get_handler(SIGCHLD);
+        $originalAsync = pcntl_async_signals();
+        $hostHandler = static function (): void {};
+        pcntl_signal(SIGCHLD, $hostHandler);
+        pcntl_async_signals(false);
+
+        $pid = null;
+        try {
+            $this->manager->create('agent_signal', 'Inspect repo', 'Explore');
+            $pid = pcntl_fork();
+            if ($pid === 0) {
+                sleep(5);
+                exit(0);
+            }
+            $this->assertGreaterThan(0, $pid);
+            $this->manager->attachProcess('agent_signal', $pid);
+            $this->assertTrue(pcntl_async_signals());
+
+            BackgroundAgentManager::resetSignalReaper();
+
+            $this->assertSame($hostHandler, pcntl_signal_get_handler(SIGCHLD));
+            $this->assertFalse(pcntl_async_signals());
+        } finally {
+            if (is_int($pid) && $pid > 0) {
+                @posix_kill($pid, SIGTERM);
+                @pcntl_waitpid($pid, $status);
+            }
+            pcntl_signal(SIGCHLD, $originalHandler);
+            pcntl_async_signals($originalAsync);
+        }
+    }
+
+    private function git(string $directory, string $arguments): void
+    {
+        $output = [];
+        exec('cd '.escapeshellarg($directory).' && git '.$arguments.' 2>&1', $output, $code);
+        $this->assertSame(0, $code, implode("\n", $output));
     }
 
     private function removeDirectory(string $directory): void

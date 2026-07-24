@@ -345,6 +345,47 @@ class SessionManagerTest extends TestCase
         $manager->claimInterrupt($manager->getSessionId(), 'int-cancel', []);
     }
 
+    public function test_cancelling_mixed_batch_preserves_completed_results(): void
+    {
+        $manager = new SessionManager;
+        $interrupt = [
+            'id' => 'int-mixed-cancel',
+            'session_id' => $manager->getSessionId(),
+            'actions' => [['id' => 'call-write', 'tool_name' => 'Write']],
+            'created_at' => date('c'),
+        ];
+        $manager->recordPendingInterrupt($interrupt, [
+            'blocks' => [
+                ['id' => 'call-read', 'name' => 'Read', 'input' => []],
+                ['id' => 'call-write', 'name' => 'Write', 'input' => []],
+            ],
+            'results' => [
+                0 => [
+                    'type' => 'tool_result',
+                    'tool_use_id' => 'call-read',
+                    'content' => 'existing content',
+                    'is_error' => false,
+                ],
+            ],
+        ]);
+
+        $manager->cancelInterrupt(
+            $manager->getSessionId(),
+            'int-mixed-cancel',
+            'Stopped.',
+        );
+
+        $results = $manager->getInterruptState(
+            $manager->getSessionId(),
+            'int-mixed-cancel',
+        )['tool_results'];
+        $this->assertCount(2, $results);
+        $this->assertSame('call-read', $results[0]['tool_use_id']);
+        $this->assertSame('existing content', $results[0]['content']);
+        $this->assertSame('call-write', $results[1]['tool_use_id']);
+        $this->assertTrue($results[1]['is_error']);
+    }
+
     public function test_cancelling_child_interrupt_also_cancels_pending_parent_chain(): void
     {
         $manager = new SessionManager;

@@ -50,7 +50,14 @@ class Conversation
     ) {
         $this->agent = Agent::fromConfig($config);
         $this->options = RunOptions::fromConfig($config);
-        $this->run = SdkRunFactory::createFromAgent($this->agent, $this->options, $factory, $streamingClient);
+        $resumeSnapshot = SdkRunFactory::consumeResumeSnapshot($config);
+        $this->run = SdkRunFactory::createFromAgent(
+            $this->agent,
+            $this->options,
+            $factory,
+            $streamingClient,
+            $resumeSnapshot,
+        );
         $this->loop = $this->run->loop;
     }
 
@@ -355,6 +362,7 @@ class Conversation
         }
 
         $history = $this->loop->getMessageHistory();
+        $loadedPendingAssistants = [];
 
         foreach ($entries as $entry) {
             $type = $entry['type'] ?? null;
@@ -367,7 +375,14 @@ class Conversation
                     $history->addToolResultMessage($entry['tool_results']);
                 }
             } elseif ($type === 'interrupt_pending' && isset($entry['checkpoint']['assistant_message'])) {
+                $interruptId = (string) ($entry['interrupt']['id'] ?? '');
+                if ($interruptId !== '' && isset($loadedPendingAssistants[$interruptId])) {
+                    continue;
+                }
                 $history->addAssistantMessage($entry['checkpoint']['assistant_message']);
+                if ($interruptId !== '') {
+                    $loadedPendingAssistants[$interruptId] = true;
+                }
             } elseif (in_array($type, ['interrupt_resolved', 'interrupt_cancelled'], true)
                 && ! empty($entry['tool_results'])) {
                 $history->addToolResultMessage($entry['tool_results']);

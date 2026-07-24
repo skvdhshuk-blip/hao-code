@@ -644,6 +644,7 @@ class AgentLoop
                                 'assistant_message' => $assistantMessage,
                                 'blocks' => [$index => $block],
                                 'results' => $toolResults,
+                                'run_snapshot' => $this->buildRunSnapshot($turnCount),
                                 'allowed_tools' => array_keys($this->toolRegistry->getAllTools()),
                                 'interrupt_on' => $this->toolOrchestrator->getInterruptOn(),
                                 'enable_ask_user' => $this->toolOrchestrator->isAskUserEnabled(),
@@ -675,6 +676,7 @@ class AgentLoop
                             'assistant_message' => $assistantMessage,
                             'blocks' => $review['prepared'],
                             'results' => $toolResults,
+                            'run_snapshot' => $this->buildRunSnapshot($turnCount),
                             'allowed_tools' => array_keys($this->toolRegistry->getAllTools()),
                             'interrupt_on' => $this->toolOrchestrator->getInterruptOn(),
                             'enable_ask_user' => $this->toolOrchestrator->isAskUserEnabled(),
@@ -764,6 +766,25 @@ class AgentLoop
         }
 
         return $this->finalizeAfterTurnLimit($systemPrompt, $onTextDelta, $onThinkingDelta);
+    }
+
+    /**
+     * Capture the scoped child-run identity needed for a process-safe resume.
+     *
+     * @return array<string, mixed>
+     */
+    private function buildRunSnapshot(int $turnCount): array
+    {
+        return [
+            'cwd' => $this->runContext?->workingDirectory,
+            'model' => $this->runContext?->settings->getModel(),
+            'system_prompt' => $this->runContext?->settings->getSystemPrompt(),
+            'append_system_prompt' => $this->runContext?->settings->getAppendSystemPrompt(),
+            'omit_project_instructions' => $this->runContext?->omitProjectInstructions ?? false,
+            'agent_type' => $this->runContext?->agentType,
+            'read_only' => $this->runContext?->readOnly ?? false,
+            'max_turns_remaining' => max(1, $this->maxTurns - $turnCount),
+        ];
     }
 
     /** @return array<int, array<string, mixed>> */

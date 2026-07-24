@@ -73,7 +73,7 @@ DESC;
                             'model' => [
                                 'type' => 'string',
                                 'description' => 'Optional model override',
-                                'enum' => ['sonnet', 'opus', 'haiku'],
+                                'enum' => ['sonnet', 'opus', 'haiku', 'inherit'],
                             ],
                         ],
                         'required' => ['role'],
@@ -100,7 +100,7 @@ DESC;
             'members.*.role' => 'required|string',
             'members.*.agent_type' => 'nullable|string',
             'members.*.prompt' => 'nullable|string',
-            'members.*.model' => 'nullable|string|in:sonnet,opus,haiku',
+            'members.*.model' => 'nullable|string|in:sonnet,opus,haiku,inherit',
             'read_only' => 'nullable|boolean',
             'max_turns' => 'nullable|integer|min:1|max:50',
             'default_agent_type' => 'nullable|string',
@@ -168,7 +168,11 @@ DESC;
                 return ToolResult::error("Unknown agent type: {$agentTypeName}");
             }
             try {
-                $model = AgentModelResolver::resolve($member['model'] ?? null, $agentDef->model);
+                $model = AgentModelResolver::resolve(
+                    $member['model'] ?? null,
+                    $agentDef->model,
+                    $context->runContext?->settings->getProviderType() ?? 'anthropic',
+                );
             } catch (\InvalidArgumentException $e) {
                 return ToolResult::error($e->getMessage());
             }
@@ -405,6 +409,7 @@ PREAMBLE;
             model: $model,
             appendSystemPrompt: $agentDef->systemPrompt,
             omitProjectInstructions: $agentDef->omitClaudeMd,
+            agentType: $agentDef->agentType,
         );
         $effectiveMaxTurns = $maxTurns ?? $agentDef->maxTurns;
         if ($effectiveMaxTurns !== null) {

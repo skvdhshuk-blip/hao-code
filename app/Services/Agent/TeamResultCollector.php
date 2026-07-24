@@ -26,10 +26,12 @@ final class TeamResultCollector
             $result = $agent['last_result'] ?? null;
             $error = $agent['error'] ?? null;
             $waitingForInput = $status === 'waiting_for_input';
-            $outcome = match (true) {
-                is_string($result) && trim($result) !== '' => 'succeeded',
-                in_array($status, ['error', 'dead', 'completed'], true) => 'failed',
-                default => 'pending',
+            $outcome = match ($status) {
+                'pending', 'running', 'waiting_for_input' => 'pending',
+                'idle', 'completed' => is_string($result) && trim($result) !== ''
+                    ? 'succeeded'
+                    : ($status === 'completed' ? 'failed' : 'pending'),
+                default => 'failed',
             };
 
             $summary['total']++;
