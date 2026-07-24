@@ -801,4 +801,30 @@ class ToolOrchestratorTest extends TestCase
         $this->assertNull($orchestrator->getActiveSkillModelOverride());
         $this->assertSame('fork', $orchestrator->getActiveSkillContext());
     }
+
+    public function test_restored_skill_scope_keeps_disallowed_tools_blocked_after_interrupt(): void
+    {
+        $registry = new ToolRegistry;
+        $registry->register($this->makeTool('Read', fn () => ToolResult::success('read')));
+        $registry->register($this->makeTool('Write', fn () => ToolResult::success('must not run')));
+        $orchestrator = $this->makeOrchestrator($registry);
+
+        $orchestrator->setResumeAllowedTools(['Read']);
+        $orchestrator->restoreSkillScope(['Read'], 'skill-model', 'inline');
+
+        $read = $orchestrator->executeToolBlock(
+            ['id' => 'read-1', 'name' => 'Read', 'input' => []],
+            $this->context(),
+        );
+        $write = $orchestrator->executeToolBlock(
+            ['id' => 'write-1', 'name' => 'Write', 'input' => []],
+            $this->context(),
+        );
+
+        $this->assertFalse($read['is_error']);
+        $this->assertTrue($write['is_error']);
+        $this->assertStringContainsString('active skill scope', $write['content']);
+        $this->assertSame(['Read'], $orchestrator->getAdvertisedAllowedTools());
+        $this->assertSame('skill-model', $orchestrator->getActiveSkillModelOverride());
+    }
 }

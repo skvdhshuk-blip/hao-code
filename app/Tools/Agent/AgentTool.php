@@ -151,7 +151,14 @@ DESC;
             );
         }
 
-        $result = $this->runSync($prompt, $agentDef, $model, $context, $worktreePath);
+        $result = $this->runSync(
+            $prompt,
+            $agentDef,
+            $model,
+            $context,
+            $worktreePath,
+            $worktreeBranch,
+        );
 
         return $worktreePath === null || $worktreeBranch === null
             ? $result
@@ -164,6 +171,7 @@ DESC;
         ?string $model,
         ToolUseContext $context,
         ?string $worktreePath = null,
+        ?string $worktreeBranch = null,
     ): ToolResult {
         try {
             $subLoop = $this->agentLoopFactory->createIsolated(
@@ -171,9 +179,12 @@ DESC;
                 workingDirectory: $worktreePath ?? $context->workingDirectory,
                 streamingClient: $context->provider,
                 runContext: $context->runContext?->fork(
-                    $worktreePath ?? $context->workingDirectory,
-                    $agentDef->readOnly,
-                    $agentDef->interruptOn,
+                    workingDirectory: $worktreePath ?? $context->workingDirectory,
+                    readOnly: $agentDef->readOnly,
+                    interruptOn: $agentDef->interruptOn,
+                    worktreePath: $worktreePath,
+                    worktreeBranch: $worktreeBranch,
+                    managedWorktree: $worktreePath !== null && $worktreeBranch !== null,
                 ),
                 readOnly: $agentDef->readOnly,
                 parentToolRegistry: $context->toolRegistry,
@@ -214,7 +225,14 @@ DESC;
         ?string $worktreeBranch = null,
     ): ToolResult {
         if (!function_exists('pcntl_fork')) {
-            $result = $this->runSync($prompt, $agentDef, $model, $context, $worktreePath);
+            $result = $this->runSync(
+                $prompt,
+                $agentDef,
+                $model,
+                $context,
+                $worktreePath,
+                $worktreeBranch,
+            );
 
             return $worktreePath === null || $worktreeBranch === null
                 ? $result
@@ -244,7 +262,14 @@ DESC;
             $this->tasks()->remove($taskId);
             $this->backgroundAgents()->delete($taskId);
 
-            $result = $this->runSync($prompt, $agentDef, $model, $context, $worktreePath);
+            $result = $this->runSync(
+                $prompt,
+                $agentDef,
+                $model,
+                $context,
+                $worktreePath,
+                $worktreeBranch,
+            );
 
             return $worktreePath === null || $worktreeBranch === null
                 ? $result
@@ -536,47 +561,21 @@ DESC;
         return ['path' => $worktreeDir, 'branch' => $branch];
     }
 
-    private function worktreeHasChanges(string $worktreePath): bool
-    {
-        $status = trim(shell_exec("cd " . escapeshellarg($worktreePath) . " && git status --porcelain 2>/dev/null") ?? '');
-        if ($status !== '') {
-            return true;
-        }
-
-        $parent = dirname($worktreePath, 3);
-        $worktreeHead = trim(shell_exec(
-            'cd '.escapeshellarg($worktreePath).' && git rev-parse HEAD 2>/dev/null',
-        ) ?? '');
-        $parentHead = trim(shell_exec(
-            'cd '.escapeshellarg($parent).' && git rev-parse HEAD 2>/dev/null',
-        ) ?? '');
-
-        return $worktreeHead === '' || $parentHead === '' || $worktreeHead !== $parentHead;
-    }
-
     private function finalizeSyncWorktree(
         ToolResult $result,
         string $worktreePath,
         string $worktreeBranch,
     ): ToolResult {
-        if ($this->worktreeHasChanges($worktreePath)) {
-            return new ToolResult(
-                $result->output."\n\nWorktree with changes at: {$worktreePath} (branch: {$worktreeBranch})",
-                $result->isError,
-                ($result->metadata ?? []) + [
-                    'worktreePath' => $worktreePath,
-                    'worktreeBranch' => $worktreeBranch,
-                    'worktreeRetained' => true,
-                ],
-            );
-        }
-
-        if ($this->cleanupWorktree($worktreePath, $worktreeBranch)) {
+        $outcome = $this->backgroundAgents()->finalizeManagedWorktree($worktreePath, $worktreeBranch);
+        if (! $outcome['retained']) {
             return $result;
         }
 
+        $notice = $outcome['notice']
+            ?? "Warning: {$outcome['error']} {$worktreePath} (branch: {$worktreeBranch}).";
+
         return new ToolResult(
-            $result->output."\n\nWarning: failed to remove worktree {$worktreePath} (branch: {$worktreeBranch}).",
+            $result->output."\n\n".$notice,
             $result->isError,
             ($result->metadata ?? []) + [
                 'worktreePath' => $worktreePath,
@@ -589,42 +588,6 @@ DESC;
     private function finalizeBackgroundWorktree(string $taskId): void
     {
         $this->backgroundAgents()->finalizeStoredWorktree($taskId);
-    }
-
-    private function cleanupWorktree(string $worktreePath, string $branch): bool
-    {
-        $parent = dirname($worktreePath, 3); // .claude/worktrees/<branch> -> project
-        $removeOutput = [];
-        $removeCode = 0;
-        exec(
-            "cd ".escapeshellarg($parent)
-            ." && git worktree remove ".escapeshellarg($worktreePath)." --force 2>&1",
-            $removeOutput,
-            $removeCode,
-        );
-        if ($removeCode !== 0) {
-            return false;
-        }
-
-        $branchOutput = [];
-        $branchCode = 0;
-        $branchExistsCode = 0;
-        exec(
-            'cd '.escapeshellarg($parent)
-            .' && git show-ref --verify --quiet '.escapeshellarg('refs/heads/'.$branch),
-            $branchOutput,
-            $branchExistsCode,
-        );
-        if ($branchExistsCode === 0) {
-            exec(
-                "cd ".escapeshellarg($parent)
-                ." && git branch -D ".escapeshellarg($branch)." 2>&1",
-                $branchOutput,
-                $branchCode,
-            );
-        }
-
-        return $branchCode === 0;
     }
 
     private function backgroundAgents(): BackgroundAgentManager

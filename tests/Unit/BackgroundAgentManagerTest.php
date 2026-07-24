@@ -374,6 +374,62 @@ class BackgroundAgentManagerTest extends TestCase
         $this->assertSame(0, $code);
     }
 
+    public function test_finalize_managed_worktree_removes_clean_worktree_and_branch(): void
+    {
+        $repo = $this->tempDir.'/clean-repo';
+        mkdir($repo, 0755, true);
+        $this->git($repo, 'init');
+        $this->git($repo, 'config user.email test@example.test');
+        $this->git($repo, 'config user.name HaoCode Test');
+        file_put_contents($repo.'/README.md', "root\n");
+        $this->git($repo, 'add README.md');
+        $this->git($repo, 'commit -m initial');
+
+        $branch = 'agent-b1c2d3e4';
+        $worktree = $repo.'/.claude/worktrees/'.$branch;
+        mkdir(dirname($worktree), 0755, true);
+        $this->git($repo, 'worktree add -b '.$branch.' '.escapeshellarg($worktree).' HEAD');
+
+        $outcome = $this->manager->finalizeManagedWorktree($worktree, $branch);
+
+        $this->assertFalse($outcome['retained']);
+        $this->assertNull($outcome['error']);
+        clearstatcache(true, $worktree);
+        $this->assertDirectoryDoesNotExist($worktree);
+        exec(
+            'cd '.escapeshellarg($repo)
+            .' && git show-ref --verify --quiet '.escapeshellarg('refs/heads/'.$branch),
+            $output,
+            $code,
+        );
+        $this->assertNotSame(0, $code);
+    }
+
+    public function test_runtime_reset_guard_rejects_owned_child_process(): void
+    {
+        if (! function_exists('pcntl_fork') || ! function_exists('posix_kill')) {
+            $this->markTestSkipped('pcntl and posix support are required.');
+        }
+
+        $this->manager->create('agent_reset', 'Inspect repo', 'Explore');
+        $pid = pcntl_fork();
+        if ($pid === 0) {
+            sleep(10);
+            exit(0);
+        }
+        $this->assertGreaterThan(0, $pid);
+        $this->manager->attachProcess('agent_reset', $pid);
+
+        try {
+            BackgroundAgentManager::assertRuntimeResetSafe();
+            $this->fail('Expected active background agent to block runtime reset.');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('agent_reset', $e->getMessage());
+        } finally {
+            $this->assertTrue($this->manager->terminateProcess('agent_reset'));
+        }
+    }
+
     public function test_signal_reaper_restores_host_handler_and_async_mode(): void
     {
         if (! function_exists('pcntl_fork')

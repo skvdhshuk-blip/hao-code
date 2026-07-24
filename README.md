@@ -178,6 +178,9 @@ values such as `ANTHROPIC_API_KEY`, `HAOCODE_MODEL`, `HAOCODE_API_BASE_URL`, and
 `HAOCODE_MAX_TOKENS`. `OPENAI_API_KEY` is not an automatic fallback; pass it as
 `apiKey` or put it in the selected provider entry in
 `~/.haocode/settings.json`.
+For `openai` and `openai_chat`, a model must also be supplied explicitly or by
+the selected provider entry; the Anthropic default is never sent to those
+providers.
 
 For `deepseek-v4-flash`, enabling thinking sends DeepSeek's explicit thinking
 contract. A thinking budget of `32000` or more selects maximum reasoning effort,
@@ -435,6 +438,9 @@ be overridden. HITL cannot be combined with `ephemeral: true`.
 Streaming hosts resume the same checkpoint with `HaoCode::streamResumeInterrupt()`;
 it yields normal stream messages and exactly one final `result`, unless another
 `interrupt` pauses the run again.
+Resume preserves the effective inline Skill tool scope and cumulative
+token/cost totals. A synchronous worktree Agent is finalized after its resumed
+run; retained changes are reported in the final text and `usage` metadata.
 
 ## Structured Output
 
@@ -611,6 +617,11 @@ $config = new HaoCodeConfig(
 );
 ```
 
+Built-in USD budgets use exact pricing for the Claude models listed by this
+release. Unknown or non-Anthropic models report `cost_available: false`;
+requesting `maxBudgetUsd` for one of those models fails before a request is sent
+instead of applying an unrelated fallback price.
+
 ## Callbacks And Abort
 
 `HaoCodeConfig` supports callbacks for text and thinking deltas, tool starts,
@@ -692,7 +703,7 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.18.5`. Notable changes since `v1.10.0`:
+is based on `v1.18.6`. Notable changes since `v1.10.0`:
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/
@@ -710,6 +721,9 @@ is based on `v1.18.5`. Notable changes since `v1.10.0`:
   review.
 - `v1.13.1` — Session JSONL writes never kill or corrupt a run: invalid UTF-8
   and non-finite doubles are sanitized with partial-output fallback.
+- `v1.18.6` — Durable HITL preserves inline Skill scopes, cumulative budgets,
+  multimodal content, and managed worktree lifecycle; provider model selection,
+  pricing, transcript writes, and runtime reset safety now fail closed.
 
 ## License
 

@@ -34,6 +34,9 @@ final class AgentRunContext
         public readonly bool $omitProjectInstructions = false,
         public readonly ?string $agentType = null,
         public readonly bool $readOnly = false,
+        public readonly ?string $worktreePath = null,
+        public readonly ?string $worktreeBranch = null,
+        public readonly bool $managedWorktree = false,
     ) {}
 
     public function fork(
@@ -44,6 +47,10 @@ final class AgentRunContext
         ?string $teamName = null,
         ?bool $omitProjectInstructions = null,
         ?string $agentType = null,
+        ?string $worktreePath = null,
+        ?string $worktreeBranch = null,
+        ?bool $managedWorktree = null,
+        ?string $projectDirectory = null,
     ): self
     {
         $readOnly ??= $this->readOnly;
@@ -54,7 +61,7 @@ final class AgentRunContext
 
         return new self(
             $workingDirectory ?? $this->workingDirectory,
-            $this->projectDirectory,
+            $projectDirectory ?? $this->projectDirectory,
             $settings,
             clone $this->skillLoader,
             $this->cancellationToken->fork(),
@@ -73,6 +80,9 @@ final class AgentRunContext
             $omitProjectInstructions ?? $this->omitProjectInstructions,
             $agentType ?? $this->agentType,
             $readOnly,
+            $worktreePath ?? $this->worktreePath,
+            $worktreeBranch ?? $this->worktreeBranch,
+            $managedWorktree ?? $this->managedWorktree,
         );
     }
 }

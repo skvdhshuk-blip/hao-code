@@ -14,6 +14,7 @@ final class AgentModelResolver
     ): ?string
     {
         $selected = $callModel ?? $definitionModel;
+        $explicitCallModel = $callModel !== null && trim($callModel) !== '';
         if ($selected === null || trim($selected) === '' || trim($selected) === 'inherit') {
             return null;
         }
@@ -26,8 +27,19 @@ final class AgentModelResolver
             );
         }
 
-        // Tier aliases describe relative capability, not portable model IDs.
-        // Non-Anthropic providers inherit the parent's already-valid model.
-        return $providerType === 'anthropic' ? $aliases[$selected] : null;
+        if ($providerType !== 'anthropic') {
+            if ($explicitCallModel) {
+                throw new \InvalidArgumentException(
+                    "Agent model alias '{$selected}' is only supported by the Anthropic provider. "
+                    .'Use inherit with non-Anthropic providers.',
+                );
+            }
+
+            // Definition defaults describe relative capability. Non-Anthropic
+            // providers inherit the parent's already-valid model.
+            return null;
+        }
+
+        return $aliases[$selected];
     }
 }

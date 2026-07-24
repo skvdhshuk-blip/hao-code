@@ -21,10 +21,18 @@ class AgentModelResolverTest extends TestCase
         $this->assertNull(AgentModelResolver::resolve(null, null));
     }
 
-    public function test_tier_alias_inherits_parent_model_for_non_anthropic_provider(): void
+    public function test_definition_tier_alias_inherits_parent_model_for_non_anthropic_provider(): void
     {
-        $this->assertNull(AgentModelResolver::resolve('haiku', null, 'openai'));
-        $this->assertNull(AgentModelResolver::resolve('sonnet', null, 'openai_chat'));
+        $this->assertNull(AgentModelResolver::resolve(null, 'haiku', 'openai'));
+        $this->assertNull(AgentModelResolver::resolve(null, 'sonnet', 'openai_chat'));
+    }
+
+    public function test_explicit_tier_alias_is_rejected_for_non_anthropic_provider(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('only supported by the Anthropic provider');
+
+        AgentModelResolver::resolve('haiku', null, 'openai');
     }
 
     public function test_invalid_definition_model_is_rejected_explicitly(): void

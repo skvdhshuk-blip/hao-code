@@ -192,6 +192,7 @@ class Runner
             'output_tokens' => $loop->getTotalOutputTokens(),
             'cache_creation_tokens' => $loop->getCacheCreationTokens(),
             'cache_read_tokens' => $loop->getCacheReadTokens(),
+            'cost_available' => $loop->isCostEstimateAvailable(),
         ];
     }
 }

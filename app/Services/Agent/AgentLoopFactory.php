@@ -255,6 +255,10 @@ class AgentLoopFactory
             );
         }
 
+        $costTracker = new CostTracker();
+        $costTracker->setProviderType($settings->getProviderType());
+        $costTracker->setModel($settings->getModel());
+
         $loop = new AgentLoop(
             queryEngine: $queryEngine,
             toolOrchestrator: $toolOrchestrator,
@@ -263,7 +267,7 @@ class AgentLoopFactory
             permissionChecker: $permissionChecker,
             sessionManager: new SessionManager(persistenceEnabled: ! $ephemeral),
             contextCompactor: new ContextCompactor($queryEngine, $hookExecutor, $settings->getContextWindow()),
-            costTracker: new CostTracker(),
+            costTracker: $costTracker,
             toolRegistry: $toolRegistry,
             hookExecutor: $hookExecutor,
             tracer: $tracer,

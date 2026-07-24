@@ -360,7 +360,7 @@ class AgentLoop
             $this->messageHistory->addUserMessage($modelInput);
             $this->sessionManager->recordEntry([
                 'type' => 'user_message',
-                'content' => is_string($userInput) ? $userInput : '[multi-content message with images]',
+                'content' => $userInput,
             ]);
         }
 
@@ -645,7 +645,7 @@ class AgentLoop
                                 'blocks' => [$index => $block],
                                 'results' => $toolResults,
                                 'run_snapshot' => $this->buildRunSnapshot($turnCount),
-                                'allowed_tools' => array_keys($this->toolRegistry->getAllTools()),
+                                'allowed_tools' => $this->effectiveAllowedTools(),
                                 'interrupt_on' => $this->toolOrchestrator->getInterruptOn(),
                                 'enable_ask_user' => $this->toolOrchestrator->isAskUserEnabled(),
                                 'permission_interrupts' => $this->toolOrchestrator->arePermissionInterruptsEnabled(),
@@ -677,7 +677,7 @@ class AgentLoop
                             'blocks' => $review['prepared'],
                             'results' => $toolResults,
                             'run_snapshot' => $this->buildRunSnapshot($turnCount),
-                            'allowed_tools' => array_keys($this->toolRegistry->getAllTools()),
+                            'allowed_tools' => $this->effectiveAllowedTools(),
                             'interrupt_on' => $this->toolOrchestrator->getInterruptOn(),
                             'enable_ask_user' => $this->toolOrchestrator->isAskUserEnabled(),
                             'permission_interrupts' => $this->toolOrchestrator->arePermissionInterruptsEnabled(),
@@ -777,6 +777,10 @@ class AgentLoop
     {
         return [
             'cwd' => $this->runContext?->workingDirectory,
+            'project_directory' => $this->runContext?->projectDirectory,
+            'worktree_path' => $this->runContext?->worktreePath,
+            'worktree_branch' => $this->runContext?->worktreeBranch,
+            'managed_worktree' => $this->runContext?->managedWorktree ?? false,
             'model' => $this->runContext?->settings->getModel(),
             'system_prompt' => $this->runContext?->settings->getSystemPrompt(),
             'append_system_prompt' => $this->runContext?->settings->getAppendSystemPrompt(),
@@ -784,7 +788,30 @@ class AgentLoop
             'agent_type' => $this->runContext?->agentType,
             'read_only' => $this->runContext?->readOnly ?? false,
             'max_turns_remaining' => max(1, $this->maxTurns - $turnCount),
+            'allowed_tools' => $this->effectiveAllowedTools(),
+            'active_skill_allowed_tools' => $this->toolOrchestrator->getActiveSkillAllowedTools(),
+            'active_skill_model_override' => $this->toolOrchestrator->getActiveSkillModelOverride(),
+            'active_skill_context' => $this->toolOrchestrator->getActiveSkillContext(),
+            'estimated_cost_usd' => $this->costTracker->getTotalCost(),
+            'total_input_tokens' => $this->totalInputTokens,
+            'total_output_tokens' => $this->totalOutputTokens,
+            'total_cache_creation_tokens' => $this->totalCacheCreationTokens,
+            'total_cache_read_tokens' => $this->totalCacheReadTokens,
+            'last_turn_input_tokens' => $this->lastTurnInputTokens,
         ];
+    }
+
+    /** @return string[] */
+    private function effectiveAllowedTools(): array
+    {
+        $allowed = $this->toolOrchestrator->getAdvertisedAllowedTools()
+            ?? array_keys($this->toolRegistry->getAllTools());
+        if (isset($this->toolRegistry->getAllTools()['Skill'])
+            && ! in_array('Skill', $allowed, true)) {
+            $allowed[] = 'Skill';
+        }
+
+        return $allowed;
     }
 
     /** @return array<int, array<string, mixed>> */
@@ -917,6 +944,11 @@ class AgentLoop
         return $this->costTracker->getTotalCost();
     }
 
+    public function isCostEstimateAvailable(): bool
+    {
+        return $this->costTracker->isPricingAvailable();
+    }
+
     public function getCostTracker(): CostTracker
     {
         return $this->costTracker;
@@ -940,6 +972,34 @@ class AgentLoop
     public function getSessionManager(): SessionManager
     {
         return $this->sessionManager;
+    }
+
+    /** @internal */
+    public function restoreRunSnapshot(array $snapshot): void
+    {
+        if (is_array($snapshot['allowed_tools'] ?? null)) {
+            $this->toolOrchestrator->setResumeAllowedTools($snapshot['allowed_tools']);
+        }
+        $this->toolOrchestrator->restoreSkillScope(
+            is_array($snapshot['active_skill_allowed_tools'] ?? null)
+                ? $snapshot['active_skill_allowed_tools']
+                : null,
+            is_string($snapshot['active_skill_model_override'] ?? null)
+                ? $snapshot['active_skill_model_override']
+                : null,
+            is_string($snapshot['active_skill_context'] ?? null)
+                ? $snapshot['active_skill_context']
+                : null,
+        );
+
+        $this->totalInputTokens = max(0, (int) ($snapshot['total_input_tokens'] ?? 0));
+        $this->totalOutputTokens = max(0, (int) ($snapshot['total_output_tokens'] ?? 0));
+        $this->totalCacheCreationTokens = max(0, (int) ($snapshot['total_cache_creation_tokens'] ?? 0));
+        $this->totalCacheReadTokens = max(0, (int) ($snapshot['total_cache_read_tokens'] ?? 0));
+        $this->lastTurnInputTokens = max(0, (int) ($snapshot['last_turn_input_tokens'] ?? 0));
+        if (is_numeric($snapshot['estimated_cost_usd'] ?? null)) {
+            $this->costTracker->setTotalCost(max(0.0, (float) $snapshot['estimated_cost_usd']));
+        }
     }
 
     public function resetSessionMetrics(): void

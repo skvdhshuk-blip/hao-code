@@ -136,4 +136,29 @@ class CostTrackerTest extends TestCase
         $this->assertEqualsWithDelta(3.0, $tracker->getWarnThreshold(), 0.0001);
         $this->assertEqualsWithDelta(30.0, $tracker->getStopThreshold(), 0.0001);
     }
+
+    public function test_it_uses_current_opus_and_haiku_pricing(): void
+    {
+        $opus = new CostTracker;
+        $opus->setModel('claude-opus-4-8');
+        $opus->addUsage(1_000_000, 1_000_000, 1_000_000, 1_000_000);
+        $this->assertEqualsWithDelta(36.75, $opus->getTotalCost(), 0.0001);
+
+        $haiku = new CostTracker;
+        $haiku->setModel('claude-haiku-4-5-20251001');
+        $haiku->addUsage(1_000_000, 1_000_000, 1_000_000, 1_000_000);
+        $this->assertEqualsWithDelta(7.35, $haiku->getTotalCost(), 0.0001);
+    }
+
+    public function test_unknown_or_non_anthropic_models_do_not_fall_back_to_sonnet_pricing(): void
+    {
+        $tracker = new CostTracker;
+        $tracker->setProviderType('openai');
+        $tracker->setModel('gpt-5');
+        $tracker->addUsage(1_000_000, 1_000_000);
+
+        $this->assertFalse($tracker->isPricingAvailable());
+        $this->assertSame(0.0, $tracker->getTotalCost());
+        $this->assertStringContainsString('Cost unavailable', $tracker->getSummary());
+    }
 }

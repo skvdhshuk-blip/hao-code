@@ -4,6 +4,10 @@ namespace HaoCode\Services\Session;
 
 class SessionManager
 {
+    private const MAX_ENTRY_BYTES = 32 * 1024 * 1024;
+
+    private const MAX_SESSION_BYTES = 128 * 1024 * 1024;
+
     private string $sessionId;
 
     private string $sessionPath;
@@ -139,10 +143,6 @@ class SessionManager
             return;
         }
 
-        if (! is_dir($this->sessionPath)) {
-            mkdir($this->sessionPath, 0755, true);
-        }
-
         $line = self::encodeEntryForJsonl(array_merge(
             [
                 'timestamp' => date('c'),
@@ -152,7 +152,7 @@ class SessionManager
             $entry
         ))."\n";
 
-        file_put_contents($this->getFilePath(), $line, FILE_APPEND | LOCK_EX);
+        $this->appendLineToSessionFile($line, 'session transcript');
     }
 
     /**
@@ -178,22 +178,6 @@ class SessionManager
             throw new \RuntimeException('Human-in-the-loop requires a durable session.');
         }
 
-        // Unlike recordEntry() (which is best-effort for ordinary transcript
-        // lines), an interrupt checkpoint is the SDK's promise that the call
-        // can be resumed. A silent write failure would let the caller hand
-        // back a HumanInterrupt that points at a non-existent checkpoint, so
-        // the next resume() would crash with "Interrupt not found". Use a
-        // durable write path: exclusive lock, check every I/O return value,
-        // and throw on failure so the caller sees the problem immediately
-        // rather than after raising the interrupt (chatgpt 3rd review #8).
-        if (! is_dir($this->sessionPath)) {
-            if (! @mkdir($this->sessionPath, 0700, true) && ! is_dir($this->sessionPath)) {
-                throw new \RuntimeException(
-                    'Could not create session directory for interrupt checkpoint: '.$this->sessionPath,
-                );
-            }
-        }
-
         $entry = array_merge(
             [
                 'timestamp' => date('c'),
@@ -206,28 +190,7 @@ class SessionManager
         );
         $line = self::encodeEntryForJsonl($entry)."\n";
 
-        $handle = @fopen($this->getFilePath(), 'a');
-        if ($handle === false) {
-            throw new \RuntimeException(
-                'Could not open session file for interrupt checkpoint: '.$this->getFilePath(),
-            );
-        }
-
-        try {
-            if (! flock($handle, LOCK_EX)) {
-                throw new \RuntimeException('Could not lock session file for interrupt checkpoint.');
-            }
-            $written = fwrite($handle, $line);
-            if ($written === false || $written !== strlen($line)) {
-                throw new \RuntimeException('Could not write interrupt checkpoint to session file.');
-            }
-            if (! fflush($handle)) {
-                throw new \RuntimeException('Could not flush interrupt checkpoint to disk.');
-            }
-        } finally {
-            @flock($handle, LOCK_UN);
-            fclose($handle);
-        }
+        $this->appendLineToSessionFile($line, 'interrupt checkpoint');
     }
 
     /** @internal */
@@ -684,10 +647,68 @@ class SessionManager
     /** @param resource $handle */
     private function appendJsonLine($handle, array $entry): void
     {
-        $encoded = self::encodeEntryForJsonl($entry);
+        $line = self::encodeEntryForJsonl($entry)."\n";
+        $this->assertAppendFits($handle, $line);
         fseek($handle, 0, SEEK_END);
-        if (fwrite($handle, $encoded."\n") === false || ! fflush($handle)) {
+        $written = fwrite($handle, $line);
+        if ($written === false || $written !== strlen($line) || ! fflush($handle)) {
             throw new \RuntimeException('Could not persist session interrupt checkpoint.');
+        }
+    }
+
+    private function appendLineToSessionFile(string $line, string $purpose): void
+    {
+        if (! is_dir($this->sessionPath)
+            && ! @mkdir($this->sessionPath, 0700, true)
+            && ! is_dir($this->sessionPath)) {
+            throw new \RuntimeException(
+                "Could not create session directory for {$purpose}: {$this->sessionPath}",
+            );
+        }
+
+        $handle = @fopen($this->getFilePath(), 'a');
+        if ($handle === false) {
+            throw new \RuntimeException(
+                "Could not open session file for {$purpose}: {$this->getFilePath()}",
+            );
+        }
+
+        try {
+            if (! flock($handle, LOCK_EX)) {
+                throw new \RuntimeException("Could not lock session file for {$purpose}.");
+            }
+            $this->assertAppendFits($handle, $line);
+            $written = fwrite($handle, $line);
+            if ($written === false || $written !== strlen($line)) {
+                throw new \RuntimeException("Could not write {$purpose} to session file.");
+            }
+            if (! fflush($handle)) {
+                throw new \RuntimeException("Could not flush {$purpose} to disk.");
+            }
+        } finally {
+            @flock($handle, LOCK_UN);
+            fclose($handle);
+        }
+    }
+
+    /** @param resource $handle */
+    private function assertAppendFits($handle, string $line): void
+    {
+        $lineBytes = strlen($line);
+        if ($lineBytes > self::MAX_ENTRY_BYTES) {
+            throw new \RuntimeException(
+                'Session entry exceeds the 32 MiB persistence limit.',
+            );
+        }
+
+        if (fseek($handle, 0, SEEK_END) !== 0) {
+            throw new \RuntimeException('Could not inspect session file size.');
+        }
+        $currentBytes = ftell($handle);
+        if ($currentBytes === false || $currentBytes + $lineBytes > self::MAX_SESSION_BYTES) {
+            throw new \RuntimeException(
+                'Session transcript exceeds the 128 MiB persistence limit.',
+            );
         }
     }
 

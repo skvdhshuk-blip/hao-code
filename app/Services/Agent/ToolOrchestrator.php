@@ -148,6 +148,27 @@ class ToolOrchestrator
         $this->activeSkillContext = 'inline';
     }
 
+    /** @internal */
+    public function restoreSkillScope(
+        ?array $allowedTools,
+        ?string $modelOverride,
+        ?string $context,
+    ): void
+    {
+        $this->activeSkillAllowedTools = $allowedTools === null
+            ? null
+            : array_values(array_unique(array_filter(
+                $allowedTools,
+                static fn (mixed $name): bool => is_string($name) && trim($name) !== '',
+            )));
+        $this->activeSkillModelOverride = is_string($modelOverride) && trim($modelOverride) !== ''
+            ? trim($modelOverride)
+            : null;
+        $this->activeSkillContext = in_array($context, ['inline', 'fork'], true)
+            ? $context
+            : 'inline';
+    }
+
     /** @return string[]|null */
     public function getActiveSkillAllowedTools(): ?array
     {

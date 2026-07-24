@@ -728,7 +728,10 @@ class SdkE2ETest extends TestCase
         $client4 = $method->invoke(null, $config4);
         $this->assertInstanceOf(StreamingClient::class, $client4);
 
-        $openAiClient = $method->invoke(null, new HaoCodeConfig(providerType: 'openai'));
+        $openAiClient = $method->invoke(null, new HaoCodeConfig(
+            providerType: 'openai',
+            model: 'gpt-5.2',
+        ));
         $openAiReflection = new \ReflectionObject($openAiClient);
         $openAiProvider = $openAiReflection->getProperty('openai')->getValue($openAiClient);
         $this->assertSame(
@@ -803,6 +806,19 @@ class SdkE2ETest extends TestCase
         $this->assertStringContainsString('Project settings response', $result->text);
     }
 
+    public function test_openai_provider_without_model_fails_before_request_creation(): void
+    {
+        $method = new \ReflectionMethod(HaoCode::class, 'buildStreamingClient');
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('A model is required for provider type "openai"');
+
+        $method->invoke(null, new HaoCodeConfig(
+            apiKey: 'test-openai-key',
+            providerType: 'openai',
+        ));
+    }
+
     // ──────────────────────────────────────────────────────────────
     //  Test 21: maxBudgetUsd wires to CostTracker
     // ──────────────────────────────────────────────────────────────
@@ -815,7 +831,10 @@ class SdkE2ETest extends TestCase
 
         chdir($this->projectDir);
 
-        $config = new HaoCodeConfig(maxBudgetUsd: 2.50);
+        $config = new HaoCodeConfig(
+            model: 'claude-sonnet-4-6',
+            maxBudgetUsd: 2.50,
+        );
 
         // Use reflection to verify CostTracker thresholds were set
         $method = new \ReflectionMethod(HaoCode::class, 'createRun');
@@ -825,6 +844,21 @@ class SdkE2ETest extends TestCase
         $tracker = $loop->getCostTracker();
         $this->assertSame(2.50, $tracker->getStopThreshold());
         $run->close();
+    }
+
+    public function test_max_budget_rejects_a_model_without_trusted_pricing(): void
+    {
+        $this->bootWithMock([
+            function (): MockResponse {
+                $this->fail('No request should be sent without trusted pricing.');
+            },
+        ]);
+        chdir($this->projectDir);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('No trusted pricing is configured');
+
+        HaoCode::query('Budgeted request', new HaoCodeConfig(maxBudgetUsd: 1.0));
     }
 
     // ──────────────────────────────────────────────────────────────
@@ -1822,6 +1856,127 @@ JSON),
         );
     }
 
+    public function test_inline_skill_scope_survives_durable_interrupt_resume(): void
+    {
+        $this->bootWithMock([
+            MockAnthropicSse::toolUseResponse('scope-skill', 'Skill', [
+                'skill' => 'scoped-shell',
+            ]),
+            function (array $payload): MockResponse {
+                $this->assertSame(
+                    ['Skill', 'Bash'],
+                    array_values(array_intersect(
+                        ['Skill', 'Bash'],
+                        array_column($payload['tools'] ?? [], 'name'),
+                    )),
+                );
+                $this->assertNotContains('Write', array_column($payload['tools'] ?? [], 'name'));
+
+                return MockAnthropicSse::toolUseResponse('scope-bash', 'Bash', [
+                    'command' => 'printf scoped',
+                    'description' => 'Run scoped command',
+                ]);
+            },
+            function (array $payload): MockResponse {
+                $toolNames = array_column($payload['tools'] ?? [], 'name');
+                $this->assertContains('Bash', $toolNames);
+                $this->assertNotContains('Write', $toolNames);
+
+                return MockAnthropicSse::textResponse('Scoped resume completed.');
+            },
+        ]);
+        chdir($this->projectDir);
+        $config = new HaoCodeConfig(
+            allowedTools: ['Skill', 'Bash', 'Write'],
+            skills: [
+                new SdkSkill(
+                    name: 'scoped-shell',
+                    description: 'Run a read-only shell check',
+                    prompt: 'Run the requested shell check.',
+                    allowedTools: ['Bash'],
+                ),
+            ],
+            ephemeral: false,
+            interruptOn: ['Bash' => true],
+            hitlMode: 'ask',
+        );
+
+        try {
+            HaoCode::query('Use the scoped shell skill', $config);
+            $this->fail('Expected scoped Bash interrupt.');
+        } catch (HumanInterruptException $e) {
+            $interrupt = $e->interrupt;
+        }
+
+        $state = \HaoCode\Support\Runtime\SdkRuntime::app(
+            \HaoCode\Services\Session\SessionManager::class,
+        )->getInterruptState($interrupt->sessionId, $interrupt->id);
+        $this->assertSame(
+            ['Bash', 'Skill'],
+            $state['checkpoint']['allowed_tools'],
+        );
+        $this->assertSame(
+            ['Bash'],
+            $state['checkpoint']['run_snapshot']['active_skill_allowed_tools'],
+        );
+
+        $result = HaoCode::resumeInterrupt(
+            $interrupt->sessionId,
+            $interrupt->id,
+            [HumanDecision::approve('scope-bash')],
+            $config,
+        );
+
+        $this->assertSame('Scoped resume completed.', $result->text);
+    }
+
+    public function test_cost_and_usage_totals_continue_across_durable_interrupt_resume(): void
+    {
+        $model = 'claude-sonnet-4-6';
+        $this->bootWithMock([
+            MockAnthropicSse::toolUseResponse(
+                'budget-write',
+                'Write',
+                ['file_path' => 'budget.txt', 'content' => 'ok'],
+                model: $model,
+            ),
+            MockAnthropicSse::textResponse('Budget resume completed.', model: $model),
+        ], model: $model);
+        chdir($this->projectDir);
+        $config = new HaoCodeConfig(
+            maxBudgetUsd: 1.0,
+            allowedTools: ['Write'],
+            ephemeral: false,
+            interruptOn: ['Write' => true],
+            hitlMode: 'ask',
+        );
+
+        try {
+            HaoCode::query('Write within the budget', $config);
+            $this->fail('Expected budgeted write interrupt.');
+        } catch (HumanInterruptException $e) {
+            $interrupt = $e->interrupt;
+        }
+
+        $state = \HaoCode\Support\Runtime\SdkRuntime::app(
+            \HaoCode\Services\Session\SessionManager::class,
+        )->getInterruptState($interrupt->sessionId, $interrupt->id);
+        $snapshot = $state['checkpoint']['run_snapshot'];
+        $this->assertGreaterThan(0.0, $snapshot['estimated_cost_usd']);
+        $this->assertSame(64, $snapshot['total_input_tokens']);
+
+        $result = HaoCode::resumeInterrupt(
+            $interrupt->sessionId,
+            $interrupt->id,
+            [HumanDecision::approve('budget-write')],
+            $config,
+        );
+
+        $this->assertGreaterThan($snapshot['estimated_cost_usd'], $result->cost);
+        $this->assertGreaterThan($snapshot['total_input_tokens'], $result->usage['input_tokens']);
+        $this->assertTrue($result->usage['cost_available']);
+    }
+
     public function test_stream_emits_interrupt_without_fake_result(): void
     {
         $this->bootWithMock([
@@ -2111,6 +2266,77 @@ JSON),
         $this->assertSame('Parent received the child result.', $result->text);
     }
 
+    public function test_foreground_worktree_agent_finalizes_and_reports_after_interrupt_resume(): void
+    {
+        exec('git -C '.escapeshellarg($this->projectDir).' init -q', $output, $code);
+        $this->assertSame(0, $code);
+        exec('git -C '.escapeshellarg($this->projectDir).' config user.email test@example.test');
+        exec('git -C '.escapeshellarg($this->projectDir).' config user.name "HaoCode Test"');
+        file_put_contents($this->projectDir.'/README.md', "root\n");
+        exec('git -C '.escapeshellarg($this->projectDir).' add README.md');
+        exec('git -C '.escapeshellarg($this->projectDir).' commit -qm initial', $output, $code);
+        $this->assertSame(0, $code);
+
+        $worktreePath = null;
+        $this->bootWithMock([
+            MockAnthropicSse::toolUseResponse('worktree-agent', 'Agent', [
+                'description' => 'Write in isolated worktree',
+                'prompt' => 'Write isolated.txt with the word isolated.',
+                'subagent_type' => 'general-purpose',
+                'isolation' => 'worktree',
+            ]),
+            MockAnthropicSse::toolUseResponse('worktree-write', 'Write', [
+                'file_path' => 'isolated.txt',
+                'content' => 'isolated',
+            ]),
+            MockAnthropicSse::textResponse('Child completed isolated work.'),
+            function (array $payload) use (&$worktreePath): MockResponse {
+                $childResult = (string) MockAnthropicSse::lastToolResultText($payload);
+                $this->assertStringContainsString('Worktree with changes retained at:', $childResult);
+                preg_match('/retained at: (.+) \\(branch:/', $childResult, $matches);
+                $worktreePath = $matches[1] ?? null;
+
+                return MockAnthropicSse::textResponse('Parent completed after isolated child.');
+            },
+        ]);
+        chdir($this->projectDir);
+        $config = new HaoCodeConfig(
+            allowedTools: ['Agent', 'Write'],
+            permissionMode: 'bypass_permissions',
+            ephemeral: false,
+            interruptOn: ['Write' => true],
+            hitlMode: 'ask',
+        );
+
+        try {
+            HaoCode::query('Delegate isolated work', $config);
+            $this->fail('Expected child worktree interrupt.');
+        } catch (HumanInterruptException $e) {
+            $interrupt = $e->interrupt;
+        }
+
+        $state = \HaoCode\Support\Runtime\SdkRuntime::app(
+            \HaoCode\Services\Session\SessionManager::class,
+        )->getInterruptState($interrupt->sessionId, $interrupt->id);
+        $snapshot = $state['checkpoint']['run_snapshot'];
+        $this->assertTrue($snapshot['managed_worktree']);
+        $this->assertDirectoryExists($snapshot['worktree_path']);
+
+        $result = HaoCode::resumeInterrupt(
+            $interrupt->sessionId,
+            $interrupt->id,
+            [HumanDecision::approve('worktree-write')],
+            $config,
+        );
+
+        $this->assertIsString($worktreePath);
+        $this->assertSame($worktreePath, $result->usage['worktree_path']);
+        $this->assertTrue($result->usage['worktree_retained']);
+        $this->assertStringContainsString($worktreePath, $result->text);
+        $this->assertSame('isolated', file_get_contents($worktreePath.'/isolated.txt'));
+        $this->assertFileDoesNotExist($this->projectDir.'/isolated.txt');
+    }
+
     public function test_approved_agent_gate_can_pause_again_for_a_child_interrupt_without_reexecution(): void
     {
         $this->bootWithMock([
@@ -2215,7 +2441,11 @@ JSON),
     //  Infrastructure
     // ══════════════════════════════════════════════════════════════
 
-    private function bootWithMock(array $responses, ?array &$capturedRequests = null): void
+    private function bootWithMock(
+        array $responses,
+        ?array &$capturedRequests = null,
+        string $model = 'claude-test',
+    ): void
     {
         $requests = [];
         $this->refreshApplication();
@@ -2227,7 +2457,7 @@ JSON),
         config([
             'haocode.api_key' => 'test-key',
             'haocode.api_base_url' => 'https://mock.anthropic.test',
-            'haocode.model' => 'claude-test',
+            'haocode.model' => $model,
             'haocode.max_tokens' => 4096,
             'haocode.permission_mode' => 'bypass_permissions',
             // These E2E tests exercise interrupt mechanics under 'ask'; pin the
@@ -2239,10 +2469,10 @@ JSON),
             'haocode.api_stream_poll_timeout' => 0.01,
         ]);
 
-        $this->app->singleton(StreamingClient::class, function ($app) use (&$requests, $responses): StreamingClient {
+        $this->app->singleton(StreamingClient::class, function ($app) use (&$requests, $responses, $model): StreamingClient {
             return new StreamingClient(
                 apiKey: 'test-key',
-                model: 'claude-test',
+                model: $model,
                 baseUrl: 'https://mock.anthropic.test',
                 maxTokens: 4096,
                 httpClient: MockAnthropicSse::client($responses, $requests),

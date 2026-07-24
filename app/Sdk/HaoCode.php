@@ -223,13 +223,21 @@ class HaoCode
                 \HaoCode\Support\Runtime\SdkRuntime::app(\HaoCode\Services\Task\TaskManager::class)
                     ->update($pendingInterrupt->sourceAgentId, 'completed', $result->text);
             }
+            $result = self::finalizeResumedManagedWorktree(
+                $result,
+                $pendingInterrupt,
+                $runSnapshot,
+                ($checkpoint['operation'] ?? null) !== 'structured',
+            );
             if ($parentLink !== null) {
-                return self::resumeInterrupt(
+                $parentResult = self::resumeInterrupt(
                     (string) $parentLink['parent_session_id'],
                     (string) $parentLink['parent_interrupt_id'],
                     [HumanDecision::respond((string) $parentLink['parent_action_id'], $result->text)],
                     $config,
                 );
+
+                return self::propagateManagedWorktreeResult($parentResult, $result);
             }
             if (($checkpoint['operation'] ?? null) === 'structured') {
                 return self::parseStructuredResult($result);
@@ -311,13 +319,22 @@ class HaoCode
                 \HaoCode\Support\Runtime\SdkRuntime::app(\HaoCode\Services\Task\TaskManager::class)
                     ->update($pendingInterrupt->sourceAgentId, 'completed', $final->text ?? '');
             }
+            $final = self::finalizeResumedManagedWorktreeMessage(
+                $final,
+                $pendingInterrupt,
+                $runSnapshot,
+            );
             if ($parentLink !== null) {
-                yield from self::streamResumeInterrupt(
+                foreach (self::streamResumeInterrupt(
                     (string) $parentLink['parent_session_id'],
                     (string) $parentLink['parent_interrupt_id'],
                     [HumanDecision::respond((string) $parentLink['parent_action_id'], $final->text)],
                     $config,
-                );
+                ) as $parentMessage) {
+                    yield $parentMessage->isResult()
+                        ? self::propagateManagedWorktreeMessage($parentMessage, $final)
+                        : $parentMessage;
+                }
                 return;
             }
             yield $final;
@@ -446,6 +463,171 @@ class HaoCode
         }
 
         return $conversation;
+    }
+
+    private static function finalizeResumedManagedWorktree(
+        QueryResult $result,
+        HumanInterrupt $interrupt,
+        array $runSnapshot,
+        bool $appendNotice,
+    ): QueryResult {
+        $outcome = self::finalizeManagedWorktreeSnapshot($interrupt, $runSnapshot);
+        if ($outcome === null) {
+            return $result;
+        }
+
+        $usage = array_merge($result->usage, $outcome['metadata']);
+        $text = $result->text;
+        if ($appendNotice && $outcome['notice'] !== null) {
+            $text .= "\n\n".$outcome['notice'];
+        }
+
+        return new QueryResult(
+            text: $text,
+            usage: $usage,
+            cost: $result->cost,
+            sessionId: $result->sessionId,
+            turnsUsed: $result->turnsUsed,
+        );
+    }
+
+    private static function finalizeResumedManagedWorktreeMessage(
+        Message $message,
+        HumanInterrupt $interrupt,
+        array $runSnapshot,
+    ): Message {
+        $outcome = self::finalizeManagedWorktreeSnapshot($interrupt, $runSnapshot);
+        if ($outcome === null || ! $message->isResult()) {
+            return $message;
+        }
+
+        $text = $message->text ?? '';
+        if ($outcome['notice'] !== null) {
+            $text .= "\n\n".$outcome['notice'];
+        }
+
+        return Message::result(
+            $text,
+            array_merge($message->usage ?? [], $outcome['metadata']),
+            $message->cost ?? 0.0,
+            $message->sessionId,
+        );
+    }
+
+    private static function propagateManagedWorktreeResult(
+        QueryResult|StructuredResult $parent,
+        QueryResult $child,
+    ): QueryResult|StructuredResult {
+        if ($parent instanceof StructuredResult) {
+            if ($parent->queryResult === null) {
+                return $parent;
+            }
+            $queryResult = self::propagateManagedWorktreeResult($parent->queryResult, $child);
+
+            return new StructuredResult(
+                $parent->toArray(),
+                $parent->rawText,
+                $queryResult instanceof QueryResult ? $queryResult : $parent->queryResult,
+            );
+        }
+
+        $metadata = self::managedWorktreeMetadata($child->usage);
+        if ($metadata === []) {
+            return $parent;
+        }
+
+        return new QueryResult(
+            text: self::appendManagedWorktreeNotice($parent->text, $metadata),
+            usage: array_merge($parent->usage, $metadata),
+            cost: $parent->cost,
+            sessionId: $parent->sessionId,
+            turnsUsed: $parent->turnsUsed,
+        );
+    }
+
+    private static function propagateManagedWorktreeMessage(Message $parent, Message $child): Message
+    {
+        $metadata = self::managedWorktreeMetadata($child->usage ?? []);
+        if ($metadata === []) {
+            return $parent;
+        }
+
+        return Message::result(
+            self::appendManagedWorktreeNotice($parent->text ?? '', $metadata),
+            array_merge($parent->usage ?? [], $metadata),
+            $parent->cost ?? 0.0,
+            $parent->sessionId,
+        );
+    }
+
+    /** @return array<string, mixed> */
+    private static function managedWorktreeMetadata(array $usage): array
+    {
+        if (! is_string($usage['worktree_path'] ?? null)
+            || ! is_string($usage['worktree_branch'] ?? null)
+            || ! is_bool($usage['worktree_retained'] ?? null)) {
+            return [];
+        }
+
+        return array_intersect_key($usage, array_flip([
+            'worktree_path',
+            'worktree_branch',
+            'worktree_retained',
+            'worktree_cleanup_error',
+        ]));
+    }
+
+    /** @param array<string, mixed> $metadata */
+    private static function appendManagedWorktreeNotice(string $text, array $metadata): string
+    {
+        $path = $metadata['worktree_path'];
+        $branch = $metadata['worktree_branch'];
+        if (($metadata['worktree_retained'] ?? false) !== true || str_contains($text, $path)) {
+            return $text;
+        }
+
+        $error = $metadata['worktree_cleanup_error'] ?? null;
+        $notice = is_string($error) && $error !== ''
+            ? "Warning: {$error} Worktree: {$path} (branch: {$branch})."
+            : "Worktree with changes retained at: {$path} (branch: {$branch})";
+
+        return $text."\n\n".$notice;
+    }
+
+    /**
+     * @return array{notice: string|null, metadata: array<string, mixed>}|null
+     */
+    private static function finalizeManagedWorktreeSnapshot(
+        HumanInterrupt $interrupt,
+        array $runSnapshot,
+    ): ?array {
+        if ($interrupt->sourceAgentId !== null || ($runSnapshot['managed_worktree'] ?? false) !== true) {
+            return null;
+        }
+
+        $path = $runSnapshot['worktree_path'] ?? null;
+        $branch = $runSnapshot['worktree_branch'] ?? null;
+        if (! is_string($path) || $path === '' || ! is_string($branch) || $branch === '') {
+            return null;
+        }
+
+        $outcome = \HaoCode\Support\Runtime\SdkRuntime::app(
+            \HaoCode\Services\Agent\BackgroundAgentManager::class,
+        )->finalizeManagedWorktree($path, $branch);
+        $notice = $outcome['notice'];
+        if ($notice === null && $outcome['error'] !== null) {
+            $notice = "Warning: {$outcome['error']} Worktree: {$path} (branch: {$branch}).";
+        }
+
+        return [
+            'notice' => $notice,
+            'metadata' => [
+                'worktree_path' => $path,
+                'worktree_branch' => $branch,
+                'worktree_retained' => $outcome['retained'],
+                'worktree_cleanup_error' => $outcome['error'],
+            ],
+        ];
     }
 
     /**
@@ -593,6 +775,7 @@ class HaoCode
             'output_tokens' => $loop->getTotalOutputTokens(),
             'cache_creation_tokens' => $loop->getCacheCreationTokens(),
             'cache_read_tokens' => $loop->getCacheReadTokens(),
+            'cost_available' => $loop->isCostEstimateAvailable(),
         ];
     }
 }

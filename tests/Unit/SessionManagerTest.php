@@ -118,6 +118,47 @@ class SessionManagerTest extends TestCase
         $this->assertSame('World', $entries[1]['content']);
     }
 
+    public function test_multimodal_content_blocks_round_trip_through_durable_session(): void
+    {
+        $content = [
+            ['type' => 'text', 'text' => 'Inspect this image'],
+            [
+                'type' => 'image',
+                'source' => [
+                    'type' => 'base64',
+                    'media_type' => 'image/png',
+                    'data' => 'aGVsbG8=',
+                ],
+            ],
+        ];
+        $manager = new SessionManager;
+        $manager->recordEntry(['type' => 'user_message', 'content' => $content]);
+
+        $entries = $manager->loadSession($manager->getSessionId());
+
+        $this->assertSame($content, $entries[0]['content']);
+    }
+
+    public function test_record_entry_throws_when_session_path_cannot_be_created(): void
+    {
+        $blockingFile = $this->tmpDir.'/not-a-directory';
+        file_put_contents($blockingFile, 'blocked');
+        config(['haocode.session_path' => $blockingFile.'/sessions']);
+        $manager = new SessionManager;
+
+        try {
+            $manager->recordEntry(['type' => 'user_message', 'content' => 'must fail']);
+            $this->fail('Expected transcript persistence failure.');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString(
+                'Could not create session directory for session transcript',
+                $e->getMessage(),
+            );
+        } finally {
+            unlink($blockingFile);
+        }
+    }
+
     public function test_load_session_returns_empty_for_unknown_id(): void
     {
         $manager = new SessionManager;
@@ -289,6 +330,7 @@ class SessionManagerTest extends TestCase
             );
         } finally {
             chmod($readOnlyDir, 0700);
+            @rmdir($readOnlyDir);
             // tearDown will clean up.
         }
     }

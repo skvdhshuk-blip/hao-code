@@ -2,6 +2,8 @@
 
 namespace HaoCode\Services\Cost;
 
+use HaoCode\Services\Settings\ModelCatalog;
+
 /**
  * Tracks spending per session with configurable thresholds and warnings.
  */
@@ -23,37 +25,33 @@ class CostTracker
         $this->stopThreshold = $stopThreshold ?? (float) ($_ENV['HAOCODE_COST_STOP'] ?? 50.00);
     }
 
-    // Per-million-token pricing by model family
-    private const MODEL_PRICING = [
-        'opus' => ['input' => 15.0, 'output' => 75.0, 'cache_write' => 18.75, 'cache_read' => 1.50],
-        'sonnet' => ['input' => 3.0, 'output' => 15.0, 'cache_write' => 3.75, 'cache_read' => 0.30],
-        'haiku' => ['input' => 0.80, 'output' => 4.0, 'cache_write' => 1.0, 'cache_read' => 0.08],
-    ];
+    private string $currentModel = ModelCatalog::SONNET;
 
-    private string $currentModel = '';
+    private string $providerType = 'anthropic';
 
     public function setModel(string $model): void
     {
         $this->currentModel = $model;
     }
 
+    public function setProviderType(string $providerType): void
+    {
+        $this->providerType = $providerType;
+    }
+
     /**
      * Get pricing for the current model.
      *
-     * @return array{input: float, output: float, cache_write: float, cache_read: float}
+     * @return array{input: float, output: float, cache_write: float, cache_read: float}|null
      */
-    private function getPricing(): array
+    private function getPricing(): ?array
     {
-        $model = strtolower($this->currentModel);
+        return ModelCatalog::pricingFor($this->providerType, $this->currentModel);
+    }
 
-        foreach (self::MODEL_PRICING as $family => $pricing) {
-            if (str_contains($model, $family)) {
-                return $pricing;
-            }
-        }
-
-        // Default to Sonnet pricing
-        return self::MODEL_PRICING['sonnet'];
+    public function isPricingAvailable(): bool
+    {
+        return $this->getPricing() !== null;
     }
 
     /**
@@ -62,6 +60,9 @@ class CostTracker
     public function addUsage(int $inputTokens, int $outputTokens, int $cacheWriteTokens = 0, int $cacheReadTokens = 0): void
     {
         $pricing = $this->getPricing();
+        if ($pricing === null) {
+            return;
+        }
 
         $cost = (
             $inputTokens * $pricing['input'] +
@@ -86,6 +87,7 @@ class CostTracker
     public function setTotalCost(float $cost): void
     {
         $this->totalCost = $cost;
+        $this->warnedAtThreshold = $cost >= $this->warnThreshold;
     }
 
     public function reset(): void
@@ -142,6 +144,10 @@ class CostTracker
      */
     public function getSummary(): string
     {
+        if (! $this->isPricingAvailable()) {
+            return "Cost unavailable for model {$this->currentModel} ({$this->providerType})";
+        }
+
         $cost = '$' . number_format($this->totalCost, 2);
         $warn = '$' . number_format($this->warnThreshold, 2);
         $stop = '$' . number_format($this->stopThreshold, 2);

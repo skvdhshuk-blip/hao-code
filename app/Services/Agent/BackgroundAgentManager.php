@@ -412,21 +412,38 @@ class BackgroundAgentManager
         if (! is_string($path) || $path === '' || ! is_string($branch) || $branch === '') {
             return $state;
         }
+
+        $outcome = $this->finalizeManagedWorktree($path, $branch);
+
+        return $this->finalizeWorktree(
+            $id,
+            retained: $outcome['retained'],
+            notice: $outcome['notice'],
+            error: $outcome['error'],
+        );
+    }
+
+    /**
+     * @return array{retained: bool, notice: string|null, error: string|null}
+     * @internal
+     */
+    public function finalizeManagedWorktree(string $path, string $branch): array
+    {
         if (! $this->isManagedWorktree($path, $branch)) {
-            return $this->finalizeWorktree(
-                $id,
-                retained: true,
-                error: 'Refused to finalize an invalid managed worktree path.',
-            );
+            return [
+                'retained' => true,
+                'notice' => null,
+                'error' => 'Refused to finalize an invalid managed worktree path.',
+            ];
         }
 
         if (is_dir($path)) {
             if ($this->worktreeHasChanges($path)) {
-                return $this->finalizeWorktree(
-                    $id,
-                    retained: true,
-                    notice: "Worktree retained at: {$path} (branch: {$branch})",
-                );
+                return [
+                    'retained' => true,
+                    'notice' => "Worktree with changes retained at: {$path} (branch: {$branch})",
+                    'error' => null,
+                ];
             }
         } else {
             $uniqueCommits = $this->branchHasUniqueCommits(dirname($path, 3), $branch);
@@ -435,11 +452,11 @@ class BackgroundAgentManager
                     ? 'branch contains commits not present on the parent HEAD'
                     : 'branch history could not be verified safely';
 
-                return $this->finalizeWorktree(
-                    $id,
-                    retained: true,
-                    notice: "Worktree directory is missing; branch retained because {$reason}: {$branch}",
-                );
+                return [
+                    'retained' => true,
+                    'notice' => "Worktree directory is missing; branch retained because {$reason}: {$branch}",
+                    'error' => null,
+                ];
             }
         }
 
@@ -478,14 +495,14 @@ class BackgroundAgentManager
         }
 
         if ($removeCode === 0 && $branchCode === 0) {
-            return $this->finalizeWorktree($id, retained: false);
+            return ['retained' => false, 'notice' => null, 'error' => null];
         }
 
-        return $this->finalizeWorktree(
-            $id,
-            retained: true,
-            error: 'Failed to remove the temporary worktree and branch.',
-        );
+        return [
+            'retained' => true,
+            'notice' => null,
+            'error' => 'Failed to remove the temporary worktree and branch.',
+        ];
     }
 
     private function mutateState(string $id, callable $callback): ?array
@@ -723,6 +740,31 @@ class BackgroundAgentManager
         }
 
         return (int) $count > 0;
+    }
+
+    /** @internal */
+    public static function assertRuntimeResetSafe(): void
+    {
+        $ownedIds = [];
+        foreach (self::$signalReapers as $key => $reference) {
+            $manager = $reference->get();
+            if (! $manager instanceof self) {
+                unset(self::$signalReapers[$key]);
+                continue;
+            }
+
+            $manager->reapExitedChildren();
+            foreach ($manager->ownedProcesses as $owned) {
+                $ownedIds[] = $owned['id'];
+            }
+        }
+
+        if ($ownedIds !== []) {
+            throw new \RuntimeException(
+                'Cannot reset HaoCode runtime while background agents are still running: '
+                .implode(', ', array_values(array_unique($ownedIds))).'.',
+            );
+        }
     }
 
     /** @internal */

@@ -94,6 +94,7 @@ class Conversation
                 'output_tokens' => $this->loop->getTotalOutputTokens(),
                 'cache_creation_tokens' => $this->loop->getCacheCreationTokens(),
                 'cache_read_tokens' => $this->loop->getCacheReadTokens(),
+                'cost_available' => $this->loop->isCostEstimateAvailable(),
             ],
             cost: $this->loop->getEstimatedCost(),
             sessionId: $this->options->ephemeral ? null : $this->loop->getSessionManager()->getSessionId(),
@@ -219,6 +220,7 @@ class Conversation
                 'output_tokens' => $this->loop->getTotalOutputTokens(),
                 'cache_creation_tokens' => $this->loop->getCacheCreationTokens(),
                 'cache_read_tokens' => $this->loop->getCacheReadTokens(),
+                'cost_available' => $this->loop->isCostEstimateAvailable(),
             ],
             cost: $this->loop->getEstimatedCost(),
             sessionId: $this->options->ephemeral ? null : $this->loop->getSessionManager()->getSessionId(),
@@ -254,6 +256,7 @@ class Conversation
                 'output_tokens' => $this->loop->getTotalOutputTokens(),
                 'cache_creation_tokens' => $this->loop->getCacheCreationTokens(),
                 'cache_read_tokens' => $this->loop->getCacheReadTokens(),
+                'cost_available' => $this->loop->isCostEstimateAvailable(),
             ],
             cost: $this->loop->getEstimatedCost(),
             sessionId: $this->loop->getSessionManager()->getSessionId(),
@@ -343,6 +346,7 @@ class Conversation
             'output_tokens' => $this->loop->getTotalOutputTokens(),
             'cache_creation_tokens' => $this->loop->getCacheCreationTokens(),
             'cache_read_tokens' => $this->loop->getCacheReadTokens(),
+            'cost_available' => $this->loop->isCostEstimateAvailable(),
         ], $this->loop->getEstimatedCost(), $this->loop->getSessionManager()->getSessionId());
     }
 

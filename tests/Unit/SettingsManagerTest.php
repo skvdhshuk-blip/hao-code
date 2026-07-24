@@ -42,6 +42,39 @@ class SettingsManagerTest extends TestCase
         $this->assertSame('claude-sonnet-4-6', $settings->getModel());
     }
 
+    public function test_non_anthropic_provider_requires_an_explicit_or_provider_model(): void
+    {
+        config([
+            'haocode.model' => null,
+            'haocode.provider_type' => 'openai',
+        ]);
+
+        $settings = new SettingsManager;
+        $settings->set('provider_type', 'openai');
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('A model is required for provider type "openai"');
+
+        $settings->getModel();
+    }
+
+    public function test_non_anthropic_provider_uses_its_selected_provider_model(): void
+    {
+        $settings = new SettingsManager;
+        $reflection = new \ReflectionObject($settings);
+        $reflection->getProperty('cachedSettings')->setValue($settings, [
+            'active_provider' => 'openai-main',
+            'provider' => [
+                'openai-main' => [
+                    'type' => 'openai',
+                    'model' => 'gpt-5.2',
+                ],
+            ],
+        ]);
+
+        $this->assertSame('gpt-5.2', $settings->getModel());
+    }
+
     // ─── runtime overrides ────────────────────────────────────────────────
 
     public function test_set_runtime_override_affects_get_model(): void

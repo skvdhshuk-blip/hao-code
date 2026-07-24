@@ -178,6 +178,58 @@ class AgentLoopTest extends TestCase
         $loop->run('hi');
     }
 
+    public function test_durable_multimodal_input_is_persisted_without_placeholder_replacement(): void
+    {
+        $queryEngine = $this->createMock(QueryEngine::class);
+        $queryEngine->method('query')->willReturn($this->makePlainTextProcessor('done'));
+        $content = [
+            ['type' => 'text', 'text' => 'Inspect this image'],
+            [
+                'type' => 'image',
+                'source' => [
+                    'type' => 'base64',
+                    'media_type' => 'image/png',
+                    'data' => 'aGVsbG8=',
+                ],
+            ],
+        ];
+
+        $sessionManager = $this->createMock(SessionManager::class);
+        $sessionManager->method('getSessionId')->willReturn('test-session');
+        $sessionManager->expects($this->once())
+            ->method('recordEntry')
+            ->with([
+                'type' => 'user_message',
+                'content' => $content,
+            ]);
+
+        $loop = $this->makeLoop($queryEngine, sessionManager: $sessionManager);
+
+        $this->assertSame('done', $loop->run($content));
+    }
+
+    public function test_restore_run_snapshot_restores_cost_and_usage_totals(): void
+    {
+        $queryEngine = $this->createMock(QueryEngine::class);
+        $loop = $this->makeLoop($queryEngine);
+
+        $loop->restoreRunSnapshot([
+            'estimated_cost_usd' => 0.8,
+            'total_input_tokens' => 120,
+            'total_output_tokens' => 34,
+            'total_cache_creation_tokens' => 12,
+            'total_cache_read_tokens' => 56,
+            'last_turn_input_tokens' => 78,
+        ]);
+
+        $this->assertEqualsWithDelta(0.8, $loop->getEstimatedCost(), 0.0001);
+        $this->assertSame(120, $loop->getTotalInputTokens());
+        $this->assertSame(34, $loop->getTotalOutputTokens());
+        $this->assertSame(12, $loop->getCacheCreationTokens());
+        $this->assertSame(56, $loop->getCacheReadTokens());
+        $this->assertSame(78, $loop->getLastTurnInputTokens());
+    }
+
     public function test_incomplete_plain_text_response_is_retried_before_returning(): void
     {
         $qe = $this->createMock(QueryEngine::class);

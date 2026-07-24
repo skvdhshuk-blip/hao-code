@@ -45,11 +45,21 @@ class SettingsManager
 
         $model = $runtimeModel
             ?? $providerConfig['model']
-            ?? $settingsModel
-            ?? \HaoCode\Support\Runtime\SdkRuntime::config('haocode.model', ModelCatalog::SONNET);
+            ?? $settingsModel;
+
+        $providerType = $this->getProviderType();
+        if ((! is_string($model) || trim($model) === '') && $providerType !== 'anthropic') {
+            throw new \RuntimeException(
+                "A model is required for provider type \"{$providerType}\". "
+                .'Pass HaoCodeConfig(model: ...) or configure a default model for the selected provider.',
+            );
+        }
 
         if (! is_string($model) || trim($model) === '') {
-            $model = ModelCatalog::SONNET;
+            $configured = \HaoCode\Support\Runtime\SdkRuntime::config('haocode.model', ModelCatalog::SONNET);
+            $model = is_string($configured) && trim($configured) !== ''
+                ? trim($configured)
+                : ModelCatalog::SONNET;
         }
 
         // Kimi's Anthropic-compatible coding endpoint expects its own model name.

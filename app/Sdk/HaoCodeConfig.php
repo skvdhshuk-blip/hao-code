@@ -100,9 +100,9 @@ class HaoCodeConfig
         /**
          * Provider wire format: 'anthropic' (default), 'openai' (Responses
          * API), or 'openai_chat' (Chat Completions — use for aihubmix,
-         * DeepSeek, vLLM, and other OpenAI-compatible gateways). Only honoured
-         * when one of {apiKey, baseUrl, model, maxTokens} is also set, since
-         * otherwise the SDK falls back to whatever is in settings.json.
+         * DeepSeek, vLLM, and other OpenAI-compatible gateways). OpenAI
+         * providers require an explicit model or one configured on the
+         * selected provider entry.
          *
          * @api
          */
@@ -130,7 +130,9 @@ class HaoCodeConfig
         public readonly int $maxTurns = 50,
 
         /**
-         * Maximum spending in USD before stopping. null = no limit.
+         * Maximum estimated spending in USD before stopping. Supported only
+         * when the selected provider/model has trusted built-in pricing.
+         * null = no limit.
          *
          * @api
          */

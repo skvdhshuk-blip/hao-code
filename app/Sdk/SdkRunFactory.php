@@ -9,6 +9,7 @@ use HaoCode\Services\Api\StreamingClient;
 use HaoCode\Services\Mcp\McpConnectionException;
 use HaoCode\Services\Mcp\McpConnectionManager;
 use HaoCode\Services\Mcp\McpServerConfigManager;
+use HaoCode\Services\Settings\ModelCatalog;
 use HaoCode\Services\Settings\SettingsManager;
 use HaoCode\Sdk\Sandbox\SandboxManager;
 use HaoCode\Tools\Mcp\ListMcpResourcesTool;
@@ -83,9 +84,13 @@ final class SdkRunFactory
         if ($resumeSnapshot !== null) {
             $runContext = $runContext->fork(
                 workingDirectory: self::snapshotString($resumeSnapshot, 'cwd'),
+                projectDirectory: self::snapshotString($resumeSnapshot, 'project_directory'),
                 readOnly: (bool) ($resumeSnapshot['read_only'] ?? false),
                 omitProjectInstructions: (bool) ($resumeSnapshot['omit_project_instructions'] ?? false),
                 agentType: self::snapshotString($resumeSnapshot, 'agent_type'),
+                worktreePath: self::snapshotString($resumeSnapshot, 'worktree_path'),
+                worktreeBranch: self::snapshotString($resumeSnapshot, 'worktree_branch'),
+                managedWorktree: (bool) ($resumeSnapshot['managed_worktree'] ?? false),
             );
             foreach ([
                 'model' => 'model',
@@ -106,6 +111,14 @@ final class SdkRunFactory
             ?? \HaoCode\Support\Runtime\SdkRuntime::app(StreamingClient::class)->withSettingsManager($runContext->settings);
 
         $providerType = self::resolveProviderType($config, $runContext->settings);
+        $resolvedModel = $runContext->settings->getModel();
+        if ($config->maxBudgetUsd !== null
+            && ModelCatalog::pricingFor($providerType, $resolvedModel) === null) {
+            throw new \RuntimeException(
+                "Cost budget requires pricing for model \"{$resolvedModel}\" "
+                ."on provider type \"{$providerType}\". No trusted pricing is configured.",
+            );
+        }
         if ($config->credentialPool !== null) {
             $provider = new PooledProvider($provider, $config->credentialPool, $providerType);
         }
@@ -162,17 +175,24 @@ final class SdkRunFactory
 
         $remainingTurns = $resumeSnapshot['max_turns_remaining'] ?? null;
         $loop->setMaxTurns(is_int($remainingTurns) && $remainingTurns > 0 ? $remainingTurns : $config->maxTurns);
+        $loop->restoreRunSnapshot($resumeSnapshot ?? []);
         if ($mcpConnectionManager !== null) {
             $loop->setEventPump(static function () use ($mcpConnectionManager): void {
                 $mcpConnectionManager->poll();
             });
         }
 
+        $costTracker = $loop->getCostTracker();
+        $costTracker->setProviderType($providerType);
+        $costTracker->setModel($resolvedModel);
         if ($config->maxBudgetUsd !== null) {
             $loop->getCostTracker()->setThresholds(
                 warn: $config->maxBudgetUsd * 0.8,
                 stop: $config->maxBudgetUsd,
             );
+            if (is_numeric($resumeSnapshot['estimated_cost_usd'] ?? null)) {
+                $costTracker->setTotalCost((float) $resumeSnapshot['estimated_cost_usd']);
+            }
         }
 
         if ($config->abortController !== null) {

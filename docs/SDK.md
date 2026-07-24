@@ -2,7 +2,7 @@
 
 Use hao-code as a framework-free PHP library to embed an AI coding agent in your application.
 
-This document describes the `v1.18.5` source line. Published package versions
+This document describes the `v1.18.6` source line. Published package versions
 are identified by Git tags and Packagist.
 
 ```bash
@@ -315,6 +315,10 @@ from `structured()`); the streaming form yields the same `Message` types as
 Both methods require the original `HaoCodeConfig` at runtime even though the
 parameter remains nullable for signature compatibility. This prevents a resumed
 approval from silently switching tool implementations or escaping its sandbox.
+The checkpoint also restores inline Skill tool/model scope and cumulative usage
+and cost totals. When a synchronous worktree Agent retains changes after resume,
+the final result includes `worktree_path`, `worktree_branch`, and
+`worktree_retained` in its `usage` metadata.
 
 ```text
 HaoCode::resumeInterrupt(string $sessionId, string $interruptId, array $decisions, ?HaoCodeConfig $config = null): QueryResult|StructuredResult
@@ -378,7 +382,7 @@ $config = new HaoCodeConfig(
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `apiKey` | `?string` | `null` | API key for the selected provider. Falls back to provider/project/global settings, then `ANTHROPIC_API_KEY` |
-| `model` | `?string` | `null` | Model ID. Falls back to config default |
+| `model` | `?string` | `null` | Model ID. Anthropic falls back to the configured Claude default; `openai` and `openai_chat` require an explicit model or one in the selected provider entry |
 | `baseUrl` | `?string` | `null` | API endpoint URL (for proxies, custom endpoints) |
 | `maxTokens` | `?int` | `null` | Maximum output tokens per response |
 | `providerType` | `?string` | `null` | `anthropic`, `openai`, or `openai_chat` wire format |
@@ -388,6 +392,9 @@ $config = new HaoCodeConfig(
 When any of these are set, the SDK creates a run-scoped provider. Explicit
 values override active settings; unspecified connection values still come from
 the selected provider/project/global settings.
+Selecting `openai` or `openai_chat` without a model fails before request
+creation. This prevents a Claude default model ID from crossing provider
+boundaries.
 
 Input budgeting uses the active provider's `context_window` setting. It falls
 back to `HAOCODE_CONTEXT_WINDOW` (200000 by default) and reserves both the
@@ -1497,6 +1504,11 @@ $content = ImageContentBlock::buildUserContent('Analyze this', [$block]);
 
 `buildUserContent()` returns an array of content blocks that the Provider layer sends as a native multimodal message. You do not need to base64-encode files manually; `ImageContentBlock::from()` detects the MIME type and reads the file automatically.
 
+With `ephemeral: false`, the normalized text and image blocks are persisted so
+session resume and durable HITL see the original multimodal message. Durable
+entries are limited to 32 MiB each and a session transcript to 128 MiB; an
+oversized or failed write is reported to the caller.
+
 ---
 
 ## Abort Controller
@@ -1558,6 +1570,12 @@ $result = HaoCode::query('Do a big refactoring', new HaoCodeConfig(
 ));
 // Agent auto-stops at 80% ($4.00 warning) and 100% ($5.00 hard stop)
 ```
+
+The built-in estimator has exact pricing for the Claude model IDs in
+`ModelCatalog`. Unknown and non-Anthropic models expose
+`$result->usage['cost_available'] === false`; `maxBudgetUsd` fails before the
+first request when trusted pricing is unavailable. Durable HITL checkpoints
+restore cumulative token and cost totals before continuing.
 
 ### Conversation cumulative cost
 

@@ -152,6 +152,7 @@ final class SdkRuntime
 
     public static function reset(): void
     {
+        BackgroundAgentManager::assertRuntimeResetSafe();
         BackgroundAgentManager::resetSignalReaper();
         self::$container = null;
     }
