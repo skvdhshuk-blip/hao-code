@@ -866,6 +866,38 @@ class StreamingClientTest extends TestCase
         $this->assertGreaterThanOrEqual(16000 + 4096, $decoded['max_tokens']);
     }
 
+    public function test_opus_4_8_uses_adaptive_thinking_without_manual_budget(): void
+    {
+        $capturedBody = null;
+        $httpClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$capturedBody) {
+            $capturedBody = $options['body'] ?? '';
+
+            return new MockResponse([
+                "event: message_stop\n",
+                "data: {}\n\n",
+            ], ['http_code' => 200]);
+        });
+
+        $client = new StreamingClient(
+            apiKey: 'test-key',
+            model: 'claude-opus-4-8',
+            httpClient: $httpClient,
+            thinkingEnabled: true,
+            thinkingBudget: 16000,
+        );
+
+        iterator_to_array($client->streamMessages(
+            systemPrompt: [],
+            messages: [['role' => 'user', 'content' => 'think about this']],
+            tools: [],
+        ));
+
+        $decoded = json_decode($capturedBody, true);
+        $this->assertSame(['type' => 'adaptive'], $decoded['thinking']);
+        $this->assertSame(['effort' => 'high'], $decoded['output_config']);
+        $this->assertArrayNotHasKey('budget_tokens', $decoded['thinking']);
+    }
+
     // ─── settings manager integration ─────────────────────────────────────
 
     public function test_model_and_max_tokens_resolved_from_settings(): void

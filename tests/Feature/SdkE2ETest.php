@@ -729,6 +729,7 @@ class SdkE2ETest extends TestCase
         $this->assertInstanceOf(StreamingClient::class, $client4);
 
         $openAiClient = $method->invoke(null, new HaoCodeConfig(
+            apiKey: 'test-openai-key',
             providerType: 'openai',
             model: 'gpt-5.2',
         ));
@@ -819,6 +820,41 @@ class SdkE2ETest extends TestCase
         ));
     }
 
+    public function test_openai_provider_never_sends_anthropic_key_from_active_provider(): void
+    {
+        $this->bootWithMock([]);
+        mkdir($this->projectDir.'/.haocode', 0755, true);
+        file_put_contents($this->projectDir.'/.haocode/settings.json', json_encode([
+            'active_provider' => 'anthropic-main',
+            'provider' => [
+                'anthropic-main' => [
+                    'type' => 'anthropic',
+                    'api_key' => 'must-not-leave-anthropic-boundary',
+                    'model' => 'claude-opus-4-8',
+                ],
+            ],
+        ]));
+        $originalOpenAiKey = getenv('OPENAI_API_KEY');
+        putenv('OPENAI_API_KEY');
+
+        try {
+            $method = new \ReflectionMethod(HaoCode::class, 'createRun');
+
+            $this->expectException(\RuntimeException::class);
+            $this->expectExceptionMessage('API key is required for provider type "openai"');
+
+            $method->invoke(null, new HaoCodeConfig(
+                cwd: $this->projectDir,
+                providerType: 'openai',
+                model: 'gpt-5.2',
+            ));
+        } finally {
+            $originalOpenAiKey === false
+                ? putenv('OPENAI_API_KEY')
+                : putenv('OPENAI_API_KEY='.$originalOpenAiKey);
+        }
+    }
+
     // ──────────────────────────────────────────────────────────────
     //  Test 21: maxBudgetUsd wires to CostTracker
     // ──────────────────────────────────────────────────────────────
@@ -844,6 +880,24 @@ class SdkE2ETest extends TestCase
         $tracker = $loop->getCostTracker();
         $this->assertSame(2.50, $tracker->getStopThreshold());
         $run->close();
+    }
+
+    public function test_zero_budget_stops_before_sending_a_request(): void
+    {
+        $this->bootWithMock([
+            function (): MockResponse {
+                $this->fail('A zero budget must stop before an API request.');
+            },
+        ], model: 'claude-sonnet-4-6');
+        chdir($this->projectDir);
+
+        $result = HaoCode::query('Do not sample', new HaoCodeConfig(
+            maxBudgetUsd: 0.0,
+        ));
+
+        $this->assertStringContainsString('Cost limit reached', $result->text);
+        $this->assertSame(0.0, $result->cost);
+        $this->assertSame(0, $result->turnsUsed);
     }
 
     public function test_max_budget_rejects_a_model_without_trusted_pricing(): void
@@ -1856,6 +1910,140 @@ JSON),
         );
     }
 
+    public function test_conversation_resume_interrupt_uses_the_same_snapshot_path_and_remains_usable(): void
+    {
+        $model = 'claude-sonnet-4-6';
+        $this->bootWithMock([
+            MockAnthropicSse::toolUseResponse('conversation-write', 'Write', [
+                'file_path' => 'conversation-approved.txt',
+                'content' => 'approved',
+            ], model: $model),
+            MockAnthropicSse::textResponse('Conversation resume completed.', model: $model),
+            function (array $payload): MockResponse {
+                $this->assertGreaterThanOrEqual(4, MockAnthropicSse::messageCount($payload));
+
+                return MockAnthropicSse::textResponse(
+                    'Follow-up completed.',
+                    model: 'claude-sonnet-4-6',
+                );
+            },
+        ], model: $model);
+        chdir($this->projectDir);
+        $config = new HaoCodeConfig(
+            allowedTools: ['Write'],
+            ephemeral: false,
+            interruptOn: ['Write' => true],
+            hitlMode: 'ask',
+            maxBudgetUsd: 1.0,
+        );
+        $conversation = HaoCode::conversation($config);
+
+        try {
+            $conversation->send('Write the approved conversation file');
+            $this->fail('Expected a durable conversation interrupt.');
+        } catch (HumanInterruptException $e) {
+            $interrupt = $e->interrupt;
+        }
+
+        $result = $conversation->resumeInterrupt(
+            $interrupt->id,
+            [HumanDecision::approve('conversation-write')],
+        );
+        $followUp = $conversation->send('Confirm the previous work');
+        $conversation->close();
+
+        $this->assertSame('Conversation resume completed.', $result->text);
+        $this->assertSame('Follow-up completed.', $followUp->text);
+        $this->assertGreaterThan($result->cost, $followUp->cost);
+        $this->assertFileExists($this->projectDir.'/conversation-approved.txt');
+    }
+
+    public function test_background_owner_completes_only_after_parent_interrupt_chain_finishes(): void
+    {
+        $backgroundAgents = null;
+        $this->bootWithMock([
+            MockAnthropicSse::toolUseResponse('parent-write', 'Write', [
+                'file_path' => 'parent.txt',
+                'content' => 'parent',
+            ]),
+            MockAnthropicSse::toolUseResponse('child-write', 'Write', [
+                'file_path' => 'child.txt',
+                'content' => 'child',
+            ]),
+            MockAnthropicSse::textResponse('Background child completed.'),
+            function () use (&$backgroundAgents): MockResponse {
+                $this->assertNotNull($backgroundAgents);
+                $this->assertSame(
+                    'waiting_for_input',
+                    $backgroundAgents->get('agent_chain')['status'] ?? null,
+                );
+
+                return MockAnthropicSse::textResponse('Parent chain completed.');
+            },
+        ]);
+        chdir($this->projectDir);
+        $config = new HaoCodeConfig(
+            allowedTools: ['Write'],
+            permissionMode: 'bypass_permissions',
+            ephemeral: false,
+            interruptOn: ['Write' => true],
+            hitlMode: 'ask',
+        );
+
+        try {
+            HaoCode::query('Start the parent interrupt', $config);
+            $this->fail('Expected parent interrupt.');
+        } catch (HumanInterruptException $e) {
+            $parentInterrupt = $e->interrupt;
+        }
+
+        $backgroundAgents = \HaoCode\Support\Runtime\SdkRuntime::app(
+            \HaoCode\Services\Agent\BackgroundAgentManager::class,
+        );
+        $backgroundAgents->create('agent_chain', 'Run child', 'general-purpose');
+        $childContext = \HaoCode\Sdk\AgentRunContextFactory::make($config)->fork(
+            agentId: 'agent_chain',
+            backgroundOwnerAgentId: 'agent_chain',
+        );
+        $childLoop = \HaoCode\Support\Runtime\SdkRuntime::app(
+            \HaoCode\Services\Agent\AgentLoopFactory::class,
+        )->createIsolated(
+            toolFilter: $config->toolFilter(),
+            workingDirectory: $this->projectDir,
+            streamingClient: \HaoCode\Support\Runtime\SdkRuntime::app(StreamingClient::class),
+            runContext: $childContext,
+            ephemeral: false,
+        );
+
+        try {
+            $childLoop->run('Start the background child interrupt');
+            $this->fail('Expected child interrupt.');
+        } catch (HumanInterruptException $e) {
+            $childInterrupt = $e->interrupt;
+        }
+
+        $backgroundAgents->markWaitingForInput('agent_chain', $childInterrupt);
+        \HaoCode\Support\Runtime\SdkRuntime::app(
+            \HaoCode\Services\Session\SessionManager::class,
+        )->recordInterruptParentLink(
+            $childInterrupt->sessionId,
+            $childInterrupt->id,
+            $parentInterrupt->sessionId,
+            $parentInterrupt->id,
+            'parent-write',
+        );
+
+        $result = HaoCode::resumeInterrupt(
+            $childInterrupt->sessionId,
+            $childInterrupt->id,
+            [HumanDecision::approve('child-write')],
+            $config,
+        );
+
+        $this->assertSame('Parent chain completed.', $result->text);
+        $this->assertSame('completed', $backgroundAgents->get('agent_chain')['status'] ?? null);
+    }
+
     public function test_inline_skill_scope_survives_durable_interrupt_resume(): void
     {
         $this->bootWithMock([
@@ -1964,6 +2152,8 @@ JSON),
         $snapshot = $state['checkpoint']['run_snapshot'];
         $this->assertGreaterThan(0.0, $snapshot['estimated_cost_usd']);
         $this->assertSame(64, $snapshot['total_input_tokens']);
+        $this->assertMatchesRegularExpression('/^[a-f0-9]{32}$/', $snapshot['budget_ledger_id']);
+        $this->assertEquals(1.0, $snapshot['budget_limit_usd']);
 
         $result = HaoCode::resumeInterrupt(
             $interrupt->sessionId,
@@ -2264,6 +2454,36 @@ JSON),
 
         $this->assertFileExists($this->projectDir.'/child.txt');
         $this->assertSame('Parent received the child result.', $result->text);
+    }
+
+    public function test_max_budget_tracks_root_and_foreground_agent_cost_together(): void
+    {
+        $model = 'claude-sonnet-4-6';
+        $childText = 'Child inspected the task.';
+        $parentText = 'Parent received the result.';
+        $this->bootWithMock([
+            MockAnthropicSse::toolUseResponse('budget-agent', 'Agent', [
+                'description' => 'Inspect task',
+                'prompt' => 'Inspect the task without using tools.',
+                'subagent_type' => 'general-purpose',
+            ], model: $model),
+            MockAnthropicSse::textResponse($childText, model: $model),
+            MockAnthropicSse::textResponse($parentText, model: $model),
+        ], model: $model);
+        chdir($this->projectDir);
+
+        $result = HaoCode::query('Delegate this inspection', new HaoCodeConfig(
+            allowedTools: ['Agent'],
+            permissionMode: 'bypass_permissions',
+            maxBudgetUsd: 1.0,
+        ));
+
+        $expectedCost = (
+            (64 + 32 + 32) * 3
+            + (1 + strlen($childText) + strlen($parentText)) * 15
+        ) / 1_000_000;
+        $this->assertSame($parentText, $result->text);
+        $this->assertEqualsWithDelta($expectedCost, $result->cost, 0.000001);
     }
 
     public function test_foreground_worktree_agent_finalizes_and_reports_after_interrupt_resume(): void
@@ -2585,6 +2805,41 @@ JSON),
         $secondPrompt = $lastPayload['messages'][0]['content'] ?? '';
         $secondPromptStr = is_array($secondPrompt) ? json_encode($secondPrompt) : (string) $secondPrompt;
         $this->assertStringContainsString('did not match the schema', $secondPromptStr);
+    }
+
+    public function test_structured_retries_share_one_total_budget(): void
+    {
+        $invalid = '{"category":"shipping","priority":"urgent"}';
+        $valid = '{"category":"shipping","priority":"high"}';
+        $model = 'claude-sonnet-4-6';
+        $this->bootWithMock([
+            MockAnthropicSse::textResponse($invalid, model: $model),
+            MockAnthropicSse::textResponse($valid, model: $model),
+        ], model: $model);
+
+        chdir($this->projectDir);
+
+        $result = HaoCode::structured('Classify this ticket.', [
+            'type' => 'object',
+            'required' => ['category', 'priority'],
+            'properties' => [
+                'category' => ['type' => 'string'],
+                'priority' => ['enum' => ['low', 'medium', 'high']],
+            ],
+        ], new HaoCodeConfig(
+            maxBudgetUsd: 1.0,
+        ));
+
+        $expectedCost = (
+            64 * 3
+            + (strlen($invalid) + strlen($valid)) * 15
+        ) / 1_000_000;
+        $this->assertNotNull($result->queryResult);
+        $this->assertEqualsWithDelta(
+            $expectedCost,
+            $result->queryResult->cost,
+            0.000001,
+        );
     }
 
     public function test_structured_throws_when_retry_exhausted(): void

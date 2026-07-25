@@ -150,6 +150,21 @@ class CostTrackerTest extends TestCase
         $this->assertEqualsWithDelta(7.35, $haiku->getTotalCost(), 0.0001);
     }
 
+    public function test_it_prices_current_generation_models(): void
+    {
+        $opus = new CostTracker;
+        $opus->setModel('claude-opus-5');
+        $opus->addUsage(1_000_000, 1_000_000, 1_000_000, 1_000_000);
+        $this->assertEqualsWithDelta(36.75, $opus->getTotalCost(), 0.0001);
+
+        $fable = new CostTracker;
+        $fable->setModel('claude-fable-5');
+        $fable->addUsage(1_000_000, 1_000_000, 1_000_000, 1_000_000);
+        $this->assertEqualsWithDelta(73.50, $fable->getTotalCost(), 0.0001);
+
+        $this->assertContains('claude-sonnet-5', \HaoCode\Services\Settings\ModelCatalog::availableModels());
+    }
+
     public function test_unknown_or_non_anthropic_models_do_not_fall_back_to_sonnet_pricing(): void
     {
         $tracker = new CostTracker;

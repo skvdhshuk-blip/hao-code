@@ -75,6 +75,191 @@ class SettingsManagerTest extends TestCase
         $this->assertSame('gpt-5.2', $settings->getModel());
     }
 
+    public function test_explicit_openai_provider_does_not_reuse_active_anthropic_credentials(): void
+    {
+        $originalOpenAiKey = getenv('OPENAI_API_KEY');
+        putenv('OPENAI_API_KEY');
+
+        try {
+            $settings = new SettingsManager;
+            $reflection = new \ReflectionObject($settings);
+            $reflection->getProperty('cachedSettings')->setValue($settings, [
+                'active_provider' => 'anthropic-main',
+                'api_key' => 'legacy-anthropic-key',
+                'provider' => [
+                    'anthropic-main' => [
+                        'type' => 'anthropic',
+                        'api_key' => 'active-anthropic-key',
+                        'api_base_url' => 'https://api.anthropic.com',
+                        'model' => 'claude-opus-4-8',
+                    ],
+                ],
+            ]);
+            $settings->set('provider_type', 'openai');
+            $settings->set('model', 'gpt-5.2');
+
+            $resolved = $settings->resolveProviderConfig();
+
+            $this->assertSame('openai', $resolved->providerType);
+            $this->assertNull($resolved->providerName);
+            $this->assertSame('', $resolved->apiKey);
+            $this->assertSame('gpt-5.2', $resolved->model);
+            $this->assertSame('https://api.openai.com', $resolved->baseUrl);
+        } finally {
+            $originalOpenAiKey === false
+                ? putenv('OPENAI_API_KEY')
+                : putenv('OPENAI_API_KEY='.$originalOpenAiKey);
+        }
+    }
+
+    public function test_explicit_provider_type_selects_the_only_matching_provider_as_one_unit(): void
+    {
+        $settings = new SettingsManager;
+        $reflection = new \ReflectionObject($settings);
+        $reflection->getProperty('cachedSettings')->setValue($settings, [
+            'active_provider' => 'anthropic-main',
+            'provider' => [
+                'anthropic-main' => [
+                    'type' => 'anthropic',
+                    'api_key' => 'anthropic-key',
+                    'api_base_url' => 'https://api.anthropic.com',
+                    'model' => 'claude-opus-4-8',
+                    'max_tokens' => 8192,
+                ],
+                'openai-main' => [
+                    'type' => 'openai',
+                    'api_key' => 'openai-key',
+                    'api_base_url' => 'https://openai.example.test',
+                    'model' => 'gpt-5.2',
+                    'max_tokens' => 32768,
+                    'context_window' => 128000,
+                ],
+            ],
+        ]);
+        $settings->set('provider_type', 'openai');
+
+        $resolved = $settings->resolveProviderConfig();
+
+        $this->assertSame('openai-main', $resolved->providerName);
+        $this->assertSame('openai-key', $resolved->apiKey);
+        $this->assertSame('https://openai.example.test', $resolved->baseUrl);
+        $this->assertSame('gpt-5.2', $resolved->model);
+        $this->assertSame(32768, $resolved->maxTokens);
+        $this->assertSame(128000, $resolved->contextWindow);
+        $this->assertSame(128000, $settings->getContextWindow());
+    }
+
+    public function test_explicit_provider_switch_uses_the_matching_provider_context_window(): void
+    {
+        $settings = new SettingsManager;
+        $reflection = new \ReflectionObject($settings);
+        $reflection->getProperty('cachedSettings')->setValue($settings, [
+            'active_provider' => 'anthropic-main',
+            'provider' => [
+                'anthropic-main' => [
+                    'type' => 'anthropic',
+                    'api_key' => 'anthropic-key',
+                    'model' => 'claude-sonnet-4-6',
+                    'context_window' => 200000,
+                ],
+                'openai-main' => [
+                    'type' => 'openai',
+                    'api_key' => 'openai-key',
+                    'model' => 'gpt-5.2',
+                    'context_window' => 128000,
+                ],
+            ],
+        ]);
+        $settings->set('provider_type', 'openai');
+
+        $this->assertSame('openai-main', $settings->resolveProviderConfig()->providerName);
+        $this->assertSame(128000, $settings->getContextWindow());
+    }
+
+    public function test_explicit_connection_does_not_require_selecting_between_matching_providers(): void
+    {
+        $settings = new SettingsManager;
+        $reflection = new \ReflectionObject($settings);
+        $reflection->getProperty('cachedSettings')->setValue($settings, [
+            'provider' => [
+                'openai-primary' => [
+                    'type' => 'openai',
+                    'api_key' => 'provider-one-key',
+                    'model' => 'provider-one-model',
+                ],
+                'openai-secondary' => [
+                    'type' => 'openai',
+                    'api_key' => 'provider-two-key',
+                    'model' => 'provider-two-model',
+                ],
+            ],
+        ]);
+        $settings->set('provider_type', 'openai');
+        $settings->set('api_key', 'explicit-key');
+        $settings->set('model', 'explicit-model');
+
+        $resolved = $settings->resolveProviderConfig();
+
+        $this->assertNull($resolved->providerName);
+        $this->assertSame('explicit-key', $resolved->apiKey);
+        $this->assertSame('explicit-model', $resolved->model);
+        $this->assertSame('https://api.openai.com', $resolved->baseUrl);
+    }
+
+    public function test_explicit_openai_provider_rejects_active_anthropic_model_fallback(): void
+    {
+        $settings = new SettingsManager;
+        $reflection = new \ReflectionObject($settings);
+        $reflection->getProperty('cachedSettings')->setValue($settings, [
+            'active_provider' => 'anthropic-main',
+            'provider' => [
+                'anthropic-main' => [
+                    'type' => 'anthropic',
+                    'api_key' => 'anthropic-key',
+                    'model' => 'claude-opus-4-8',
+                ],
+            ],
+        ]);
+        $settings->set('provider_type', 'openai');
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('A model is required for provider type "openai"');
+
+        $settings->resolveProviderConfig();
+    }
+
+    public function test_active_openai_provider_does_not_reuse_legacy_anthropic_credentials(): void
+    {
+        $settings = new SettingsManager;
+        $reflection = new \ReflectionObject($settings);
+        $reflection->getProperty('cachedSettings')->setValue($settings, [
+            'active_provider' => 'openai-main',
+            'api_key' => 'legacy-anthropic-key',
+            'model' => 'claude-opus-4-8',
+            'provider' => [
+                'openai-main' => [
+                    'type' => 'openai',
+                    'model' => 'gpt-5.2',
+                ],
+            ],
+        ]);
+        $originalOpenAiKey = getenv('OPENAI_API_KEY');
+        putenv('OPENAI_API_KEY');
+
+        try {
+            $resolved = $settings->resolveProviderConfig();
+
+            $this->assertSame('openai', $resolved->providerType);
+            $this->assertSame('', $resolved->apiKey);
+            $this->assertSame('gpt-5.2', $resolved->model);
+            $this->assertNotSame('legacy-anthropic-key', $resolved->apiKey);
+        } finally {
+            $originalOpenAiKey === false
+                ? putenv('OPENAI_API_KEY')
+                : putenv('OPENAI_API_KEY='.$originalOpenAiKey);
+        }
+    }
+
     // ─── runtime overrides ────────────────────────────────────────────────
 
     public function test_set_runtime_override_affects_get_model(): void

@@ -24,87 +24,126 @@ class SettingsManager
 
     public function getApiKey(): string
     {
-        $settings = $this->loadProjectSettings();
-        $providerConfig = $this->getProviderConfig();
-        $apiKey = $this->runtimeOverrides['api_key']
-            ?? $providerConfig['api_key']
-            ?? $settings['api_key']
-            ?? \HaoCode\Support\Runtime\SdkRuntime::config('haocode.api_key')
-            ?: getenv('ANTHROPIC_API_KEY')
-            ?: '';
-
-        return is_string($apiKey) ? trim($apiKey) : '';
+        return $this->resolveProviderConfig()->apiKey;
     }
 
     public function getModel(): string
     {
+        return $this->resolveProviderConfig()->model;
+    }
+
+    public function getBaseUrl(): string
+    {
+        return $this->resolveProviderConfig()->baseUrl;
+    }
+
+    public function getMaxTokens(): int
+    {
+        return $this->resolveProviderConfig()->maxTokens;
+    }
+
+    /**
+     * Resolve provider type, credentials, endpoint, model, and token limit
+     * together so an explicit provider switch cannot reuse another vendor's
+     * active provider entry or environment credential.
+     */
+    public function resolveProviderConfig(): ResolvedProviderConfig
+    {
         $settings = $this->loadProjectSettings();
-        $runtimeModel = $this->resolveModelOverride($this->runtimeOverrides['model'] ?? null, $settings);
-        $providerConfig = $this->getProviderConfig();
-        $settingsModel = $this->resolveModelOverride($settings['model'] ?? null, $settings);
-
-        $model = $runtimeModel
-            ?? $providerConfig['model']
-            ?? $settingsModel;
-
         $providerType = $this->getProviderType();
-        if ((! is_string($model) || trim($model) === '') && $providerType !== 'anthropic') {
+        $hasExplicitProviderType = array_key_exists('provider_type', $this->runtimeOverrides);
+        $hasExplicitConnectionSettings = array_intersect(
+            ['api_key', 'model', 'api_base_url', 'max_tokens', 'context_window'],
+            array_keys($this->runtimeOverrides),
+        ) !== [];
+        $providerName = $this->resolveProviderNameForType(
+            $providerType,
+            $hasExplicitProviderType,
+            $hasExplicitConnectionSettings,
+        );
+        $providerConfig = $providerName !== null ? $this->getProviderConfig($providerName) : null;
+
+        $legacyAllowed = $providerType === 'anthropic';
+        $apiKey = array_key_exists('api_key', $this->runtimeOverrides)
+            ? trim(is_string($this->runtimeOverrides['api_key'])
+                ? $this->runtimeOverrides['api_key']
+                : '')
+            : ($this->firstNonEmptyString(
+                $providerConfig['api_key'] ?? null,
+                $legacyAllowed ? ($settings['api_key'] ?? null) : null,
+                $legacyAllowed ? \HaoCode\Support\Runtime\SdkRuntime::config('haocode.api_key') : null,
+                $providerType === 'anthropic'
+                    ? (getenv('ANTHROPIC_API_KEY') ?: null)
+                    : (getenv('OPENAI_API_KEY') ?: null),
+            ) ?? '');
+
+        $runtimeModel = $this->resolveModelOverride($this->runtimeOverrides['model'] ?? null, $settings);
+        $settingsModel = $legacyAllowed
+            ? $this->resolveModelOverride($settings['model'] ?? null, $settings)
+            : null;
+        $model = $this->firstNonEmptyString(
+            $runtimeModel,
+            $providerConfig['model'] ?? null,
+            $settingsModel,
+        );
+        if ($model === null && $providerType !== 'anthropic') {
             throw new \RuntimeException(
                 "A model is required for provider type \"{$providerType}\". "
                 .'Pass HaoCodeConfig(model: ...) or configure a default model for the selected provider.',
             );
         }
+        if ($model === null) {
+            $model = $this->firstNonEmptyString(
+                \HaoCode\Support\Runtime\SdkRuntime::config('haocode.model', ModelCatalog::SONNET),
+            ) ?? ModelCatalog::SONNET;
+        }
 
-        if (! is_string($model) || trim($model) === '') {
-            $configured = \HaoCode\Support\Runtime\SdkRuntime::config('haocode.model', ModelCatalog::SONNET);
-            $model = is_string($configured) && trim($configured) !== ''
-                ? trim($configured)
-                : ModelCatalog::SONNET;
+        $defaultBaseUrl = in_array($providerType, ['openai', 'openai_chat'], true)
+            ? 'https://api.openai.com'
+            : self::DEFAULT_BASE_URL;
+        $baseUrl = $this->firstNonEmptyString(
+            $this->runtimeOverrides['api_base_url'] ?? null,
+            $providerConfig['api_base_url'] ?? null,
+            $legacyAllowed ? ($settings['api_base_url'] ?? null) : null,
+            $legacyAllowed ? \HaoCode\Support\Runtime\SdkRuntime::config('haocode.api_base_url') : null,
+        ) ?? $defaultBaseUrl;
+
+        $maxTokens = $this->firstNumericValue(
+            $this->runtimeOverrides['max_tokens'] ?? null,
+            $providerConfig['max_tokens'] ?? null,
+            $legacyAllowed ? ($settings['max_tokens'] ?? null) : null,
+            $legacyAllowed ? \HaoCode\Support\Runtime\SdkRuntime::config('haocode.max_tokens') : null,
+        ) ?? self::DEFAULT_MAX_TOKENS;
+        $contextWindow = $this->firstNumericValue(
+            $this->runtimeOverrides['context_window'] ?? null,
+            $providerConfig['context_window'] ?? null,
+            $legacyAllowed ? ($settings['context_window'] ?? null) : null,
+            $legacyAllowed ? \HaoCode\Support\Runtime\SdkRuntime::config('haocode.context_window') : null,
+        );
+        if ($contextWindow === null || $contextWindow <= 0) {
+            $contextWindow = 200000;
         }
 
         // Kimi's Anthropic-compatible coding endpoint expects its own model name.
-        if ($this->isKimiCodingEndpoint() && str_starts_with($model, 'claude-')) {
-            return 'kimi-for-coding';
+        if (str_contains(strtolower(rtrim($baseUrl, '/')), 'api.kimi.com/coding')
+            && str_starts_with($model, 'claude-')) {
+            $model = 'kimi-for-coding';
         }
 
-        return $model;
-    }
-
-    public function getBaseUrl(): string
-    {
-        $settings = $this->loadProjectSettings();
-        $baseUrl = $this->runtimeOverrides['api_base_url']
-            ?? $this->getProviderConfig()['api_base_url']
-            ?? $settings['api_base_url']
-            ?? \HaoCode\Support\Runtime\SdkRuntime::config('haocode.api_base_url', self::DEFAULT_BASE_URL);
-
-        return is_string($baseUrl) && trim($baseUrl) !== ''
-            ? $baseUrl
-            : self::DEFAULT_BASE_URL;
-    }
-
-    public function getMaxTokens(): int
-    {
-        $settings = $this->loadProjectSettings();
-        $maxTokens = $this->runtimeOverrides['max_tokens']
-            ?? $this->getProviderConfig()['max_tokens']
-            ?? $settings['max_tokens']
-            ?? \HaoCode\Support\Runtime\SdkRuntime::config('haocode.max_tokens', self::DEFAULT_MAX_TOKENS);
-
-        return is_numeric($maxTokens) ? (int) $maxTokens : self::DEFAULT_MAX_TOKENS;
+        return new ResolvedProviderConfig(
+            providerType: $providerType,
+            providerName: $providerName,
+            apiKey: $apiKey,
+            model: $model,
+            baseUrl: $baseUrl,
+            maxTokens: $maxTokens,
+            contextWindow: $contextWindow,
+        );
     }
 
     public function getContextWindow(): int
     {
-        $settings = $this->loadProjectSettings();
-        $contextWindow = $this->runtimeOverrides['context_window']
-            ?? $this->getProviderConfig()['context_window']
-            ?? $settings['context_window']
-            ?? \HaoCode\Support\Runtime\SdkRuntime::config('haocode.context_window', 200000);
-
-        return is_numeric($contextWindow) && (int) $contextWindow > 0
-            ? (int) $contextWindow
-            : 200000;
+        return $this->resolveProviderConfig()->contextWindow;
     }
 
     public function getActiveProviderName(): ?string
@@ -665,13 +704,6 @@ class SettingsManager
         return ModelCatalog::availableModels();
     }
 
-    private function isKimiCodingEndpoint(): bool
-    {
-        $baseUrl = strtolower(rtrim($this->getBaseUrl(), '/'));
-
-        return str_contains($baseUrl, 'api.kimi.com/coding');
-    }
-
     private function loadProjectSettings(): array
     {
         if ($this->cachedSettings !== null) {
@@ -719,7 +751,7 @@ class SettingsManager
         return is_array($decoded) ? $decoded : [];
     }
 
-    private function resolveSelectedProviderName(array $settings): ?string
+    private function resolveSelectedProviderName(array $settings, bool $allowImplicitFallback = true): ?string
     {
         $providers = $this->configuredProvidersFromSettings($settings);
         if ($providers === []) {
@@ -761,8 +793,47 @@ class SettingsManager
             return $settingsSelection['provider'];
         }
 
-        if (! $this->hasLegacyTopLevelConfig($settings)) {
+        if ($allowImplicitFallback && ! $this->hasLegacyTopLevelConfig($settings)) {
             return array_key_first($providers);
+        }
+
+        return null;
+    }
+
+    private function resolveProviderNameForType(
+        string $providerType,
+        bool $explicitProviderType,
+        bool $hasExplicitConnectionSettings = false,
+    ): ?string
+    {
+        if (! $explicitProviderType) {
+            return $this->getActiveProviderName();
+        }
+
+        $providers = $this->getConfiguredProviders();
+        $activeProvider = $this->resolveSelectedProviderName($this->loadProjectSettings(), false);
+        if ($activeProvider !== null
+            && isset($providers[$activeProvider])
+            && $providers[$activeProvider]['type'] === $providerType) {
+            return $activeProvider;
+        }
+
+        $matches = array_keys(array_filter(
+            $providers,
+            static fn (array $provider): bool => $provider['type'] === $providerType,
+        ));
+        if (count($matches) === 1) {
+            return $matches[0];
+        }
+        if (count($matches) > 1) {
+            if ($hasExplicitConnectionSettings) {
+                return null;
+            }
+            throw new \RuntimeException(
+                "Provider type \"{$providerType}\" matches multiple configured providers: "
+                .implode(', ', $matches)
+                .'. Select one with model_provider/active_provider or pass explicit connection settings.',
+            );
         }
 
         return null;

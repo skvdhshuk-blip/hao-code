@@ -2,6 +2,8 @@
 
 namespace Tests\Unit;
 
+use HaoCode\Sdk\AgentRunContextFactory;
+use HaoCode\Sdk\HaoCodeConfig;
 use HaoCode\Services\Agent\AgentLoop;
 use HaoCode\Services\Agent\AgentLoopFactory;
 use HaoCode\Services\Agent\BackgroundAgentManager;
@@ -305,6 +307,57 @@ MD);
             $this->assertFalse($result->isError);
             exec('cd '.escapeshellarg($root)." && git branch --list 'agent-*'", $branches);
             $this->assertSame([], $branches);
+        } finally {
+            $this->removeDirectory($root);
+        }
+    }
+
+    public function test_worktree_agent_uses_the_worktree_for_tools_and_project_context(): void
+    {
+        $root = $this->makeGitRepository();
+        mkdir($root.'/.haocode/skills/root-only', 0755, true);
+        file_put_contents(
+            $root.'/.haocode/skills/root-only/SKILL.md',
+            "---\ndescription: Uncommitted root skill\n---\nRoot-only prompt",
+        );
+
+        try {
+            $parentContext = AgentRunContextFactory::make(new HaoCodeConfig(
+                apiKey: 'test-key',
+                cwd: $root,
+            ))->fork(
+                agentId: 'outer-background-agent',
+                backgroundOwnerAgentId: 'outer-background-agent',
+            );
+            $loop = $this->makeLoop('done');
+            $factory = $this->createMock(AgentLoopFactory::class);
+            $factory->expects($this->once())
+                ->method('createIsolated')
+                ->willReturnCallback(function (...$arguments) use ($loop, $root): AgentLoop {
+                    $worktreePath = $arguments[1];
+                    $childContext = $arguments[4];
+
+                    $this->assertNotSame($root, $worktreePath);
+                    $this->assertSame($worktreePath, $childContext->workingDirectory);
+                    $this->assertSame($worktreePath, $childContext->projectDirectory);
+                    $this->assertNull($childContext->agentId);
+                    $this->assertSame('outer-background-agent', $childContext->backgroundOwnerAgentId);
+                    $this->assertNull($childContext->skillLoader->findSkill('root-only'));
+
+                    return $loop;
+                });
+
+            $result = (new AgentTool($factory))->call([
+                'prompt' => 'Inspect the repository',
+                'isolation' => 'worktree',
+            ], new ToolUseContext(
+                workingDirectory: $root,
+                sessionId: 'session-1',
+                runContext: $parentContext,
+                toolRegistry: new ToolRegistry,
+            ));
+
+            $this->assertFalse($result->isError);
         } finally {
             $this->removeDirectory($root);
         }

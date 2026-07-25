@@ -208,6 +208,57 @@ class AgentLoopTest extends TestCase
         $this->assertSame('done', $loop->run($content));
     }
 
+    public function test_failed_user_message_persistence_does_not_mutate_in_memory_history(): void
+    {
+        $queryEngine = $this->createMock(QueryEngine::class);
+        $queryEngine->expects($this->never())->method('query');
+
+        $sessionManager = $this->createMock(SessionManager::class);
+        $sessionManager->method('getSessionId')->willReturn('test-session');
+        $sessionManager->method('recordEntry')->willThrowException(
+            new \RuntimeException('disk full'),
+        );
+
+        $loop = $this->makeLoop($queryEngine, sessionManager: $sessionManager);
+
+        try {
+            $loop->run('must persist first');
+            $this->fail('Expected user transcript persistence failure.');
+        } catch (\RuntimeException $e) {
+            $this->assertSame('disk full', $e->getMessage());
+        }
+
+        $this->assertSame([], $loop->getMessageHistory()->getMessages());
+    }
+
+    public function test_failed_assistant_persistence_poison_closes_the_loop_for_future_turns(): void
+    {
+        $queryEngine = $this->createMock(QueryEngine::class);
+        $queryEngine->expects($this->once())
+            ->method('query')
+            ->willReturn($this->makePlainTextProcessor('model completed'));
+
+        $sessionManager = $this->createMock(SessionManager::class);
+        $sessionManager->method('getSessionId')->willReturn('test-session');
+        $sessionManager->method('recordTurn')->willThrowException(
+            new \RuntimeException('disk full'),
+        );
+
+        $loop = $this->makeLoop($queryEngine, sessionManager: $sessionManager);
+
+        try {
+            $loop->run('first turn');
+            $this->fail('Expected assistant transcript persistence failure.');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('may have completed', $e->getMessage());
+        }
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('cannot continue');
+
+        $loop->run('second turn');
+    }
+
     public function test_restore_run_snapshot_restores_cost_and_usage_totals(): void
     {
         $queryEngine = $this->createMock(QueryEngine::class);

@@ -828,7 +828,7 @@ class SessionManager
                 continue;
             }
 
-            $content = trim((string) ($entry['content'] ?? ''));
+            $content = $this->extractTextContent($entry['content'] ?? '');
             if ($content !== '') {
                 $singleLine = preg_replace('/\s+/', ' ', $content) ?: $content;
 
@@ -837,6 +837,31 @@ class SessionManager
         }
 
         return 'Branched conversation';
+    }
+
+    private function extractTextContent(mixed $content): string
+    {
+        if (is_string($content)) {
+            return trim($content);
+        }
+        if (! is_array($content)) {
+            return '';
+        }
+
+        $texts = [];
+        foreach ($content as $block) {
+            if (is_string($block)) {
+                $texts[] = $block;
+                continue;
+            }
+            if (is_array($block)
+                && ($block['type'] ?? null) === 'text'
+                && is_string($block['text'] ?? null)) {
+                $texts[] = $block['text'];
+            }
+        }
+
+        return trim(implode(' ', $texts));
     }
 
     private function makeUniqueBranchTitle(string $baseTitle): string
@@ -882,8 +907,12 @@ class SessionManager
     {
         $sessionId = $this->validateSessionId($sessionId);
 
-        if (! is_dir($this->sessionPath)) {
-            mkdir($this->sessionPath, 0755, true);
+        if (! is_dir($this->sessionPath)
+            && ! @mkdir($this->sessionPath, 0700, true)
+            && ! is_dir($this->sessionPath)) {
+            throw new \RuntimeException(
+                "Could not create session directory for branched transcript: {$this->sessionPath}",
+            );
         }
 
         $lines = array_map(function (array $entry) use ($sessionId): string {
@@ -891,9 +920,58 @@ class SessionManager
             $entry['timestamp'] = (string) ($entry['timestamp'] ?? date('c'));
             $entry['cwd'] = $entry['cwd'] ?? (getcwd() ?: null);
 
-            return json_encode($entry, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        }, $entries);
+            $line = self::encodeEntryForJsonl($entry)."\n";
+            if (strlen($line) > self::MAX_ENTRY_BYTES) {
+                throw new \RuntimeException(
+                    'Session entry exceeds the 32 MiB persistence limit.',
+                );
+            }
 
-        file_put_contents($this->sessionPath.'/'.$sessionId.'.jsonl', implode("\n", $lines)."\n");
+            return $line;
+        }, $entries);
+        $contents = implode('', $lines);
+        if (strlen($contents) > self::MAX_SESSION_BYTES) {
+            throw new \RuntimeException(
+                'Session transcript exceeds the 128 MiB persistence limit.',
+            );
+        }
+
+        $destination = $this->sessionPath.'/'.$sessionId.'.jsonl';
+        $temporary = tempnam($this->sessionPath, '.branch-');
+        if ($temporary === false) {
+            throw new \RuntimeException('Could not create a temporary branched session file.');
+        }
+
+        $handle = @fopen($temporary, 'wb');
+        if ($handle === false) {
+            @unlink($temporary);
+            throw new \RuntimeException('Could not open the temporary branched session file.');
+        }
+
+        try {
+            $offset = 0;
+            $length = strlen($contents);
+            while ($offset < $length) {
+                $written = fwrite($handle, substr($contents, $offset));
+                if ($written === false || $written === 0) {
+                    throw new \RuntimeException('Could not write the branched session transcript.');
+                }
+                $offset += $written;
+            }
+            if (! fflush($handle)) {
+                throw new \RuntimeException('Could not flush the branched session transcript.');
+            }
+        } catch (\Throwable $e) {
+            fclose($handle);
+            @unlink($temporary);
+            throw $e;
+        }
+        fclose($handle);
+        @chmod($temporary, 0600);
+
+        if (! @rename($temporary, $destination)) {
+            @unlink($temporary);
+            throw new \RuntimeException('Could not atomically publish the branched session transcript.');
+        }
     }
 }

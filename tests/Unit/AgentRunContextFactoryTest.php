@@ -108,6 +108,23 @@ class AgentRunContextFactoryTest extends TestCase
         $this->assertTrue($overridden->enableAskUser, 'AskUser is a host safety capability and remains inherited.');
     }
 
+    public function test_fork_can_clear_execution_agent_id_without_losing_background_owner(): void
+    {
+        $projectDirectory = $this->makeProjectDirectory('nested-agent-identity');
+        $context = AgentRunContextFactory::make(new HaoCodeConfig(
+            apiKey: 'test-key',
+            cwd: $projectDirectory,
+        ))->fork(
+            agentId: 'outer-background-agent',
+            backgroundOwnerAgentId: 'outer-background-agent',
+        );
+
+        $nestedSync = $context->fork(inheritAgentId: false);
+
+        $this->assertNull($nestedSync->agentId);
+        $this->assertSame('outer-background-agent', $nestedSync->backgroundOwnerAgentId);
+    }
+
     public function test_additional_recursive_skill_directories_are_propagated_to_run_context(): void
     {
         $projectDirectory = $this->makeProjectDirectory('skill-directory-project');

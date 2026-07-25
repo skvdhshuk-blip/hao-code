@@ -18,6 +18,9 @@ class SkillLoader
     /** @var array<string, SkillDefinition> */
     private ?array $skills = null;
 
+    /** @var array<string, SkillDefinition> */
+    private array $registeredDefinitions = [];
+
     public function __construct(
         private readonly ?string $workingDirectory = null,
         /** @var string[] */
@@ -172,9 +175,26 @@ class SkillLoader
      */
     public function registerSkillDefinition(SkillDefinition $skill): void
     {
+        $this->registeredDefinitions[$skill->name] = $skill;
         // Ensure skills cache is initialized
         $this->loadSkills();
         $this->skills[$skill->name] = $skill;
+    }
+
+    /**
+     * Rebase project-local discovery while preserving only programmatically
+     * registered SDK skills and explicit additional directories.
+     *
+     * @internal
+     */
+    public function forWorkingDirectory(string $workingDirectory): self
+    {
+        $loader = new self($workingDirectory, $this->additionalDirectories, $this->recursive);
+        foreach ($this->registeredDefinitions as $definition) {
+            $loader->registerSkillDefinition($definition);
+        }
+
+        return $loader;
     }
 
     private function getSkillDirectories(): array

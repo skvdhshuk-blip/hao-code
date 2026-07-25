@@ -2,7 +2,7 @@
 
 Use hao-code as a framework-free PHP library to embed an AI coding agent in your application.
 
-This document describes the `v1.18.6` source line. Published package versions
+This document describes the `v1.18.7` source line. Published package versions
 are identified by Git tags and Packagist.
 
 ```bash
@@ -381,7 +381,7 @@ $config = new HaoCodeConfig(
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `apiKey` | `?string` | `null` | API key for the selected provider. Falls back to provider/project/global settings, then `ANTHROPIC_API_KEY` |
+| `apiKey` | `?string` | `null` | API key for the selected provider. Anthropic may use legacy project/global settings and `ANTHROPIC_API_KEY`; OpenAI wire formats use only an explicitly matching provider entry or `OPENAI_API_KEY` |
 | `model` | `?string` | `null` | Model ID. Anthropic falls back to the configured Claude default; `openai` and `openai_chat` require an explicit model or one in the selected provider entry |
 | `baseUrl` | `?string` | `null` | API endpoint URL (for proxies, custom endpoints) |
 | `maxTokens` | `?int` | `null` | Maximum output tokens per response |
@@ -390,8 +390,10 @@ $config = new HaoCodeConfig(
 | `headers` | `array<string, string>` | `[]` | Extra HTTP request headers merged into every provider request (e.g. GitHub Copilot's `Editor-Version` / `Copilot-Integration-Id`). A custom value overrides the provider's hardcoded header of the same name (case-insensitive), except `Authorization` / `x-api-key`, which always stay under the SDK's authentication logic. Invalid entries (non-string keys/values, invalid header names, CR/LF) are filtered out |
 
 When any of these are set, the SDK creates a run-scoped provider. Explicit
-values override active settings; unspecified connection values still come from
-the selected provider/project/global settings.
+values override active settings; unspecified connection values come only from
+the selected provider and the matching vendor environment. Credentials and
+models are resolved as one connection, so switching wire formats cannot reuse
+another vendor's active key or model.
 Selecting `openai` or `openai_chat` without a model fails before request
 creation. This prevents a Claude default model ID from crossing provider
 boundaries.
@@ -406,7 +408,7 @@ configured output tokens and a safety margin before sending a request.
 |-----------|------|---------|-------------|
 | `cwd` | `?string` | `null` | Working directory for tool execution. Defaults to `getcwd()` |
 | `maxTurns` | `int` | `50` | Maximum agent turns (tool-use round trips) |
-| `maxBudgetUsd` | `?float` | `null` | Cost limit in USD. Agent stops when exceeded |
+| `maxBudgetUsd` | `?float` | `null` | Total estimated cost limit in USD for the root run, child/Team/background agents, forked skills, structured retries, and HITL resumes |
 | `ephemeral` | `bool` | `true` | Disable session and tool-result persistence for this run |
 | `permissionMode` | `string` | `'default'` | `'default'`, `'plan'`, `'accept_edits'`, `'bypass_permissions'` |
 | `sandbox` | `?SandboxConfig` | `null` | Optional temporary filesystem/shell runtime for tools |
@@ -776,6 +778,10 @@ pure-Python k-means script, run it in AgentRun, and read back the JSON summary.
 | `memorySummaryLevel` | `string` | `'l0'` | Memory injected into the system prompt: `l0`, `l1`, or `l2` |
 | `memoryStoragePath` | `?string` | `null` | Isolated JSON memory file; defaults to `~/.haocode/memory.json` |
 | `memoryStore` | `?MemoryStoreInterface` | `null` | Run-scoped custom store; takes precedence over `memoryStoragePath` |
+
+Models that require adaptive thinking (including Opus 4.8 and current Claude 5
+models) send `thinking.type: adaptive` with high effort. `thinkingBudget`
+continues to apply to models that support manual extended-thinking budgets.
 
 ### Factory Method
 
@@ -1568,14 +1574,18 @@ $result = HaoCode::query('Do a big refactoring', new HaoCodeConfig(
     allowedTools: ['Read', 'Edit', 'Glob', 'Grep'],
     permissionMode: 'bypass_permissions',
 ));
-// Agent auto-stops at 80% ($4.00 warning) and 100% ($5.00 hard stop)
+// The shared run tree warns at 80% and hard-stops before its next model call at 100%.
 ```
 
 The built-in estimator has exact pricing for the Claude model IDs in
 `ModelCatalog`. Unknown and non-Anthropic models expose
 `$result->usage['cost_available'] === false`; `maxBudgetUsd` fails before the
 first request when trusted pricing is unavailable. Durable HITL checkpoints
-restore cumulative token and cost totals before continuing.
+restore cumulative token and cost totals before continuing. One process-safe
+ledger is shared by the root run, synchronous and background descendants, Team
+members, forked skills, and structured-output correction retries. Ledger files
+inactive for 90 days are collected lazily; a later durable resume reconstructs
+the minimum accumulated spend from its checkpoint.
 
 ### Conversation cumulative cost
 

@@ -620,7 +620,9 @@ $config = new HaoCodeConfig(
 Built-in USD budgets use exact pricing for the Claude models listed by this
 release. Unknown or non-Anthropic models report `cost_available: false`;
 requesting `maxBudgetUsd` for one of those models fails before a request is sent
-instead of applying an unrelated fallback price.
+instead of applying an unrelated fallback price. The budget is one shared,
+process-safe total across the root run, child/Team/background agents, forked
+skills, structured retries, and durable HITL resumes.
 
 ## Callbacks And Abort
 
@@ -703,7 +705,7 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.18.6`. Notable changes since `v1.10.0`:
+is based on `v1.18.7`. Notable changes since `v1.10.0`:
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/
@@ -724,6 +726,9 @@ is based on `v1.18.6`. Notable changes since `v1.10.0`:
 - `v1.18.6` — Durable HITL preserves inline Skill scopes, cumulative budgets,
   multimodal content, and managed worktree lifecycle; provider model selection,
   pricing, transcript writes, and runtime reset safety now fail closed.
+- `v1.18.7` — Provider connections resolve credentials and model limits as one
+  vendor-safe unit; adaptive thinking, shared run-tree budgets, consistent HITL
+  resumes, worktree context, and durable session writes are hardened.
 
 ## License
 

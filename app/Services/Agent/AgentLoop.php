@@ -30,6 +30,8 @@ class AgentLoop
 
     private bool $aborted = false;
 
+    private bool $durablePersistenceFailed = false;
+
     private bool $sessionStarted = false;
 
     /** @var array<int, array<string, mixed>>|null Cache-stable prompt for this loop/session. */
@@ -158,6 +160,7 @@ class AgentLoop
         ?callable $onTurnStart = null,
         ?callable $onThinkingDelta = null,
     ): string {
+        $this->assertDurableConversationUsable();
         $originalModel = $this->runContext?->settings->getModel();
         $this->toolOrchestrator->resetSkillScope();
         $agentSpan = $this->tracer?->startSpan(
@@ -210,6 +213,7 @@ class AgentLoop
         ?callable $onTurnStart = null,
         ?callable $onThinkingDelta = null,
     ): string {
+        $this->assertDurableConversationUsable();
         $context = $this->toolUseContext ??= new ToolUseContext(
             workingDirectory: $this->workingDirectory ?? (getcwd() ?: '/'),
             sessionId: $this->sessionManager->getSessionId(),
@@ -346,6 +350,9 @@ class AgentLoop
         $this->cancellationToken->reset();
         $this->interruptDecider = null;
         $this->interruptDeciderResolved = false;
+        if ($this->costTracker->shouldStop()) {
+            return '(Cost limit reached: '.$this->costTracker->getSummary().')';
+        }
         if (is_string($userInput)) {
             $this->lastUserPrompt = $userInput;
         } elseif (is_array($userInput)) {
@@ -357,11 +364,11 @@ class AgentLoop
             $modelInput = $isSessionStart
                 ? $this->withInitialTurnContext($userInput)
                 : $userInput;
-            $this->messageHistory->addUserMessage($modelInput);
             $this->sessionManager->recordEntry([
                 'type' => 'user_message',
                 'content' => $userInput,
             ]);
+            $this->messageHistory->addUserMessage($modelInput);
         }
 
         // Fire SessionStart hook on the very first user turn
@@ -389,6 +396,9 @@ class AgentLoop
         while ($turnCount < $this->maxTurns && ! $this->aborted) {
             if ($this->eventPump !== null) {
                 ($this->eventPump)();
+            }
+            if ($this->costTracker->shouldStop()) {
+                return '(Cost limit reached: '.$this->costTracker->getSummary().')';
             }
             $turnCount++;
 
@@ -541,7 +551,7 @@ class AgentLoop
 
                     $incompleteResponseRetries = 0;
                     $this->messageHistory->addAssistantMessage($assistantMessage);
-                    $this->sessionManager->recordTurn($assistantMessage, []);
+                    $this->persistAssistantTurn($assistantMessage, []);
                     $this->hookExecutor?->execute('Stop', [
                         'session_id' => $this->sessionManager->getSessionId(),
                         'turn' => $turnCount,
@@ -575,7 +585,7 @@ class AgentLoop
                                 $signatureRetries,
                             ),
                         );
-                        $this->sessionManager->recordTurn($assistantMessage, $toolResults);
+                        $this->persistAssistantTurn($assistantMessage, $toolResults);
                         $turnCount--;
 
                         continue;
@@ -730,7 +740,7 @@ class AgentLoop
                 $this->messageHistory->addToolResultMessage($toolResults);
 
                 // 9. Record transcript
-                $this->sessionManager->recordTurn($assistantMessage, $toolResults);
+                $this->persistAssistantTurn($assistantMessage, $toolResults);
 
                 // 10. Auto-generate session title after first turn
                 if (! $this->autoTitleGenerated && $this->sessionManager->getTitle() === null) {
@@ -752,7 +762,7 @@ class AgentLoop
                     $firstInput = mb_substr($rawTitle, 0, 80);
                     $title = preg_replace('/\s+/', ' ', trim($firstInput));
                     if ($title !== '') {
-                        $this->sessionManager->setTitle($title);
+                        $this->persistSessionTitle($title);
                     }
                 }
             } catch (\Throwable $e) {
@@ -781,6 +791,7 @@ class AgentLoop
             'worktree_path' => $this->runContext?->worktreePath,
             'worktree_branch' => $this->runContext?->worktreeBranch,
             'managed_worktree' => $this->runContext?->managedWorktree ?? false,
+            'background_owner_agent_id' => $this->runContext?->backgroundOwnerAgentId,
             'model' => $this->runContext?->settings->getModel(),
             'system_prompt' => $this->runContext?->settings->getSystemPrompt(),
             'append_system_prompt' => $this->runContext?->settings->getAppendSystemPrompt(),
@@ -793,6 +804,8 @@ class AgentLoop
             'active_skill_model_override' => $this->toolOrchestrator->getActiveSkillModelOverride(),
             'active_skill_context' => $this->toolOrchestrator->getActiveSkillContext(),
             'estimated_cost_usd' => $this->costTracker->getTotalCost(),
+            'budget_ledger_id' => $this->runContext?->budgetLedger?->getId(),
+            'budget_limit_usd' => $this->runContext?->budgetLedger?->getLimit(),
             'total_input_tokens' => $this->totalInputTokens,
             'total_output_tokens' => $this->totalOutputTokens,
             'total_cache_creation_tokens' => $this->totalCacheCreationTokens,
@@ -910,7 +923,7 @@ class AgentLoop
 
         $assistantMessage = $processor->toAssistantMessage();
         $this->messageHistory->addAssistantMessage($assistantMessage);
-        $this->sessionManager->recordTurn($assistantMessage, []);
+        $this->persistAssistantTurn($assistantMessage, []);
 
         $answer = trim($processor->getAccumulatedText());
 
@@ -952,6 +965,12 @@ class AgentLoop
     public function getCostTracker(): CostTracker
     {
         return $this->costTracker;
+    }
+
+    /** @internal */
+    public function getBudgetLedger(): ?\HaoCode\Services\Cost\BudgetLedger
+    {
+        return $this->runContext?->budgetLedger;
     }
 
     public function getCacheCreationTokens(): int
@@ -1325,7 +1344,49 @@ class AgentLoop
         }
 
         $this->messageHistory->addAssistantMessage($assistantMessage);
-        $this->sessionManager->recordTurn($assistantMessage, []);
+        $this->persistAssistantTurn($assistantMessage, []);
+    }
+
+    private function assertDurableConversationUsable(): void
+    {
+        if ($this->durablePersistenceFailed) {
+            throw new \RuntimeException(
+                'This durable conversation cannot continue because a previous transcript write failed. '
+                .'Create or resume a fresh conversation from the last persisted state.',
+            );
+        }
+    }
+
+    private function persistAssistantTurn(array $assistantMessage, array $toolResults): void
+    {
+        try {
+            $this->sessionManager->recordTurn($assistantMessage, $toolResults);
+        } catch (\Throwable $e) {
+            $this->durablePersistenceFailed = true;
+
+            throw new \RuntimeException(
+                'Model or tool execution may have completed, but the durable transcript could not be written. '
+                .'This conversation is no longer safe to continue.',
+                0,
+                $e,
+            );
+        }
+    }
+
+    private function persistSessionTitle(string $title): void
+    {
+        try {
+            $this->sessionManager->setTitle($title);
+        } catch (\Throwable $e) {
+            $this->durablePersistenceFailed = true;
+
+            throw new \RuntimeException(
+                'Model or tool execution completed, but the durable session title could not be written. '
+                .'This conversation is no longer safe to continue.',
+                0,
+                $e,
+            );
+        }
     }
 
     private function buildIncompleteResponseRetryInstruction(

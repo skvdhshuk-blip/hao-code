@@ -3,6 +3,7 @@
 namespace HaoCode\Services\Agent;
 
 use HaoCode\Sdk\Memory\MemoryStoreInterface;
+use HaoCode\Services\Cost\BudgetLedger;
 use HaoCode\Services\Settings\SettingsManager;
 use HaoCode\Tools\Skill\SkillLoader;
 
@@ -37,6 +38,8 @@ final class AgentRunContext
         public readonly ?string $worktreePath = null,
         public readonly ?string $worktreeBranch = null,
         public readonly bool $managedWorktree = false,
+        public readonly ?string $backgroundOwnerAgentId = null,
+        public readonly ?BudgetLedger $budgetLedger = null,
     ) {}
 
     public function fork(
@@ -51,23 +54,30 @@ final class AgentRunContext
         ?string $worktreeBranch = null,
         ?bool $managedWorktree = null,
         ?string $projectDirectory = null,
+        ?string $backgroundOwnerAgentId = null,
+        ?BudgetLedger $budgetLedger = null,
+        bool $inheritAgentId = true,
     ): self
     {
         $readOnly ??= $this->readOnly;
+        $projectDirectory ??= $this->projectDirectory;
         $settings = clone $this->settings;
         if ($readOnly) {
             $settings->set('permission_mode', 'plan');
         }
+        $skillLoader = $projectDirectory === $this->projectDirectory
+            ? clone $this->skillLoader
+            : $this->skillLoader->forWorkingDirectory($projectDirectory);
 
         return new self(
             $workingDirectory ?? $this->workingDirectory,
-            $projectDirectory ?? $this->projectDirectory,
+            $projectDirectory,
             $settings,
-            clone $this->skillLoader,
+            $skillLoader,
             $this->cancellationToken->fork(),
             $interruptOn ?? $this->interruptOn,
             $this->enableAskUser,
-            $agentId ?? $this->agentId,
+            $inheritAgentId ? ($agentId ?? $this->agentId) : $agentId,
             $teamName ?? $this->teamName,
             $this->responseSchema,
             $this->memoryStore,
@@ -83,6 +93,8 @@ final class AgentRunContext
             $worktreePath ?? $this->worktreePath,
             $worktreeBranch ?? $this->worktreeBranch,
             $managedWorktree ?? $this->managedWorktree,
+            $backgroundOwnerAgentId ?? $this->backgroundOwnerAgentId,
+            $budgetLedger ?? $this->budgetLedger,
         );
     }
 }

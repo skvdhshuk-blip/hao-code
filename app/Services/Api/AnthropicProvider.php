@@ -2,6 +2,7 @@
 
 namespace HaoCode\Services\Api;
 
+use HaoCode\Services\Settings\ModelCatalog;
 use JsonException;
 use Symfony\Component\HttpClient\HttpClient;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
@@ -216,12 +217,17 @@ class AnthropicProvider implements ApiKeyAwareProvider, SettingsAwareProvider
 
         $thinkingEnabled = $this->resolveThinkingEnabled();
         if ($thinkingEnabled) {
-            $thinkingBudget = $this->resolveThinkingBudget();
-            $payload['thinking'] = [
-                'type' => 'enabled',
-                'budget_tokens' => $thinkingBudget,
-            ];
-            $payload['max_tokens'] = max($this->resolveMaxTokens(), $thinkingBudget + 4096);
+            if (ModelCatalog::requiresAdaptiveThinking($this->resolveModel())) {
+                $payload['thinking'] = ['type' => 'adaptive'];
+                $payload['output_config'] = ['effort' => 'high'];
+            } else {
+                $thinkingBudget = $this->resolveThinkingBudget();
+                $payload['thinking'] = [
+                    'type' => 'enabled',
+                    'budget_tokens' => $thinkingBudget,
+                ];
+                $payload['max_tokens'] = max($this->resolveMaxTokens(), $thinkingBudget + 4096);
+            }
         }
 
         $tools = $this->normalizeToolsForProvider($tools, $baseUrl);

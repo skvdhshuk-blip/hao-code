@@ -6,6 +6,7 @@ use HaoCode\Services\Agent\AgentLoopFactory;
 use HaoCode\Services\Agent\AgentRunContext;
 use HaoCode\Services\Api\PooledProvider;
 use HaoCode\Services\Api\StreamingClient;
+use HaoCode\Services\Cost\BudgetLedger;
 use HaoCode\Services\Mcp\McpConnectionException;
 use HaoCode\Services\Mcp\McpConnectionManager;
 use HaoCode\Services\Mcp\McpServerConfigManager;
@@ -65,12 +66,14 @@ final class SdkRunFactory
         AgentLoopFactory $factory,
         ?StreamingClient $streamingClient = null,
         ?array $resumeSnapshot = null,
+        ?BudgetLedger $budgetLedger = null,
     ): SdkRun {
         return self::create(
             ($options ?? new RunOptions)->toConfig($agent),
             $factory,
             $streamingClient,
             $resumeSnapshot,
+            $budgetLedger,
         );
     }
 
@@ -79,8 +82,29 @@ final class SdkRunFactory
         AgentLoopFactory $factory,
         ?StreamingClient $streamingClient = null,
         ?array $resumeSnapshot = null,
+        ?BudgetLedger $budgetLedger = null,
     ): SdkRun {
         $runContext = self::createValidatedRunContext($config);
+        $snapshotBudgetLimit = $resumeSnapshot['budget_limit_usd'] ?? null;
+        $budgetLimit = is_numeric($snapshotBudgetLimit) && (float) $snapshotBudgetLimit >= 0
+            ? (float) $snapshotBudgetLimit
+            : $config->maxBudgetUsd;
+        if ($budgetLedger !== null) {
+            if ($budgetLimit === null || abs($budgetLedger->getLimit() - $budgetLimit) > 0.0000001) {
+                throw new \RuntimeException('Shared budget ledger does not match the run budget.');
+            }
+        } elseif ($budgetLimit !== null) {
+            $ledgerId = self::snapshotString($resumeSnapshot ?? [], 'budget_ledger_id');
+            $minimumSpent = is_numeric($resumeSnapshot['estimated_cost_usd'] ?? null)
+                ? max(0.0, (float) $resumeSnapshot['estimated_cost_usd'])
+                : 0.0;
+            $budgetLedger = $ledgerId !== null
+                ? BudgetLedger::resume($ledgerId, $budgetLimit, $minimumSpent)
+                : BudgetLedger::create($budgetLimit);
+        }
+        if ($budgetLedger !== null) {
+            $runContext = $runContext->fork(budgetLedger: $budgetLedger);
+        }
         if ($resumeSnapshot !== null) {
             $runContext = $runContext->fork(
                 workingDirectory: self::snapshotString($resumeSnapshot, 'cwd'),
@@ -91,6 +115,7 @@ final class SdkRunFactory
                 worktreePath: self::snapshotString($resumeSnapshot, 'worktree_path'),
                 worktreeBranch: self::snapshotString($resumeSnapshot, 'worktree_branch'),
                 managedWorktree: (bool) ($resumeSnapshot['managed_worktree'] ?? false),
+                backgroundOwnerAgentId: self::snapshotString($resumeSnapshot, 'background_owner_agent_id'),
             );
             foreach ([
                 'model' => 'model',
@@ -110,9 +135,10 @@ final class SdkRunFactory
             )
             ?? \HaoCode\Support\Runtime\SdkRuntime::app(StreamingClient::class)->withSettingsManager($runContext->settings);
 
-        $providerType = self::resolveProviderType($config, $runContext->settings);
-        $resolvedModel = $runContext->settings->getModel();
-        if ($config->maxBudgetUsd !== null
+        $resolvedProvider = $runContext->settings->resolveProviderConfig();
+        $providerType = $resolvedProvider->providerType;
+        $resolvedModel = $resolvedProvider->model;
+        if ($budgetLimit !== null
             && ModelCatalog::pricingFor($providerType, $resolvedModel) === null) {
             throw new \RuntimeException(
                 "Cost budget requires pricing for model \"{$resolvedModel}\" "
@@ -185,10 +211,10 @@ final class SdkRunFactory
         $costTracker = $loop->getCostTracker();
         $costTracker->setProviderType($providerType);
         $costTracker->setModel($resolvedModel);
-        if ($config->maxBudgetUsd !== null) {
+        if ($budgetLimit !== null) {
             $loop->getCostTracker()->setThresholds(
-                warn: $config->maxBudgetUsd * 0.8,
-                stop: $config->maxBudgetUsd,
+                warn: $budgetLimit * 0.8,
+                stop: $budgetLimit,
             );
             if (is_numeric($resumeSnapshot['estimated_cost_usd'] ?? null)) {
                 $costTracker->setTotalCost((float) $resumeSnapshot['estimated_cost_usd']);
@@ -212,14 +238,19 @@ final class SdkRunFactory
     public static function createValidatedRunContext(HaoCodeConfig $config): AgentRunContext
     {
         $runContext = AgentRunContextFactory::make($config);
-        $providerType = self::resolveProviderType($config, $runContext->settings);
+        $resolvedProvider = $runContext->settings->resolveProviderConfig();
+        $providerType = $resolvedProvider->providerType;
         $hasPooledCredential = $config->credentialPool?->hasProvider($providerType) ?? false;
-        $apiKey = $config->apiKey ?? $runContext->settings->getApiKey();
+        $apiKey = $resolvedProvider->apiKey;
 
         if (trim($apiKey) === '' && ! $hasPooledCredential) {
+            $environment = $providerType === 'anthropic'
+                ? 'ANTHROPIC_API_KEY'
+                : 'OPENAI_API_KEY';
             throw new \RuntimeException(
-                'API key is required. Pass HaoCodeConfig(apiKey: ...), configure credentialPool, '.
-                'or set ANTHROPIC_API_KEY in the process environment. .env files are not loaded automatically.',
+                "API key is required for provider type \"{$providerType}\". "
+                .'Pass HaoCodeConfig(apiKey: ...), configure a matching credentialPool/provider entry, '
+                ."or set {$environment} in the process environment. .env files are not loaded automatically.",
             );
         }
 
@@ -240,18 +271,14 @@ final class SdkRunFactory
         }
 
         $settings ??= AgentRunContextFactory::make($config)->settings;
-        $providerType = self::resolveProviderType($config, $settings);
-        $defaultBaseUrl = in_array($providerType, ['openai', 'openai_chat'], true)
-            ? 'https://api.openai.com'
-            : 'https://api.anthropic.com';
-        $baseUrl = $config->baseUrl
-            ?? ($config->providerType !== null ? $defaultBaseUrl : ($settings->getBaseUrl() ?: $defaultBaseUrl));
+        $resolvedProvider = $settings->resolveProviderConfig();
+        $providerType = $resolvedProvider->providerType;
 
         return new StreamingClient(
-            apiKey: $config->apiKey ?? $settings->getApiKey(),
-            model: $modelOverride ?? $config->model ?? $settings->getModel(),
-            baseUrl: $baseUrl,
-            maxTokens: $config->maxTokens ?? $settings->getMaxTokens(),
+            apiKey: $resolvedProvider->apiKey,
+            model: $modelOverride ?? $resolvedProvider->model,
+            baseUrl: $resolvedProvider->baseUrl,
+            maxTokens: $resolvedProvider->maxTokens,
             thinkingEnabled: $config->thinkingEnabled,
             thinkingBudget: $config->thinkingBudget,
             settingsManager: null,

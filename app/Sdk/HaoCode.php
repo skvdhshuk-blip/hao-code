@@ -5,6 +5,7 @@ namespace HaoCode\Sdk;
 use HaoCode\Services\Agent\AgentLoop;
 use HaoCode\Services\Agent\AgentLoopFactory;
 use HaoCode\Services\Api\StreamingClient;
+use HaoCode\Services\Cost\BudgetLedger;
 use HaoCode\Services\Session\SessionManager;
 use HaoCode\Services\Settings\SettingsManager;
 
@@ -214,15 +215,6 @@ class HaoCode
                 }
                 throw $e;
             }
-            if ($pendingInterrupt->sourceAgentId !== null) {
-                $backgroundAgents = \HaoCode\Support\Runtime\SdkRuntime::app(
-                    \HaoCode\Services\Agent\BackgroundAgentManager::class,
-                );
-                $backgroundAgents->markCompleted($pendingInterrupt->sourceAgentId, $result->text);
-                $backgroundAgents->finalizeStoredWorktree($pendingInterrupt->sourceAgentId);
-                \HaoCode\Support\Runtime\SdkRuntime::app(\HaoCode\Services\Task\TaskManager::class)
-                    ->update($pendingInterrupt->sourceAgentId, 'completed', $result->text);
-            }
             $result = self::finalizeResumedManagedWorktree(
                 $result,
                 $pendingInterrupt,
@@ -237,11 +229,18 @@ class HaoCode
                     $config,
                 );
 
+                self::completeBackgroundInterruptOwner($pendingInterrupt, $result->text);
+
                 return self::propagateManagedWorktreeResult($parentResult, $result);
             }
             if (($checkpoint['operation'] ?? null) === 'structured') {
-                return self::parseStructuredResult($result);
+                $structuredResult = self::parseStructuredResult($result);
+                self::completeBackgroundInterruptOwner($pendingInterrupt, $result->text);
+
+                return $structuredResult;
             }
+
+            self::completeBackgroundInterruptOwner($pendingInterrupt, $result->text);
 
             return $result;
         } finally {
@@ -310,15 +309,6 @@ class HaoCode
             if ($final === null) {
                 return;
             }
-            if ($pendingInterrupt->sourceAgentId !== null) {
-                $backgroundAgents = \HaoCode\Support\Runtime\SdkRuntime::app(
-                    \HaoCode\Services\Agent\BackgroundAgentManager::class,
-                );
-                $backgroundAgents->markCompleted($pendingInterrupt->sourceAgentId, $final->text);
-                $backgroundAgents->finalizeStoredWorktree($pendingInterrupt->sourceAgentId);
-                \HaoCode\Support\Runtime\SdkRuntime::app(\HaoCode\Services\Task\TaskManager::class)
-                    ->update($pendingInterrupt->sourceAgentId, 'completed', $final->text ?? '');
-            }
             $final = self::finalizeResumedManagedWorktreeMessage(
                 $final,
                 $pendingInterrupt,
@@ -331,12 +321,20 @@ class HaoCode
                     [HumanDecision::respond((string) $parentLink['parent_action_id'], $final->text)],
                     $config,
                 ) as $parentMessage) {
-                    yield $parentMessage->isResult()
-                        ? self::propagateManagedWorktreeMessage($parentMessage, $final)
-                        : $parentMessage;
+                    if ($parentMessage->isResult()) {
+                        self::completeBackgroundInterruptOwner(
+                            $pendingInterrupt,
+                            $final->text ?? '',
+                        );
+                        yield self::propagateManagedWorktreeMessage($parentMessage, $final);
+
+                        return;
+                    }
+                    yield $parentMessage;
                 }
                 return;
             }
+            self::completeBackgroundInterruptOwner($pendingInterrupt, $final->text ?? '');
             yield $final;
         } finally {
             $conversation->close();
@@ -413,6 +411,23 @@ class HaoCode
         $values['cwd'] = $worktreePath;
 
         return new HaoCodeConfig(...$values);
+    }
+
+    private static function completeBackgroundInterruptOwner(
+        HumanInterrupt $interrupt,
+        string $result,
+    ): void {
+        if ($interrupt->sourceAgentId === null) {
+            return;
+        }
+
+        $backgroundAgents = \HaoCode\Support\Runtime\SdkRuntime::app(
+            \HaoCode\Services\Agent\BackgroundAgentManager::class,
+        );
+        $backgroundAgents->markCompleted($interrupt->sourceAgentId, $result);
+        $backgroundAgents->finalizeStoredWorktree($interrupt->sourceAgentId);
+        \HaoCode\Support\Runtime\SdkRuntime::app(\HaoCode\Services\Task\TaskManager::class)
+            ->update($interrupt->sourceAgentId, 'completed', $result);
     }
 
     private static function restoreInterruptRunConfig(
@@ -667,38 +682,63 @@ class HaoCode
 
         $config = ($config ?? new HaoCodeConfig)->withResponseSchema($effectiveSchema);
 
+        $conversation = null;
+        if ($config->maxBudgetUsd !== null) {
+            if ($config->sessionId !== null) {
+                $conversation = self::resume($config->sessionId, $config);
+            } elseif ($config->continueSession) {
+                $conversation = self::continueLatest($config->cwd, $config);
+            }
+        }
+        $budgetLedger = $conversation === null && $config->maxBudgetUsd !== null
+            ? BudgetLedger::create($config->maxBudgetUsd)
+            : null;
         $attempt = 0;
         $lastValidationErrors = [];
         $lastRawText = '';
-        while (true) {
-            $promptForAttempt = $attempt === 0
-                ? $basePrompt
-                : $basePrompt."\n\n".
-                    "Your previous response did not match the schema. ".
-                    "Fix these violations and reply with the corrected JSON only:\n".
-                    implode("\n", $lastValidationErrors);
+        try {
+            while (true) {
+                $promptForAttempt = $attempt === 0
+                    ? $basePrompt
+                    : $basePrompt."\n\n".
+                        "Your previous response did not match the schema. ".
+                        "Fix these violations and reply with the corrected JSON only:\n".
+                        implode("\n", $lastValidationErrors);
 
-            $queryResult = self::query($promptForAttempt, $config);
-            $lastRawText = $queryResult->text;
+                if ($conversation !== null) {
+                    $queryResult = $conversation->send($promptForAttempt, $config->images);
+                } elseif ($budgetLedger !== null) {
+                    $queryResult = self::queryWithBudgetLedger(
+                        $promptForAttempt,
+                        $config,
+                        $budgetLedger,
+                    );
+                } else {
+                    $queryResult = self::query($promptForAttempt, $config);
+                }
+                $lastRawText = $queryResult->text;
 
-            $parsed = self::parseStructuredResult($queryResult);
-            // parseStructuredResult already guarantees $parsed is a JSON array;
-            // now validate it against the supplied schema.
-            $errors = self::validateAgainstSchema($parsed->toArray(), $effectiveSchema);
-            if ($errors === []) {
-                return $parsed;
+                $parsed = self::parseStructuredResult($queryResult);
+                // parseStructuredResult already guarantees $parsed is a JSON array;
+                // now validate it against the supplied schema.
+                $errors = self::validateAgainstSchema($parsed->toArray(), $effectiveSchema);
+                if ($errors === []) {
+                    return $parsed;
+                }
+
+                $lastValidationErrors = $errors;
+                if ($attempt >= $maxRetries) {
+                    throw new StructuredResultValidationException(
+                        'Structured response failed schema validation after '.($attempt + 1).
+                        ' attempt(s). Violations: '.implode('; ', $errors),
+                        $lastRawText,
+                        $errors,
+                    );
+                }
+                $attempt++;
             }
-
-            $lastValidationErrors = $errors;
-            if ($attempt >= $maxRetries) {
-                throw new StructuredResultValidationException(
-                    'Structured response failed schema validation after '.($attempt + 1).
-                    ' attempt(s). Violations: '.implode('; ', $errors),
-                    $lastRawText,
-                    $errors,
-                );
-            }
-            $attempt++;
+        } finally {
+            $conversation?->close();
         }
     }
 
@@ -748,12 +788,48 @@ class HaoCode
         }
     }
 
-    private static function createRun(HaoCodeConfig $config): SdkRun
+    private static function queryWithBudgetLedger(
+        string $prompt,
+        HaoCodeConfig $config,
+        BudgetLedger $budgetLedger,
+    ): QueryResult {
+        $run = self::createRun($config, $budgetLedger);
+        $loop = $run->loop;
+        $userInput = $config->images !== []
+            ? ImageContentBlock::buildUserContent($prompt, $config->images)
+            : $prompt;
+
+        try {
+            $response = $loop->run(
+                userInput: $userInput,
+                onTextDelta: $config->onText,
+                onToolStart: $config->onToolStart,
+                onToolComplete: $config->onToolComplete,
+                onTurnStart: $config->onTurnStart,
+                onThinkingDelta: $config->onThinking,
+            );
+
+            return new QueryResult(
+                text: $response,
+                usage: self::extractUsage($loop),
+                cost: $loop->getEstimatedCost(),
+                sessionId: $config->ephemeral ? null : $loop->getSessionManager()->getSessionId(),
+                turnsUsed: $loop->getLastRunTurns(),
+            );
+        } finally {
+            $run->close();
+        }
+    }
+
+    private static function createRun(
+        HaoCodeConfig $config,
+        ?BudgetLedger $budgetLedger = null,
+    ): SdkRun
     {
         /** @var AgentLoopFactory $factory */
         $factory = \HaoCode\Support\Runtime\SdkRuntime::app(AgentLoopFactory::class);
 
-        return SdkRunFactory::create($config, $factory);
+        return SdkRunFactory::create($config, $factory, budgetLedger: $budgetLedger);
     }
 
     /**

@@ -11,6 +11,12 @@ final class ModelCatalog
 
     public const HAIKU = 'claude-haiku-4-5-20251001';
 
+    public const SONNET_5 = 'claude-sonnet-5';
+
+    public const OPUS_5 = 'claude-opus-5';
+
+    public const FABLE_5 = 'claude-fable-5';
+
     /**
      * Standard Claude API pricing per million tokens.
      *
@@ -19,6 +25,18 @@ final class ModelCatalog
      * @var array<string, array{input: float, output: float, cache_write: float, cache_read: float}>
      */
     private const PRICING = [
+        self::FABLE_5 => [
+            'input' => 10.0,
+            'output' => 50.0,
+            'cache_write' => 12.50,
+            'cache_read' => 1.0,
+        ],
+        self::OPUS_5 => [
+            'input' => 5.0,
+            'output' => 25.0,
+            'cache_write' => 6.25,
+            'cache_read' => 0.50,
+        ],
         self::OPUS => [
             'input' => 5.0,
             'output' => 25.0,
@@ -58,10 +76,32 @@ final class ModelCatalog
     {
         return [
             'kimi-for-coding',
+            self::FABLE_5,
+            self::OPUS_5,
+            self::SONNET_5,
             self::SONNET,
             self::OPUS,
             self::HAIKU,
         ];
+    }
+
+    public static function requiresAdaptiveThinking(string $model): bool
+    {
+        $normalized = strtolower(trim($model));
+
+        foreach ([
+            self::FABLE_5,
+            self::OPUS_5,
+            self::SONNET_5,
+            self::OPUS,
+            'claude-opus-4-7',
+        ] as $modelId) {
+            if ($normalized === $modelId || str_starts_with($normalized, $modelId.'-')) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**
@@ -74,6 +114,23 @@ final class ModelCatalog
         }
 
         $normalized = strtolower(trim($model));
+        if ($normalized === self::SONNET_5 || str_starts_with($normalized, self::SONNET_5.'-')) {
+            if (time() < strtotime('2026-09-01T00:00:00Z')) {
+                return [
+                    'input' => 2.0,
+                    'output' => 10.0,
+                    'cache_write' => 2.50,
+                    'cache_read' => 0.20,
+                ];
+            }
+
+            return [
+                'input' => 3.0,
+                'output' => 15.0,
+                'cache_write' => 3.75,
+                'cache_read' => 0.30,
+            ];
+        }
         foreach (self::PRICING as $modelId => $pricing) {
             if ($normalized === $modelId || str_starts_with($normalized, $modelId.'-')) {
                 return $pricing;

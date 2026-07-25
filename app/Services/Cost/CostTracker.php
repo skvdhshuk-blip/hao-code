@@ -20,9 +20,14 @@ class CostTracker
     public function __construct(
         ?float $warnThreshold = null,
         ?float $stopThreshold = null,
+        private readonly ?BudgetLedger $budgetLedger = null,
     ) {
-        $this->warnThreshold = $warnThreshold ?? (float) ($_ENV['HAOCODE_COST_WARN'] ?? 5.00);
-        $this->stopThreshold = $stopThreshold ?? (float) ($_ENV['HAOCODE_COST_STOP'] ?? 50.00);
+        $sharedLimit = $budgetLedger?->getLimit();
+        $this->warnThreshold = $warnThreshold
+            ?? ($sharedLimit !== null ? $sharedLimit * 0.8 : (float) ($_ENV['HAOCODE_COST_WARN'] ?? 5.00));
+        $this->stopThreshold = $stopThreshold
+            ?? $sharedLimit
+            ?? (float) ($_ENV['HAOCODE_COST_STOP'] ?? 50.00);
     }
 
     private string $currentModel = ModelCatalog::SONNET;
@@ -72,11 +77,12 @@ class CostTracker
         ) / 1_000_000;
 
         $this->totalCost += $cost;
+        $globalCost = $this->budgetLedger?->add($cost) ?? $this->totalCost;
 
-        if (!$this->warnedAtThreshold && $this->totalCost >= $this->warnThreshold) {
+        if (!$this->warnedAtThreshold && $globalCost >= $this->warnThreshold) {
             $this->warnedAtThreshold = true;
             if ($this->onWarning) {
-                ($this->onWarning)($this->totalCost, $this->warnThreshold, 'warning');
+                ($this->onWarning)($globalCost, $this->warnThreshold, 'warning');
             }
         }
     }
@@ -86,8 +92,9 @@ class CostTracker
      */
     public function setTotalCost(float $cost): void
     {
-        $this->totalCost = $cost;
-        $this->warnedAtThreshold = $cost >= $this->warnThreshold;
+        $this->totalCost = max(0.0, $cost);
+        $globalCost = $this->budgetLedger?->ensureAtLeast($this->totalCost) ?? $this->totalCost;
+        $this->warnedAtThreshold = $globalCost >= $this->warnThreshold;
     }
 
     public function reset(): void
@@ -98,7 +105,7 @@ class CostTracker
 
     public function getTotalCost(): float
     {
-        return $this->totalCost;
+        return $this->budgetLedger?->getSpent() ?? $this->totalCost;
     }
 
     /**
@@ -106,7 +113,8 @@ class CostTracker
      */
     public function shouldStop(): bool
     {
-        return $this->totalCost >= $this->stopThreshold;
+        return $this->budgetLedger?->shouldStop()
+            ?? $this->totalCost >= $this->stopThreshold;
     }
 
     /**
@@ -114,7 +122,7 @@ class CostTracker
      */
     public function shouldWarn(): bool
     {
-        return $this->totalCost >= $this->warnThreshold;
+        return $this->getTotalCost() >= $this->warnThreshold;
     }
 
     public function setOnWarning(callable $callback): void
@@ -148,7 +156,7 @@ class CostTracker
             return "Cost unavailable for model {$this->currentModel} ({$this->providerType})";
         }
 
-        $cost = '$' . number_format($this->totalCost, 2);
+        $cost = '$' . number_format($this->getTotalCost(), 2);
         $warn = '$' . number_format($this->warnThreshold, 2);
         $stop = '$' . number_format($this->stopThreshold, 2);
         return "Cost: {$cost} (warn at {$warn}, stop at {$stop})";

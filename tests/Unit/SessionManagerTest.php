@@ -568,6 +568,45 @@ class SessionManagerTest extends TestCase
         $this->assertSame($branch['source_session_id'], $entries[1]['source_session_id']);
     }
 
+    public function test_branch_session_derives_title_from_multimodal_text_blocks(): void
+    {
+        $manager = new SessionManager;
+        $manager->recordEntry([
+            'type' => 'user_message',
+            'content' => [
+                ['type' => 'text', 'text' => 'Inspect this diagram'],
+                [
+                    'type' => 'image',
+                    'source' => [
+                        'type' => 'base64',
+                        'media_type' => 'image/png',
+                        'data' => 'aGVsbG8=',
+                    ],
+                ],
+            ],
+        ]);
+
+        $branch = $manager->branchSession();
+
+        $this->assertSame('Inspect this diagram (Branch)', $branch['title']);
+        $this->assertStringNotContainsString('Array', $branch['title']);
+    }
+
+    public function test_branch_session_uses_json_sanitization_for_invalid_utf8(): void
+    {
+        $manager = new SessionManager;
+        $manager->recordEntry([
+            'type' => 'user_message',
+            'content' => "binary \xFF input",
+        ]);
+
+        $branch = $manager->branchSession('Binary transcript');
+        $entries = $manager->loadSession($branch['session_id']);
+
+        $this->assertNotEmpty($entries);
+        $this->assertSame('Binary transcript (Branch)', $branch['title']);
+    }
+
     public function test_find_most_recent_session_id_prefers_matching_cwd(): void
     {
         $manager = new SessionManager;

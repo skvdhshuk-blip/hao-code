@@ -25,6 +25,8 @@ class Conversation
 
     private SdkRun $run;
 
+    private bool $snapshotRestored = false;
+
     /**
      * The agent definition backing this conversation, normalized from the
      * constructor config via {@see Agent::fromConfig()}. Everything that
@@ -45,12 +47,13 @@ class Conversation
      */
     public function __construct(
         private readonly HaoCodeConfig $config,
-        AgentLoopFactory $factory,
-        ?StreamingClient $streamingClient = null,
+        private readonly AgentLoopFactory $factory,
+        private readonly ?StreamingClient $streamingClient = null,
     ) {
         $this->agent = Agent::fromConfig($config);
         $this->options = RunOptions::fromConfig($config);
         $resumeSnapshot = SdkRunFactory::consumeResumeSnapshot($config);
+        $this->snapshotRestored = $resumeSnapshot !== null;
         $this->run = SdkRunFactory::createFromAgent(
             $this->agent,
             $this->options,
@@ -239,6 +242,20 @@ class Conversation
             throw new \RuntimeException('Conversation has been closed.');
         }
 
+        if (! $this->snapshotRestored) {
+            $sessionId = $this->loop->getSessionManager()->getSessionId();
+            $result = HaoCode::resumeInterrupt($sessionId, $interruptId, $decisions, $this->config);
+            $queryResult = $result instanceof StructuredResult ? $result->queryResult : $result;
+            if (! $queryResult instanceof QueryResult) {
+                throw new \RuntimeException(
+                    'Conversation interrupt resume returned a structured result without its query metadata.',
+                );
+            }
+            $this->reloadAfterSnapshotResume($sessionId);
+
+            return $queryResult;
+        }
+
         $response = $this->loop->resumeInterrupt(
             interruptId: $interruptId,
             decisions: $decisions,
@@ -275,6 +292,27 @@ class Conversation
     {
         if ($this->closed) {
             throw new \RuntimeException('Conversation has been closed.');
+        }
+
+        if (! $this->snapshotRestored) {
+            $sessionId = $this->loop->getSessionManager()->getSessionId();
+            $completed = false;
+            foreach (HaoCode::streamResumeInterrupt(
+                $sessionId,
+                $interruptId,
+                $decisions,
+                $this->config,
+            ) as $message) {
+                if ($message->isResult()) {
+                    $completed = true;
+                }
+                yield $message;
+            }
+            if ($completed) {
+                $this->reloadAfterSnapshotResume($sessionId);
+            }
+
+            return;
         }
 
         $queue = new \SplQueue;
@@ -348,6 +386,22 @@ class Conversation
             'cache_read_tokens' => $this->loop->getCacheReadTokens(),
             'cost_available' => $this->loop->isCostEstimateAvailable(),
         ], $this->loop->getEstimatedCost(), $this->loop->getSessionManager()->getSessionId());
+    }
+
+    private function reloadAfterSnapshotResume(string $sessionId): void
+    {
+        $budgetLedger = $this->loop->getBudgetLedger();
+        $this->run->close();
+        $this->run = SdkRunFactory::createFromAgent(
+            $this->agent,
+            $this->options,
+            $this->factory,
+            $this->streamingClient,
+            budgetLedger: $budgetLedger,
+        );
+        $this->loop = $this->run->loop;
+        $this->snapshotRestored = false;
+        $this->loadSession($sessionId);
     }
 
     /**
