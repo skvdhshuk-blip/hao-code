@@ -196,16 +196,20 @@ class SettingsManager
     public function getProviderType(): string
     {
         if (isset($this->runtimeOverrides['provider_type'])) {
-            return $this->normalizeProviderType((string) $this->runtimeOverrides['provider_type']);
+            return ProviderType::normalizeRequired((string) $this->runtimeOverrides['provider_type']);
         }
 
         $config = $this->getProviderConfig();
 
         if ($config === null) {
-            return 'anthropic';
+            return ProviderType::ANTHROPIC;
         }
 
-        return $config['type'] ?? 'anthropic';
+        $type = $config['type'] ?? null;
+
+        return is_string($type) && $type !== ''
+            ? ProviderType::normalizeRequired($type)
+            : ProviderType::ANTHROPIC;
     }
 
     /**
@@ -996,7 +1000,14 @@ class SettingsManager
             $provider['type'] ?? null,
             $options['type'] ?? null,
         );
-        $type = $this->normalizeProviderType($rawType ?? $name);
+        // Explicit type values fail closed. When type is omitted, only treat the
+        // provider name as a type if it is itself a known alias; otherwise keep
+        // the historical Anthropic default for unnamed/legacy entries.
+        if ($rawType !== null) {
+            $type = ProviderType::normalizeRequired($rawType);
+        } else {
+            $type = ProviderType::tryFromName($name) ?? ProviderType::ANTHROPIC;
+        }
 
         return [
             'api_key' => $this->firstNonEmptyString(
@@ -1033,25 +1044,6 @@ class SettingsManager
             ),
             'type' => $type,
         ];
-    }
-
-    /**
-     * Map a raw "type" value (or fallback provider name) to one of
-     * the supported wire formats.
-     */
-    private function normalizeProviderType(?string $value): string
-    {
-        if ($value === null) {
-            return 'anthropic';
-        }
-
-        $normalized = strtolower(trim($value));
-
-        return match ($normalized) {
-            'openai', 'openai_responses', 'responses' => 'openai',
-            'openai_chat', 'openai_chat_completions', 'chat_completions' => 'openai_chat',
-            default => 'anthropic',
-        };
     }
 
     private function hasLegacyTopLevelConfig(array $settings): bool

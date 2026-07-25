@@ -182,9 +182,20 @@ For `openai` and `openai_chat`, a model must also be supplied explicitly or by
 the selected provider entry; the Anthropic default is never sent to those
 providers.
 
+`providerType` accepts only `anthropic`, `openai`, and `openai_chat` (plus a
+few documented aliases such as `openai_responses` / `chat_completions`). Any
+other non-empty value throws at `HaoCodeConfig` construction — unknown types
+never silently fall back to Anthropic, so an OpenAI key cannot be sent to an
+Anthropic endpoint by typo.
+
 For `deepseek-v4-flash`, enabling thinking sends DeepSeek's explicit thinking
 contract. A thinking budget of `32000` or more selects maximum reasoning effort,
 and HaoCode preserves `reasoning_content` across multi-turn tool calls.
+
+For Anthropic models that use adaptive thinking (including Opus 4.8 and current
+Claude 5 IDs), `thinkingBudget` maps to effort tiers (`low` / `medium` /
+`high` / `max`) unless settings `effort_level` is set explicitly. Manual
+extended-thinking models still use `thinkingBudget` as a token budget.
 
 Tools, permission bypass, and durable storage are independent opt-ins. An
 unattended full agent must state all three explicitly, for example
@@ -398,6 +409,12 @@ initial user turn instead of rewriting the system prefix, improving automatic
 prefix-cache reuse on DeepSeek and other compatible providers. DeepSeek cache
 hits are reported through `usage['cache_read_tokens']`.
 
+`HaoCode::resume($sessionId)` restores tools against the session transcript's
+canonical working directory, not the current PHP process cwd. If you pass a
+config `cwd` that differs from that directory, resume fails unless you set
+`allowCwdOverride: true`. `HaoCode::continueLatest($cwd)` injects the lookup
+`$cwd` into the resume config automatically.
+
 ## Human approval
 
 Human-in-the-loop runs are durable and non-blocking: the SDK pauses, returns a
@@ -442,6 +459,13 @@ Resume preserves the effective inline Skill tool scope and cumulative
 token/cost totals. A synchronous worktree Agent is finalized after its resumed
 run; retained changes are reported in the final text and `usage` metadata.
 
+Once claimed, an interrupt moves to `resolving` and is never auto-retried (tool
+side effects may already have run). If resume fails after the claim — provider
+timeout, tool error, session write failure — the session records a terminal
+`interrupt_failed` state with the error and a side-effect hint instead of
+staying stuck in `resolving`. Branching a session that still has a
+pending/resolving interrupt is refused.
+
 ## Structured Output
 
 Use `structured()` for machine-readable results:
@@ -458,6 +482,10 @@ $result = HaoCode::structured('Classify: "payment failed"', [
 
 echo $result->category;
 ```
+
+With `ephemeral: false` (or an explicit budget / session), schema retries reuse
+one `Conversation` so tool side effects and transcript history stay in the same
+session. Retry prompts remind the model not to repeat completed side effects.
 
 ## MCP Tools
 
@@ -572,12 +600,15 @@ $skill = new SdkSkill(
     name: 'security-review',
     description: 'Review code for common security risks.',
     prompt: 'Check $ARGUMENTS for injection, auth bypass, secrets, and unsafe IO.',
-    allowedTools: ['Read', 'Grep'],
+    // Full tool names, or Claude-style patterns such as Bash(cargo:*).
+    // Patterns are enforced at call time — they are never stripped to a wider grant.
+    allowedTools: ['Read', 'Grep', 'Bash(cargo:*)'],
+    model: 'haiku', // Anthropic tier alias (or a full model id)
     context: 'inline', // use 'fork' for an isolated child agent
 );
 
 $result = HaoCode::query('Use security-review on app/Auth.php', new HaoCodeConfig(
-    allowedTools: ['Skill', 'Read', 'Grep'],
+    allowedTools: ['Skill', 'Read', 'Grep', 'Bash'],
     skills: [$skill],
 ));
 ```
@@ -593,13 +624,19 @@ $result = HaoCode::query('Use the matching skill for this task', new HaoCodeConf
 ```
 
 Skill-specific tool restrictions and model overrides are enforced during the
-active skill scope. Standalone skill shell directives are forwarded to the
-normal `Bash` tool, so the configured permission checks and hooks still apply.
+active skill scope (inline for the rest of the turn; fork only inside the child
+agent). Claude-style entries such as `Bash(cargo:*)` keep the command pattern —
+`Bash(cargo:*)` does **not** silently become unrestricted `Bash`. Nested inline
+skills intersect their capability lists. Model overrides use the same provider-
+aware alias rules as Agent tools: `haiku` / `sonnet` / `opus` expand on
+Anthropic; full model IDs pass through; Anthropic aliases on non-Anthropic
+providers fail closed. Standalone skill shell directives are forwarded to the
+normal `Bash` tool, so permission checks, hooks, and skill scope still apply.
 Additional directories are never loaded implicitly.
 
 ## Credentials And Budgets
 
-Use credential pools when you have multiple API keys, and cost budgets when the caller needs a hard spending guard:
+Use credential pools when you have multiple API keys, and cost budgets when the caller needs a shared post-response spending guard:
 
 ```php
 use HaoCode\Sdk\Credential;
@@ -622,7 +659,13 @@ release. Unknown or non-Anthropic models report `cost_available: false`;
 requesting `maxBudgetUsd` for one of those models fails before a request is sent
 instead of applying an unrelated fallback price. The budget is one shared,
 process-safe total across the root run, child/Team/background agents, forked
-skills, structured retries, and durable HITL resumes.
+skills, structured retries, and durable HITL resumes. Enforcement is a
+**shared post-response spending guard** (checked before the next request and
+after each usage record), not a pre-reserved hard cap: a single in-flight call
+can finish slightly over the limit, and parallel child agents may overshoot
+further before their costs are merged. On HITL resume, the effective limit is
+`min(snapshot limit, current config maxBudgetUsd)` so a tighter caller budget
+is never ignored.
 
 ## Callbacks And Abort
 
@@ -705,7 +748,7 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.18.7`. Notable changes since `v1.10.0`:
+is based on `v1.18.8`. Notable changes since `v1.10.0`:
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/
@@ -729,6 +772,12 @@ is based on `v1.18.7`. Notable changes since `v1.10.0`:
 - `v1.18.7` — Provider connections resolve credentials and model limits as one
   vendor-safe unit; adaptive thinking, shared run-tree budgets, consistent HITL
   resumes, worktree context, and durable session writes are hardened.
+- `v1.18.8` — Unknown `providerType` fail-closed; skill `Bash(pattern)` capability
+  rules enforced without silent widening; skill model aliases provider-aware;
+  session resume restores transcript cwd; `interrupt_failed` terminal state;
+  durable structured retries share one conversation; branch refuses unfinished
+  HITL; budget documented as a shared post-response guard with stricter resume
+  limits; adaptive effort mapped from `thinkingBudget` / `effort_level`.
 
 ## License
 

@@ -37,11 +37,10 @@ final class AgentRunContextFactory
             $settings->set('max_tokens', $config->maxTokens);
         }
         if ($config->providerType !== null) {
-            $settings->set('provider_type', match ($config->providerType) {
-                'openai', 'openai_responses', 'responses' => 'openai',
-                'openai_chat', 'openai_chat_completions', 'chat_completions' => 'openai_chat',
-                default => 'anthropic',
-            });
+            $settings->set(
+                'provider_type',
+                \HaoCode\Services\Settings\ProviderType::normalizeRequired($config->providerType),
+            );
         }
         if ($config->oauthBearer !== null) {
             $settings->set('oauth_bearer', $config->oauthBearer);

@@ -767,6 +767,41 @@ class ToolOrchestratorTest extends TestCase
         $this->assertSame('skill-model', $orchestrator->getActiveSkillModelOverride());
     }
 
+    public function test_skill_scope_enforces_bash_command_pattern(): void
+    {
+        $registry = new ToolRegistry;
+        $registry->register($this->makeTool('Skill', fn () => ToolResult::success('loaded', [
+            'allowed_tools' => ['Bash(cargo:*)'],
+            'context' => 'inline',
+        ])));
+        $bashCalls = [];
+        $registry->register($this->makeTool('Bash', function (array $input) use (&$bashCalls) {
+            $bashCalls[] = $input['command'] ?? '';
+
+            return ToolResult::success('ok');
+        }));
+        $orchestrator = $this->makeOrchestrator($registry);
+
+        $orchestrator->executeToolBlock(
+            ['id' => 'skill-1', 'name' => 'Skill', 'input' => []],
+            $this->context(),
+        );
+        $allowed = $orchestrator->executeToolBlock(
+            ['id' => 'bash-1', 'name' => 'Bash', 'input' => ['command' => 'cargo test']],
+            $this->context(),
+        );
+        $denied = $orchestrator->executeToolBlock(
+            ['id' => 'bash-2', 'name' => 'Bash', 'input' => ['command' => 'rm -rf /tmp']],
+            $this->context(),
+        );
+
+        $this->assertFalse($allowed['is_error']);
+        $this->assertTrue($denied['is_error']);
+        $this->assertStringContainsString('active skill scope', $denied['content']);
+        $this->assertSame(['Bash(cargo:*)'], $orchestrator->getActiveSkillAllowedTools());
+        $this->assertSame(['cargo test'], $bashCalls);
+    }
+
     public function test_multiple_skill_scopes_intersect_allowed_tools(): void
     {
         $registry = new ToolRegistry;

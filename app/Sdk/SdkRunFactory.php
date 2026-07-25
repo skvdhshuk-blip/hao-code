@@ -86,9 +86,16 @@ final class SdkRunFactory
     ): SdkRun {
         $runContext = self::createValidatedRunContext($config);
         $snapshotBudgetLimit = $resumeSnapshot['budget_limit_usd'] ?? null;
-        $budgetLimit = is_numeric($snapshotBudgetLimit) && (float) $snapshotBudgetLimit >= 0
+        $snapshotLimit = is_numeric($snapshotBudgetLimit) && (float) $snapshotBudgetLimit >= 0
             ? (float) $snapshotBudgetLimit
-            : $config->maxBudgetUsd;
+            : null;
+        // Prefer the stricter of snapshot vs current config so a resume cannot
+        // silently ignore a tighter caller-supplied maxBudgetUsd.
+        if ($snapshotLimit !== null && $config->maxBudgetUsd !== null) {
+            $budgetLimit = min($snapshotLimit, $config->maxBudgetUsd);
+        } else {
+            $budgetLimit = $snapshotLimit ?? $config->maxBudgetUsd;
+        }
         if ($budgetLedger !== null) {
             if ($budgetLimit === null || abs($budgetLedger->getLimit() - $budgetLimit) > 0.0000001) {
                 throw new \RuntimeException('Shared budget ledger does not match the run budget.');
@@ -292,13 +299,11 @@ final class SdkRunFactory
 
     private static function resolveProviderType(HaoCodeConfig $config, SettingsManager $settings): string
     {
-        return match ($config->providerType) {
-            'openai', 'openai_responses', 'responses' => 'openai',
-            'openai_chat', 'openai_chat_completions', 'chat_completions' => 'openai_chat',
-            'anthropic' => 'anthropic',
-            null => $settings->getProviderType(),
-            default => 'anthropic',
-        };
+        if ($config->providerType === null) {
+            return $settings->getProviderType();
+        }
+
+        return \HaoCode\Services\Settings\ProviderType::normalizeRequired($config->providerType);
     }
 
     /**

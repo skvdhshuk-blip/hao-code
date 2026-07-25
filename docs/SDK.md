@@ -2,7 +2,7 @@
 
 Use hao-code as a framework-free PHP library to embed an AI coding agent in your application.
 
-This document describes the `v1.18.7` source line. Published package versions
+This document describes the `v1.18.8` source line. Published package versions
 are identified by Git tags and Packagist.
 
 ```bash
@@ -287,6 +287,19 @@ $conv = HaoCode::continueLatest(config: $config);
 $conv->send('Continue the refactoring');
 ```
 
+**Working directory on resume.** Session transcripts store a canonical `cwd` per
+entry. `resume()` uses that directory for tools (`Read` / `Write` / `Bash`, …)
+so history and file operations stay aligned:
+
+| Config `cwd` | Behavior |
+|---|---|
+| `null` / empty | Restored from the session transcript |
+| Same as session cwd | Resume normally |
+| Different from session cwd | Throws unless `allowCwdOverride: true` |
+
+`continueLatest($cwd)` always injects the lookup `$cwd` into the resume config
+when config `cwd` is empty, then follows the same rules.
+
 Also works inline via config:
 
 ```php
@@ -320,6 +333,20 @@ and cost totals. When a synchronous worktree Agent retains changes after resume,
 the final result includes `worktree_path`, `worktree_branch`, and
 `worktree_retained` in its `usage` metadata.
 
+Interrupt lifecycle (latest entry wins):
+
+| State | Meaning |
+|---|---|
+| `interrupt_pending` | Waiting for host decisions |
+| `interrupt_resolving` | Claimed; tool side effects may be in progress — not auto-retried |
+| `interrupt_resolved` | Tools applied; model loop continued |
+| `interrupt_cancelled` | Explicitly cancelled by the host |
+| `interrupt_failed` | Claimed resume failed (provider/tool/session error); terminal, not auto-retried |
+
+A claim-then-crash path records `interrupt_failed` with `error`,
+`side_effect_status` (`none` / `partial` / `unknown`), and optional
+`partial_results` instead of leaving the interrupt stuck in `resolving`.
+
 ```text
 HaoCode::resumeInterrupt(string $sessionId, string $interruptId, array $decisions, ?HaoCodeConfig $config = null): QueryResult|StructuredResult
 HaoCode::streamResumeInterrupt(string $sessionId, string $interruptId, array $decisions, ?HaoCodeConfig $config = null): Generator<Message>
@@ -333,8 +360,8 @@ decision semantics.
 Extract structured (JSON) data from the agent's response. The schema is
 validated with a real JSON Schema validator
 ([`swaggest/json-schema`](https://github.com/swaggest/json-schema)); when the
-model returns JSON that violates the schema, the SDK retries once by appending
-the validator's error paths to the prompt. Configure the retry budget with
+model returns JSON that violates the schema, the SDK retries by appending the
+validator's error paths to the prompt. Configure the retry budget with
 `HaoCodeConfig::$structuredMaxRetries` (default `1`; set to `0` to fail fast).
 
 ```php
@@ -357,6 +384,12 @@ echo $result['priority'];  // 'high' (ArrayAccess)
 $result->toArray();        // ['category' => 'shipping', ...]
 $result->toJson();         // '{"category":"shipping",...}'
 ```
+
+**Retry session reuse.** When `ephemeral: false`, or when a budget / session id /
+`continueSession` is set, all schema retries share one `Conversation` (one
+session history and one tool-side-effect context). Ephemeral one-shots without
+budget still open a fresh query per attempt. Retry prompts include the
+validator errors and a reminder that previous tools may already have executed.
 
 When validation fails after exhausting retries, `structured()` throws
 `HaoCode\Sdk\StructuredResultValidationException`, which exposes the raw model
@@ -385,7 +418,7 @@ $config = new HaoCodeConfig(
 | `model` | `?string` | `null` | Model ID. Anthropic falls back to the configured Claude default; `openai` and `openai_chat` require an explicit model or one in the selected provider entry |
 | `baseUrl` | `?string` | `null` | API endpoint URL (for proxies, custom endpoints) |
 | `maxTokens` | `?int` | `null` | Maximum output tokens per response |
-| `providerType` | `?string` | `null` | `anthropic`, `openai`, or `openai_chat` wire format |
+| `providerType` | `?string` | `null` | `anthropic`, `openai`, or `openai_chat` wire format (aliases: `openai_responses` / `responses` → `openai`; `openai_chat_completions` / `chat_completions` → `openai_chat`). **Unknown non-empty values throw at construction** — they never silently map to Anthropic |
 | `oauthBearer` | `?bool` | `null` | When `true`, treat `apiKey` as an Anthropic OAuth access token: it is sent as `Authorization: Bearer <token>` with the `oauth-2025-04-20` beta flag (merged with the prompt-caching flag) instead of the `x-api-key` header. `null`/`false` keeps the default `x-api-key` behaviour. Anthropic provider only |
 | `headers` | `array<string, string>` | `[]` | Extra HTTP request headers merged into every provider request (e.g. GitHub Copilot's `Editor-Version` / `Copilot-Integration-Id`). A custom value overrides the provider's hardcoded header of the same name (case-insensitive), except `Authorization` / `x-api-key`, which always stay under the SDK's authentication logic. Invalid entries (non-string keys/values, invalid header names, CR/LF) are filtered out |
 
@@ -398,6 +431,12 @@ Selecting `openai` or `openai_chat` without a model fails before request
 creation. This prevents a Claude default model ID from crossing provider
 boundaries.
 
+Settings files use the same fail-closed type rules: an explicit provider entry
+`type` (or runtime `provider_type` override) that is not a known alias throws
+before any HTTP request is built. When `type` is omitted from a named provider
+entry, only a name that is itself a known alias is treated as a type; otherwise
+the historical Anthropic default still applies.
+
 Input budgeting uses the active provider's `context_window` setting. It falls
 back to `HAOCODE_CONTEXT_WINDOW` (200000 by default) and reserves both the
 configured output tokens and a safety margin before sending a request.
@@ -406,9 +445,10 @@ configured output tokens and a safety margin before sending a request.
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `cwd` | `?string` | `null` | Working directory for tool execution. Defaults to `getcwd()` |
+| `cwd` | `?string` | `null` | Working directory for tool execution. Defaults to `getcwd()`. On `resume()`, when empty, the session transcript cwd is restored instead |
 | `maxTurns` | `int` | `50` | Maximum agent turns (tool-use round trips) |
-| `maxBudgetUsd` | `?float` | `null` | Total estimated cost limit in USD for the root run, child/Team/background agents, forked skills, structured retries, and HITL resumes |
+| `maxBudgetUsd` | `?float` | `null` | Shared post-response spending guard (USD) for the root run, child/Team/background agents, forked skills, structured retries, and HITL resumes. Checked before each model request and after usage is recorded — **not** a pre-reserved hard cap. In-flight or parallel work can finish slightly over the limit. On HITL resume the effective limit is `min(snapshot, config)` |
+| `allowCwdOverride` | `bool` | `false` | When `false`, `resume()` refuses a config `cwd` that differs from the session transcript cwd. Set `true` only when tools should intentionally run under a different project root |
 | `ephemeral` | `bool` | `true` | Disable session and tool-result persistence for this run |
 | `permissionMode` | `string` | `'default'` | `'default'`, `'plan'`, `'accept_edits'`, `'bypass_permissions'` |
 | `sandbox` | `?SandboxConfig` | `null` | Optional temporary filesystem/shell runtime for tools |
@@ -774,14 +814,24 @@ pure-Python k-means script, run it in AgentRun, and read back the JSON summary.
 | `sessionId` | `?string` | `null` | Resume a previous session in `query()`/`stream()` |
 | `continueSession` | `bool` | `false` | Auto-continue latest session in `query()`/`stream()` |
 | `thinkingEnabled` | `bool` | `false` | Enable extended thinking |
-| `thinkingBudget` | `int` | `10000` | Thinking token budget |
+| `thinkingBudget` | `int` | `10000` | Manual extended-thinking token budget, or (for adaptive-thinking models) the budget used to derive effort when `effort_level` is not set |
 | `memorySummaryLevel` | `string` | `'l0'` | Memory injected into the system prompt: `l0`, `l1`, or `l2` |
 | `memoryStoragePath` | `?string` | `null` | Isolated JSON memory file; defaults to `~/.haocode/memory.json` |
 | `memoryStore` | `?MemoryStoreInterface` | `null` | Run-scoped custom store; takes precedence over `memoryStoragePath` |
 
 Models that require adaptive thinking (including Opus 4.8 and current Claude 5
-models) send `thinking.type: adaptive` with high effort. `thinkingBudget`
-continues to apply to models that support manual extended-thinking budgets.
+models) send `thinking.type: adaptive` with an effort tier:
+
+| Source | Effort |
+|---|---|
+| Settings `effort_level` = `low` / `medium` / `high` / `max` | That value |
+| Otherwise `thinkingBudget` below 8000 | `low` |
+| `thinkingBudget` 8000–15999 | `medium` |
+| `thinkingBudget` 16000–31999 | `high` |
+| `thinkingBudget` 32000 or more | `max` |
+
+Manual extended-thinking models still send `thinking.type: enabled` with
+`budget_tokens` from `thinkingBudget`.
 
 ### Factory Method
 
@@ -819,9 +869,11 @@ $result->outputTokens();         // int
 ```
 
 `usage['input_tokens']` is the accumulated provider-reported input usage for
-the run. When the provider reports prompt-cache telemetry,
-`usage['cache_read_tokens']` contains the cached portion and
-`usage['cache_creation_tokens']` contains explicit cache writes (Anthropic).
+the conversation/run lifetime (not a single HTTP delta). After a durable HITL
+snapshot resume rebuilds the agent loop, both token counters and cost remain
+cumulative so they stay in the same statistical scope. When the provider reports
+prompt-cache telemetry, `usage['cache_read_tokens']` contains the cached portion
+and `usage['cache_creation_tokens']` contains explicit cache writes (Anthropic).
 
 ---
 
@@ -1036,13 +1088,14 @@ $skill = new SdkSkill(
     name: 'security-review',
     description: 'Review code for OWASP vulnerabilities',
     prompt: 'Review $ARGUMENTS for injection, XSS, auth bypass, and other OWASP Top 10 issues.',
-    allowedTools: ['Read', 'Grep'],  // optional: restrict tools during skill
-    model: 'opus',                    // optional: model override
+    // Full tool names and/or Claude-style patterns (enforced at call time).
+    allowedTools: ['Read', 'Grep', 'Bash(cargo:*)'],
+    model: 'haiku',                   // optional: Anthropic alias or full model id
     context: 'inline',                // optional: inline or isolated fork
 );
 
 $result = HaoCode::query('Review auth.php for security', new HaoCodeConfig(
-    allowedTools: ['Skill', 'Read', 'Grep'],
+    allowedTools: ['Skill', 'Read', 'Grep', 'Bash'],
     skills: [$skill],
 ));
 ```
@@ -1055,7 +1108,7 @@ $result = HaoCode::query('Review auth.php for security', new HaoCodeConfig(
 | How agent uses it | Invokes via `SkillTool`, gets expanded prompt | Calls `handle()` directly |
 | `$ARGUMENTS` support | Yes | No |
 | Appears in system prompt | Yes (Available skills list) | Yes (API tools list) |
-| Can restrict tools | Yes (`allowedTools`) | No |
+| Can restrict tools | Yes (`allowedTools`, including input patterns) | No |
 | Isolated execution | Yes (`context: 'fork'`) | No |
 | Returns | Expanded prompt text | `handle()` return string |
 
@@ -1076,12 +1129,35 @@ descriptions. The `Skill` tool supports paginated `list` and filtered `search`
 actions. Once a skill is invoked, its resolved absolute directory is included
 in the tool result so relative references are read from the correct package.
 
-`allowedTools` is enforced for the rest of the current user turn. Multiple
-inline skills use the intersection of their tool sets. A skill model override
-applies for the rest of that turn and is restored afterward. Forked skills
-apply their tool and model settings only inside the child agent.
-Standalone `!` shell directives in a skill are converted into normal `Bash`
-tool requests; they do not bypass tool permissions, hooks, or skill tool scope.
+#### Skill tool scope and model overrides
+
+`allowedTools` is enforced for the rest of the current user turn (inline) or for
+the entire forked child run (`context: 'fork'`). Entries may be:
+
+| Spec | Meaning |
+|---|---|
+| `Read` | Full access to that tool for the skill scope |
+| `Bash(cargo:*)` | `Bash` only when `command` matches the pattern (`cargo` or `cargo …`) |
+| `Read(src/**)` | Path-constrained tools match against `file_path` / `path` |
+
+Patterns are **never** stripped to a wider grant. `Bash(cargo:*)` does not
+become unrestricted `Bash`. Multiple inline skills intersect their capability
+lists (the more restrictive combination wins). File-based frontmatter uses the
+same format (`allowed-tools: Bash(cargo:*) Read`).
+
+`model` overrides use a provider-aware resolver (same alias rules as Agent
+tools):
+
+| Value | Anthropic | `openai` / `openai_chat` |
+|---|---|---|
+| `haiku` / `sonnet` / `opus` | Expand to the catalog model id | Reject (fail closed) |
+| Full model id (e.g. `claude-…`, `gpt-…`) | Pass through | Pass through |
+| `inherit` / empty | Keep parent model | Keep parent model |
+
+The override applies for the rest of that turn (inline) or only inside the
+child agent (fork), then the parent model is restored. Standalone `!` shell
+directives in a skill become normal `Bash` tool requests; they still pass
+through tool permissions, hooks, and skill capability scope.
 
 ---
 
@@ -1183,12 +1259,20 @@ Available decisions are:
 question; optional questions may use `null`. Hard deny rules and hooks remain
 authoritative. Sessions are claimed under a file lock; a `resolving` checkpoint
 is not automatically retried after a process crash because side effects may have
-already occurred.
+already occurred. If resume fails after the claim, the session appends an
+`interrupt_failed` entry (error message, `side_effect_status`, optional partial
+results) so the interrupt does not remain stuck in `resolving`.
 
 Foreground child-agent interrupts bubble directly. Background agents and team
 members enter `waiting_for_input`; `TeamAwait` and `TeamCollect` surface their
 pending interrupt. Resolve the child interrupt using its own `sessionId`, then
-collect the team again.
+collect the team again. When the child interrupt has no `sourceAgentId`, the
+run snapshot's `background_owner_agent_id` is still used to mark the outer
+background owner completed after the full parent chain finishes.
+
+Branching a session (`SessionManager::branchSession` / conversation branch
+helpers) is refused while any interrupt is still `pending` or `resolving`, so
+HITL checkpoints are never duplicated across branches.
 
 For a streaming host, resume without buffering the continued run:
 
@@ -1391,7 +1475,7 @@ $config = new HaoCodeConfig(
 $result = HaoCode::query('Remember that the project codename is ORBIT.', $config);
 $sessionId = $result->sessionId;  // save this
 
-// Later process — resume where we left off
+// Later process — resume where we left off (tools use the session transcript cwd)
 $conv = HaoCode::resume($sessionId, $config);
 $conv->send('What is the project codename?');
 
@@ -1399,6 +1483,11 @@ $conv->send('What is the project codename?');
 $conv = HaoCode::continueLatest(__DIR__, $config);
 $conv->send('What were we working on?');
 ```
+
+If the PHP process cwd differs from the session's recorded project root,
+`resume()` still targets the transcript cwd (not the process cwd). Passing a
+different config `cwd` throws unless `allowCwdOverride: true`. See
+[resume() / continueLatest()](#resume--continuelatest).
 
 ---
 
@@ -1420,6 +1509,11 @@ $ticket = HaoCode::structured(
         ],
         'required' => ['category', 'priority', 'summary'],
     ],
+    new HaoCodeConfig(
+        ephemeral: false,          // durable: schema retries share one session
+        structuredMaxRetries: 2,
+        allowedTools: [],
+    ),
 );
 
 echo $ticket->category;     // 'billing'
@@ -1431,6 +1525,10 @@ $ticket->toJson();           // JSON string
 // Access underlying QueryResult for cost/usage
 echo $ticket->queryResult->cost;
 ```
+
+With durable config (`ephemeral: false`) or an explicit budget/session, every
+schema retry reuses the same conversation so tool side effects and message
+history are not split across multiple session files.
 
 ---
 
@@ -1570,20 +1668,28 @@ echo "Output tokens: {$result->outputTokens()}";
 
 ```php
 $result = HaoCode::query('Do a big refactoring', new HaoCodeConfig(
-    maxBudgetUsd: 5.00,  // stop if cost exceeds $5
+    maxBudgetUsd: 5.00,  // shared post-response spending guard
     allowedTools: ['Read', 'Edit', 'Glob', 'Grep'],
     permissionMode: 'bypass_permissions',
 ));
-// The shared run tree warns at 80% and hard-stops before its next model call at 100%.
+// Warns at ~80%. Stops before the *next* model call once the shared total
+// reaches 100%. The request that crossed the limit may still complete.
 ```
 
 The built-in estimator has exact pricing for the Claude model IDs in
 `ModelCatalog`. Unknown and non-Anthropic models expose
 `$result->usage['cost_available'] === false`; `maxBudgetUsd` fails before the
 first request when trusted pricing is unavailable. Durable HITL checkpoints
-restore cumulative token and cost totals before continuing. One process-safe
-ledger is shared by the root run, synchronous and background descendants, Team
-members, forked skills, and structured-output correction retries. Ledger files
+restore cumulative token and cost totals before continuing (including after
+snapshot rebuilds of the conversation loop). One process-safe ledger is shared
+by the root run, synchronous and background descendants, Team members, forked
+skills, and structured-output correction retries.
+
+This is a **shared post-response spending guard**, not a pre-reserved hard
+cap: cost is recorded after each model response, so one in-flight call (or
+parallel children that all passed the pre-check) can finish slightly over the
+limit. On HITL resume the effective limit is
+`min(snapshot budget_limit_usd, current config maxBudgetUsd)`. Ledger files
 inactive for 90 days are collected lazily; a later durable resume reconstructs
 the minimum accumulated spend from its checkpoint.
 

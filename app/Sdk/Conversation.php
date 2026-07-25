@@ -391,6 +391,15 @@ class Conversation
     private function reloadAfterSnapshotResume(string $sessionId): void
     {
         $budgetLedger = $this->loop->getBudgetLedger();
+        // Preserve lifetime usage so QueryResult tokens stay aligned with
+        // the shared cumulative cost after the loop is rebuilt.
+        $priorUsage = [
+            'total_input_tokens' => $this->loop->getTotalInputTokens(),
+            'total_output_tokens' => $this->loop->getTotalOutputTokens(),
+            'total_cache_creation_tokens' => $this->loop->getCacheCreationTokens(),
+            'total_cache_read_tokens' => $this->loop->getCacheReadTokens(),
+            'estimated_cost_usd' => $this->loop->getEstimatedCost(),
+        ];
         $this->run->close();
         $this->run = SdkRunFactory::createFromAgent(
             $this->agent,
@@ -400,6 +409,7 @@ class Conversation
             budgetLedger: $budgetLedger,
         );
         $this->loop = $this->run->loop;
+        $this->loop->restoreRunSnapshot($priorUsage);
         $this->snapshotRestored = false;
         $this->loadSession($sessionId);
     }

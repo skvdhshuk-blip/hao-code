@@ -67,10 +67,7 @@ class StreamingClient implements ApiKeyAwareProvider, ForkSafeProvider, Settings
             'headers' => RequestHeaders::sanitize($headers),
         ];
         $this->settingsManager = $settingsManager;
-        $this->defaultProviderType = match ($providerType) {
-            'openai', 'openai_chat', 'anthropic' => $providerType,
-            default => 'anthropic',
-        };
+        $this->defaultProviderType = \HaoCode\Services\Settings\ProviderType::normalizeRequired($providerType);
         $this->anthropic = $anthropicProvider ?? new AnthropicProvider(
             apiKey: $apiKey,
             model: $model,

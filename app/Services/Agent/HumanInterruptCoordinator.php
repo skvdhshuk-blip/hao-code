@@ -56,97 +56,112 @@ final class HumanInterruptCoordinator
             $actionMap[$action->id] = $action;
         }
 
-        foreach ($blocks as $index => $block) {
-            $id = (string) ($block['id'] ?? '');
-            if (! isset($actionMap[$id])) {
-                continue;
-            }
-            $action = $actionMap[$id];
-            $decision = $decisionMap[$id];
-
-            if ($decision->type === 'reject') {
-                $results[$index] = $action->toolName === 'AskUserQuestion'
-                    ? [
-                        'tool_use_id' => $id,
-                        'content' => json_encode(['status' => 'cancelled', 'answers' => []], JSON_UNESCAPED_SLASHES),
-                        'is_error' => false,
-                    ]
-                    : [
-                        'tool_use_id' => $id,
-                        'content' => 'Rejected by human'.($decision->message !== null ? ': '.$decision->message : ''),
-                        'is_error' => true,
-                    ];
-                continue;
-            }
-            if ($decision->type === 'respond') {
-                $content = is_string($decision->response)
-                    ? $decision->response
-                    : (json_encode($decision->response, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: 'null');
-                $results[$index] = ['tool_use_id' => $id, 'content' => $content, 'is_error' => false];
-                continue;
-            }
-            if ($decision->type === 'edit') {
-                $block['input'] = $decision->editedInput;
-                $review = $this->tools->prepareHumanReview([$block], $context, true);
-                if (isset($review['results'][0])) {
-                    $results[$index] = $review['results'][0];
+        $sideEffectStatus = 'none';
+        try {
+            foreach ($blocks as $index => $block) {
+                $id = (string) ($block['id'] ?? '');
+                if (! isset($actionMap[$id])) {
                     continue;
                 }
-                $block = $review['prepared'][0];
-            }
-            try {
-                $results[$index] = $this->tools->executePreparedToolBlock(
-                    $block,
-                    $context,
-                    $onToolStart,
-                    $onToolComplete,
-                );
-            } catch (HumanInterruptException $childInterrupt) {
-                foreach ($checkpoint['blocks'] ?? [] as $siblingIndex => $sibling) {
-                    if ($siblingIndex === $index || isset($results[$siblingIndex])) {
+                $action = $actionMap[$id];
+                $decision = $decisionMap[$id];
+
+                if ($decision->type === 'reject') {
+                    $results[$index] = $action->toolName === 'AskUserQuestion'
+                        ? [
+                            'tool_use_id' => $id,
+                            'content' => json_encode(['status' => 'cancelled', 'answers' => []], JSON_UNESCAPED_SLASHES),
+                            'is_error' => false,
+                        ]
+                        : [
+                            'tool_use_id' => $id,
+                            'content' => 'Rejected by human'.($decision->message !== null ? ': '.$decision->message : ''),
+                            'is_error' => true,
+                        ];
+                    continue;
+                }
+                if ($decision->type === 'respond') {
+                    $content = is_string($decision->response)
+                        ? $decision->response
+                        : (json_encode($decision->response, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: 'null');
+                    $results[$index] = ['tool_use_id' => $id, 'content' => $content, 'is_error' => false];
+                    continue;
+                }
+                if ($decision->type === 'edit') {
+                    $block['input'] = $decision->editedInput;
+                    $review = $this->tools->prepareHumanReview([$block], $context, true);
+                    if (isset($review['results'][0])) {
+                        $results[$index] = $review['results'][0];
                         continue;
                     }
-                    $results[$siblingIndex] = [
-                        'tool_use_id' => $sibling['id'],
-                        'content' => 'Deferred because a child agent requires human input; retry after the child resumes.',
-                        'is_error' => true,
-                    ];
+                    $block = $review['prepared'][0];
                 }
-                $waitAction = new HumanActionRequest(
-                    id: $id,
-                    toolName: (string) $block['name'],
-                    input: $block['input'] ?? [],
-                    description: 'Continue with the resumed child agent result',
-                    allowedDecisions: ['respond', 'reject'],
-                    agentId: $interrupt->sourceAgentId,
-                );
-                $waitingInterrupt = new HumanInterrupt(
-                    id: $interrupt->id,
-                    sessionId: $interrupt->sessionId,
-                    actions: [$waitAction],
-                    createdAt: date('c'),
-                    sourceAgentId: $interrupt->sourceAgentId,
-                    sourceTeam: $interrupt->sourceTeam,
-                );
-                $checkpoint['blocks'] = [$index => $block];
-                $checkpoint['results'] = $results;
-                $this->sessions->recordChildWaitInterrupt($waitingInterrupt->toArray(), $checkpoint);
-                $this->sessions->recordInterruptParentLink(
-                    $childInterrupt->interrupt->sessionId,
-                    $childInterrupt->interrupt->id,
-                    $waitingInterrupt->sessionId,
-                    $waitingInterrupt->id,
-                    $waitAction->id,
-                );
-                throw $childInterrupt;
+                try {
+                    $results[$index] = $this->tools->executePreparedToolBlock(
+                        $block,
+                        $context,
+                        $onToolStart,
+                        $onToolComplete,
+                    );
+                    $sideEffectStatus = 'partial';
+                } catch (HumanInterruptException $childInterrupt) {
+                    foreach ($checkpoint['blocks'] ?? [] as $siblingIndex => $sibling) {
+                        if ($siblingIndex === $index || isset($results[$siblingIndex])) {
+                            continue;
+                        }
+                        $results[$siblingIndex] = [
+                            'tool_use_id' => $sibling['id'],
+                            'content' => 'Deferred because a child agent requires human input; retry after the child resumes.',
+                            'is_error' => true,
+                        ];
+                    }
+                    $waitAction = new HumanActionRequest(
+                        id: $id,
+                        toolName: (string) $block['name'],
+                        input: $block['input'] ?? [],
+                        description: 'Continue with the resumed child agent result',
+                        allowedDecisions: ['respond', 'reject'],
+                        agentId: $interrupt->sourceAgentId,
+                    );
+                    $waitingInterrupt = new HumanInterrupt(
+                        id: $interrupt->id,
+                        sessionId: $interrupt->sessionId,
+                        actions: [$waitAction],
+                        createdAt: date('c'),
+                        sourceAgentId: $interrupt->sourceAgentId,
+                        sourceTeam: $interrupt->sourceTeam,
+                    );
+                    $checkpoint['blocks'] = [$index => $block];
+                    $checkpoint['results'] = $results;
+                    $this->sessions->recordChildWaitInterrupt($waitingInterrupt->toArray(), $checkpoint);
+                    $this->sessions->recordInterruptParentLink(
+                        $childInterrupt->interrupt->sessionId,
+                        $childInterrupt->interrupt->id,
+                        $waitingInterrupt->sessionId,
+                        $waitingInterrupt->id,
+                        $waitAction->id,
+                    );
+                    throw $childInterrupt;
+                }
             }
+
+            ksort($results);
+            $results = array_values($results);
+            $this->sessions->resolveInterrupt($interruptId, $results);
+
+            return compact('interrupt', 'checkpoint', 'results');
+        } catch (HumanInterruptException $e) {
+            throw $e;
+        } catch (\Throwable $e) {
+            $this->sessions->failInterrupt(
+                $this->sessions->getSessionId(),
+                $interruptId,
+                $e->getMessage(),
+                $sideEffectStatus,
+                $results === [] ? null : $results,
+            );
+            throw $e;
         }
-
-        ksort($results);
-        $results = array_values($results);
-        $this->sessions->resolveInterrupt($interruptId, $results);
-
-        return compact('interrupt', 'checkpoint', 'results');
     }
 
     /** @return array<string, HumanDecision> */

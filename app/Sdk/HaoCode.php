@@ -150,6 +150,7 @@ class HaoCode
     public static function resume(string $sessionId, ?HaoCodeConfig $config = null): Conversation
     {
         $config ??= new HaoCodeConfig(ephemeral: false);
+        $config = self::resolveResumeWorkingDirectory($sessionId, $config);
 
         /** @var AgentLoopFactory $factory */
         $factory = \HaoCode\Support\Runtime\SdkRuntime::app(AgentLoopFactory::class);
@@ -163,6 +164,42 @@ class HaoCode
         }
 
         return $conv;
+    }
+
+    /**
+     * Align resume config cwd with the session transcript's canonical cwd.
+     */
+    private static function resolveResumeWorkingDirectory(string $sessionId, HaoCodeConfig $config): HaoCodeConfig
+    {
+        /** @var SessionManager $sessionManager */
+        $sessionManager = \HaoCode\Support\Runtime\SdkRuntime::app(SessionManager::class);
+        $sessionCwd = $sessionManager->getSessionCanonicalCwd($sessionId);
+        if ($sessionCwd === null || $sessionCwd === '') {
+            return $config;
+        }
+
+        if ($config->cwd === null || $config->cwd === '') {
+            $values = get_object_vars($config);
+            $values['cwd'] = $sessionCwd;
+
+            return new HaoCodeConfig(...$values);
+        }
+
+        $configReal = realpath($config->cwd) ?: $config->cwd;
+        $sessionReal = realpath($sessionCwd) ?: $sessionCwd;
+        if ($configReal === $sessionReal) {
+            return $config;
+        }
+
+        if ($config->allowCwdOverride) {
+            return $config;
+        }
+
+        throw new \RuntimeException(
+            "Session {$sessionId} was recorded under working directory \"{$sessionCwd}\", "
+            ."but resume config cwd is \"{$config->cwd}\". Pass the session cwd, or set "
+            .'allowCwdOverride: true if you intentionally want tools to run elsewhere.',
+        );
     }
 
     /**
@@ -229,18 +266,18 @@ class HaoCode
                     $config,
                 );
 
-                self::completeBackgroundInterruptOwner($pendingInterrupt, $result->text);
+                self::completeBackgroundInterruptOwner($pendingInterrupt, $result->text, $runSnapshot);
 
                 return self::propagateManagedWorktreeResult($parentResult, $result);
             }
             if (($checkpoint['operation'] ?? null) === 'structured') {
                 $structuredResult = self::parseStructuredResult($result);
-                self::completeBackgroundInterruptOwner($pendingInterrupt, $result->text);
+                self::completeBackgroundInterruptOwner($pendingInterrupt, $result->text, $runSnapshot);
 
                 return $structuredResult;
             }
 
-            self::completeBackgroundInterruptOwner($pendingInterrupt, $result->text);
+            self::completeBackgroundInterruptOwner($pendingInterrupt, $result->text, $runSnapshot);
 
             return $result;
         } finally {
@@ -325,6 +362,7 @@ class HaoCode
                         self::completeBackgroundInterruptOwner(
                             $pendingInterrupt,
                             $final->text ?? '',
+                            $runSnapshot,
                         );
                         yield self::propagateManagedWorktreeMessage($parentMessage, $final);
 
@@ -334,7 +372,7 @@ class HaoCode
                 }
                 return;
             }
-            self::completeBackgroundInterruptOwner($pendingInterrupt, $final->text ?? '');
+            self::completeBackgroundInterruptOwner($pendingInterrupt, $final->text ?? '', $runSnapshot);
             yield $final;
         } finally {
             $conversation->close();
@@ -353,6 +391,12 @@ class HaoCode
     public static function continueLatest(?string $cwd = null, ?HaoCodeConfig $config = null): Conversation
     {
         $cwd ??= getcwd() ?: '/';
+        $config ??= new HaoCodeConfig(ephemeral: false);
+        if ($config->cwd === null || $config->cwd === '') {
+            $values = get_object_vars($config);
+            $values['cwd'] = $cwd;
+            $config = new HaoCodeConfig(...$values);
+        }
 
         /** @var SessionManager $sessionManager */
         $sessionManager = \HaoCode\Support\Runtime\SdkRuntime::app(SessionManager::class);
@@ -416,18 +460,23 @@ class HaoCode
     private static function completeBackgroundInterruptOwner(
         HumanInterrupt $interrupt,
         string $result,
+        ?array $runSnapshot = null,
     ): void {
-        if ($interrupt->sourceAgentId === null) {
+        $ownerId = $interrupt->sourceAgentId
+            ?? (is_string($runSnapshot['background_owner_agent_id'] ?? null)
+                ? $runSnapshot['background_owner_agent_id']
+                : null);
+        if ($ownerId === null || $ownerId === '') {
             return;
         }
 
         $backgroundAgents = \HaoCode\Support\Runtime\SdkRuntime::app(
             \HaoCode\Services\Agent\BackgroundAgentManager::class,
         );
-        $backgroundAgents->markCompleted($interrupt->sourceAgentId, $result);
-        $backgroundAgents->finalizeStoredWorktree($interrupt->sourceAgentId);
+        $backgroundAgents->markCompleted($ownerId, $result);
+        $backgroundAgents->finalizeStoredWorktree($ownerId);
         \HaoCode\Support\Runtime\SdkRuntime::app(\HaoCode\Services\Task\TaskManager::class)
-            ->update($interrupt->sourceAgentId, 'completed', $result);
+            ->update($ownerId, 'completed', $result);
     }
 
     private static function restoreInterruptRunConfig(
@@ -682,17 +731,24 @@ class HaoCode
 
         $config = ($config ?? new HaoCodeConfig)->withResponseSchema($effectiveSchema);
 
+        // Durable structured runs always reuse one Conversation so retries
+        // share session history (and tool side-effect context). Ephemeral
+        // budgeted runs may still use a shared ledger without a conversation
+        // when no session is requested.
         $conversation = null;
-        if ($config->maxBudgetUsd !== null) {
+        $reuseConversation = ! $config->ephemeral
+            || $config->sessionId !== null
+            || $config->continueSession
+            || $config->maxBudgetUsd !== null;
+        if ($reuseConversation) {
             if ($config->sessionId !== null) {
                 $conversation = self::resume($config->sessionId, $config);
             } elseif ($config->continueSession) {
                 $conversation = self::continueLatest($config->cwd, $config);
+            } elseif (! $config->ephemeral || $config->maxBudgetUsd !== null) {
+                $conversation = self::conversation($config);
             }
         }
-        $budgetLedger = $conversation === null && $config->maxBudgetUsd !== null
-            ? BudgetLedger::create($config->maxBudgetUsd)
-            : null;
         $attempt = 0;
         $lastValidationErrors = [];
         $lastRawText = '';
@@ -703,16 +759,11 @@ class HaoCode
                     : $basePrompt."\n\n".
                         "Your previous response did not match the schema. ".
                         "Fix these violations and reply with the corrected JSON only:\n".
-                        implode("\n", $lastValidationErrors);
+                        implode("\n", $lastValidationErrors).
+                        "\n\nPrevious tools may already have executed. Do not repeat completed side effects.";
 
                 if ($conversation !== null) {
                     $queryResult = $conversation->send($promptForAttempt, $config->images);
-                } elseif ($budgetLedger !== null) {
-                    $queryResult = self::queryWithBudgetLedger(
-                        $promptForAttempt,
-                        $config,
-                        $budgetLedger,
-                    );
                 } else {
                     $queryResult = self::query($promptForAttempt, $config);
                 }

@@ -81,6 +81,34 @@ class SessionManager
             throw new \RuntimeException('No conversation to branch.');
         }
 
+        $latestInterruptState = [];
+        foreach ($sourceEntries as $entry) {
+            $type = $entry['type'] ?? null;
+            if (! in_array($type, [
+                'interrupt_pending',
+                'interrupt_resolving',
+                'interrupt_resolved',
+                'interrupt_cancelled',
+                'interrupt_failed',
+            ], true)) {
+                continue;
+            }
+            $interruptId = is_array($entry['interrupt'] ?? null)
+                ? (string) ($entry['interrupt']['id'] ?? '')
+                : '';
+            if ($interruptId !== '') {
+                $latestInterruptState[$interruptId] = $type;
+            }
+        }
+        foreach ($latestInterruptState as $type) {
+            if (in_array($type, ['interrupt_pending', 'interrupt_resolving'], true)) {
+                throw new \RuntimeException(
+                    'Cannot branch a session with an unfinished human interrupt. '
+                    .'Resolve or cancel the interrupt first.',
+                );
+            }
+        }
+
         $branchedSessionId = $this->generateSessionId();
         $branchTitle = $this->makeUniqueBranchTitle(
             $customTitle ?: $this->deriveBranchTitleBase($sourceEntries)
@@ -101,8 +129,18 @@ class SessionManager
             ],
         ];
 
+        // Copy settled history only. Skip unfinished interrupt lifecycle
+        // entries and parent links so branches never inherit live HITL state.
+        $skipTypes = [
+            'session_title',
+            'session_branch',
+            'interrupt_pending',
+            'interrupt_resolving',
+            'interrupt_failed',
+            'interrupt_parent',
+        ];
         foreach ($sourceEntries as $entry) {
-            if (in_array($entry['type'] ?? null, ['session_title', 'session_branch'], true)) {
+            if (in_array($entry['type'] ?? null, $skipTypes, true)) {
                 continue;
             }
 
@@ -287,7 +325,13 @@ class SessionManager
     {
         $latest = null;
         foreach ($this->loadSession($sessionId) as $entry) {
-            if (in_array($entry['type'] ?? null, ['interrupt_pending', 'interrupt_resolving', 'interrupt_resolved', 'interrupt_cancelled'], true)
+            if (in_array($entry['type'] ?? null, [
+                'interrupt_pending',
+                'interrupt_resolving',
+                'interrupt_resolved',
+                'interrupt_cancelled',
+                'interrupt_failed',
+            ], true)
                 && ($entry['interrupt']['id'] ?? null) === $interruptId) {
                 $latest = $entry;
             }
@@ -297,6 +341,88 @@ class SessionManager
         }
 
         return $latest;
+    }
+
+    /**
+     * Mark a claimed (resolving) interrupt as permanently failed.
+     * Automatic retry remains disabled; callers must surface the error.
+     *
+     * @param  array<int|string, mixed>|null  $partialResults
+     * @internal
+     */
+    public function failInterrupt(
+        string $sessionId,
+        string $interruptId,
+        string $error,
+        string $sideEffectStatus = 'unknown',
+        ?array $partialResults = null,
+    ): void {
+        if (! $this->persistenceEnabled) {
+            return;
+        }
+
+        $sessionId = $this->validateSessionId($sessionId);
+        $path = $this->sessionPath.'/'.$sessionId.'.jsonl';
+        $handle = @fopen($path, 'c+');
+        if ($handle === false) {
+            return;
+        }
+
+        try {
+            if (! flock($handle, LOCK_EX)) {
+                return;
+            }
+
+            $latest = $this->findLatestInterruptEntry($handle, $interruptId);
+            if ($latest === null) {
+                return;
+            }
+            if (($latest['type'] ?? null) !== 'interrupt_resolving') {
+                return;
+            }
+
+            $entry = [
+                'timestamp' => date('c'),
+                'session_id' => $sessionId,
+                'cwd' => $latest['cwd'] ?? $this->currentWorkingDirectory ?? (getcwd() ?: null),
+                'type' => 'interrupt_failed',
+                'interrupt' => $latest['interrupt'],
+                'checkpoint' => $latest['checkpoint'] ?? null,
+                'error' => $error,
+                'side_effect_status' => in_array($sideEffectStatus, ['none', 'partial', 'unknown'], true)
+                    ? $sideEffectStatus
+                    : 'unknown',
+                'partial_results' => $partialResults,
+            ];
+            $this->appendJsonLine($handle, $entry);
+        } finally {
+            flock($handle, LOCK_UN);
+            fclose($handle);
+        }
+    }
+
+    /**
+     * Canonical working directory recorded in the session transcript.
+     * Prefers the first user_message cwd, then any earlier entry cwd.
+     *
+     * @internal
+     */
+    public function getSessionCanonicalCwd(string $sessionId): ?string
+    {
+        $entries = $this->loadSession($sessionId);
+        $fallback = null;
+        foreach ($entries as $entry) {
+            $cwd = $entry['cwd'] ?? null;
+            if (! is_string($cwd) || $cwd === '') {
+                continue;
+            }
+            if (($entry['type'] ?? null) === 'user_message') {
+                return $cwd;
+            }
+            $fallback ??= $cwd;
+        }
+
+        return $fallback;
     }
 
     /** @internal */
@@ -612,7 +738,13 @@ class SessionManager
         while (($line = fgets($handle)) !== false) {
             $entry = json_decode($line, true);
             if (is_array($entry)
-                && in_array($entry['type'] ?? null, ['interrupt_pending', 'interrupt_resolving', 'interrupt_resolved', 'interrupt_cancelled'], true)
+                && in_array($entry['type'] ?? null, [
+                    'interrupt_pending',
+                    'interrupt_resolving',
+                    'interrupt_resolved',
+                    'interrupt_cancelled',
+                    'interrupt_failed',
+                ], true)
                 && ($entry['interrupt']['id'] ?? null) === $interruptId) {
                 $latest = $entry;
             }

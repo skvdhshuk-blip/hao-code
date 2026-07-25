@@ -172,21 +172,28 @@ class AgentLoopFactory
 
                         $childContext = $context->runContext->fork($context->workingDirectory);
                         if ($skill->model !== null && trim($skill->model) !== '') {
-                            $childContext->settings->set('model', trim($skill->model));
+                            $resolvedModel = \HaoCode\Tools\Skill\SkillModelResolver::resolve(
+                                trim($skill->model),
+                                $childContext->settings->getProviderType(),
+                            );
+                            if ($resolvedModel !== null) {
+                                $childContext->settings->set('model', $resolvedModel);
+                            }
                         }
 
-                        $allowedTools = array_values(array_unique(array_filter(array_map(
-                            static function (mixed $name): string {
-                                $name = trim((string) $name);
-                                $patternStart = strpos($name, '(');
-
-                                return $patternStart === false ? $name : substr($name, 0, $patternStart);
-                            },
-                            $skill->allowedTools,
-                        ))));
-                        $filter = $allowedTools === []
+                        $capabilitySpecs = \HaoCode\Tools\Skill\SkillCapability::normalizeSpecs($skill->allowedTools);
+                        $filter = $capabilitySpecs === []
                             ? null
-                            : static fn (string $name): bool => in_array($name, $allowedTools, true);
+                            : static function (string $name) use ($capabilitySpecs): bool {
+                                // Fork filter only sees tool names (no per-call input).
+                                // Pattern enforcement still happens inside the child
+                                // orchestrator when the skill scope is activated.
+                                return in_array(
+                                    $name,
+                                    \HaoCode\Tools\Skill\SkillCapability::toolNames($capabilitySpecs),
+                                    true,
+                                );
+                            };
 
                         $loop = $this->createIsolated(
                             toolFilter: $filter,
@@ -198,6 +205,11 @@ class AgentLoopFactory
                             parentToolRegistry: $context->toolRegistry,
                         );
                         $loop->setMaxTurns(20);
+                        // Enforce patterned capability rules for the whole child
+                        // run (toolFilter only sees names, not Bash commands).
+                        if ($capabilitySpecs !== []) {
+                            $loop->setBaseSkillScope($capabilitySpecs);
+                        }
 
                         return $loop->run($prompt);
                     },

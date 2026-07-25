@@ -96,6 +96,32 @@ class AnthropicProvider implements ApiKeyAwareProvider, SettingsAwareProvider
         return $this->thinkingBudget;
     }
 
+    /**
+     * Map thinkingBudget / effort_level into adaptive effort tiers.
+     *
+     * @return 'low'|'medium'|'high'|'max'
+     */
+    private function resolveAdaptiveEffort(): string
+    {
+        $explicit = $this->settingsManager?->getEffortLevel();
+        if (is_string($explicit) && in_array($explicit, ['low', 'medium', 'high', 'max'], true)) {
+            return $explicit;
+        }
+
+        $budget = $this->resolveThinkingBudget();
+        if ($budget >= 32000) {
+            return 'max';
+        }
+        if ($budget >= 16000) {
+            return 'high';
+        }
+        if ($budget >= 8000) {
+            return 'medium';
+        }
+
+        return 'low';
+    }
+
     private function resolveBaseUrl(): string
     {
         if ($this->settingsManager) {
@@ -219,7 +245,9 @@ class AnthropicProvider implements ApiKeyAwareProvider, SettingsAwareProvider
         if ($thinkingEnabled) {
             if (ModelCatalog::requiresAdaptiveThinking($this->resolveModel())) {
                 $payload['thinking'] = ['type' => 'adaptive'];
-                $payload['output_config'] = ['effort' => 'high'];
+                $payload['output_config'] = [
+                    'effort' => $this->resolveAdaptiveEffort(),
+                ];
             } else {
                 $thinkingBudget = $this->resolveThinkingBudget();
                 $payload['thinking'] = [

@@ -993,6 +993,17 @@ class AgentLoop
         return $this->sessionManager;
     }
 
+    /**
+     * Install a run-lifetime skill capability envelope (used by forked skills).
+     *
+     * @param  list<string>|null  $allowedTools
+     * @internal
+     */
+    public function setBaseSkillScope(?array $allowedTools): void
+    {
+        $this->toolOrchestrator->setBaseSkillScope($allowedTools);
+    }
+
     /** @internal */
     public function restoreRunSnapshot(array $snapshot): void
     {

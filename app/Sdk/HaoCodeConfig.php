@@ -75,6 +75,14 @@ class HaoCodeConfig
      */
     public readonly array $headers;
 
+    /**
+     * Provider wire format: 'anthropic', 'openai', or 'openai_chat'.
+     * null means "use settings defaults". Normalized at construction.
+     *
+     * @api
+     */
+    public readonly ?string $providerType;
+
     public function __construct(
         /**
          * Anthropic API key. Falls back to config('haocode.api_key').
@@ -102,11 +110,12 @@ class HaoCodeConfig
          * API), or 'openai_chat' (Chat Completions — use for aihubmix,
          * DeepSeek, vLLM, and other OpenAI-compatible gateways). OpenAI
          * providers require an explicit model or one configured on the
-         * selected provider entry.
+         * selected provider entry. Unknown non-empty values throw at
+         * construction time (fail closed — never silently map to Anthropic).
          *
          * @api
          */
-        public readonly ?string $providerType = null,
+        ?string $providerType = null,
 
         /**
          * Maximum output tokens per response.
@@ -130,9 +139,11 @@ class HaoCodeConfig
         public readonly int $maxTurns = 50,
 
         /**
-         * Maximum estimated spending in USD before stopping. Supported only
+         * Shared post-response spending guard in USD. Checked before each
+         * model request and again after usage is recorded. Supported only
          * when the selected provider/model has trusted built-in pricing.
-         * null = no limit.
+         * null = no limit. Concurrent or in-flight requests may still push
+         * the total slightly past the limit before the next pre-request check.
          *
          * @api
          */
@@ -501,6 +512,16 @@ class HaoCodeConfig
          * @api
          */
         public readonly int $webfetchMaxBytes = 5_242_880,
+
+        /**
+         * When true, {@see HaoCode::resume()} may run a session under a cwd
+         * that differs from the session's stored working directory. Default
+         * false refuses the mismatch so tools cannot silently operate on a
+         * different project than the transcript history.
+         *
+         * @api
+         */
+        public readonly bool $allowCwdOverride = false,
     ) {
         $this->hitlMode = is_string($hitlMode) && in_array($hitlMode, ['ask', 'smart', 'auto'], true) ? $hitlMode : null;
         $this->hitlReviewModel = is_string($hitlReviewModel) && trim($hitlReviewModel) !== ''
@@ -510,6 +531,9 @@ class HaoCodeConfig
             ? $hitlAllowlistPath
             : null;
         $this->headers = \HaoCode\Services\Api\RequestHeaders::sanitize($headers);
+        // Normalize + fail closed on unknown provider types before any HTTP
+        // client can be constructed with mixed credentials.
+        $this->providerType = \HaoCode\Services\Settings\ProviderType::normalizeExplicit($providerType);
 
         if (! in_array($this->memorySummaryLevel, ['l0', 'l1', 'l2'], true)) {
             throw new \InvalidArgumentException('memorySummaryLevel must be l0, l1, or l2.');

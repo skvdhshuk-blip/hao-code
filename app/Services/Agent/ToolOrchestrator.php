@@ -7,6 +7,8 @@ use HaoCode\Services\Permissions\PermissionChecker;
 use HaoCode\Services\Telemetry\PhoenixTracer;
 use HaoCode\Services\ToolResult\ToolResultStorage;
 use HaoCode\Sdk\HumanActionRequest;
+use HaoCode\Tools\Skill\SkillCapability;
+use HaoCode\Tools\Skill\SkillModelResolver;
 use HaoCode\Tools\ToolRegistry;
 use HaoCode\Tools\ToolUseContext;
 use HaoCode\Tools\ToolResult;
@@ -21,8 +23,22 @@ class ToolOrchestrator
     private ?ToolResultStorage $toolResultStorage = null;
     /** @var array<string, int> raw file_path → successful Read count (this session) */
     private array $readCountsByFile = [];
-    /** @var string[]|null Tool names allowed by active skills; null means unrestricted. */
+    /**
+     * Capability specs allowed by active skills (e.g. "Read", "Bash(cargo:*)").
+     * null means unrestricted.
+     *
+     * @var list<string>|null
+     */
     private ?array $activeSkillAllowedTools = null;
+
+    /**
+     * Optional base capability envelope (e.g. forked skill child runs). Survives
+     * {@see resetSkillScope()} so fork constraints remain for the whole child run.
+     *
+     * @var list<string>|null
+     */
+    private ?array $baseSkillAllowedTools = null;
+
     private ?string $activeSkillModelOverride = null;
     private string $activeSkillContext = 'inline';
 
@@ -143,9 +159,24 @@ class ToolOrchestrator
 
     public function resetSkillScope(): void
     {
-        $this->activeSkillAllowedTools = null;
+        $this->activeSkillAllowedTools = $this->baseSkillAllowedTools;
         $this->activeSkillModelOverride = null;
         $this->activeSkillContext = 'inline';
+    }
+
+    /**
+     * Install a run-lifetime capability envelope (forked skills). Call before
+     * {@see AgentLoop::run()} so resetSkillScope restores this envelope.
+     *
+     * @param  list<string>|null  $allowedTools
+     * @internal
+     */
+    public function setBaseSkillScope(?array $allowedTools): void
+    {
+        $this->baseSkillAllowedTools = $allowedTools === null
+            ? null
+            : SkillCapability::normalizeSpecs($allowedTools);
+        $this->activeSkillAllowedTools = $this->baseSkillAllowedTools;
     }
 
     /** @internal */
@@ -155,12 +186,13 @@ class ToolOrchestrator
         ?string $context,
     ): void
     {
-        $this->activeSkillAllowedTools = $allowedTools === null
+        $normalized = $allowedTools === null
             ? null
-            : array_values(array_unique(array_filter(
-                $allowedTools,
-                static fn (mixed $name): bool => is_string($name) && trim($name) !== '',
-            )));
+            : SkillCapability::normalizeSpecs($allowedTools);
+        // Resume snapshots restore the active scope on top of any base envelope.
+        $this->activeSkillAllowedTools = $normalized === null || $this->baseSkillAllowedTools === null
+            ? $normalized
+            : SkillCapability::intersect($this->baseSkillAllowedTools, $normalized);
         $this->activeSkillModelOverride = is_string($modelOverride) && trim($modelOverride) !== ''
             ? trim($modelOverride)
             : null;
@@ -169,23 +201,35 @@ class ToolOrchestrator
             : 'inline';
     }
 
-    /** @return string[]|null */
+    /**
+     * Active skill capability specs (may include patterns like Bash(cargo:*)).
+     *
+     * @return list<string>|null
+     */
     public function getActiveSkillAllowedTools(): ?array
     {
         return $this->activeSkillAllowedTools;
     }
 
-    /** @return string[]|null @internal */
+    /**
+     * Tool names advertised to the model under the active scope (patterns stripped).
+     *
+     * @return string[]|null @internal
+     */
     public function getAdvertisedAllowedTools(): ?array
     {
+        $skillTools = $this->activeSkillAllowedTools === null
+            ? null
+            : SkillCapability::toolNames($this->activeSkillAllowedTools);
+
         if ($this->resumeAllowedTools === null) {
-            return $this->activeSkillAllowedTools;
+            return $skillTools;
         }
-        if ($this->activeSkillAllowedTools === null) {
+        if ($skillTools === null) {
             return $this->resumeAllowedTools;
         }
 
-        return array_values(array_intersect($this->resumeAllowedTools, $this->activeSkillAllowedTools));
+        return array_values(array_intersect($this->resumeAllowedTools, $skillTools));
     }
 
     public function getActiveSkillModelOverride(): ?string
@@ -476,14 +520,6 @@ class ToolOrchestrator
             ];
         }
 
-        if (! $this->isAllowedByActiveSkillScope($toolName)) {
-            return [
-                'tool_use_id' => $toolUseId,
-                'content' => "Tool {$toolName} is not allowed by the active skill scope.",
-                'is_error' => true,
-            ];
-        }
-
         if (! $isPrepared) {
         // Stage 1: Schema validation
         try {
@@ -553,6 +589,14 @@ class ToolOrchestrator
         }
         }
 
+        if (! $this->isAllowedByActiveSkillScope($toolName, is_array($input) ? $input : [])) {
+            return [
+                'tool_use_id' => $toolUseId,
+                'content' => "Tool {$toolName} is not allowed by the active skill scope.",
+                'is_error' => true,
+            ];
+        }
+
         if ($onStart) {
             $onStart($toolName, $input);
         }
@@ -560,7 +604,7 @@ class ToolOrchestrator
         // Execute the tool
         try {
             $result = $tool->call($input, $context);
-            $this->activateSkillScope($toolName, $result);
+            $this->activateSkillScope($toolName, $result, $context);
 
             // PostToolUse hooks (success path)
             $postHookResult = $this->hookExecutor->execute('PostToolUse', [
@@ -657,10 +701,6 @@ class ToolOrchestrator
         if ($tool === null || ! $tool->isEnabled()) {
             return $error("Unknown tool: {$toolName}");
         }
-        if (! $this->isAllowedByActiveSkillScope($toolName)) {
-            return $error("Tool {$toolName} is not allowed by the active skill scope.");
-        }
-
         try {
             $input = $tool->inputSchema()->validate($input);
         } catch (\InvalidArgumentException $e) {
@@ -673,6 +713,9 @@ class ToolOrchestrator
         }
 
         $input = $tool->backfillObservableInput($input, $context);
+        if (! $this->isAllowedByActiveSkillScope($toolName, $input)) {
+            return $error("Tool {$toolName} is not allowed by the active skill scope.");
+        }
         $hookResult = $this->hookExecutor->execute('PreToolUse', ['tool' => $toolName, 'input' => $input]);
         if (! $hookResult->allowed) {
             return $error('Blocked by hook: '.$hookResult->output);
@@ -731,7 +774,10 @@ class ToolOrchestrator
         ];
     }
 
-    private function isAllowedByActiveSkillScope(string $toolName): bool
+    /**
+     * @param  array<string, mixed>  $input
+     */
+    private function isAllowedByActiveSkillScope(string $toolName, array $input = []): bool
     {
         if ($this->resumeAllowedTools !== null && ! in_array($toolName, $this->resumeAllowedTools, true)) {
             return false;
@@ -740,10 +786,10 @@ class ToolOrchestrator
             return true;
         }
 
-        return in_array($toolName, $this->activeSkillAllowedTools, true);
+        return SkillCapability::allows($this->activeSkillAllowedTools, $toolName, $input);
     }
 
-    private function activateSkillScope(string $toolName, ToolResult $result): void
+    private function activateSkillScope(string $toolName, ToolResult $result, ?ToolUseContext $toolContext = null): void
     {
         if ($toolName !== 'Skill' || $result->isError || $result->metadata === null) {
             return;
@@ -752,24 +798,33 @@ class ToolOrchestrator
         $allowedTools = $result->metadata['allowed_tools'] ?? [];
         $context = $result->metadata['context'] ?? 'inline';
         if ($context !== 'fork' && is_array($allowedTools) && $allowedTools !== []) {
-            $normalized = array_values(array_unique(array_filter(array_map(
-                static function (mixed $name): string {
-                    $name = trim((string) $name);
-                    $patternStart = strpos($name, '(');
+            try {
+                $normalized = SkillCapability::normalizeSpecs($allowedTools);
+            } catch (\InvalidArgumentException $e) {
+                // Invalid capability specs must not widen permissions.
+                $this->activeSkillAllowedTools = $this->activeSkillAllowedTools ?? [];
 
-                    return $patternStart === false ? $name : substr($name, 0, $patternStart);
-                },
-                $allowedTools,
-            ))));
+                return;
+            }
 
-            $this->activeSkillAllowedTools = $this->activeSkillAllowedTools === null
+            $combined = $this->activeSkillAllowedTools === null
                 ? $normalized
-                : array_values(array_intersect($this->activeSkillAllowedTools, $normalized));
+                : SkillCapability::intersect($this->activeSkillAllowedTools, $normalized);
+            // Never escape a forked skill's base envelope.
+            $this->activeSkillAllowedTools = $this->baseSkillAllowedTools === null
+                ? $combined
+                : SkillCapability::intersect($this->baseSkillAllowedTools, $combined);
         }
 
         $modelOverride = $result->metadata['model_override'] ?? null;
         if ($context !== 'fork' && is_string($modelOverride) && trim($modelOverride) !== '') {
-            $this->activeSkillModelOverride = trim($modelOverride);
+            $providerType = $toolContext?->runContext?->settings->getProviderType() ?? 'anthropic';
+            try {
+                $resolved = SkillModelResolver::resolve(trim($modelOverride), $providerType);
+                $this->activeSkillModelOverride = $resolved;
+            } catch (\InvalidArgumentException) {
+                // Keep prior override rather than applying an invalid alias.
+            }
         }
 
         if (is_string($context) && in_array($context, ['inline', 'fork'], true)) {

@@ -894,8 +894,40 @@ class StreamingClientTest extends TestCase
 
         $decoded = json_decode($capturedBody, true);
         $this->assertSame(['type' => 'adaptive'], $decoded['thinking']);
+        // thinkingBudget 16000 maps to high effort for adaptive models.
         $this->assertSame(['effort' => 'high'], $decoded['output_config']);
         $this->assertArrayNotHasKey('budget_tokens', $decoded['thinking']);
+    }
+
+    public function test_adaptive_thinking_maps_low_budget_to_low_effort(): void
+    {
+        $capturedBody = null;
+        $httpClient = new MockHttpClient(function (string $method, string $url, array $options) use (&$capturedBody) {
+            $capturedBody = $options['body'] ?? '';
+
+            return new MockResponse([
+                "event: message_stop\n",
+                "data: {}\n\n",
+            ], ['http_code' => 200]);
+        });
+
+        $client = new StreamingClient(
+            apiKey: 'test-key',
+            model: 'claude-opus-4-8',
+            httpClient: $httpClient,
+            thinkingEnabled: true,
+            thinkingBudget: 4000,
+        );
+
+        iterator_to_array($client->streamMessages(
+            systemPrompt: [],
+            messages: [['role' => 'user', 'content' => 'think about this']],
+            tools: [],
+        ));
+
+        $decoded = json_decode($capturedBody, true);
+        $this->assertSame(['type' => 'adaptive'], $decoded['thinking']);
+        $this->assertSame(['effort' => 'low'], $decoded['output_config']);
     }
 
     // ─── settings manager integration ─────────────────────────────────────

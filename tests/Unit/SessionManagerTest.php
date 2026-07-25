@@ -515,6 +515,52 @@ class SessionManagerTest extends TestCase
         $manager->claimInterrupt($manager->getSessionId(), 'int-1', []);
     }
 
+    public function test_fail_interrupt_marks_resolving_as_failed_terminal_state(): void
+    {
+        $manager = new SessionManager;
+        $interrupt = [
+            'id' => 'int-fail',
+            'session_id' => $manager->getSessionId(),
+            'actions' => [],
+            'created_at' => date('c'),
+        ];
+        $manager->recordPendingInterrupt($interrupt, ['blocks' => [], 'results' => []]);
+        $manager->claimInterrupt($manager->getSessionId(), 'int-fail', []);
+
+        $manager->failInterrupt(
+            $manager->getSessionId(),
+            'int-fail',
+            'provider timeout',
+            'partial',
+            [['tool_use_id' => 't1', 'content' => 'done', 'is_error' => false]],
+        );
+
+        $state = $manager->getInterruptState($manager->getSessionId(), 'int-fail');
+        $this->assertSame('interrupt_failed', $state['type']);
+        $this->assertSame('provider timeout', $state['error']);
+        $this->assertSame('partial', $state['side_effect_status']);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('already failed');
+        $manager->claimInterrupt($manager->getSessionId(), 'int-fail', []);
+    }
+
+    public function test_branch_session_rejects_unfinished_interrupt(): void
+    {
+        $manager = new SessionManager;
+        $manager->recordUserMessage('hello');
+        $manager->recordPendingInterrupt([
+            'id' => 'int-branch',
+            'session_id' => $manager->getSessionId(),
+            'actions' => [],
+            'created_at' => date('c'),
+        ], ['blocks' => [], 'results' => []]);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('unfinished human interrupt');
+        $manager->branchSession();
+    }
+
     // ─── setTitle records entry ───────────────────────────────────────────
 
     public function test_set_title_records_session_title_entry(): void
