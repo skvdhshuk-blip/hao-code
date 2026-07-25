@@ -2,7 +2,7 @@
 
 Use hao-code as a framework-free PHP library to embed an AI coding agent in your application.
 
-This document describes the `v1.18.8` source line. Published package versions
+This document describes the `v1.18.9` source line. Published package versions
 are identified by Git tags and Packagist.
 
 ```bash
@@ -346,6 +346,13 @@ Interrupt lifecycle (latest entry wins):
 A claim-then-crash path records `interrupt_failed` with `error`,
 `side_effect_status` (`none` / `partial` / `unknown`), and optional
 `partial_results` instead of leaving the interrupt stuck in `resolving`.
+Post-claim setup/tool failures are always written as `interrupt_failed` so the
+interrupt never stays permanently in `resolving`.
+
+When you resume via a long-lived `Conversation` handle, the conversation rebuilds
+its loop after the interrupt and restores the working directory from (in order)
+the live run context, the session transcript canonical cwd, then `RunOptions`
+cwd — so a later `send()` does not fall back to the process `getcwd()`.
 
 ```text
 HaoCode::resumeInterrupt(string $sessionId, string $interruptId, array $decisions, ?HaoCodeConfig $config = null): QueryResult|StructuredResult
@@ -1137,13 +1144,17 @@ the entire forked child run (`context: 'fork'`). Entries may be:
 | Spec | Meaning |
 |---|---|
 | `Read` | Full access to that tool for the skill scope |
-| `Bash(cargo:*)` | `Bash` only when `command` matches the pattern (`cargo` or `cargo …`) |
+| `Bash(cargo:*)` | `Bash` only for a **single simple** command whose text is `cargo` or starts with `cargo ` |
 | `Read(src/**)` | Path-constrained tools match against `file_path` / `path` |
 
 Patterns are **never** stripped to a wider grant. `Bash(cargo:*)` does not
-become unrestricted `Bash`. Multiple inline skills intersect their capability
-lists (the more restrictive combination wins). File-based frontmatter uses the
-same format (`allowed-tools: Bash(cargo:*) Read`).
+become unrestricted `Bash`. Bash patterns also **fail closed** on shell
+chaining and expansion: `;`, `&&`, `||`, `|`, backticks, `$()`, redirections
+(`>`, `<`), newlines, comments (`#`), and `ENV=value cmd` prefixes are
+rejected even when the string begins with the allowed prefix (so
+`cargo test; rm -rf /` is denied). Multiple inline skills intersect their
+capability lists (the more restrictive combination wins). File-based
+frontmatter uses the same format (`allowed-tools: Bash(cargo:*) Read`).
 
 `model` overrides use a provider-aware resolver (same alias rules as Agent
 tools):

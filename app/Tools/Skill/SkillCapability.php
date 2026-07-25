@@ -217,11 +217,13 @@ final class SkillCapability
 
     private static function matchesBashPattern(string $command, string $pattern): bool
     {
-        if ($command === '') {
+        if ($command === '' || ! self::isSimpleSingleBashCommand($command)) {
             return false;
         }
 
         // Claude-style "cargo:*" / "npm run:*" — command prefix + optional args.
+        // Prefix alone is not enough: shell operators must already be rejected
+        // so "cargo test; rm -rf /" never becomes a grant.
         if (str_ends_with($pattern, ':*')) {
             $prefix = substr($pattern, 0, -2);
             if ($prefix === '') {
@@ -238,6 +240,28 @@ final class SkillCapability
         }
 
         return self::matchesGlob($pattern, $command);
+    }
+
+    /**
+     * Fail closed on multi-command shells, expansions, and redirections.
+     *
+     * Skill patterns grant a command family (e.g. cargo:*), not a free shell.
+     * Anything that can chain or expand into another program is rejected.
+     */
+    private static function isSimpleSingleBashCommand(string $command): bool
+    {
+        // Control operators, pipes, redirections, expansions, subshells, comments.
+        if (preg_match('/[;&|`$()<>\n\r#]|&&|\|\|/', $command) === 1) {
+            return false;
+        }
+
+        // Reject environment-prefix forms like "FOO=bar cargo test" that can
+        // rewrite process state before the matched binary runs.
+        if (preg_match('/^\s*[A-Za-z_][A-Za-z0-9_]*=/', $command) === 1) {
+            return false;
+        }
+
+        return true;
     }
 
     private static function matchesGlob(string $pattern, string $value): bool

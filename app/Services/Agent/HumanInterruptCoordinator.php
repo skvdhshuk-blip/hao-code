@@ -40,24 +40,28 @@ final class HumanInterruptCoordinator
 
         $pendingInterrupt = HumanInterrupt::fromArray($pending['interrupt'] ?? []);
         $decisionMap = $this->validateDecisions($pendingInterrupt, $serialized);
+
+        // Claim first, then run everything else under failInterrupt so a
+        // post-claim crash cannot leave the interrupt permanently "resolving".
         $claim = $this->sessions->claimInterrupt(
             $this->sessions->getSessionId(),
             $interruptId,
             $serialized,
         );
-        $interrupt = HumanInterrupt::fromArray($claim['interrupt'] ?? []);
-        $checkpoint = is_array($claim['checkpoint'] ?? null) ? $claim['checkpoint'] : [];
-        $this->restoreCheckpointPolicy($checkpoint);
-
-        $blocks = is_array($checkpoint['blocks'] ?? null) ? $checkpoint['blocks'] : [];
-        $results = is_array($checkpoint['results'] ?? null) ? $checkpoint['results'] : [];
-        $actionMap = [];
-        foreach ($interrupt->actions as $action) {
-            $actionMap[$action->id] = $action;
-        }
-
         $sideEffectStatus = 'none';
+        $results = [];
         try {
+            $interrupt = HumanInterrupt::fromArray($claim['interrupt'] ?? []);
+            $checkpoint = is_array($claim['checkpoint'] ?? null) ? $claim['checkpoint'] : [];
+            $this->restoreCheckpointPolicy($checkpoint);
+
+            $blocks = is_array($checkpoint['blocks'] ?? null) ? $checkpoint['blocks'] : [];
+            $results = is_array($checkpoint['results'] ?? null) ? $checkpoint['results'] : [];
+            $actionMap = [];
+            foreach ($interrupt->actions as $action) {
+                $actionMap[$action->id] = $action;
+            }
+
             foreach ($blocks as $index => $block) {
                 $id = (string) ($block['id'] ?? '');
                 if (! isset($actionMap[$id])) {

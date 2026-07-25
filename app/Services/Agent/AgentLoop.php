@@ -973,6 +973,12 @@ class AgentLoop
         return $this->runContext?->budgetLedger;
     }
 
+    /** @internal */
+    public function getRunContext(): ?AgentRunContext
+    {
+        return $this->runContext;
+    }
+
     public function getCacheCreationTokens(): int
     {
         return $this->totalCacheCreationTokens;

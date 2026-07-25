@@ -400,12 +400,45 @@ class Conversation
             'total_cache_read_tokens' => $this->loop->getCacheReadTokens(),
             'estimated_cost_usd' => $this->loop->getEstimatedCost(),
         ];
+
+        // Prefer the live run context (worktree / snapshot resume), then the
+        // session transcript, then the original RunOptions. Rebuilding only
+        // from agent+options can fall back to getcwd() and lose the original
+        // session working directory on the next send().
+        $liveCwd = $this->loop->getRunContext()?->workingDirectory;
+        $liveProject = $this->loop->getRunContext()?->projectDirectory;
+        /** @var SessionManager $sessionManager */
+        $sessionManager = \HaoCode\Support\Runtime\SdkRuntime::app(SessionManager::class);
+        $sessionCwd = $sessionManager->getSessionCanonicalCwd($sessionId);
+        $cwd = $liveCwd
+            ?? ((is_string($sessionCwd) && $sessionCwd !== '') ? $sessionCwd : null)
+            ?? $this->options->cwd;
+        $projectDirectory = $liveProject
+            ?? ((is_string($sessionCwd) && $sessionCwd !== '') ? $sessionCwd : null)
+            ?? $this->options->cwd;
+
+        $resumeSnapshot = array_filter(
+            [
+                'cwd' => $cwd,
+                'project_directory' => $projectDirectory,
+                'worktree_path' => $this->loop->getRunContext()?->worktreePath,
+                'worktree_branch' => $this->loop->getRunContext()?->worktreeBranch,
+                'managed_worktree' => $this->loop->getRunContext()?->managedWorktree ?? false,
+                'background_owner_agent_id' => $this->loop->getRunContext()?->backgroundOwnerAgentId,
+                'omit_project_instructions' => $this->loop->getRunContext()?->omitProjectInstructions ?? false,
+                'agent_type' => $this->loop->getRunContext()?->agentType,
+                'read_only' => $this->loop->getRunContext()?->readOnly ?? false,
+            ],
+            static fn (mixed $value): bool => $value !== null && $value !== '',
+        );
+
         $this->run->close();
         $this->run = SdkRunFactory::createFromAgent(
             $this->agent,
             $this->options,
             $this->factory,
             $this->streamingClient,
+            resumeSnapshot: $resumeSnapshot === [] ? null : $resumeSnapshot,
             budgetLedger: $budgetLedger,
         );
         $this->loop = $this->run->loop;

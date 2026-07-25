@@ -461,10 +461,12 @@ run; retained changes are reported in the final text and `usage` metadata.
 
 Once claimed, an interrupt moves to `resolving` and is never auto-retried (tool
 side effects may already have run). If resume fails after the claim — provider
-timeout, tool error, session write failure — the session records a terminal
-`interrupt_failed` state with the error and a side-effect hint instead of
-staying stuck in `resolving`. Branching a session that still has a
-pending/resolving interrupt is refused.
+timeout, tool error, session write failure, or post-claim setup errors — the
+session records a terminal `interrupt_failed` state with the error and a
+side-effect hint instead of staying stuck in `resolving`. A long-lived
+`Conversation` that resumes an interrupt rebuilds its loop and restores the
+session / live-run working directory for later `send()` calls. Branching a
+session that still has a pending/resolving interrupt is refused.
 
 ## Structured Output
 
@@ -626,13 +628,15 @@ $result = HaoCode::query('Use the matching skill for this task', new HaoCodeConf
 Skill-specific tool restrictions and model overrides are enforced during the
 active skill scope (inline for the rest of the turn; fork only inside the child
 agent). Claude-style entries such as `Bash(cargo:*)` keep the command pattern —
-`Bash(cargo:*)` does **not** silently become unrestricted `Bash`. Nested inline
-skills intersect their capability lists. Model overrides use the same provider-
-aware alias rules as Agent tools: `haiku` / `sonnet` / `opus` expand on
-Anthropic; full model IDs pass through; Anthropic aliases on non-Anthropic
-providers fail closed. Standalone skill shell directives are forwarded to the
-normal `Bash` tool, so permission checks, hooks, and skill scope still apply.
-Additional directories are never loaded implicitly.
+`Bash(cargo:*)` does **not** silently become unrestricted `Bash`, and shell
+chaining / expansion (`cargo test; rm -rf /`, pipes, `$()`, redirections) is
+rejected. Nested inline skills intersect their capability lists. Model
+overrides use the same provider-aware alias rules as Agent tools: `haiku` /
+`sonnet` / `opus` expand on Anthropic; full model IDs pass through; Anthropic
+aliases on non-Anthropic providers fail closed. Standalone skill shell
+directives are forwarded to the normal `Bash` tool, so permission checks,
+hooks, and skill scope still apply. Additional directories are never loaded
+implicitly.
 
 ## Credentials And Budgets
 
@@ -748,7 +752,7 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.18.8`. Notable changes since `v1.10.0`:
+is based on `v1.18.9`. Notable changes since `v1.10.0`:
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/
@@ -778,6 +782,9 @@ is based on `v1.18.8`. Notable changes since `v1.10.0`:
   durable structured retries share one conversation; branch refuses unfinished
   HITL; budget documented as a shared post-response guard with stricter resume
   limits; adaptive effort mapped from `thinkingBudget` / `effort_level`.
+- `v1.18.9` — Skill Bash patterns reject shell chaining/expansion (not just
+  prefix match); `Conversation` reload after interrupt resume restores session /
+  live-run cwd; post-claim HITL failures always record `interrupt_failed`.
 
 ## License
 
