@@ -9,7 +9,21 @@ use HaoCode\Tools\ToolUseContext;
 
 class BashTool extends BaseTool
 {
-    /** @var array<string, array{pid: int, outFile: string, startTime: float}> */
+    /** Default TTL for in-process background task bookkeeping (seconds). */
+    private const BACKGROUND_TASK_TTL_SECONDS = 6 * 3600;
+
+    /** Hard cap so a runaway table cannot grow without bound. */
+    private const BACKGROUND_TASK_MAX = 64;
+
+    /**
+     * @var array<string, array{
+     *   pid: int,
+     *   outFile: string,
+     *   startTime: float,
+     *   startToken: ?string,
+     *   command: string
+     * }>
+     */
     private static array $backgroundTasks = [];
     /** @var array<string, string> */
     private static array $sessionWorkingDirectories = [];
@@ -60,11 +74,7 @@ DESC;
                 ],
                 'run_in_background' => [
                     'type' => 'boolean',
-                    'description' => 'Run the command in the background',
-                ],
-                'dangerouslyDisableSandbox' => [
-                    'type' => 'boolean',
-                    'description' => 'Set to true to override sandbox mode and run without restrictions.',
+                    'description' => 'Run the command in the background (process-local; not durable across PHP restarts)',
                 ],
             ],
             'required' => ['command'],
@@ -73,7 +83,6 @@ DESC;
             'description' => 'nullable|string',
             'timeout' => 'nullable|integer|min:1000|max:600000',
             'run_in_background' => 'nullable|boolean',
-            'dangerouslyDisableSandbox' => 'nullable|boolean',
         ]);
     }
 
@@ -81,6 +90,15 @@ DESC;
     {
         $command = $input['command'];
         $background = $input['run_in_background'] ?? false;
+
+        // Removed from the public schema: accepting it as a no-op would be
+        // misleading; reject explicitly if a client still sends it.
+        if (array_key_exists('dangerouslyDisableSandbox', $input)) {
+            return ToolResult::error(
+                'dangerouslyDisableSandbox is not supported. Bash always runs under the '
+                .'active permission mode / sandbox boundary; use permissionMode or SandboxConfig instead.',
+            );
+        }
 
         if ($context->isAborted()) {
             return ToolResult::error('Command interrupted by user.', [
@@ -183,6 +201,7 @@ DESC;
         $deadline  = microtime(true) + $timeout;
         $timedOut  = false;
         $aborted = false;
+        $drainFailed = false;
 
         while (true) {
             if ($context->isAborted()) {
@@ -191,8 +210,11 @@ DESC;
                 break;
             }
 
-            $stdout .= $this->drainPipe($stdoutHandle);
-            $stderr .= $this->drainPipe($stderrHandle);
+            [$stdoutChunk, $stdoutFailed] = $this->drainPipe($stdoutHandle);
+            [$stderrChunk, $stderrFailed] = $this->drainPipe($stderrHandle);
+            $stdout .= $stdoutChunk;
+            $stderr .= $stderrChunk;
+            $drainFailed = $drainFailed || $stdoutFailed || $stderrFailed;
 
             $status = proc_get_status($process);
             if (!($status['running'] ?? false)) {
@@ -210,8 +232,11 @@ DESC;
             usleep((int) min($remaining * 1_000_000, 200_000));
         }
 
-        $stdout .= $this->drainPipe($stdoutHandle);
-        $stderr .= $this->drainPipe($stderrHandle);
+        [$stdoutChunk, $stdoutFailed] = $this->drainPipe($stdoutHandle);
+        [$stderrChunk, $stderrFailed] = $this->drainPipe($stderrHandle);
+        $stdout .= $stdoutChunk;
+        $stderr .= $stderrChunk;
+        $drainFailed = $drainFailed || $stdoutFailed || $stderrFailed;
 
         [$stdout, $capturedWorkingDirectory] = $this->extractWorkingDirectoryMarker($stdout, $cwdMarker);
 
@@ -265,6 +290,10 @@ DESC;
 
         if (empty($output)) {
             $output = '(no output)';
+        }
+
+        if ($drainFailed) {
+            $output .= "\n\n[warning: one or more stream reads failed while capturing command output]";
         }
 
         // Truncate very long output
@@ -333,8 +362,20 @@ DESC;
      */
     private function runInBackground(string $command, string $cwd, array $warnings): ToolResult
     {
+        self::pruneBackgroundTasks();
+
+        if (count(self::$backgroundTasks) >= self::BACKGROUND_TASK_MAX) {
+            return ToolResult::error(
+                'Too many in-process background Bash tasks (max '.self::BACKGROUND_TASK_MAX.'). '
+                .'Wait for existing tasks to finish or call checkTask() to reclaim them.',
+            );
+        }
+
         $taskId = 'bg_' . bin2hex(random_bytes(4));
-        $outFile = sys_get_temp_dir() . '/haocode_' . $taskId . '.out';
+        $outFile = tempnam(sys_get_temp_dir(), 'haocode_bg_');
+        if ($outFile === false) {
+            return ToolResult::error("Failed to allocate output file for background command: {$command}");
+        }
 
         // Spawn via proc_open with an env filter so the REQUIRED_ENV_DENY
         // keys (LD_PRELOAD, DYLD_*, PYTHONPATH, NODE_OPTIONS, PERL5OPT) do
@@ -346,44 +387,69 @@ DESC;
             unset($env[$deniedKey]);
         }
 
+        // Launcher stdout carries only the PID; the job's stdout/stderr go to
+        // $outFile. Prefer process-group isolation so later cleanup can signal
+        // the whole tree when the platform supports it.
+        $job = 'cd '.escapeshellarg($cwd).' && '
+            .'( command -v setsid >/dev/null 2>&1 && setsid bash -c '.escapeshellarg($command)
+            .' || bash -c '.escapeshellarg($command)
+            .' ) >'.escapeshellarg($outFile).' 2>&1 & echo $!';
+
         $descriptors = [
             0 => ['file', '/dev/null', 'r'],
-            1 => ['file', $outFile, 'w'],
-            2 => ['file', $outFile, 'a'],
+            1 => ['pipe', 'w'],
+            2 => ['pipe', 'w'],
         ];
 
-        // Wrap so the background PID is echoed back on stdout (the original
-        // `& echo $!` pattern), but through proc_open so we control the env.
-        $wrapped = 'cd ' . escapeshellarg($cwd) . ' && bash -c ' . escapeshellarg($command) . ' & echo $!';
-
-        $process = @proc_open($wrapped, $descriptors, $pipes, $cwd, $env);
+        $process = @proc_open(['bash', '-c', $job], $descriptors, $pipes, $cwd, $env);
         if (! is_resource($process)) {
+            @unlink($outFile);
+
             return ToolResult::error("Failed to start background command: {$command}");
         }
 
-        // Read the echoed PID from stdout, then close.
+        stream_set_blocking($pipes[1], true);
+        stream_set_blocking($pipes[2], true);
         $output = stream_get_contents($pipes[1]);
-        fclose($pipes[1]);
-        // The background child is detached via `&`; proc_close returns after
-        // the foreground `echo $!` finishes, not after the background job.
+        $launcherErr = stream_get_contents($pipes[2]);
+        if ($output === false) {
+            $output = '';
+        }
+        if (is_resource($pipes[1])) {
+            fclose($pipes[1]);
+        }
+        if (is_resource($pipes[2])) {
+            fclose($pipes[2]);
+        }
+        // Launcher is only the `echo $!` shell; the job itself is backgrounded.
         proc_close($process);
 
-        $pid = (int) trim($output ?? '0');
+        $pid = (int) trim((string) $output);
 
         if ($pid <= 0) {
-            return ToolResult::error("Failed to start background command: {$command}");
+            @unlink($outFile);
+            $hint = is_string($launcherErr) && trim($launcherErr) !== ''
+                ? "\nLauncher stderr: ".trim($launcherErr)
+                : '';
+
+            return ToolResult::error("Failed to start background command: {$command}{$hint}");
         }
+
+        // Capture a process start token immediately so PID reuse can be detected later.
+        $startToken = self::processStartToken($pid);
 
         self::$backgroundTasks[$taskId] = [
             'pid' => $pid,
             'outFile' => $outFile,
             'startTime' => microtime(true),
+            'startToken' => $startToken,
             'command' => $command,
         ];
 
         $result = "Background task started: {$taskId} (PID: {$pid})\n";
         $result .= "Command: {$command}\n";
-        $result .= "Use /tasks to check status.";
+        $result .= 'Status is process-local (not durable across PHP restarts). '
+            .'Use BashTool::checkTask() / checkAllTasks() to poll.';
 
         if (!empty($warnings)) {
             $result = "<warnings>\n" . implode("\n", $warnings) . "\n</warnings>\n\n" . $result;
@@ -397,39 +463,65 @@ DESC;
      */
     public static function checkTask(string $taskId): ?ToolResult
     {
+        self::pruneBackgroundTasks();
+
         $task = self::$backgroundTasks[$taskId] ?? null;
         if ($task === null) {
-            return ToolResult::error("Unknown background task: {$taskId}");
+            return ToolResult::error(
+                "Unknown background task: {$taskId}. "
+                .'It may have already been reaped, expired (TTL '
+                .self::BACKGROUND_TASK_TTL_SECONDS.'s), or never started in this process.',
+            );
         }
 
-        // Check if process is still running
-        $running = posix_kill($task['pid'], 0);
+        $running = self::isBackgroundProcessAlive($task);
 
         if ($running) {
             $elapsed = round(microtime(true) - $task['startTime'], 1);
-            return ToolResult::success("Task {$taskId} still running (PID: {$task['pid']}, {$elapsed}s elapsed)");
+
+            return ToolResult::success(
+                "Task {$taskId} still running (PID: {$task['pid']}, {$elapsed}s elapsed)",
+                ['taskId' => $taskId, 'pid' => $task['pid'], 'running' => true, 'elapsed' => $elapsed],
+            );
         }
 
-        // Process finished - read output
-        $output = file_exists($task['outFile']) ? file_get_contents($task['outFile']) : '(no output)';
-        @unlink($task['outFile']);
+        // Process finished or PID was reused — read output and reclaim bookkeeping.
+        $output = '(no output)';
+        if (is_string($task['outFile']) && file_exists($task['outFile'])) {
+            $raw = @file_get_contents($task['outFile']);
+            if ($raw === false) {
+                $output = '(failed to read task output file)';
+            } elseif ($raw !== '') {
+                $output = $raw;
+            }
+            @unlink($task['outFile']);
+        }
         unset(self::$backgroundTasks[$taskId]);
 
-        return ToolResult::success("Task {$taskId} completed:\n{$output}");
+        return ToolResult::success(
+            "Task {$taskId} completed:\n{$output}",
+            ['taskId' => $taskId, 'pid' => $task['pid'], 'running' => false],
+        );
     }
 
     /**
      * Drain any output already written to a capture stream without waiting for EOF.
+     *
+     * @param  resource  $pipe
+     * @return array{0: string, 1: bool} [chunk, readFailed]
      */
-    private function drainPipe($pipe): string
+    private function drainPipe($pipe): array
     {
-        if (!is_resource($pipe)) {
-            return '';
+        if (! is_resource($pipe)) {
+            return ['', true];
         }
 
-        $chunk = stream_get_contents($pipe);
+        $chunk = @stream_get_contents($pipe);
+        if ($chunk === false) {
+            return ['', true];
+        }
 
-        return $chunk === false ? '' : $chunk;
+        return [$chunk, false];
     }
 
     /**
@@ -438,6 +530,7 @@ DESC;
      */
     public static function checkAllTasks(): array
     {
+        self::pruneBackgroundTasks();
         $results = [];
         foreach (array_keys(self::$backgroundTasks) as $taskId) {
             $results[$taskId] = self::checkTask($taskId);
@@ -446,11 +539,108 @@ DESC;
     }
 
     /**
-     * List all running background tasks.
+     * List tracked background tasks (after TTL / PID-reuse pruning).
+     *
+     * @return array<string, array{pid: int, outFile: string, startTime: float, startToken: ?string, command: string}>
      */
     public static function listTasks(): array
     {
+        self::pruneBackgroundTasks();
+
         return self::$backgroundTasks;
+    }
+
+    /**
+     * Drop only TTL-expired bookkeeping. Finished-but-uncollected tasks stay
+     * until {@see checkTask()} harvests their output.
+     */
+    private static function pruneBackgroundTasks(): void
+    {
+        $now = microtime(true);
+        foreach (self::$backgroundTasks as $taskId => $task) {
+            $age = $now - (float) ($task['startTime'] ?? 0);
+            if ($age <= self::BACKGROUND_TASK_TTL_SECONDS) {
+                continue;
+            }
+
+            if (self::isBackgroundProcessAlive($task)) {
+                // Soft-stop the orphan tree; ignore failures (permissions / races).
+                @posix_kill((int) $task['pid'], defined('SIGTERM') ? SIGTERM : 15);
+            }
+
+            if (is_string($task['outFile'] ?? null) && file_exists($task['outFile'])) {
+                @unlink($task['outFile']);
+            }
+            unset(self::$backgroundTasks[$taskId]);
+        }
+    }
+
+    /**
+     * @param  array{pid: int, startToken?: ?string, startTime?: float}  $task
+     */
+    private static function isBackgroundProcessAlive(array $task): bool
+    {
+        $pid = (int) ($task['pid'] ?? 0);
+        if ($pid <= 0 || ! function_exists('posix_kill')) {
+            return false;
+        }
+
+        // Signal 0 probes existence without delivering a signal.
+        if (! @posix_kill($pid, 0)) {
+            return false;
+        }
+
+        $expected = $task['startToken'] ?? null;
+        if (! is_string($expected) || $expected === '') {
+            // No token captured at spawn — fall back to signal-0 only.
+            return true;
+        }
+
+        $current = self::processStartToken($pid);
+        // If we can no longer read a token but the PID still signals alive,
+        // keep treating it as alive (platform may hide process metadata).
+        if ($current === null) {
+            return true;
+        }
+
+        // PID reuse: same pid number, different start identity.
+        return $current === $expected;
+    }
+
+    /**
+     * Platform-specific process start identity used to detect PID reuse.
+     */
+    private static function processStartToken(int $pid): ?string
+    {
+        if ($pid <= 0) {
+            return null;
+        }
+
+        $statPath = "/proc/{$pid}/stat";
+        if (@is_readable($statPath)) {
+            $stat = @file_get_contents($statPath);
+            if (is_string($stat) && $stat !== '') {
+                // Format: pid (comm) state ppid ... starttime is field 22 after comm.
+                $closeParen = strrpos($stat, ')');
+                if ($closeParen !== false) {
+                    $rest = trim(substr($stat, $closeParen + 1));
+                    $fields = preg_split('/\s+/', $rest) ?: [];
+                    // After comm: state(1) ... starttime is the 20th remaining field (index 19).
+                    if (isset($fields[19]) && ctype_digit($fields[19])) {
+                        return 'proc:'.$fields[19];
+                    }
+                }
+            }
+        }
+
+        if (PHP_OS_FAMILY === 'Darwin' || PHP_OS_FAMILY === 'BSD') {
+            $line = @shell_exec('ps -p '.((int) $pid).' -o lstart= 2>/dev/null');
+            if (is_string($line) && trim($line) !== '') {
+                return 'ps:'.trim($line);
+            }
+        }
+
+        return null;
     }
 
     /**

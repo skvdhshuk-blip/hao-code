@@ -752,7 +752,7 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.18.9`. Notable changes since `v1.10.0`:
+is based on `v1.18.10`. Notable changes since `v1.10.0`:
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/
@@ -785,6 +785,10 @@ is based on `v1.18.9`. Notable changes since `v1.10.0`:
 - `v1.18.9` — Skill Bash patterns reject shell chaining/expansion (not just
   prefix match); `Conversation` reload after interrupt resume restores session /
   live-run cwd; post-claim HITL failures always record `interrupt_failed`.
+- `v1.18.10` — Polish existing tools: drop misleading Bash
+  `dangerouslyDisableSandbox`; harden background Bash bookkeeping (TTL,
+  start-token, harvest-on-check); MCP `list*` follows `nextCursor`; Edit/Patch
+  refuse binary/NUL payloads.
 
 ## License
 

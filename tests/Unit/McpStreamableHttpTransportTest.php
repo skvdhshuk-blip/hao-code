@@ -333,6 +333,79 @@ final class McpStreamableHttpTransportTest extends TestCase
         $transport->poll(0.01);
     }
 
+    public function test_list_tools_follows_next_cursor_pagination(): void
+    {
+        $listCalls = [];
+        $http = new MockHttpClient(function (string $method, string $url, array $options) use (&$listCalls): MockResponse {
+            $payload = $this->decodeRequestBody($options);
+            $rpcMethod = $payload['method'] ?? $method;
+
+            if ($rpcMethod === 'initialize') {
+                return $this->jsonResponse([
+                    'jsonrpc' => '2.0',
+                    'id' => $payload['id'],
+                    'result' => [
+                        'protocolVersion' => '2025-11-25',
+                        'capabilities' => ['tools' => new \stdClass],
+                        'serverInfo' => ['name' => 'fixture', 'version' => '1'],
+                    ],
+                ], ['Mcp-Session-Id: session-page']);
+            }
+            if ($rpcMethod === 'notifications/initialized') {
+                return new MockResponse('', ['http_code' => 202]);
+            }
+            if ($method === 'GET') {
+                return new MockResponse('', ['http_code' => 405]);
+            }
+            if ($rpcMethod === 'tools/list') {
+                $listCalls[] = $payload['params'] ?? [];
+                $cursor = $payload['params']['cursor'] ?? null;
+                if ($cursor === null) {
+                    return $this->jsonResponse([
+                        'jsonrpc' => '2.0',
+                        'id' => $payload['id'],
+                        'result' => [
+                            'tools' => [
+                                ['name' => 'tool_a', 'description' => 'A', 'inputSchema' => ['type' => 'object']],
+                            ],
+                            'nextCursor' => 'page-2',
+                        ],
+                    ]);
+                }
+                if ($cursor === 'page-2') {
+                    return $this->jsonResponse([
+                        'jsonrpc' => '2.0',
+                        'id' => $payload['id'],
+                        'result' => [
+                            'tools' => [
+                                ['name' => 'tool_b', 'description' => 'B', 'inputSchema' => ['type' => 'object']],
+                            ],
+                        ],
+                    ]);
+                }
+
+                return $this->jsonResponse([
+                    'jsonrpc' => '2.0',
+                    'id' => $payload['id'],
+                    'error' => ['code' => -32602, 'message' => 'unexpected cursor'],
+                ]);
+            }
+
+            return new MockResponse('', ['http_code' => 204]);
+        });
+
+        $transport = $this->makeTransport($http);
+        $client = new McpClient($transport, 'fixture');
+        $client->connect();
+
+        $tools = $client->listTools(false, 2);
+
+        $this->assertSame(['tool_a', 'tool_b'], array_column($tools, 'name'));
+        $this->assertCount(2, $listCalls);
+        $this->assertSame([], $listCalls[0] ?? []);
+        $this->assertSame(['cursor' => 'page-2'], $listCalls[1] ?? []);
+    }
+
     public function test_explicit_authorization_header_is_not_replaced_by_oauth_retry(): void
     {
         $secretName = 'HAOCODE_TEST_MCP_CLIENT_SECRET_'.bin2hex(random_bytes(4));

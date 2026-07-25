@@ -540,4 +540,54 @@ class BashToolTest extends TestCase
             'PERL5OPT'                => ['PERL5OPT'],
         ];
     }
+
+    public function test_dangerously_disable_sandbox_is_rejected_as_unsupported(): void
+    {
+        $result = $this->tool->call([
+            'command' => 'echo hi',
+            'dangerouslyDisableSandbox' => true,
+        ], $this->context);
+
+        $this->assertTrue($result->isError);
+        $this->assertStringContainsString('dangerouslyDisableSandbox is not supported', $result->output);
+    }
+
+    public function test_input_schema_does_not_advertise_dangerously_disable_sandbox(): void
+    {
+        $schema = $this->tool->inputSchema()->toJsonSchema();
+        $this->assertArrayNotHasKey('dangerouslyDisableSandbox', $schema['properties'] ?? []);
+    }
+
+    public function test_run_in_background_and_check_task_lifecycle(): void
+    {
+        $result = $this->tool->call([
+            'command' => 'printf bg-ok',
+            'run_in_background' => true,
+        ], $this->context);
+
+        $this->assertFalse($result->isError, $result->output);
+        $taskId = $result->metadata['taskId'] ?? null;
+        $this->assertIsString($taskId);
+
+        $deadline = microtime(true) + 3.0;
+        $final = null;
+        while (microtime(true) < $deadline) {
+            $final = BashTool::checkTask($taskId);
+            $this->assertNotNull($final);
+            if (($final->metadata['running'] ?? null) === false
+                || str_contains($final->output, 'completed')) {
+                break;
+            }
+            usleep(50_000);
+        }
+
+        $this->assertNotNull($final);
+        $this->assertFalse($final->isError, $final->output);
+        $this->assertStringContainsString('bg-ok', $final->output);
+        $this->assertStringContainsString('completed', $final->output);
+
+        $missing = BashTool::checkTask($taskId);
+        $this->assertTrue($missing->isError);
+        $this->assertStringContainsString('Unknown background task', $missing->output);
+    }
 }

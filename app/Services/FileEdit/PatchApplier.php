@@ -157,6 +157,11 @@ class PatchApplier
                 $this->assertNoSymlink($path, $op->path);
 
                 $content = $op->newContent ?? '';
+                if ($this->looksBinary($content)) {
+                    throw new \RuntimeException(
+                        "Add failed: refusing to write binary payload via apply_patch: {$op->path}",
+                    );
+                }
                 if ($this->secretScanner->containsSecrets($content)) {
                     $findings = $this->secretScanner->scan($content);
                     $types = implode(', ', array_column($findings, 'type'));
@@ -174,6 +179,11 @@ class PatchApplier
                 $original = file_get_contents($path);
                 if ($original === false) {
                     throw new \RuntimeException("Cannot read file for update: {$op->path}");
+                }
+                if ($this->looksBinary($original)) {
+                    throw new \RuntimeException(
+                        "Update failed: refusing to patch binary file: {$op->path}",
+                    );
                 }
                 $patched = $this->sequencer->applyHunks($original, $op->hunks ?? [], $op->path);
                 $this->staged[$this->writeTempFile($patched, dirname($path))] = $path;
@@ -369,5 +379,13 @@ class PatchApplier
             }
             $check = dirname($check);
         }
+    }
+
+    /**
+     * Patch envelopes are text-oriented; reject NUL-bearing payloads.
+     */
+    private function looksBinary(string $content): bool
+    {
+        return str_contains($content, "\0");
     }
 }

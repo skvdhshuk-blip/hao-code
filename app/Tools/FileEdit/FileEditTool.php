@@ -82,6 +82,10 @@ DESC;
             return ToolResult::error("File is not writable: {$filePath}");
         }
 
+        if (is_dir($filePath)) {
+            return ToolResult::error("Path is a directory, not a file: {$filePath}");
+        }
+
         // Record file history before editing
         try {
             \HaoCode\Support\Runtime\SdkRuntime::app(\HaoCode\Services\FileHistory\FileHistoryManager::class)
@@ -89,6 +93,16 @@ DESC;
         } catch (\Throwable) {}
 
         $content = file_get_contents($filePath);
+        if ($content === false) {
+            return ToolResult::error("Failed to read file: {$filePath}");
+        }
+
+        if ($this->looksBinary($content, $filePath)) {
+            return ToolResult::error(
+                "Refusing to Edit binary file: {$filePath}. "
+                .'Use a dedicated binary-aware workflow instead of text replacement.',
+            );
+        }
 
         if ($oldString === $newString) {
             return ToolResult::error("old_string and new_string are identical. No changes needed.");
@@ -286,5 +300,74 @@ DESC;
         }
 
         return $singleLine;
+    }
+
+    /**
+     * Fail closed on clearly non-text payloads so Edit never corrupts binaries.
+     */
+    private function looksBinary(string $content, string $filePath): bool
+    {
+        if ($content === '') {
+            return false;
+        }
+
+        if (str_contains($content, "\0")) {
+            return true;
+        }
+
+        $mime = @mime_content_type($filePath);
+        if (is_string($mime) && $mime !== '') {
+            if (str_starts_with($mime, 'text/')) {
+                return false;
+            }
+            // Common structured text types that mime_content_type may not call text/*
+            $textMimes = [
+                'application/json',
+                'application/ld+json',
+                'application/xml',
+                'application/javascript',
+                'application/x-javascript',
+                'application/x-httpd-php',
+                'application/sql',
+                'application/yaml',
+                'application/x-yaml',
+                'application/toml',
+                'application/x-sh',
+                'application/x-shellscript',
+                'inode/x-empty',
+            ];
+            if (in_array($mime, $textMimes, true) || str_ends_with($mime, '+json') || str_ends_with($mime, '+xml')) {
+                return false;
+            }
+            if (str_starts_with($mime, 'image/')
+                || str_starts_with($mime, 'audio/')
+                || str_starts_with($mime, 'video/')
+                || str_starts_with($mime, 'font/')
+                || $mime === 'application/octet-stream'
+                || $mime === 'application/pdf'
+                || $mime === 'application/zip') {
+                return true;
+            }
+        }
+
+        // Heuristic: high ratio of non-printable / non-whitespace control bytes
+        // in the first 8 KiB indicates binary content.
+        $sample = substr($content, 0, 8192);
+        $len = strlen($sample);
+        if ($len === 0) {
+            return false;
+        }
+        $nonText = 0;
+        for ($i = 0; $i < $len; $i++) {
+            $ord = ord($sample[$i]);
+            if ($ord === 9 || $ord === 10 || $ord === 13) {
+                continue;
+            }
+            if ($ord < 32 || $ord === 127) {
+                $nonText++;
+            }
+        }
+
+        return ($nonText / $len) > 0.30;
     }
 }

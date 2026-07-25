@@ -23,6 +23,9 @@ final class McpClient
         '2024-10-07',
     ];
 
+    /** Safety cap for tools/list, resources/list, prompts/list pagination. */
+    private const LIST_MAX_PAGES = 100;
+
     private bool $initialized = false;
 
     /** @var array<string, mixed>|null Server capabilities from initialize response */
@@ -195,10 +198,8 @@ final class McpClient
 
         $span = $this->startSpan('tools/list');
         try {
-            $result = $this->requestWithSessionRecovery('tools/list', [], $timeoutSeconds);
-
             $tools = [];
-            foreach (($result['tools'] ?? []) as $tool) {
+            foreach ($this->listAllPages('tools/list', 'tools', $timeoutSeconds) as $tool) {
                 if (! is_array($tool) || ! isset($tool['name'])) {
                     continue;
                 }
@@ -287,10 +288,8 @@ final class McpClient
 
         $span = $this->startSpan('resources/list');
         try {
-            $result = $this->requestWithSessionRecovery('resources/list', [], $timeoutSeconds);
-
             $resources = [];
-            foreach (($result['resources'] ?? []) as $resource) {
+            foreach ($this->listAllPages('resources/list', 'resources', $timeoutSeconds) as $resource) {
                 if (! is_array($resource) || ! isset($resource['uri'])) {
                     continue;
                 }
@@ -368,10 +367,8 @@ final class McpClient
 
         $span = $this->startSpan('prompts/list');
         try {
-            $result = $this->requestWithSessionRecovery('prompts/list', [], $timeoutSeconds);
-
             $prompts = [];
-            foreach (($result['prompts'] ?? []) as $prompt) {
+            foreach ($this->listAllPages('prompts/list', 'prompts', $timeoutSeconds) as $prompt) {
                 if (! is_array($prompt) || ! isset($prompt['name'])) {
                     continue;
                 }
@@ -395,6 +392,62 @@ final class McpClient
         } finally {
             $span?->end();
         }
+    }
+
+    /**
+     * Walk MCP list endpoints following nextCursor until exhausted.
+     *
+     * @return list<mixed>
+     *
+     * @throws McpConnectionException
+     */
+    private function listAllPages(string $method, string $itemsKey, int $timeoutSeconds): array
+    {
+        $items = [];
+        $cursor = null;
+        $seenCursors = [];
+        $hasMore = true;
+
+        for ($page = 0; $page < self::LIST_MAX_PAGES && $hasMore; $page++) {
+            $params = [];
+            if (is_string($cursor) && $cursor !== '') {
+                $params['cursor'] = $cursor;
+            }
+
+            $result = $this->requestWithSessionRecovery($method, $params, $timeoutSeconds);
+            if (! is_array($result)) {
+                $hasMore = false;
+                break;
+            }
+
+            $pageItems = $result[$itemsKey] ?? [];
+            if (is_array($pageItems)) {
+                foreach ($pageItems as $item) {
+                    $items[] = $item;
+                }
+            }
+
+            $next = $result['nextCursor'] ?? null;
+            if (! is_string($next) || $next === '') {
+                $hasMore = false;
+                break;
+            }
+            if (isset($seenCursors[$next])) {
+                throw new McpConnectionException(
+                    "MCP {$method} pagination loop detected at cursor.",
+                );
+            }
+            $seenCursors[$next] = true;
+            $cursor = $next;
+        }
+
+        if ($hasMore) {
+            throw new McpConnectionException(
+                "MCP {$method} exceeded ".self::LIST_MAX_PAGES.' pages while following nextCursor.',
+            );
+        }
+
+        return $items;
     }
 
     /**

@@ -234,4 +234,20 @@ class FileEditToolTest extends TestCase
 
         unlink($path);
     }
+
+    public function test_it_refuses_to_edit_binary_files_with_null_bytes(): void
+    {
+        $file = $this->makeTmpFile("hello\0world");
+
+        $result = $this->tool->call([
+            'file_path' => $file,
+            'old_string' => 'hello',
+            'new_string' => 'goodbye',
+        ], $this->context);
+
+        $this->assertTrue($result->isError);
+        $this->assertStringContainsString('binary', strtolower($result->output));
+
+        unlink($file);
+    }
 }
