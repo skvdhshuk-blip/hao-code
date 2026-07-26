@@ -101,7 +101,8 @@ class Conversation
             ],
             cost: $this->loop->getEstimatedCost(),
             sessionId: $this->options->ephemeral ? null : $this->loop->getSessionManager()->getSessionId(),
-            turnsUsed: $this->turnCount,
+            // Per-operation Agent loop turns (not cumulative conversation sends).
+            turnsUsed: $this->loop->getLastRunTurns(),
         );
     }
 
@@ -277,7 +278,7 @@ class Conversation
             ],
             cost: $this->loop->getEstimatedCost(),
             sessionId: $this->loop->getSessionManager()->getSessionId(),
-            turnsUsed: $this->turnCount,
+            turnsUsed: $this->loop->getLastRunTurns(),
         );
     }
 

@@ -2,8 +2,13 @@
 
 namespace HaoCode\Sdk;
 
+use HaoCode\Services\Agent\AgentLoopFactory;
+use HaoCode\Services\Api\StreamingClient;
+use HaoCode\Tools\ToolResult;
+use HaoCode\Tools\ToolUseContext;
+
 /**
- * A tool that delegates to another Agent.
+ * A tool that delegates to another Agent, inheriting the parent run context.
  *
  * @internal
  */
@@ -36,15 +41,81 @@ final class AgentAsTool extends SdkTool
         ];
     }
 
+    /**
+     * Not used: {@see call()} owns execution so the parent ToolUseContext is not dropped.
+     */
     public function handle(array $input): string
+    {
+        throw new \LogicException('AgentAsTool::handle() must not be called; use call().');
+    }
+
+    public function call(array $input, ToolUseContext $context): ToolResult
     {
         $task = $input['task'] ?? '';
         if (! is_string($task) || trim($task) === '') {
-            return 'Error: task must be a non-empty string.';
+            return ToolResult::error('task must be a non-empty string.');
         }
 
-        $result = Runner::run($this->agent, $task);
+        /** @var AgentLoopFactory $factory */
+        $factory = \HaoCode\Support\Runtime\SdkRuntime::app(AgentLoopFactory::class);
 
-        return (string) $result;
+        $budgetLedger = $context->runContext?->budgetLedger;
+        $options = new RunOptions(
+            cwd: $context->workingDirectory,
+            // Explicit agent preference; null would also inherit after RunOptions fix.
+            ephemeral: $this->agent->ephemeral,
+            maxBudgetUsd: $budgetLedger?->getLimit(),
+        );
+
+        $run = null;
+        try {
+            $run = SdkRunFactory::createFromAgent(
+                $this->agent,
+                $options,
+                $factory,
+                streamingClient: $context->provider instanceof StreamingClient
+                    ? $context->provider
+                    : null,
+                budgetLedger: $budgetLedger,
+            );
+            $loop = $run->loop;
+
+            // Parent tool cwd wins over process getcwd() / agent construction cwd.
+            $loop->setWorkingDirectory($context->workingDirectory);
+
+            if ($context->shouldAbort !== null) {
+                $parentAbort = $context->shouldAbort;
+                $loop->setEventPump(static function () use ($loop, $parentAbort): void {
+                    if ($parentAbort()) {
+                        $loop->abort();
+                    }
+                });
+            }
+
+            $text = $loop->run(userInput: $task);
+
+            return ToolResult::success($text, [
+                'inputTokens' => $loop->getTotalInputTokens(),
+                'outputTokens' => $loop->getTotalOutputTokens(),
+                'cost' => $loop->getEstimatedCost(),
+                'sessionId' => $this->agent->ephemeral ? null : $loop->getSessionManager()->getSessionId(),
+            ]);
+        } catch (HumanInterruptException $e) {
+            throw $e;
+        } catch (\Throwable $e) {
+            return ToolResult::error('Agent tool error: '.$e->getMessage());
+        } finally {
+            $run?->close();
+        }
+    }
+
+    public function isReadOnly(array $input): bool
+    {
+        return false;
+    }
+
+    public function isConcurrencySafe(array $input): bool
+    {
+        return false;
     }
 }

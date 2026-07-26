@@ -45,6 +45,25 @@ class SessionMemoryTest extends TestCase
         $this->assertSame('claude-sonnet-4-6', $this->memory->get('model'));
     }
 
+    public function test_corrupt_memory_file_is_not_silently_overwritten(): void
+    {
+        $path = $this->tmpDir.'/.haocode/memory.json';
+        mkdir(dirname($path), 0755, true);
+        file_put_contents($path, '{"broken":');
+
+        $memory = new SessionMemory($path);
+
+        try {
+            $memory->get('any');
+            $this->fail('Expected corrupt memory load to throw.');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('corrupt', strtolower($e->getMessage()));
+        }
+
+        // Original file must remain so operators can recover.
+        $this->assertSame('{"broken":', file_get_contents($path));
+    }
+
     public function test_get_returns_null_for_missing_key(): void
     {
         $this->assertNull($this->memory->get('nonexistent'));

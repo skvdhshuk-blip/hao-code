@@ -305,8 +305,32 @@ class SessionMemory
 
         if ($signature !== null) {
             $contents = file_get_contents($this->path);
-            $data = is_string($contents) ? json_decode($contents, true) : null;
-            $this->memories = is_array($data) ? $data : [];
+            if ($contents === false) {
+                throw new \RuntimeException("Unable to read memory file {$this->path}.");
+            }
+            $trimmed = trim($contents);
+            // Missing file is empty; existing non-empty corrupt JSON must fail closed
+            // so a later write cannot silently wipe prior memories.
+            if ($trimmed === '') {
+                $this->memories = [];
+            } else {
+                try {
+                    $data = json_decode($contents, true, 512, JSON_THROW_ON_ERROR);
+                } catch (\JsonException $e) {
+                    throw new \RuntimeException(
+                        "Memory file is corrupt and will not be overwritten: {$this->path}. "
+                        .$e->getMessage(),
+                        0,
+                        $e,
+                    );
+                }
+                if (! is_array($data)) {
+                    throw new \RuntimeException(
+                        "Memory file is corrupt (JSON root must be an object/array): {$this->path}.",
+                    );
+                }
+                $this->memories = $data;
+            }
         } else {
             $this->memories = [];
         }

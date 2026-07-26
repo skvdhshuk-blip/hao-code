@@ -250,4 +250,17 @@ class FileEditToolTest extends TestCase
 
         unlink($file);
     }
+
+    public function test_looks_binary_guards_mime_content_type_with_function_exists(): void
+    {
+        // Structural: Edit must not call mime_content_type unconditionally
+        // (ext-fileinfo is optional; missing it previously fatals).
+        $src = file_get_contents(dirname(__DIR__, 2).'/app/Tools/FileEdit/FileEditTool.php');
+        $this->assertNotFalse($src);
+        $this->assertStringContainsString("function_exists('mime_content_type')", $src);
+        $this->assertMatchesRegularExpression(
+            '/function_exists\(\'mime_content_type\'\)\s*\?\s*@?mime_content_type/',
+            $src,
+        );
+    }
 }

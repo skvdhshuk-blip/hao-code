@@ -25,8 +25,9 @@ class HaoCodeConfig
      * null (the default) means "not chosen explicitly": the runtime then
      * resolves the mode from the haocode.hitl_mode config file /
      * HAOCODE_HITL_MODE environment variable (whose own default is 'smart').
-     * An explicit 'ask' is always honored as 'ask'. Unknown values normalize
-     * to null (unset semantics).
+     * An explicit 'ask' is always honored as 'ask'. Non-null unknown values
+     * throw {@see \InvalidArgumentException} (fail closed — never silently
+     * fall through to a looser mode).
      *
      * @api
      */
@@ -403,7 +404,7 @@ class HaoCodeConfig
 
         /**
          * Human-in-the-loop approval mode: 'ask', 'smart', or 'auto'.
-         * Unknown values normalize to 'ask'.
+         * null inherits global defaults. Non-null unknown values throw.
          *
          * @api
          */
@@ -523,7 +524,16 @@ class HaoCodeConfig
          */
         public readonly bool $allowCwdOverride = false,
     ) {
-        $this->hitlMode = is_string($hitlMode) && in_array($hitlMode, ['ask', 'smart', 'auto'], true) ? $hitlMode : null;
+        if ($hitlMode === null) {
+            $this->hitlMode = null;
+        } elseif (is_string($hitlMode) && in_array($hitlMode, ['ask', 'smart', 'auto'], true)) {
+            $this->hitlMode = $hitlMode;
+        } else {
+            throw new \InvalidArgumentException(
+                "hitlMode must be 'ask', 'smart', 'auto', or null; got "
+                . (is_string($hitlMode) ? "'{$hitlMode}'" : get_debug_type($hitlMode)).'.',
+            );
+        }
         $this->hitlReviewModel = is_string($hitlReviewModel) && trim($hitlReviewModel) !== ''
             ? $hitlReviewModel
             : null;
@@ -670,7 +680,7 @@ class HaoCodeConfig
         ?callable $onToolComplete = null,
         ?callable $onTurnStart = null,
         array $images = [],
-        bool $ephemeral = true,
+        ?bool $ephemeral = null,
         ?array $responseSchema = null,
         ?AbortController $abortController = null,
         ?string $cwd = null,
@@ -683,7 +693,9 @@ class HaoCodeConfig
         $values['onToolComplete'] = $onToolComplete;
         $values['onTurnStart'] = $onTurnStart;
         $values['images'] = $images;
-        $values['ephemeral'] = $ephemeral;
+        if ($ephemeral !== null) {
+            $values['ephemeral'] = $ephemeral;
+        }
         $values['responseSchema'] = $responseSchema;
         $values['abortController'] = $abortController;
         $values['cwd'] = $cwd;

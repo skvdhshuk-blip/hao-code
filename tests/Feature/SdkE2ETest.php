@@ -2804,7 +2804,7 @@ JSON),
         // And the second prompt contained the validator's error feedback.
         $secondPrompt = $lastPayload['messages'][0]['content'] ?? '';
         $secondPromptStr = is_array($secondPrompt) ? json_encode($secondPrompt) : (string) $secondPrompt;
-        $this->assertStringContainsString('did not match the schema', $secondPromptStr);
+        $this->assertStringContainsString('Your previous response was not acceptable', $secondPromptStr);
     }
 
     public function test_structured_retries_share_one_total_budget(): void
@@ -2899,6 +2899,69 @@ JSON),
             // Only one provider request — no retry attempted.
             $this->assertSame(1, $requestCount, 'structuredMaxRetries=0 must not retry');
             $this->assertStringContainsString('priority', implode(' ', $e->validationErrors));
+        }
+    }
+
+    public function test_structured_retries_on_invalid_json_syntax(): void
+    {
+        $requestCount = 0;
+        $lastPayload = null;
+        $this->bootWithMock([
+            function (array $payload) use (&$requestCount, &$lastPayload): MockResponse {
+                $requestCount++;
+                $lastPayload = $payload;
+                // Truncated JSON — must enter the same retry budget as schema violations.
+                return MockAnthropicSse::textResponse('{"category":"shipping",');
+            },
+            function (array $payload) use (&$requestCount, &$lastPayload): MockResponse {
+                $requestCount++;
+                $lastPayload = $payload;
+
+                return MockAnthropicSse::textResponse('{"category":"shipping","priority":"high"}');
+            },
+        ]);
+
+        chdir($this->projectDir);
+
+        $result = HaoCode::structured('Classify this ticket.', [
+            'type' => 'object',
+            'required' => ['category', 'priority'],
+            'properties' => [
+                'category' => ['type' => 'string'],
+                'priority' => ['enum' => ['low', 'medium', 'high']],
+            ],
+        ]);
+
+        $this->assertSame('high', $result['priority']);
+        $this->assertSame(2, $requestCount, 'invalid JSON must trigger a retry');
+        $secondPrompt = $lastPayload['messages'][0]['content'] ?? '';
+        $secondPromptStr = is_array($secondPrompt) ? json_encode($secondPrompt) : (string) $secondPrompt;
+        $this->assertStringContainsString('JSON syntax error', $secondPromptStr);
+    }
+
+    public function test_structured_rejects_unusable_schema_before_model_call(): void
+    {
+        $requestCount = 0;
+        $this->bootWithMock([
+            function () use (&$requestCount): MockResponse {
+                $requestCount++;
+
+                return MockAnthropicSse::textResponse('{}');
+            },
+        ]);
+
+        chdir($this->projectDir);
+
+        try {
+            HaoCode::structured('x', [
+                // Invalid JSON Schema: type object with non-object properties shape
+                // that swaggest cannot import.
+                'type' => 'not-a-real-schema-type-xyz',
+            ], new HaoCodeConfig(structuredMaxRetries: 2));
+            $this->fail('Expected StructuredResultValidationException for bad schema');
+        } catch (StructuredResultValidationException $e) {
+            $this->assertStringContainsString('schema is invalid', strtolower($e->getMessage()));
+            $this->assertSame(0, $requestCount, 'broken schema must not call the model');
         }
     }
 }

@@ -44,6 +44,25 @@ class BudgetLedgerTest extends TestCase
         $this->assertTrue($third->shouldStop());
     }
 
+    public function test_resume_can_tighten_budget_but_not_widen_it(): void
+    {
+        $ledger = BudgetLedger::create(10.0);
+        $ledger->add(1.0);
+
+        $tight = BudgetLedger::resume($ledger->getId(), 5.0);
+        $this->assertEqualsWithDelta(5.0, $tight->getLimit(), 0.0001);
+        $this->assertEqualsWithDelta(1.0, $tight->getSpent(), 0.0001);
+        $this->assertFalse($tight->shouldStop());
+
+        $attemptWiden = BudgetLedger::resume($ledger->getId(), 10.0);
+        $this->assertEqualsWithDelta(5.0, $attemptWiden->getLimit(), 0.0001);
+        $this->assertEqualsWithDelta(1.0, $attemptWiden->getSpent(), 0.0001);
+
+        $over = BudgetLedger::resume($ledger->getId(), 5.0, 6.0);
+        $this->assertEqualsWithDelta(6.0, $over->getSpent(), 0.0001);
+        $this->assertTrue($over->shouldStop());
+    }
+
     public function test_stale_ledgers_are_collected_and_can_be_rebuilt_from_a_checkpoint(): void
     {
         $ledger = BudgetLedger::create(1.0);

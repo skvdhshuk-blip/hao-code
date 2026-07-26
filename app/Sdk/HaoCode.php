@@ -722,6 +722,16 @@ class HaoCode
         $effectiveSchema = $config?->responseSchema ?? $jsonSchema;
         $maxRetries = max(0, $config?->structuredMaxRetries ?? 1);
 
+        // Fail closed on a broken schema before spending model calls.
+        $schemaSetupErrors = self::validateSchemaIsUsable($effectiveSchema);
+        if ($schemaSetupErrors !== []) {
+            throw new StructuredResultValidationException(
+                'Structured response schema is invalid: '.implode('; ', $schemaSetupErrors),
+                '',
+                $schemaSetupErrors,
+            );
+        }
+
         $schemaJson = json_encode($effectiveSchema, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
 
         $basePrompt = $prompt."\n\n".
@@ -757,8 +767,8 @@ class HaoCode
                 $promptForAttempt = $attempt === 0
                     ? $basePrompt
                     : $basePrompt."\n\n".
-                        "Your previous response did not match the schema. ".
-                        "Fix these violations and reply with the corrected JSON only:\n".
+                        "Your previous response was not acceptable. ".
+                        "Fix these issues and reply with the corrected JSON only:\n".
                         implode("\n", $lastValidationErrors).
                         "\n\nPrevious tools may already have executed. Do not repeat completed side effects.";
 
@@ -769,12 +779,25 @@ class HaoCode
                 }
                 $lastRawText = $queryResult->text;
 
-                $parsed = self::parseStructuredResult($queryResult);
-                // parseStructuredResult already guarantees $parsed is a JSON array;
-                // now validate it against the supplied schema.
-                $errors = self::validateAgainstSchema($parsed->toArray(), $effectiveSchema);
+                $parsedOrErrors = self::tryParseStructuredResult($queryResult);
+                if (is_array($parsedOrErrors)) {
+                    // JSON syntax / shape errors — retry when budget remains.
+                    $lastValidationErrors = $parsedOrErrors;
+                    if ($attempt >= $maxRetries) {
+                        throw new StructuredResultValidationException(
+                            'Structured response failed JSON parsing after '.($attempt + 1).
+                            ' attempt(s). Issues: '.implode('; ', $lastValidationErrors),
+                            $lastRawText,
+                            $lastValidationErrors,
+                        );
+                    }
+                    $attempt++;
+                    continue;
+                }
+
+                $errors = self::validateAgainstSchema($parsedOrErrors->toArray(), $effectiveSchema);
                 if ($errors === []) {
-                    return $parsed;
+                    return $parsedOrErrors;
                 }
 
                 $lastValidationErrors = $errors;
@@ -793,24 +816,70 @@ class HaoCode
         }
     }
 
-    private static function parseStructuredResult(QueryResult $queryResult): StructuredResult
+    /**
+     * @return StructuredResult|list<string>
+     */
+    private static function tryParseStructuredResult(QueryResult $queryResult): StructuredResult|array
     {
         $text = trim($queryResult->text);
 
         // Strip markdown code fences if present
         if (str_starts_with($text, '```')) {
-            $text = preg_replace('/^```(?:json)?\s*\n?/', '', $text);
-            $text = preg_replace('/\n?```\s*$/', '', $text);
+            $text = preg_replace('/^```(?:json)?\s*\n?/', '', $text) ?? $text;
+            $text = preg_replace('/\n?```\s*$/', '', $text) ?? $text;
         }
 
-        $decoded = json_decode($text, true);
+        try {
+            $decoded = json_decode($text, true, 512, JSON_THROW_ON_ERROR);
+        } catch (\JsonException $e) {
+            return [
+                'JSON syntax error: '.$e->getMessage()
+                .' (raw: '.mb_substr($text, 0, 200).')',
+            ];
+        }
+
         if (! is_array($decoded)) {
-            throw new \RuntimeException(
-                "Failed to parse structured response as JSON.\nRaw response: ".mb_substr($text, 0, 500)
-            );
+            return [
+                'JSON root must be an object or array, got '.get_debug_type($decoded)
+                .' (raw: '.mb_substr($text, 0, 200).')',
+            ];
         }
 
         return new StructuredResult($decoded, $queryResult->text, $queryResult);
+    }
+
+    /**
+     * Parse JSON or throw (used by interrupt resume paths that already re-entered).
+     */
+    private static function parseStructuredResult(QueryResult $queryResult): StructuredResult
+    {
+        $parsed = self::tryParseStructuredResult($queryResult);
+        if (is_array($parsed)) {
+            throw new StructuredResultValidationException(
+                'Failed to parse structured response as JSON. '.implode('; ', $parsed),
+                $queryResult->text,
+                $parsed,
+            );
+        }
+
+        return $parsed;
+    }
+
+    /**
+     * Compile the schema once so broken caller schemas fail before model spend.
+     *
+     * @return list<string>
+     */
+    private static function validateSchemaIsUsable(array $schema): array
+    {
+        try {
+            $schemaObj = json_decode((string) json_encode($schema, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
+            \Swaggest\JsonSchema\Schema::import($schemaObj);
+
+            return [];
+        } catch (\Throwable $e) {
+            return ['Schema validation setup failed: '.$e->getMessage()];
+        }
     }
 
     /**

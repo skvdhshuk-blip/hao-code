@@ -75,4 +75,39 @@ class ConversationInternalsTest extends TestCase
 
         $this->assertEquals($config, $roundTripped);
     }
+
+    public function test_send_turns_used_is_agent_loop_turns_not_conversation_send_count(): void
+    {
+        $session = $this->createMock(\HaoCode\Services\Session\SessionManager::class);
+        $session->method('getSessionId')->willReturn('sess-turns');
+
+        $loop = $this->createMock(AgentLoop::class);
+        $loop->method('run')->willReturn('done');
+        // Multi-step agent loop (tool + final answer) should report 2 turns.
+        $loop->method('getLastRunTurns')->willReturn(2);
+        $loop->method('getTotalInputTokens')->willReturn(10);
+        $loop->method('getTotalOutputTokens')->willReturn(5);
+        $loop->method('getCacheCreationTokens')->willReturn(0);
+        $loop->method('getCacheReadTokens')->willReturn(0);
+        $loop->method('getEstimatedCost')->willReturn(0.01);
+        $loop->method('isCostEstimateAvailable')->willReturn(true);
+        $loop->method('getSessionManager')->willReturn($session);
+
+        $factory = $this->createMock(AgentLoopFactory::class);
+        $factory->method('createIsolated')->willReturn($loop);
+
+        $conversation = new Conversation(
+            new HaoCodeConfig(apiKey: 'k', allowedTools: [], ephemeral: false),
+            $factory,
+        );
+
+        $first = $conversation->send('hello');
+        $second = $conversation->send('again');
+
+        // Conversation send counter accumulates user messages.
+        $this->assertSame(2, $conversation->getTurnCount());
+        // QueryResult::turnsUsed is the latest loop's turn count, not the send counter.
+        $this->assertSame(2, $first->turnsUsed);
+        $this->assertSame(2, $second->turnsUsed);
+    }
 }

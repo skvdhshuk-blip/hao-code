@@ -315,7 +315,9 @@ DESC;
             return true;
         }
 
-        $mime = @mime_content_type($filePath);
+        $mime = function_exists('mime_content_type')
+            ? @mime_content_type($filePath)
+            : false;
         if (is_string($mime) && $mime !== '') {
             if (str_starts_with($mime, 'text/')) {
                 return false;

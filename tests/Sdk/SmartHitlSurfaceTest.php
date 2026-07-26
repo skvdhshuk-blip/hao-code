@@ -22,11 +22,19 @@ final class SmartHitlSurfaceTest extends TestCase
         }
     }
 
-    public function test_hitl_mode_normalizes_unknown_values_to_unset(): void
+    public function test_hitl_mode_rejects_unknown_values_fail_closed(): void
     {
-        $this->assertNull((new HaoCodeConfig(hitlMode: 'yolo'))->hitlMode);
-        $this->assertNull((new HaoCodeConfig(hitlMode: ''))->hitlMode);
-        $this->assertNull((new HaoCodeConfig(hitlMode: 'SMART'))->hitlMode);
+        // Explicit unknown modes must not silently fall through to looser defaults.
+        foreach (['yolo', '', 'SMART'] as $bad) {
+            try {
+                new HaoCodeConfig(hitlMode: $bad);
+                $this->fail("Expected InvalidArgumentException for hitlMode={$bad}");
+            } catch (\InvalidArgumentException $e) {
+                $this->assertStringContainsString('hitlMode', $e->getMessage());
+            }
+        }
+        // null remains the only way to inherit process/global defaults.
+        $this->assertNull((new HaoCodeConfig(hitlMode: null))->hitlMode);
     }
 
     public function test_hitl_review_model_normalization(): void

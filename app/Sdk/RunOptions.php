@@ -78,9 +78,12 @@ class RunOptions
         /**
          * Disable session and tool-result persistence for this run.
          *
+         * null means "inherit from Agent / HaoCodeConfig". Explicit true/false
+         * overrides the agent definition for this run only.
+         *
          * @api
          */
-        public readonly bool $ephemeral = true,
+        public readonly ?bool $ephemeral = null,
 
         /**
          * JSON schema for structured output.
@@ -143,7 +146,7 @@ class RunOptions
 
     public static function make(
         ?string $cwd = null,
-        bool $ephemeral = true,
+        ?bool $ephemeral = null,
     ): self {
         return new self(
             cwd: $cwd,
@@ -195,12 +198,23 @@ class RunOptions
             onToolComplete: $this->onToolComplete,
             onTurnStart: $this->onTurnStart,
             images: $this->images,
+            // null keeps the Agent's ephemeral setting.
             ephemeral: $this->ephemeral,
             responseSchema: $this->responseSchema,
             abortController: $this->abortController,
             cwd: $this->cwd,
             maxBudgetUsd: $this->maxBudgetUsd,
         );
+    }
+
+    /**
+     * Resolve effective ephemeral for this run (options override, else agent).
+     *
+     * @internal
+     */
+    public function effectiveEphemeral(Agent $agent): bool
+    {
+        return $this->ephemeral ?? $agent->ephemeral;
     }
 
     /**

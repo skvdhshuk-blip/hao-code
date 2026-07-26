@@ -121,16 +121,27 @@ class MemoryToolsTest extends TestCase
         $this->assertSame('after', $first->read('shared'));
     }
 
-    public function test_store_recovers_after_invalid_json_is_replaced(): void
+    public function test_store_fails_closed_on_corrupt_json_without_overwriting(): void
     {
         $store = new JsonMemoryStore($this->path);
         $store->write('shared', 'valid');
         $validJson = file_get_contents($this->path);
         $this->assertIsString($validJson);
 
-        $this->atomicReplace($this->path, '{"shared":');
-        $this->assertNull($store->read('shared'));
+        $corrupt = '{"shared":';
+        $this->atomicReplace($this->path, $corrupt);
 
+        try {
+            $store->read('shared');
+            $this->fail('Expected corrupt memory load to throw.');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('corrupt', strtolower($e->getMessage()));
+        }
+
+        // Fail-closed: original corrupt bytes must remain for operator recovery.
+        $this->assertSame($corrupt, file_get_contents($this->path));
+
+        // After an external repair, reads work again.
         $this->atomicReplace($this->path, $validJson);
         $this->assertSame('valid', $store->read('shared'));
     }

@@ -47,21 +47,69 @@ final class BudgetLedger
 
         $directory = self::directory();
         self::ensureDirectory($directory);
-        $ledger = new self($id, $limit, $directory.'/budget-'.$id.'.json');
-        if (! is_file($ledger->path)) {
+        $path = $directory.'/budget-'.$id.'.json';
+
+        if (! is_file($path)) {
+            $ledger = new self($id, $limit, $path);
             try {
                 $ledger->writeInitialState(max(0.0, $minimumSpent));
             } catch (\RuntimeException $e) {
-                if (! is_file($ledger->path)) {
+                if (! is_file($path)) {
                     throw $e;
                 }
-                $ledger->ensureAtLeast($minimumSpent);
+                // Another process created it first; reconciling limit below.
+                return self::resumeExisting($id, $limit, $minimumSpent, $path);
             }
-        } else {
-            $ledger->ensureAtLeast($minimumSpent);
+
+            return $ledger;
         }
 
-        return $ledger;
+        return self::resumeExisting($id, $limit, $minimumSpent, $path);
+    }
+
+    /**
+     * Resume an existing ledger under exclusive lock. Limits may only tighten
+     * (min of stored and requested); never widen.
+     */
+    private static function resumeExisting(string $id, float $limit, float $minimumSpent, string $path): self
+    {
+        $handle = @fopen($path, 'r+b');
+        if ($handle === false) {
+            throw new \RuntimeException('Could not open the shared budget ledger.');
+        }
+
+        try {
+            if (! flock($handle, LOCK_EX)) {
+                throw new \RuntimeException('Could not lock the shared budget ledger.');
+            }
+            rewind($handle);
+            $decoded = json_decode(stream_get_contents($handle) ?: '', true);
+            if (! is_array($decoded)
+                || ! is_numeric($decoded['limit'] ?? null)
+                || ! is_numeric($decoded['spent'] ?? null)) {
+                throw new \RuntimeException('Shared budget ledger is corrupt.');
+            }
+            $storedLimit = (float) $decoded['limit'];
+            $spent = max(0.0, (float) $decoded['spent'], $minimumSpent);
+            // Monotonic tighten only: 10→5 succeeds; 5→10 stays 5.
+            $effectiveLimit = min($storedLimit, $limit);
+            $state = ['limit' => $effectiveLimit, 'spent' => $spent];
+
+            $encoded = json_encode($state, JSON_THROW_ON_ERROR);
+            rewind($handle);
+            if (! ftruncate($handle, 0)) {
+                throw new \RuntimeException('Could not truncate the shared budget ledger.');
+            }
+            $written = fwrite($handle, $encoded);
+            if ($written === false || $written !== strlen($encoded) || ! fflush($handle)) {
+                throw new \RuntimeException('Could not persist the shared budget ledger.');
+            }
+
+            return new self($id, $effectiveLimit, $path);
+        } finally {
+            @flock($handle, LOCK_UN);
+            fclose($handle);
+        }
     }
 
     public function getId(): string
@@ -187,12 +235,16 @@ final class BudgetLedger
             throw new \RuntimeException('Shared budget ledger is corrupt.');
         }
         $storedLimit = (float) $decoded['limit'];
-        if (abs($storedLimit - $this->limit) > 0.0000001) {
-            throw new \RuntimeException('Shared budget ledger limit does not match the run configuration.');
+        // Disk may be tighter than this object if another resume tightened it;
+        // never allow the in-memory limit to widen past the object limit.
+        if ($storedLimit - $this->limit > 0.0000001) {
+            throw new \RuntimeException(
+                'Shared budget ledger limit is wider than the run configuration; cannot widen a budget.',
+            );
         }
 
         return [
-            'limit' => $storedLimit,
+            'limit' => min($storedLimit, $this->limit),
             'spent' => max(0.0, (float) $decoded['spent']),
         ];
     }

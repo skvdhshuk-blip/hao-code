@@ -35,6 +35,7 @@ class Runner
     public static function run(Agent $agent, string $prompt, ?RunOptions $options = null): QueryResult
     {
         $options ??= new RunOptions();
+        $ephemeral = $options->effectiveEphemeral($agent);
 
         $run = self::createRun($agent, $options);
         $loop = $run->loop;
@@ -57,7 +58,7 @@ class Runner
                 text: $response,
                 usage: self::extractUsage($loop),
                 cost: $loop->getEstimatedCost(),
-                sessionId: $options->ephemeral ? null : $loop->getSessionManager()->getSessionId(),
+                sessionId: $ephemeral ? null : $loop->getSessionManager()->getSessionId(),
                 turnsUsed: $loop->getLastRunTurns(),
             );
         } finally {
@@ -75,6 +76,7 @@ class Runner
     public static function stream(Agent $agent, string $prompt, ?RunOptions $options = null): \Generator
     {
         $options ??= new RunOptions();
+        $ephemeral = $options->effectiveEphemeral($agent);
 
         $run = self::createRun($agent, $options);
         $loop = $run->loop;
@@ -170,7 +172,7 @@ class Runner
                 text: $response ?? '',
                 usage: self::extractUsage($loop),
                 cost: $loop->getEstimatedCost(),
-                sessionId: $options->ephemeral ? null : $loop->getSessionManager()->getSessionId(),
+                sessionId: $ephemeral ? null : $loop->getSessionManager()->getSessionId(),
             );
         } finally {
             $run->close();

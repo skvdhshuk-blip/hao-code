@@ -11,7 +11,8 @@ use HaoCode\Tools\ToolUseContext;
  * Simplified base class for SDK consumers to define custom tools.
  *
  * Implement only 4 methods: name(), description(), parameters(), handle().
- * Everything else (schema, permissions, concurrency) has sensible defaults.
+ * Everything else (schema, permissions, concurrency) has conservative defaults:
+ * custom tools are treated as non-read-only until you override isReadOnly().
  *
  * @example
  *   class LookupOrderTool extends SdkTool {
@@ -142,10 +143,16 @@ abstract class SdkTool extends BaseTool
     }
 
     /**
+     * Conservative default: assume side effects unless the tool opts into read-only.
+     *
+     * Plan mode and parallel scheduling both key off this flag. Returning true
+     * here would silently auto-approve and fork tools that may write databases,
+     * files, or network state.
+     *
      * @internal
      */
     public function isReadOnly(array $input): bool
     {
-        return true;
+        return false;
     }
 }

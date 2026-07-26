@@ -407,14 +407,24 @@ final class McpClient
         $cursor = null;
         $seenCursors = [];
         $hasMore = true;
+        // One absolute deadline for the whole list operation (not per page).
+        $deadline = microtime(true) + max(0.001, (float) $timeoutSeconds);
 
         for ($page = 0; $page < self::LIST_MAX_PAGES && $hasMore; $page++) {
+            $remaining = $deadline - microtime(true);
+            if ($remaining <= 0) {
+                throw new McpConnectionException(
+                    "MCP {$method} timed out after {$timeoutSeconds}s while following nextCursor.",
+                );
+            }
+            $pageTimeout = max(1, (int) ceil($remaining));
+
             $params = [];
             if (is_string($cursor) && $cursor !== '') {
                 $params['cursor'] = $cursor;
             }
 
-            $result = $this->requestWithSessionRecovery($method, $params, $timeoutSeconds);
+            $result = $this->requestWithSessionRecovery($method, $params, $pageTimeout);
             if (! is_array($result)) {
                 $hasMore = false;
                 break;

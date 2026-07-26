@@ -23,7 +23,11 @@ class QueryResult implements \Stringable
         public readonly float $cost,
         /** @api */
         public readonly ?string $sessionId = null,
-        /** @api */
+        /**
+         * Agent loop turns consumed by this operation (not cumulative conversation sends).
+         *
+         * @api
+         */
         public readonly int $turnsUsed = 0,
     ) {}
 

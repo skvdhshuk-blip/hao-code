@@ -276,6 +276,11 @@
                 "api": false,
                 "internal": false
             },
+            "call": {
+                "signature": "public function call(array $input, HaoCode\\Tools\\ToolUseContext $context) : HaoCode\\Tools\\ToolResult",
+                "api": false,
+                "internal": false
+            },
             "description": {
                 "signature": "public function description() : string",
                 "api": false,
@@ -283,6 +288,16 @@
             },
             "handle": {
                 "signature": "public function handle(array $input) : string",
+                "api": false,
+                "internal": false
+            },
+            "isConcurrencySafe": {
+                "signature": "public function isConcurrencySafe(array $input) : bool",
+                "api": false,
+                "internal": false
+            },
+            "isReadOnly": {
+                "signature": "public function isReadOnly(array $input) : bool",
                 "api": false,
                 "internal": false
             },
@@ -446,7 +461,7 @@
                 "internal": false
             },
             "withOverrides": {
-                "signature": "public function withOverrides(?callable $onText = null, ?callable $onThinking = null, ?callable $onToolStart = null, ?callable $onToolComplete = null, ?callable $onTurnStart = null, array $images = [], bool $ephemeral = true, ?array $responseSchema = null, ?HaoCode\\Sdk\\AbortController $abortController = null, ?string $cwd = null, ?float $maxBudgetUsd = null) : self",
+                "signature": "public function withOverrides(?callable $onText = null, ?callable $onThinking = null, ?callable $onToolStart = null, ?callable $onToolComplete = null, ?callable $onTurnStart = null, array $images = [], ?bool $ephemeral = null, ?array $responseSchema = null, ?HaoCode\\Sdk\\AbortController $abortController = null, ?string $cwd = null, ?float $maxBudgetUsd = null) : self",
                 "api": false,
                 "internal": true
             },
@@ -1206,9 +1221,14 @@
         "internal": false,
         "methods": {
             "__construct": {
-                "signature": "public function __construct(mixed $onText = null, mixed $onThinking = null, mixed $onToolStart = null, mixed $onToolComplete = null, mixed $onTurnStart = null, array $images = [], bool $ephemeral = true, ?array $responseSchema = null, ?HaoCode\\Sdk\\AbortController $abortController = null, ?string $cwd = null, ?float $maxBudgetUsd = null)",
+                "signature": "public function __construct(mixed $onText = null, mixed $onThinking = null, mixed $onToolStart = null, mixed $onToolComplete = null, mixed $onTurnStart = null, array $images = [], ?bool $ephemeral = null, ?array $responseSchema = null, ?HaoCode\\Sdk\\AbortController $abortController = null, ?string $cwd = null, ?float $maxBudgetUsd = null)",
                 "api": true,
                 "internal": false
+            },
+            "effectiveEphemeral": {
+                "signature": "public function effectiveEphemeral(HaoCode\\Sdk\\Agent $agent) : bool",
+                "api": false,
+                "internal": true
             },
             "fromConfig": {
                 "signature": "public static function fromConfig(HaoCode\\Sdk\\HaoCodeConfig $config) : self",
@@ -1216,7 +1236,7 @@
                 "internal": false
             },
             "make": {
-                "signature": "public static function make(?string $cwd = null, bool $ephemeral = true) : self",
+                "signature": "public static function make(?string $cwd = null, ?bool $ephemeral = null) : self",
                 "api": false,
                 "internal": false
             },
@@ -1253,7 +1273,7 @@
                 "internal": false
             },
             "ephemeral": {
-                "signature": "public readonly bool $ephemeral",
+                "signature": "public readonly ?bool $ephemeral",
                 "api": true,
                 "internal": false
             },

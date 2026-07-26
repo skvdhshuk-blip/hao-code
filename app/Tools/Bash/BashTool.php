@@ -19,6 +19,7 @@ class BashTool extends BaseTool
      * @var array<string, array{
      *   pid: int,
      *   outFile: string,
+     *   statusFile: string,
      *   startTime: float,
      *   startToken: ?string,
      *   command: string
@@ -373,9 +374,20 @@ DESC;
 
         $taskId = 'bg_' . bin2hex(random_bytes(4));
         $outFile = tempnam(sys_get_temp_dir(), 'haocode_bg_');
-        if ($outFile === false) {
+        $statusFile = tempnam(sys_get_temp_dir(), 'haocode_bgs_');
+        if ($outFile === false || $statusFile === false) {
+            if (is_string($outFile)) {
+                @unlink($outFile);
+            }
+            if (is_string($statusFile)) {
+                @unlink($statusFile);
+            }
+
             return ToolResult::error("Failed to allocate output file for background command: {$command}");
         }
+        // Status file is written only when the job exits; start empty so readers
+        // can distinguish "still running" from "exit 0".
+        @unlink($statusFile);
 
         // Spawn via proc_open with an env filter so the REQUIRED_ENV_DENY
         // keys (LD_PRELOAD, DYLD_*, PYTHONPATH, NODE_OPTIONS, PERL5OPT) do
@@ -387,13 +399,19 @@ DESC;
             unset($env[$deniedKey]);
         }
 
-        // Launcher stdout carries only the PID; the job's stdout/stderr go to
-        // $outFile. Prefer process-group isolation so later cleanup can signal
-        // the whole tree when the platform supports it.
-        $job = 'cd '.escapeshellarg($cwd).' && '
-            .'( command -v setsid >/dev/null 2>&1 && setsid bash -c '.escapeshellarg($command)
-            .' || bash -c '.escapeshellarg($command)
-            .' ) >'.escapeshellarg($outFile).' 2>&1 & echo $!';
+        // Explicit if/else (NOT `A && B || C`) so a failing user command does
+        // not fall through and re-run under plain bash.
+        // Exit status is written to $statusFile so checkTask() can report it.
+        $inner = 'bash -c '.escapeshellarg($command).'; __haocode_status=$?; '
+            .'printf \'%s\' "$__haocode_status" > '.escapeshellarg($statusFile).'; '
+            .'exit "$__haocode_status"';
+        $job = 'cd '.escapeshellarg($cwd).' && {'
+            .' if command -v setsid >/dev/null 2>&1; then'
+            .'   setsid '.$inner
+            .' ; else'
+            .'   '.$inner
+            .' ; fi'
+            .' } >'.escapeshellarg($outFile).' 2>&1 & echo $!';
 
         $descriptors = [
             0 => ['file', '/dev/null', 'r'],
@@ -404,6 +422,7 @@ DESC;
         $process = @proc_open(['bash', '-c', $job], $descriptors, $pipes, $cwd, $env);
         if (! is_resource($process)) {
             @unlink($outFile);
+            @unlink($statusFile);
 
             return ToolResult::error("Failed to start background command: {$command}");
         }
@@ -428,6 +447,7 @@ DESC;
 
         if ($pid <= 0) {
             @unlink($outFile);
+            @unlink($statusFile);
             $hint = is_string($launcherErr) && trim($launcherErr) !== ''
                 ? "\nLauncher stderr: ".trim($launcherErr)
                 : '';
@@ -441,6 +461,7 @@ DESC;
         self::$backgroundTasks[$taskId] = [
             'pid' => $pid,
             'outFile' => $outFile,
+            'statusFile' => $statusFile,
             'startTime' => microtime(true),
             'startToken' => $startToken,
             'command' => $command,
@@ -474,9 +495,11 @@ DESC;
             );
         }
 
+        $statusPath = is_string($task['statusFile'] ?? null) ? $task['statusFile'] : '';
+        $exitCode = self::readBackgroundExitCode($statusPath);
         $running = self::isBackgroundProcessAlive($task);
 
-        if ($running) {
+        if ($exitCode === null && $running === true) {
             $elapsed = round(microtime(true) - $task['startTime'], 1);
 
             return ToolResult::success(
@@ -485,7 +508,16 @@ DESC;
             );
         }
 
-        // Process finished or PID was reused — read output and reclaim bookkeeping.
+        if ($exitCode === null && $running === null) {
+            // No posix probe and no status file yet — do not pretend completed.
+            return ToolResult::error(
+                "Task {$taskId} status is unknown: ext-posix is unavailable and the exit status "
+                .'file has not been written yet. Cannot treat the task as completed.',
+                ['taskId' => $taskId, 'pid' => $task['pid'], 'running' => null, 'status' => 'unknown'],
+            );
+        }
+
+        // Process finished (or status file present) — harvest output + exit code.
         $output = '(no output)';
         if (is_string($task['outFile']) && file_exists($task['outFile'])) {
             $raw = @file_get_contents($task['outFile']);
@@ -496,11 +528,26 @@ DESC;
             }
             @unlink($task['outFile']);
         }
+        if ($statusPath !== '' && file_exists($statusPath)) {
+            @unlink($statusPath);
+        }
         unset(self::$backgroundTasks[$taskId]);
 
-        return ToolResult::success(
-            "Task {$taskId} completed:\n{$output}",
-            ['taskId' => $taskId, 'pid' => $task['pid'], 'running' => false],
+        $code = $exitCode ?? -1;
+        $meta = [
+            'taskId' => $taskId,
+            'pid' => $task['pid'],
+            'running' => false,
+            'exitCode' => $code,
+        ];
+
+        if ($code === 0) {
+            return ToolResult::success("Task {$taskId} completed:\n{$output}", $meta);
+        }
+
+        return ToolResult::error(
+            "Task {$taskId} failed with exit code {$code}:\n{$output}",
+            $meta,
         );
     }
 
@@ -541,7 +588,7 @@ DESC;
     /**
      * List tracked background tasks (after TTL / PID-reuse pruning).
      *
-     * @return array<string, array{pid: int, outFile: string, startTime: float, startToken: ?string, command: string}>
+     * @return array<string, array{pid: int, outFile: string, statusFile: string, startTime: float, startToken: ?string, command: string}>
      */
     public static function listTasks(): array
     {
@@ -563,7 +610,8 @@ DESC;
                 continue;
             }
 
-            if (self::isBackgroundProcessAlive($task)) {
+            $alive = self::isBackgroundProcessAlive($task);
+            if ($alive === true && function_exists('posix_kill')) {
                 // Soft-stop the orphan tree; ignore failures (permissions / races).
                 @posix_kill((int) $task['pid'], defined('SIGTERM') ? SIGTERM : 15);
             }
@@ -571,18 +619,42 @@ DESC;
             if (is_string($task['outFile'] ?? null) && file_exists($task['outFile'])) {
                 @unlink($task['outFile']);
             }
+            if (is_string($task['statusFile'] ?? null) && file_exists($task['statusFile'])) {
+                @unlink($task['statusFile']);
+            }
             unset(self::$backgroundTasks[$taskId]);
         }
     }
 
+    private static function readBackgroundExitCode(string $statusPath): ?int
+    {
+        if ($statusPath === '' || ! is_file($statusPath)) {
+            return null;
+        }
+        $raw = @file_get_contents($statusPath);
+        if ($raw === false) {
+            return null;
+        }
+        $raw = trim($raw);
+        if ($raw === '' || ! preg_match('/^-?\d+$/', $raw)) {
+            return null;
+        }
+
+        return (int) $raw;
+    }
+
     /**
      * @param  array{pid: int, startToken?: ?string, startTime?: float}  $task
+     * @return bool|null true=alive, false=dead, null=unknown (no posix probe)
      */
-    private static function isBackgroundProcessAlive(array $task): bool
+    private static function isBackgroundProcessAlive(array $task): ?bool
     {
         $pid = (int) ($task['pid'] ?? 0);
-        if ($pid <= 0 || ! function_exists('posix_kill')) {
+        if ($pid <= 0) {
             return false;
+        }
+        if (! function_exists('posix_kill')) {
+            return null;
         }
 
         // Signal 0 probes existence without delivering a signal.

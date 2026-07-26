@@ -569,25 +569,66 @@ class BashToolTest extends TestCase
         $taskId = $result->metadata['taskId'] ?? null;
         $this->assertIsString($taskId);
 
-        $deadline = microtime(true) + 3.0;
+        $final = $this->awaitBackgroundTask($taskId);
+
+        $this->assertFalse($final->isError, $final->output);
+        $this->assertStringContainsString('bg-ok', $final->output);
+        $this->assertStringContainsString('completed', $final->output);
+        $this->assertSame(0, $final->metadata['exitCode'] ?? null);
+
+        $missing = BashTool::checkTask($taskId);
+        $this->assertTrue($missing->isError);
+        $this->assertStringContainsString('Unknown background task', $missing->output);
+    }
+
+    public function test_background_nonzero_exit_is_error_and_runs_once(): void
+    {
+        $marker = tempnam(sys_get_temp_dir(), 'bash_bg_once_');
+        $this->assertNotFalse($marker);
+        @unlink($marker);
+
+        $command = sprintf(
+            'printf x >> %s; exit 7',
+            escapeshellarg($marker),
+        );
+
+        $result = $this->tool->call([
+            'command' => $command,
+            'run_in_background' => true,
+        ], $this->context);
+
+        $this->assertFalse($result->isError, $result->output);
+        $taskId = $result->metadata['taskId'] ?? null;
+        $this->assertIsString($taskId);
+
+        $final = $this->awaitBackgroundTask($taskId);
+
+        $this->assertTrue($final->isError, $final->output);
+        $this->assertSame(7, $final->metadata['exitCode'] ?? null);
+        $this->assertFileExists($marker);
+        $this->assertSame('x', file_get_contents($marker), 'Command must run exactly once despite non-zero exit');
+        @unlink($marker);
+    }
+
+    private function awaitBackgroundTask(string $taskId): \HaoCode\Tools\ToolResult
+    {
+        $deadline = microtime(true) + 5.0;
         $final = null;
         while (microtime(true) < $deadline) {
             $final = BashTool::checkTask($taskId);
             $this->assertNotNull($final);
             if (($final->metadata['running'] ?? null) === false
-                || str_contains($final->output, 'completed')) {
+                || str_contains($final->output, 'completed')
+                || str_contains($final->output, 'failed with exit code')
+                || $final->isError && ! str_contains($final->output, 'still running')
+                    && ! str_contains($final->output, 'status is unknown')) {
                 break;
             }
             usleep(50_000);
         }
 
         $this->assertNotNull($final);
-        $this->assertFalse($final->isError, $final->output);
-        $this->assertStringContainsString('bg-ok', $final->output);
-        $this->assertStringContainsString('completed', $final->output);
 
-        $missing = BashTool::checkTask($taskId);
-        $this->assertTrue($missing->isError);
-        $this->assertStringContainsString('Unknown background task', $missing->output);
+        return $final;
     }
 }
