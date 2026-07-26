@@ -485,9 +485,11 @@ $result = HaoCode::structured('Classify: "payment failed"', [
 echo $result->category;
 ```
 
-With `ephemeral: false` (or an explicit budget / session), schema retries reuse
-one `Conversation` so tool side effects and transcript history stay in the same
-session. Retry prompts remind the model not to repeat completed side effects.
+Schema and JSON-parse retries always reuse one in-memory `Conversation` (even
+when `ephemeral: true`) so tool side effects and transcript history stay in the
+same agent run. `ephemeral` only controls durable session persistence, not retry
+isolation. Correction turns ask for fixed JSON only and tell the model not to
+repeat completed side effects.
 
 ## MCP Tools
 
@@ -759,7 +761,7 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.18.11`. Notable changes since `v1.10.0`:
+is based on `v1.18.12`. Notable changes since `v1.10.0`:
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/
@@ -802,6 +804,10 @@ is based on `v1.18.11`. Notable changes since `v1.10.0`:
   invalid `hitlMode` throws; budget ledgers may only tighten; corrupt memory
   files fail closed; Edit tolerates missing fileinfo; structured retries on
   bad JSON; `turnsUsed` is per-operation; MCP list uses one total deadline.
+- `v1.18.12` — Structured retries always share one Conversation (even ephemeral)
+  with correction-only turns; HITL structured resume re-validates schema;
+  AgentAsTool accepts any parent `LlmProvider` and parent ToolRegistry; fixed
+  agent-composition example.
 
 ## License
 

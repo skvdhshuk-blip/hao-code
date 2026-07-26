@@ -2412,6 +2412,46 @@ JSON),
         $this->assertSame('done', $result->status);
     }
 
+    public function test_structured_resume_validates_schema_and_retries(): void
+    {
+        $this->bootWithMock([
+            MockAnthropicSse::toolUseResponse('structured-write-2', 'Write', [
+                'file_path' => 'structured-retry.txt',
+                'content' => 'x',
+            ]),
+            // After approve: invalid schema (missing required status).
+            MockAnthropicSse::textResponse('{"wrong":true}'),
+            // Correction turn after schema validation failure.
+            MockAnthropicSse::textResponse('{"status":"fixed"}'),
+        ]);
+        chdir($this->projectDir);
+        $schema = [
+            'type' => 'object',
+            'properties' => ['status' => ['type' => 'string']],
+            'required' => ['status'],
+        ];
+        $config = new HaoCodeConfig(
+            allowedTools: ['Write'],
+            ephemeral: false,
+            interruptOn: ['Write' => true],
+            hitlMode: 'ask',
+            structuredMaxRetries: 1,
+        );
+        try {
+            HaoCode::structured('Write then report status', $schema, $config);
+            $this->fail('Expected interrupt.');
+        } catch (HumanInterruptException $e) {
+            $interrupt = $e->interrupt;
+        }
+
+        $result = HaoCode::resumeInterrupt($interrupt->sessionId, $interrupt->id, [
+            HumanDecision::approve('structured-write-2'),
+        ], $config);
+
+        $this->assertInstanceOf(StructuredResult::class, $result);
+        $this->assertSame('fixed', $result->status);
+    }
+
     public function test_foreground_sub_agent_interrupt_cascades_back_to_parent_query(): void
     {
         $this->bootWithMock([
@@ -2801,9 +2841,8 @@ JSON),
         $this->assertSame('high', $result['priority']);
         // Confirm the retry actually happened: two provider requests were made.
         $this->assertSame(2, $requestCount, 'invalid first response must trigger exactly one retry');
-        // And the second prompt contained the validator's error feedback.
-        $secondPrompt = $lastPayload['messages'][0]['content'] ?? '';
-        $secondPromptStr = is_array($secondPrompt) ? json_encode($secondPrompt) : (string) $secondPrompt;
+        // Correction is a new user turn on the same conversation (not messages[0]).
+        $secondPromptStr = (string) (MockAnthropicSse::lastUserText($lastPayload) ?? '');
         $this->assertStringContainsString('Your previous response was not acceptable', $secondPromptStr);
     }
 
@@ -2902,6 +2941,62 @@ JSON),
         }
     }
 
+    public function test_structured_retry_reuses_conversation_so_tools_run_once(): void
+    {
+        // Ephemeral + mutating tool: tool once, then invalid JSON, then correction
+        // only. The third user turn must be a correction prompt, not a fresh task
+        // that would invite re-running Write.
+        $requestCount = 0;
+        $toolUseResponses = 0;
+        $this->bootWithMock([
+            function () use (&$requestCount, &$toolUseResponses): MockResponse {
+                $requestCount++;
+                $toolUseResponses++;
+
+                return MockAnthropicSse::toolUseResponse('side-effect-1', 'Write', [
+                    'file_path' => 'once.txt',
+                    'content' => "written-once\n",
+                ]);
+            },
+            function () use (&$requestCount): MockResponse {
+                $requestCount++;
+
+                return MockAnthropicSse::textResponse('{"status":');
+            },
+            function (array $payload) use (&$requestCount): MockResponse {
+                $requestCount++;
+                $lastUser = (string) (MockAnthropicSse::lastUserText($payload) ?? '');
+                $this->assertStringContainsString(
+                    'Do not call tools again',
+                    $lastUser,
+                    'retry must send a correction turn, not rebuild the full task',
+                );
+                $this->assertStringNotContainsString('Write once.txt then report status', $lastUser);
+
+                return MockAnthropicSse::textResponse('{"status":"ok"}');
+            },
+        ]);
+
+        chdir($this->projectDir);
+
+        $result = HaoCode::structured('Write once.txt then report status', [
+            'type' => 'object',
+            'required' => ['status'],
+            'properties' => ['status' => ['type' => 'string']],
+        ], new HaoCodeConfig(
+            allowedTools: ['Write'],
+            permissionMode: 'bypass_permissions',
+            ephemeral: true,
+            structuredMaxRetries: 2,
+        ));
+
+        $this->assertSame('ok', $result->status);
+        $this->assertSame(1, $toolUseResponses, 'model must issue Write only once across structured retries');
+        $this->assertFileExists($this->projectDir.'/once.txt');
+        $this->assertSame("written-once\n", file_get_contents($this->projectDir.'/once.txt'));
+        $this->assertSame(3, $requestCount);
+    }
+
     public function test_structured_retries_on_invalid_json_syntax(): void
     {
         $requestCount = 0;
@@ -2934,8 +3029,7 @@ JSON),
 
         $this->assertSame('high', $result['priority']);
         $this->assertSame(2, $requestCount, 'invalid JSON must trigger a retry');
-        $secondPrompt = $lastPayload['messages'][0]['content'] ?? '';
-        $secondPromptStr = is_array($secondPrompt) ? json_encode($secondPrompt) : (string) $secondPrompt;
+        $secondPromptStr = (string) (MockAnthropicSse::lastUserText($lastPayload) ?? '');
         $this->assertStringContainsString('JSON syntax error', $secondPromptStr);
     }
 

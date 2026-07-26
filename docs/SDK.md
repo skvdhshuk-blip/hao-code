@@ -2,7 +2,7 @@
 
 Use hao-code as a framework-free PHP library to embed an AI coding agent in your application.
 
-This document describes the `v1.18.11` source line. Published package versions
+This document describes the `v1.18.12` source line. Published package versions
 are identified by Git tags and Packagist.
 
 ```bash
@@ -366,10 +366,11 @@ decision semantics.
 
 Extract structured (JSON) data from the agent's response. The schema is
 validated with a real JSON Schema validator
-([`swaggest/json-schema`](https://github.com/swaggest/json-schema)); when the
-model returns JSON that violates the schema, the SDK retries by appending the
-validator's error paths to the prompt. Configure the retry budget with
-`HaoCodeConfig::$structuredMaxRetries` (default `1`; set to `0` to fail fast).
+([`swaggest/json-schema`](https://github.com/swaggest/json-schema)). JSON
+syntax errors and schema violations enter the same retry path. Configure the
+retry budget with `HaoCodeConfig::$structuredMaxRetries` (default `1`; set to
+`0` to fail fast). Root `type: array` prompts ask for a JSON array; object
+schemas ask for a JSON object.
 
 ```php
 HaoCode::structured(string $prompt, array $jsonSchema, ?HaoCodeConfig $config = null): StructuredResult
@@ -392,11 +393,14 @@ $result->toArray();        // ['category' => 'shipping', ...]
 $result->toJson();         // '{"category":"shipping",...}'
 ```
 
-**Retry session reuse.** When `ephemeral: false`, or when a budget / session id /
-`continueSession` is set, all schema retries share one `Conversation` (one
-session history and one tool-side-effect context). Ephemeral one-shots without
-budget still open a fresh query per attempt. Retry prompts include the
-validator errors and a reminder that previous tools may already have executed.
+**Retry conversation reuse.** Parse and schema retries always share one
+in-memory `Conversation` (even when `ephemeral: true`) so prior tool results
+remain visible and side effects are not re-issued on a blank agent. `ephemeral`
+only controls durable session persistence. Correction turns ask for fixed JSON
+only and remind the model not to repeat completed side effects. The same
+parse/validate/retry state machine is used after durable HITL resume when the
+checkpoint recorded `operation: structured` (restoring `response_schema` from
+the checkpoint).
 
 When validation fails after exhausting retries, `structured()` throws
 `HaoCode\Sdk\StructuredResultValidationException`, which exposes the raw model
@@ -473,7 +477,7 @@ configured output tokens and a safety margin before sending a request.
 | `systemPrompt` | `?string` | `null` | Replace the default system prompt entirely |
 | `appendSystemPrompt` | `?string` | `null` | Append text to the default system prompt |
 | `responseSchema` | `?array` | `null` | Override the schema used by `structured()` |
-| `structuredMaxRetries` | `int` | `1` | Number of times `structured()` retries the model when its JSON fails schema validation. Each retry appends the validator's error paths to the prompt. `0` fails fast and throws `StructuredResultValidationException` on the first violation. |
+| `structuredMaxRetries` | `int` | `1` | Number of times `structured()` retries after JSON parse or schema validation failures. Retries always reuse one in-memory conversation (even when `ephemeral: true`) so prior tool results remain visible; correction turns ask for fixed JSON only. `0` fails fast with `StructuredResultValidationException`. |
 | `webfetchAllowPrivateNetworks` | `bool` | `false` | Allow WebFetch to reach private-like RFC1918, loopback, link-local, and IPv6 ULA ranges. Special-use, multicast, documentation, benchmark, and reserved ranges remain blocked; use an explicit CIDR allowlist for a deliberate exception. |
 | `webfetchPrivateAllowList` | `list<string>` | `[]` | Explicit CIDRs that bypass the WebFetch SSRF guard (for example `['127.0.0.1/32', '192.168.0.0/16']`). The default is empty, so loopback is not implicitly reachable. |
 | `webfetchMaxBytes` | `int` | `5_242_880` | Hard cap on decompressed response bytes per WebFetch request. Responses over the cap are cancelled and surfaced as an error (previously the entire body was buffered, risking OOM). |

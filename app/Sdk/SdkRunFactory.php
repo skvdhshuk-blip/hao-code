@@ -4,6 +4,7 @@ namespace HaoCode\Sdk;
 
 use HaoCode\Services\Agent\AgentLoopFactory;
 use HaoCode\Services\Agent\AgentRunContext;
+use HaoCode\Services\Api\LlmProvider;
 use HaoCode\Services\Api\PooledProvider;
 use HaoCode\Services\Api\StreamingClient;
 use HaoCode\Services\Cost\BudgetLedger;
@@ -16,6 +17,7 @@ use HaoCode\Sdk\Sandbox\SandboxManager;
 use HaoCode\Tools\Mcp\ListMcpResourcesTool;
 use HaoCode\Tools\Mcp\McpDynamicTool;
 use HaoCode\Tools\Mcp\ReadMcpResourceTool;
+use HaoCode\Tools\ToolRegistry;
 use HaoCode\Tools\WebFetch\WebFetchTool;
 
 /** @internal */
@@ -64,9 +66,10 @@ final class SdkRunFactory
         Agent $agent,
         ?RunOptions $options,
         AgentLoopFactory $factory,
-        ?StreamingClient $streamingClient = null,
+        ?LlmProvider $streamingClient = null,
         ?array $resumeSnapshot = null,
         ?BudgetLedger $budgetLedger = null,
+        ?ToolRegistry $parentToolRegistry = null,
     ): SdkRun {
         return self::create(
             ($options ?? new RunOptions)->toConfig($agent),
@@ -74,17 +77,24 @@ final class SdkRunFactory
             $streamingClient,
             $resumeSnapshot,
             $budgetLedger,
+            $parentToolRegistry,
         );
     }
 
     public static function create(
         HaoCodeConfig $config,
         AgentLoopFactory $factory,
-        ?StreamingClient $streamingClient = null,
+        ?LlmProvider $streamingClient = null,
         ?array $resumeSnapshot = null,
         ?BudgetLedger $budgetLedger = null,
+        ?ToolRegistry $parentToolRegistry = null,
     ): SdkRun {
-        $runContext = self::createValidatedRunContext($config);
+        // When a parent LlmProvider is injected (AgentAsTool composition), the
+        // child's own apiKey may be empty — credentials live on the provider.
+        $runContext = self::createValidatedRunContext(
+            $config,
+            requireApiKey: $streamingClient === null,
+        );
         $snapshotBudgetLimit = $resumeSnapshot['budget_limit_usd'] ?? null;
         $snapshotLimit = is_numeric($snapshotBudgetLimit) && (float) $snapshotBudgetLimit >= 0
             ? (float) $snapshotBudgetLimit
@@ -197,6 +207,7 @@ final class SdkRunFactory
                 runContext: $runContext,
                 ephemeral: $config->ephemeral,
                 additionalToolFilter: $config->additionalToolFilter(),
+                parentToolRegistry: $parentToolRegistry,
                 model: self::snapshotString($resumeSnapshot ?? [], 'model'),
             );
         } catch (\Throwable $e) {
@@ -242,15 +253,17 @@ final class SdkRunFactory
         return is_string($value) && trim($value) !== '' ? $value : null;
     }
 
-    public static function createValidatedRunContext(HaoCodeConfig $config): AgentRunContext
-    {
+    public static function createValidatedRunContext(
+        HaoCodeConfig $config,
+        bool $requireApiKey = true,
+    ): AgentRunContext {
         $runContext = AgentRunContextFactory::make($config);
         $resolvedProvider = $runContext->settings->resolveProviderConfig();
         $providerType = $resolvedProvider->providerType;
         $hasPooledCredential = $config->credentialPool?->hasProvider($providerType) ?? false;
         $apiKey = $resolvedProvider->apiKey;
 
-        if (trim($apiKey) === '' && ! $hasPooledCredential) {
+        if ($requireApiKey && trim($apiKey) === '' && ! $hasPooledCredential) {
             $environment = $providerType === 'anthropic'
                 ? 'ANTHROPIC_API_KEY'
                 : 'OPENAI_API_KEY';

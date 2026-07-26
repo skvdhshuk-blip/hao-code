@@ -231,7 +231,7 @@ class HaoCode
         if (is_array($checkpoint['allowed_tools'] ?? null)) {
             $runSnapshot['allowed_tools'] = $checkpoint['allowed_tools'];
         }
-        $resumeConfig = self::restoreInterruptRunConfig($config, $pendingInterrupt, $runSnapshot);
+        $resumeConfig = self::restoreInterruptRunConfig($config, $pendingInterrupt, $runSnapshot, $checkpoint);
         $conversation = self::resumeWithSnapshot($sessionId, $resumeConfig, $runSnapshot);
         try {
             try {
@@ -271,7 +271,22 @@ class HaoCode
                 return self::propagateManagedWorktreeResult($parentResult, $result);
             }
             if (($checkpoint['operation'] ?? null) === 'structured') {
-                $structuredResult = self::parseStructuredResult($result);
+                $schema = is_array($checkpoint['response_schema'] ?? null)
+                    ? $checkpoint['response_schema']
+                    : ($resumeConfig->responseSchema ?? []);
+                if ($schema === []) {
+                    throw new StructuredResultValidationException(
+                        'Structured interrupt resume is missing response_schema in the checkpoint.',
+                        $result->text,
+                        ['missing response_schema'],
+                    );
+                }
+                $structuredResult = self::runStructuredStateMachine(
+                    conversation: $conversation,
+                    schema: $schema,
+                    maxRetries: max(0, $resumeConfig->structuredMaxRetries),
+                    seedResult: $result,
+                );
                 self::completeBackgroundInterruptOwner($pendingInterrupt, $result->text, $runSnapshot);
 
                 return $structuredResult;
@@ -315,7 +330,7 @@ class HaoCode
         if (is_array($checkpoint['allowed_tools'] ?? null)) {
             $runSnapshot['allowed_tools'] = $checkpoint['allowed_tools'];
         }
-        $resumeConfig = self::restoreInterruptRunConfig($config, $pendingInterrupt, $runSnapshot);
+        $resumeConfig = self::restoreInterruptRunConfig($config, $pendingInterrupt, $runSnapshot, $checkpoint);
         $conversation = self::resumeWithSnapshot($sessionId, $resumeConfig, $runSnapshot);
         try {
             $final = null;
@@ -370,6 +385,39 @@ class HaoCode
                     }
                     yield $parentMessage;
                 }
+                return;
+            }
+            if (($checkpoint['operation'] ?? null) === 'structured') {
+                $schema = is_array($checkpoint['response_schema'] ?? null)
+                    ? $checkpoint['response_schema']
+                    : ($resumeConfig->responseSchema ?? []);
+                $seed = new QueryResult(
+                    text: (string) ($final->text ?? ''),
+                    usage: is_array($final->usage ?? null) ? $final->usage : [],
+                    cost: (float) ($final->cost ?? 0.0),
+                    sessionId: $final->sessionId ?? $sessionId,
+                    turnsUsed: 0,
+                );
+                try {
+                    $structured = self::runStructuredStateMachine(
+                        conversation: $conversation,
+                        schema: $schema === [] ? ['type' => 'object'] : $schema,
+                        maxRetries: max(0, $resumeConfig->structuredMaxRetries),
+                        seedResult: $seed,
+                    );
+                } catch (StructuredResultValidationException $e) {
+                    yield Message::error($e->getMessage());
+
+                    return;
+                }
+                self::completeBackgroundInterruptOwner($pendingInterrupt, $structured->rawText, $runSnapshot);
+                yield Message::result(
+                    text: $structured->rawText,
+                    usage: $structured->queryResult?->usage ?? $seed->usage,
+                    cost: $structured->queryResult?->cost ?? $seed->cost,
+                    sessionId: $structured->queryResult?->sessionId ?? $seed->sessionId,
+                );
+
                 return;
             }
             self::completeBackgroundInterruptOwner($pendingInterrupt, $final->text ?? '', $runSnapshot);
@@ -483,6 +531,7 @@ class HaoCode
         HaoCodeConfig $config,
         HumanInterrupt $interrupt,
         array $runSnapshot,
+        array $checkpoint = [],
     ): HaoCodeConfig {
         $config = self::restoreSourceAgentWorkingDirectory($config, $interrupt, $runSnapshot);
         $values = get_object_vars($config);
@@ -501,6 +550,12 @@ class HaoCode
             $values['allowedTools'] = in_array('*', $config->allowedTools, true)
                 ? $snapshotTools
                 : array_values(array_intersect($snapshotTools, $config->allowedTools));
+        }
+        // Restore structured schema from the durable checkpoint so resume
+        // re-enters the same parse/validate state machine without the caller
+        // re-supplying responseSchema.
+        if (is_array($checkpoint['response_schema'] ?? null)) {
+            $values['responseSchema'] = $checkpoint['response_schema'];
         }
 
         return new HaoCodeConfig(...$values);
@@ -732,88 +787,141 @@ class HaoCode
             );
         }
 
-        $schemaJson = json_encode($effectiveSchema, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
-
-        $basePrompt = $prompt."\n\n".
-            'IMPORTANT: You MUST respond with ONLY a valid JSON object matching this schema. '.
-            "No markdown fences, no explanation, no extra text — just the raw JSON.\n\n".
-            "Schema:\n".$schemaJson;
-
         $config = ($config ?? new HaoCodeConfig)->withResponseSchema($effectiveSchema);
+        $basePrompt = self::buildStructuredBasePrompt($prompt, $effectiveSchema);
 
-        // Durable structured runs always reuse one Conversation so retries
-        // share session history (and tool side-effect context). Ephemeral
-        // budgeted runs may still use a shared ledger without a conversation
-        // when no session is requested.
-        $conversation = null;
-        $reuseConversation = ! $config->ephemeral
-            || $config->sessionId !== null
-            || $config->continueSession
-            || $config->maxBudgetUsd !== null;
-        if ($reuseConversation) {
-            if ($config->sessionId !== null) {
-                $conversation = self::resume($config->sessionId, $config);
-            } elseif ($config->continueSession) {
-                $conversation = self::continueLatest($config->cwd, $config);
-            } elseif (! $config->ephemeral || $config->maxBudgetUsd !== null) {
-                $conversation = self::conversation($config);
-            }
+        // Always reuse one Conversation for parse/schema retries so tool history
+        // and side effects stay in a single agent run. ephemeral still means
+        // "no durable session id for the caller", not "rebuild Agent each retry".
+        if ($config->sessionId !== null) {
+            $conversation = self::resume($config->sessionId, $config);
+        } elseif ($config->continueSession) {
+            $conversation = self::continueLatest($config->cwd, $config);
+        } else {
+            $conversation = self::conversation($config);
         }
+
+        try {
+            return self::runStructuredStateMachine(
+                conversation: $conversation,
+                schema: $effectiveSchema,
+                maxRetries: $maxRetries,
+                initialPrompt: $basePrompt,
+                initialImages: $config->images,
+            );
+        } finally {
+            $conversation->close();
+        }
+    }
+
+    /**
+     * Shared parse → validate → correct-JSON retry loop for structured output.
+     *
+     * @param  list<string|array<string, mixed>>  $initialImages
+     * @internal
+     */
+    private static function runStructuredStateMachine(
+        Conversation $conversation,
+        array $schema,
+        int $maxRetries,
+        ?string $initialPrompt = null,
+        array $initialImages = [],
+        ?QueryResult $seedResult = null,
+    ): StructuredResult {
         $attempt = 0;
         $lastValidationErrors = [];
         $lastRawText = '';
-        try {
-            while (true) {
-                $promptForAttempt = $attempt === 0
-                    ? $basePrompt
-                    : $basePrompt."\n\n".
-                        "Your previous response was not acceptable. ".
-                        "Fix these issues and reply with the corrected JSON only:\n".
-                        implode("\n", $lastValidationErrors).
-                        "\n\nPrevious tools may already have executed. Do not repeat completed side effects.";
+        $queryResult = $seedResult;
 
-                if ($conversation !== null) {
-                    $queryResult = $conversation->send($promptForAttempt, $config->images);
-                } else {
-                    $queryResult = self::query($promptForAttempt, $config);
-                }
-                $lastRawText = $queryResult->text;
-
-                $parsedOrErrors = self::tryParseStructuredResult($queryResult);
-                if (is_array($parsedOrErrors)) {
-                    // JSON syntax / shape errors — retry when budget remains.
-                    $lastValidationErrors = $parsedOrErrors;
-                    if ($attempt >= $maxRetries) {
-                        throw new StructuredResultValidationException(
-                            'Structured response failed JSON parsing after '.($attempt + 1).
-                            ' attempt(s). Issues: '.implode('; ', $lastValidationErrors),
-                            $lastRawText,
-                            $lastValidationErrors,
-                        );
+        while (true) {
+            if ($queryResult === null) {
+                if ($attempt === 0) {
+                    if ($initialPrompt === null || $initialPrompt === '') {
+                        throw new \InvalidArgumentException('Structured state machine requires an initial prompt or seed result.');
                     }
-                    $attempt++;
-                    continue;
+                    $promptForAttempt = $initialPrompt;
+                    $images = $initialImages;
+                } else {
+                    $promptForAttempt = self::buildStructuredCorrectionPrompt($schema, $lastValidationErrors);
+                    $images = [];
                 }
+                $queryResult = $conversation->send($promptForAttempt, $images);
+            }
 
-                $errors = self::validateAgainstSchema($parsedOrErrors->toArray(), $effectiveSchema);
-                if ($errors === []) {
-                    return $parsedOrErrors;
-                }
-
-                $lastValidationErrors = $errors;
+            $lastRawText = $queryResult->text;
+            $parsedOrErrors = self::tryParseStructuredResult($queryResult);
+            if (is_array($parsedOrErrors)) {
+                $lastValidationErrors = $parsedOrErrors;
                 if ($attempt >= $maxRetries) {
                     throw new StructuredResultValidationException(
-                        'Structured response failed schema validation after '.($attempt + 1).
-                        ' attempt(s). Violations: '.implode('; ', $errors),
+                        'Structured response failed JSON parsing after '.($attempt + 1).
+                        ' attempt(s). Issues: '.implode('; ', $lastValidationErrors),
                         $lastRawText,
-                        $errors,
+                        $lastValidationErrors,
                     );
                 }
                 $attempt++;
+                $queryResult = null;
+                continue;
             }
-        } finally {
-            $conversation?->close();
+
+            $errors = self::validateAgainstSchema($parsedOrErrors->toArray(), $schema);
+            if ($errors === []) {
+                return $parsedOrErrors;
+            }
+
+            $lastValidationErrors = $errors;
+            if ($attempt >= $maxRetries) {
+                throw new StructuredResultValidationException(
+                    'Structured response failed schema validation after '.($attempt + 1).
+                    ' attempt(s). Violations: '.implode('; ', $errors),
+                    $lastRawText,
+                    $errors,
+                );
+            }
+            $attempt++;
+            $queryResult = null;
         }
+    }
+
+    /**
+     * @return non-empty-string
+     */
+    private static function structuredJsonRootLabel(array $schema): string
+    {
+        return match ($schema['type'] ?? null) {
+            'array' => 'JSON array',
+            'object' => 'JSON object',
+            default => 'JSON value',
+        };
+    }
+
+    private static function buildStructuredBasePrompt(string $prompt, array $schema): string
+    {
+        $schemaJson = json_encode($schema, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+        $root = self::structuredJsonRootLabel($schema);
+
+        return $prompt."\n\n".
+            "IMPORTANT: You MUST respond with ONLY a valid {$root} matching this schema. ".
+            "No markdown fences, no explanation, no extra text — just the raw JSON.\n\n".
+            "Schema:\n".$schemaJson;
+    }
+
+    /**
+     * @param  list<string>  $errors
+     */
+    private static function buildStructuredCorrectionPrompt(array $schema, array $errors): string
+    {
+        $schemaJson = json_encode($schema, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES);
+        $root = self::structuredJsonRootLabel($schema);
+
+        return "Your previous response was not acceptable. ".
+            "Do not call tools again unless strictly required to fill a missing field — ".
+            "previous tools may already have executed; do not repeat completed side effects.\n".
+            "Reply with ONLY the corrected {$root} matching this schema ".
+            "(no markdown fences, no explanation):\n".
+            implode("\n", $errors).
+            "\n\nSchema:\n".$schemaJson;
     }
 
     /**

@@ -27,7 +27,7 @@ SdkRuntime::boot(basePath: $packageRoot);
 
 $apiKey = getenv('ANTHROPIC_API_KEY') ?: null;
 
-    $coder = new Agent(
+$coder = new Agent(
     name: 'coder',
     apiKey: $apiKey,
     systemPrompt: 'You are a terse PHP programmer. Write only the requested code.',
@@ -35,7 +35,7 @@ $apiKey = getenv('ANTHROPIC_API_KEY') ?: null;
     maxTurns: 20,
 );
 
-    $coder = new Agent(
+$planner = new Agent(
     name: 'planner',
     apiKey: $apiKey,
     systemPrompt: 'Plan tasks, then delegate implementation to the coder tool when needed.',

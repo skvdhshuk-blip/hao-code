@@ -3,7 +3,7 @@
 namespace HaoCode\Sdk;
 
 use HaoCode\Services\Agent\AgentLoopFactory;
-use HaoCode\Services\Api\StreamingClient;
+use HaoCode\Services\Api\LlmProvider;
 use HaoCode\Tools\ToolResult;
 use HaoCode\Tools\ToolUseContext;
 
@@ -69,14 +69,18 @@ final class AgentAsTool extends SdkTool
 
         $run = null;
         try {
+            $parentProvider = $context->provider instanceof LlmProvider
+                ? $context->provider
+                : null;
             $run = SdkRunFactory::createFromAgent(
                 $this->agent,
                 $options,
                 $factory,
-                streamingClient: $context->provider instanceof StreamingClient
-                    ? $context->provider
-                    : null,
+                streamingClient: $parentProvider,
                 budgetLedger: $budgetLedger,
+                // Inherit parent tool implementations (including sandbox replacements)
+                // so the child cannot rebuild host tools from the process registry.
+                parentToolRegistry: $context->toolRegistry,
             );
             $loop = $run->loop;
 
