@@ -1018,6 +1018,13 @@ class LookupOrderTool extends SdkTool
         $order = Order::findOrFail($input['order_id']);
         return $order->toJson();
     }
+
+    // Pure lookups must opt in: the SdkTool default is non-read-only so Plan
+    // mode and parallel scheduling stay fail-closed for custom tools.
+    public function isReadOnly(array $input): bool
+    {
+        return true;
+    }
 }
 ```
 
@@ -1061,9 +1068,17 @@ public function handle(array $input): string
 }
 ```
 
-### Stateful Tools
+### Read-only vs stateful tools
 
-By default, `SdkTool` is read-only (may be fork-executed in parallel). For stateful tools, override `isReadOnly`:
+By default, `SdkTool` is **not** read-only: Plan mode denies it without an
+explicit allow path, and the tool orchestrator will not treat it as
+concurrency-safe (no `pcntl_fork` parallelization). That is intentional —
+`handle()` may write databases, files, or call external APIs even when the
+class name looks like a lookup.
+
+- Mutating / stateful tools: keep the default (`isReadOnly() === false`).
+- Pure query tools: override `isReadOnly()` and return `true` so Plan mode
+  may auto-approve and parallel scheduling may apply.
 
 ```php
 class ShoppingCart extends SdkTool
@@ -1076,7 +1091,8 @@ class ShoppingCart extends SdkTool
         return 'Cart: ' . implode(', ', $this->items);
     }
 
-    // Required for state to persist across calls!
+    // Default is already false (non-read-only). Explicit override is optional
+    // but documents intent: state must stay in the parent process.
     public function isReadOnly(array $input): bool
     {
         return false;

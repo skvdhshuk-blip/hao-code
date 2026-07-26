@@ -578,6 +578,11 @@ $lookupOrder = new class extends SdkTool {
     {
         return json_encode(['status' => 'paid']);
     }
+    // Pure lookups must opt in: default is non-read-only (Plan + concurrency).
+    public function isReadOnly(array $input): bool
+    {
+        return true;
+    }
 };
 
 $result = HaoCode::query('Check order A123', new HaoCodeConfig(
@@ -588,8 +593,10 @@ $result = HaoCode::query('Check order A123', new HaoCodeConfig(
 
 Custom tools and sandbox replacement tools are exposed only when their exact
 names appear in `allowedTools` (or when `allowedTools: ['*']` is used);
-`disallowedTools` always wins. By default `SdkTool` is treated as read-only.
-Override `isReadOnly()` and return `false` for stateful or mutating tools.
+`disallowedTools` always wins. By default `SdkTool` is **not** treated as
+read-only — Plan mode will not auto-approve it, and the orchestrator will not
+fork it for parallel execution. Override `isReadOnly()` and return `true` only
+for pure query tools with no side effects.
 
 ## Custom Skills
 

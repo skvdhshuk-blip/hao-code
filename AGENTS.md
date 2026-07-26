@@ -42,7 +42,7 @@
 - `OpenAiChatProvider` 当前用 PHP native stream wrapper 读 SSE，是为绕开部分 SSE/chunked 网关下 Symfony HttpClient/Curl 提前 close stream 的问题。改回 HttpClient 前必须有回归测试覆盖。
 - `HaoCodeConfig::providerType` 支持 `anthropic`、`openai`、`openai_chat`；显式传入 `apiKey`、`baseUrl`、`model`、`maxTokens` 等配置时才覆盖默认 settings。
 - Skill 采用渐进披露：系统提示只列 description；实际使用 skill 时通过 `SkillTool` 完整读取 `SKILL.md`，相对路径按 `${HAOCODE_SKILL_DIR}` 解析。
-- 自定义工具继承 `SdkTool`；默认 read-only，状态变更工具必须显式覆盖 `isReadOnly()`。
+- 自定义工具继承 `SdkTool`；默认 **非** read-only（Plan 模式不会自动放行，也不会默认并行 fork）。纯查询工具必须显式 `isReadOnly(): true`。
 
 ## 5. 工作流硬约束
 

@@ -587,8 +587,8 @@ class SdkE2ETest extends TestCase
         $schema = $tool->inputSchema();
         $this->assertNotNull($schema);
 
-        // Tool is read-only by default
-        $this->assertTrue($tool->isReadOnly([]));
+        // Conservative default: non-read-only until the tool opts in.
+        $this->assertFalse($tool->isReadOnly([]));
     }
 
     // ──────────────────────────────────────────────────────────────
