@@ -108,12 +108,30 @@ class AgentLoop
 
     /**
      * Register a non-blocking external event pump invoked between agent turns.
+     * Replaces any existing pump. Prefer {@see appendEventPump()} when composing.
      *
      * @internal
      */
     public function setEventPump(?callable $eventPump): void
     {
         $this->eventPump = $eventPump === null ? null : \Closure::fromCallable($eventPump);
+    }
+
+    /**
+     * Chain an additional event pump after any existing one (e.g. MCP poll + abort).
+     *
+     * @internal
+     */
+    public function appendEventPump(callable $eventPump): void
+    {
+        $next = \Closure::fromCallable($eventPump);
+        $prev = $this->eventPump;
+        $this->eventPump = static function () use ($prev, $next): void {
+            if ($prev !== null) {
+                ($prev)();
+            }
+            ($next)();
+        };
     }
 
     /**

@@ -83,9 +83,11 @@ final class AgentAsTool extends SdkTool
             // Parent tool cwd wins over process getcwd() / agent construction cwd.
             $loop->setWorkingDirectory($context->workingDirectory);
 
+            // Compose with any existing pump (e.g. MCP poll from SdkRunFactory).
+            // setEventPump would clobber streamable HTTP polling.
             if ($context->shouldAbort !== null) {
                 $parentAbort = $context->shouldAbort;
-                $loop->setEventPump(static function () use ($loop, $parentAbort): void {
+                $loop->appendEventPump(static function () use ($loop, $parentAbort): void {
                     if ($parentAbort()) {
                         $loop->abort();
                     }

@@ -63,6 +63,36 @@ class BudgetLedgerTest extends TestCase
         $this->assertTrue($over->shouldStop());
     }
 
+    public function test_pre_tighten_holder_add_cannot_re_widen_disk_limit(): void
+    {
+        // create(10) → resume(5) → original->add() must leave disk limit at 5.
+        $original = BudgetLedger::create(10.0);
+        $this->assertEqualsWithDelta(10.0, $original->getLimit(), 0.0001);
+
+        $tight = BudgetLedger::resume($original->getId(), 5.0);
+        $this->assertEqualsWithDelta(5.0, $tight->getLimit(), 0.0001);
+
+        $original->add(0.5);
+
+        // Disk must stay tightened; original holder must adopt 5.
+        $this->assertEqualsWithDelta(5.0, $original->getLimit(), 0.0001);
+        $this->assertEqualsWithDelta(5.0, $tight->getLimit(), 0.0001);
+        $this->assertEqualsWithDelta(0.5, $original->getSpent(), 0.0001);
+
+        $path = \HaoCode\Support\Runtime\SdkRuntime::storagePath(
+            'app/haocode/budgets/budget-'.$original->getId().'.json',
+        );
+        $disk = json_decode((string) file_get_contents($path), true);
+        $this->assertIsArray($disk);
+        $this->assertEqualsWithDelta(5.0, (float) $disk['limit'], 0.0001);
+        $this->assertEqualsWithDelta(0.5, (float) $disk['spent'], 0.0001);
+
+        // Spent past the tightened limit must stop even on the original holder.
+        $original->add(5.0);
+        $this->assertTrue($original->shouldStop());
+        $this->assertTrue($tight->shouldStop());
+    }
+
     public function test_stale_ledgers_are_collected_and_can_be_rebuilt_from_a_checkpoint(): void
     {
         $ledger = BudgetLedger::create(1.0);

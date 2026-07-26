@@ -15,7 +15,8 @@ final class BudgetLedger
 
     private function __construct(
         private readonly string $id,
-        private readonly float $limit,
+        /** Effective limit; may only tighten when disk is stricter. */
+        private float $limit,
         private readonly string $path,
     ) {}
 
@@ -119,7 +120,19 @@ final class BudgetLedger
 
     public function getLimit(): float
     {
-        return $this->limit;
+        $handle = $this->open();
+        try {
+            if (! flock($handle, LOCK_SH)) {
+                throw new \RuntimeException('Could not lock the shared budget ledger.');
+            }
+            $state = $this->readState($handle);
+            $this->limit = min($this->limit, $state['limit']);
+
+            return $this->limit;
+        } finally {
+            @flock($handle, LOCK_UN);
+            fclose($handle);
+        }
     }
 
     public function add(float $cost): float
@@ -154,6 +167,7 @@ final class BudgetLedger
                 throw new \RuntimeException('Could not lock the shared budget ledger.');
             }
             $state = $this->readState($handle);
+            $this->limit = min($this->limit, $state['limit']);
 
             return $state['spent'];
         } finally {
@@ -164,7 +178,20 @@ final class BudgetLedger
 
     public function shouldStop(): bool
     {
-        return $this->getSpent() >= $this->limit;
+        $handle = $this->open();
+        try {
+            if (! flock($handle, LOCK_SH)) {
+                throw new \RuntimeException('Could not lock the shared budget ledger.');
+            }
+            $state = $this->readState($handle);
+            // Adopt a tighter disk limit so pre-tighten holders stop correctly.
+            $this->limit = min($this->limit, $state['limit']);
+
+            return $state['spent'] >= $this->limit;
+        } finally {
+            @flock($handle, LOCK_UN);
+            fclose($handle);
+        }
     }
 
     private function writeInitialState(float $spent): void
@@ -199,8 +226,12 @@ final class BudgetLedger
             if (! flock($handle, LOCK_EX)) {
                 throw new \RuntimeException('Could not lock the shared budget ledger.');
             }
-            $state = $mutator($this->readState($handle));
-            $state['limit'] = $this->limit;
+            $state = $this->readState($handle);
+            // Disk may already be tighter (another resume); never re-widen it.
+            $this->limit = min($this->limit, $state['limit']);
+            $state = $mutator($state);
+            $state['limit'] = min($this->limit, (float) ($state['limit'] ?? $this->limit));
+            $this->limit = $state['limit'];
             $this->writeState($handle, $state);
 
             return $state['spent'];
@@ -235,14 +266,10 @@ final class BudgetLedger
             throw new \RuntimeException('Shared budget ledger is corrupt.');
         }
         $storedLimit = (float) $decoded['limit'];
-        // Disk may be tighter than this object if another resume tightened it;
-        // never allow the in-memory limit to widen past the object limit.
-        if ($storedLimit - $this->limit > 0.0000001) {
-            throw new \RuntimeException(
-                'Shared budget ledger limit is wider than the run configuration; cannot widen a budget.',
-            );
-        }
 
+        // Effective limit is always the stricter of disk and this holder.
+        // A pre-tighten holder (limit 10) reading a tightened disk (5) adopts 5;
+        // a widen request (holder 10, disk 5) stays at 5 and never re-widens disk.
         return [
             'limit' => min($storedLimit, $this->limit),
             'spent' => max(0.0, (float) $decoded['spent']),

@@ -69,6 +69,81 @@ class AgentAsToolTest extends TestCase
         new HaoCodeConfig(hitlMode: 'aks');
     }
 
+    public function test_agent_as_tool_appends_abort_pump_without_clobbering_existing(): void
+    {
+        $mcpCalls = 0;
+        $abortCalls = 0;
+
+        $loop = $this->createMock(\HaoCode\Services\Agent\AgentLoop::class);
+        $session = $this->createMock(\HaoCode\Services\Session\SessionManager::class);
+        $session->method('getSessionId')->willReturn('child-sess');
+        $loop->method('getSessionManager')->willReturn($session);
+        $loop->method('getTotalInputTokens')->willReturn(1);
+        $loop->method('getTotalOutputTokens')->willReturn(1);
+        $loop->method('getEstimatedCost')->willReturn(0.0);
+        $loop->method('setWorkingDirectory');
+        $loop->method('run')->willReturn('ok');
+
+        // Real AgentLoop is needed to verify appendEventPump composition.
+        $realLoop = new \HaoCode\Services\Agent\AgentLoop(
+            queryEngine: $this->createMock(\HaoCode\Services\Agent\QueryEngine::class),
+            toolOrchestrator: $this->createMock(\HaoCode\Services\Agent\ToolOrchestrator::class),
+            contextBuilder: $this->createMock(\HaoCode\Services\Agent\ContextBuilder::class),
+            messageHistory: new \HaoCode\Services\Agent\MessageHistory,
+            permissionChecker: $this->createMock(\HaoCode\Services\Permissions\PermissionChecker::class),
+            sessionManager: new \HaoCode\Services\Session\SessionManager(persistenceEnabled: false),
+            contextCompactor: $this->createMock(\HaoCode\Services\Compact\ContextCompactor::class),
+            costTracker: new \HaoCode\Services\Cost\CostTracker,
+            toolRegistry: new \HaoCode\Tools\ToolRegistry,
+        );
+
+        // Simulate MCP poll installed by SdkRunFactory.
+        $realLoop->setEventPump(static function () use (&$mcpCalls): void {
+            $mcpCalls++;
+        });
+        $realLoop->appendEventPump(static function () use (&$abortCalls): void {
+            $abortCalls++;
+        });
+
+        $pump = new \ReflectionProperty($realLoop, 'eventPump');
+        $pump->setAccessible(true);
+        $composed = $pump->getValue($realLoop);
+        $this->assertInstanceOf(\Closure::class, $composed);
+        $composed();
+        $this->assertSame(1, $mcpCalls, 'MCP poll pump must still run after append');
+        $this->assertSame(1, $abortCalls, 'parent abort pump must run after append');
+
+        // AgentAsTool must call appendEventPump (not setEventPump) when shouldAbort is set.
+        $loop->expects($this->once())->method('appendEventPump');
+        $loop->expects($this->never())->method('setEventPump');
+
+        $factory = $this->createMock(\HaoCode\Services\Agent\AgentLoopFactory::class);
+        $factory->method('createIsolated')->willReturn($loop);
+        \HaoCode\Support\Runtime\SdkRuntime::app()->instance(
+            \HaoCode\Services\Agent\AgentLoopFactory::class,
+            $factory,
+        );
+
+        $tool = (new Agent(
+            name: 'child',
+            apiKey: 'test-key',
+            allowedTools: [],
+            ephemeral: true,
+        ))->asTool('Child', 'child agent');
+
+        $aborted = false;
+        $context = new ToolUseContext(
+            workingDirectory: sys_get_temp_dir(),
+            sessionId: 'parent-sess',
+            shouldAbort: static function () use (&$aborted): bool {
+                return $aborted;
+            },
+        );
+
+        $result = $tool->call(['task' => 'do work'], $context);
+        $this->assertFalse($result->isError, $result->output);
+    }
+
     public function test_agent_as_tool_uses_parent_working_directory(): void
     {
         $parentCwd = sys_get_temp_dir().'/haocode-agent-as-tool-cwd-'.bin2hex(random_bytes(4));
