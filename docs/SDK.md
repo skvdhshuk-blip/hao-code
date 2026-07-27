@@ -2,7 +2,7 @@
 
 Use hao-code as a framework-free PHP library to embed an AI coding agent in your application.
 
-This document describes the `v1.18.12` source line. Published package versions
+This document describes the `v1.18.13` source line. Published package versions
 are identified by Git tags and Packagist.
 
 ```bash
@@ -646,9 +646,13 @@ the host intentionally wants those capabilities alongside the sandbox.
 
 When a durable HITL interrupt is raised, the active sandbox root (or remote
 identity) is **detached** instead of cleaned up. The interrupt checkpoint stores
-a lease; `resumeInterrupt()` reattaches the same workspace so files written
-before the pause remain available. Final completion still honors the configured
-`cleanup` policy.
+a lease **identity** (root path, resolved AgentRun sandbox ID, Tokimo vmDir);
+credentials (API keys, tokens) are never written to session JSONL. On
+`resumeInterrupt()`, identity is reattached while security **policy** (mode,
+network, cleanup) comes from the caller's current config and may only tighten.
+Sandbox tool names (`Read`/`Write`/`Glob`/`Grep`/`Bash`) are reserved while
+sandbox mode is active and cannot be overridden by custom or MCP tools. Final
+completion still honors the configured `cleanup` policy.
 
 ### Local backend
 

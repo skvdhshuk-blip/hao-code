@@ -59,7 +59,7 @@ final class NativeSandboxBackend implements SandboxBackendInterface
         return $this->filesystem->grep($pattern, $path, $glob, $caseInsensitive, $limit);
     }
 
-    public function exec(string $command, ?string $cwd = null, int $timeoutMs = 120000): array
+    public function exec(string $command, ?string $cwd = null, int $timeoutMs = 120000, ?callable $shouldAbort = null): array
     {
         $cwdRemote = $this->normalizeRemotePath($cwd ?? $this->config->remoteCwd);
         $cwdLocal = $this->localPath($cwdRemote);
@@ -73,7 +73,7 @@ final class NativeSandboxBackend implements SandboxBackendInterface
             default => throw new \LogicException("Unsupported native sandbox engine: {$this->engine}"),
         };
 
-        return $this->run($process, $cwdLocal, $timeoutMs);
+        return $this->run($process, $cwdLocal, $timeoutMs, $shouldAbort);
     }
 
     public function upload(string $localPath, string $remotePath): void
@@ -224,9 +224,10 @@ SB;
 
     /**
      * @param string[] $command
-     * @return array{stdout: string, stderr: string, exitCode: int, timedOut: bool}
+     * @param  callable(): bool|null  $shouldAbort
+     * @return array{stdout: string, stderr: string, exitCode: int, timedOut: bool, aborted?: bool}
      */
-    private function run(array $command, string $cwd, int $timeoutMs): array
+    private function run(array $command, string $cwd, int $timeoutMs, ?callable $shouldAbort = null): array
     {
         $environment = [
             'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
@@ -256,9 +257,16 @@ SB;
         $stderrTruncated = false;
         $deadline = microtime(true) + (max(1, $timeoutMs) / 1000);
         $timedOut = false;
+        $aborted = false;
         $exitCode = -1;
+        $pid = (int) (proc_get_status($process)['pid'] ?? 0);
 
         do {
+            if ($shouldAbort !== null && $shouldAbort()) {
+                $aborted = true;
+                \HaoCode\Support\Runtime\ProcessSupervisor::terminateTree($pid, false);
+                break;
+            }
             $this->captureOutput($pipes[1], $stdout, $stdoutTruncated);
             $this->captureOutput($pipes[2], $stderr, $stderrTruncated);
             $status = proc_get_status($process);
@@ -270,12 +278,7 @@ SB;
             }
             if (microtime(true) >= $deadline) {
                 $timedOut = true;
-                proc_terminate($process, 15);
-                usleep(100000);
-                $status = proc_get_status($process);
-                if ($status['running'] ?? false) {
-                    proc_terminate($process, 9);
-                }
+                \HaoCode\Support\Runtime\ProcessSupervisor::terminateTree($pid, false);
                 break;
             }
             usleep(10000);
@@ -299,8 +302,9 @@ SB;
         return [
             'stdout' => $stdout,
             'stderr' => $stderr,
-            'exitCode' => $timedOut ? 124 : $exitCode,
+            'exitCode' => $aborted ? 130 : ($timedOut ? 124 : $exitCode),
             'timedOut' => $timedOut,
+            'aborted' => $aborted,
         ];
     }
 

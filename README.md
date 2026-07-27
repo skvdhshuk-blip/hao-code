@@ -761,7 +761,7 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.18.12`. Notable changes since `v1.10.0`:
+is based on `v1.18.13`. Notable changes since `v1.10.0`:
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/
@@ -810,6 +810,11 @@ is based on `v1.18.12`. Notable changes since `v1.10.0`:
   HITL keeps sandbox roots across interrupt/resume; Bash/LocalSandbox use
   process-group kill + unified env denylist; nested agent tokens roll into
   parent usage; MCP connect/initialize share one absolute deadline.
+- `v1.18.13` — Close cross-layer contracts: AgentRun/Tokimo durable leases
+  without secrets; lease identity vs caller policy; interrupt JSONL corruption
+  fail-closed; sandbox reserved tool names; shared usage in HITL snapshots;
+  structured correction disables tools; scalar schema rejected early; MCP init
+  full reset; Sandbox Bash honors abort during exec; background Bash watchdog.
 
 ## License
 

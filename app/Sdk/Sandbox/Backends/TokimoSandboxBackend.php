@@ -82,8 +82,12 @@ final class TokimoSandboxBackend implements SandboxBackendInterface
         return $this->filesystem->grep($pattern, $path, $glob, $caseInsensitive, $limit);
     }
 
-    public function exec(string $command, ?string $cwd = null, int $timeoutMs = 120000): array
+    public function exec(string $command, ?string $cwd = null, int $timeoutMs = 120000, ?callable $shouldAbort = null): array
     {
+        if ($shouldAbort !== null && $shouldAbort()) {
+            return ['stdout' => '', 'stderr' => '', 'exitCode' => 130, 'timedOut' => false, 'aborted' => true];
+        }
+
         $this->start();
         $this->writeRequest([
             'op' => 'exec',
@@ -105,6 +109,7 @@ final class TokimoSandboxBackend implements SandboxBackendInterface
             'stderr' => $stderr,
             'exitCode' => (int) ($response['exit_code'] ?? -1),
             'timedOut' => (bool) ($response['timed_out'] ?? false),
+            'aborted' => false,
         ];
     }
 
@@ -120,6 +125,57 @@ final class TokimoSandboxBackend implements SandboxBackendInterface
         if ($this->ownsVmDir && $this->config->cleanup === 'always') {
             $this->removeDirectory($this->vmDir);
         }
+    }
+
+    /**
+     * Stop the runner but keep host workspace + vmDir for durable HITL resume.
+     *
+     * @internal
+     */
+    public function detach(): void
+    {
+        $this->closeRunnerProcess($this->started);
+        $this->filesystem->detach();
+        // Leave vmDir on disk; reattach restarts the runner against the same paths.
+    }
+
+    /**
+     * @return array<string, mixed>
+     * @internal
+     */
+    public function exportLease(): array
+    {
+        $fsLease = $this->filesystem->exportLease();
+        $root = is_string($fsLease['root'] ?? null) ? $fsLease['root'] : $this->filesystem->rootLabel();
+
+        return [
+            'version' => 1,
+            'provider' => 'tokimo',
+            'identity' => [
+                'root' => $root,
+                'vm_dir' => $this->vmDir,
+                'owns_root' => (bool) ($fsLease['owns_root'] ?? false),
+                'owns_vm_dir' => $this->ownsVmDir,
+                'remote_cwd' => $this->config->remoteCwd,
+            ],
+            'mode' => $this->config->mode,
+            'remote_cwd' => $this->config->remoteCwd,
+            'sync' => $this->config->sync,
+            'cleanup' => $this->config->cleanup,
+            'root' => $root,
+            'owns_root' => (bool) ($fsLease['owns_root'] ?? false),
+            'exclude' => $this->config->exclude,
+            'options' => array_filter([
+                'baseRootfs' => $this->config->options['baseRootfs'] ?? null,
+                'binary' => $this->config->options['binary'] ?? null,
+                'vmDir' => $this->vmDir,
+                'memoryMb' => $this->config->options['memoryMb'] ?? null,
+                'cpuCount' => $this->config->options['cpuCount'] ?? null,
+                'network' => $this->config->options['network'] ?? null,
+                'startupTimeoutSeconds' => $this->config->options['startupTimeoutSeconds'] ?? null,
+                'owns_vm_dir' => $this->ownsVmDir,
+            ], static fn (mixed $v): bool => $v !== null && $v !== ''),
+        ];
     }
 
     public function rootLabel(): string

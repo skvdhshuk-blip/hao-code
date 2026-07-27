@@ -79,6 +79,9 @@ class AgentLoop
     /** Live sandbox for this run; used to export a durable HITL lease. */
     private ?\HaoCode\Sdk\Sandbox\SandboxRuntime $sandboxRuntime = null;
 
+    /** When true, model turns advertise no tools (structured JSON correction). */
+    private bool $forceNoTools = false;
+
     public function __construct(
         private readonly QueryEngine $queryEngine,
         private readonly ToolOrchestrator $toolOrchestrator,
@@ -117,6 +120,16 @@ class AgentLoop
     public function attachSandboxRuntime(?\HaoCode\Sdk\Sandbox\SandboxRuntime $sandboxRuntime): void
     {
         $this->sandboxRuntime = $sandboxRuntime;
+    }
+
+    /**
+     * Force the next {@see run()} to advertise zero tools (structured correction).
+     *
+     * @internal
+     */
+    public function forceNoTools(bool $enabled = true): void
+    {
+        $this->forceNoTools = $enabled;
     }
 
     /**
@@ -352,7 +365,9 @@ class AgentLoop
                 'model' => $this->runContext?->hitlReviewModel ?? $settings?->getModel(),
                 'baseUrl' => is_string($baseUrl) && trim($baseUrl) !== '' ? trim($baseUrl) : null,
                 'providerType' => is_string($providerType) && trim($providerType) !== '' ? trim($providerType) : null,
-            ], $cwd);
+                'maxBudgetUsd' => $this->runContext?->budgetLedger?->getLimit(),
+                'oauthBearer' => null,
+            ], $cwd, usageAccumulator: $this->runContext?->usageAccumulator, budgetLedger: $this->runContext?->budgetLedger);
         }
 
         return $this->interruptDecider = new SmartInterruptDecider(
@@ -453,7 +468,7 @@ class AgentLoop
 
             // 2. Build the request from the turn-stable system prompt and current history.
             $messages = $this->messageHistory->getMessagesForApi();
-            $activeTools = $this->getActiveSkillApiTools();
+            $activeTools = $this->forceNoTools ? [] : $this->getActiveSkillApiTools();
             $estimatedTokens = ContextBudget::estimateTokens(
                 $systemPrompt,
                 $messages,
@@ -830,13 +845,14 @@ class AgentLoop
             'active_skill_allowed_tools' => $this->toolOrchestrator->getActiveSkillAllowedTools(),
             'active_skill_model_override' => $this->toolOrchestrator->getActiveSkillModelOverride(),
             'active_skill_context' => $this->toolOrchestrator->getActiveSkillContext(),
-            'estimated_cost_usd' => $this->costTracker->getTotalCost(),
+            // Prefer shared tree totals so nested AgentAsTool usage survives HITL resume.
+            'estimated_cost_usd' => $this->getEstimatedCost(),
             'budget_ledger_id' => $this->runContext?->budgetLedger?->getId(),
             'budget_limit_usd' => $this->runContext?->budgetLedger?->getLimit(),
-            'total_input_tokens' => $this->totalInputTokens,
-            'total_output_tokens' => $this->totalOutputTokens,
-            'total_cache_creation_tokens' => $this->totalCacheCreationTokens,
-            'total_cache_read_tokens' => $this->totalCacheReadTokens,
+            'total_input_tokens' => $this->getTotalInputTokens(),
+            'total_output_tokens' => $this->getTotalOutputTokens(),
+            'total_cache_creation_tokens' => $this->getCacheCreationTokens(),
+            'total_cache_read_tokens' => $this->getCacheReadTokens(),
             'last_turn_input_tokens' => $this->lastTurnInputTokens,
             'sandbox_lease' => $this->sandboxRuntime?->exportLease(),
         ];

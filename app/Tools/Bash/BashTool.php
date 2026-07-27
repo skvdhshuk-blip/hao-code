@@ -183,6 +183,8 @@ DESC;
         $timedOut  = false;
         $aborted = false;
         $drainFailed = false;
+        $outputTruncated = false;
+        $maxOutputChars = 100_000;
         $status = ['running' => true, 'exitcode' => -1];
 
         while (true) {
@@ -194,8 +196,29 @@ DESC;
 
             [$stdoutChunk, $stdoutFailed] = $this->drainPipe($stdoutHandle);
             [$stderrChunk, $stderrFailed] = $this->drainPipe($stderrHandle);
-            $stdout .= $stdoutChunk;
-            $stderr .= $stderrChunk;
+            // Cap retained output during the run to bound PHP memory; still drain pipes.
+            if (mb_strlen($stdout) < $maxOutputChars) {
+                $room = $maxOutputChars - mb_strlen($stdout);
+                if (mb_strlen($stdoutChunk) > $room) {
+                    $stdout .= mb_substr($stdoutChunk, 0, $room);
+                    $outputTruncated = true;
+                } else {
+                    $stdout .= $stdoutChunk;
+                }
+            } elseif ($stdoutChunk !== '') {
+                $outputTruncated = true;
+            }
+            if (mb_strlen($stderr) < $maxOutputChars) {
+                $room = $maxOutputChars - mb_strlen($stderr);
+                if (mb_strlen($stderrChunk) > $room) {
+                    $stderr .= mb_substr($stderrChunk, 0, $room);
+                    $outputTruncated = true;
+                } else {
+                    $stderr .= $stderrChunk;
+                }
+            } elseif ($stderrChunk !== '') {
+                $outputTruncated = true;
+            }
             $drainFailed = $drainFailed || $stdoutFailed || $stderrFailed;
 
             $status = proc_get_status($process);
@@ -283,8 +306,8 @@ DESC;
             $output .= "\n\n[warning: one or more stream reads failed while capturing command output]";
         }
 
-        // Truncate very long output
-        if (mb_strlen($output) > 100000) {
+        // Truncate very long output (also covered during drain; keep final guard).
+        if ($outputTruncated || mb_strlen($output) > 100000) {
             $output = mb_substr($output, 0, 100000) . "\n\n[Output truncated at 100,000 characters]";
         }
 
@@ -380,16 +403,26 @@ DESC;
         // Explicit if/else (NOT `A && B || C`) so a failing user command does
         // not fall through and re-run under plain bash.
         // Exit status is written to $statusFile so checkTask() can report it.
-        // Timeout uses a soft watchdog that terminates the process group.
-        $timeoutMs = max(1, (int) round($timeoutSeconds * 1000));
-        $inner = 'bash -c '.escapeshellarg($command).'; __haocode_status=$?; '
-            .'printf \'%s\' "$__haocode_status" > '.escapeshellarg($statusFile).'; '
-            .'exit "$__haocode_status"';
+        // An in-shell watchdog terminates the process group without requiring
+        // the caller to poll checkTask() (true timeout, not poll-time only).
+        $timeoutSec = max(1, (int) ceil($timeoutSeconds));
+        $statusEsc = escapeshellarg($statusFile);
+        $userCmd = 'bash -c '.escapeshellarg($command);
+        $watched = 'bash -c '.escapeshellarg(
+            $userCmd.' & __haocode_pid=$!; '
+            .'( sleep '.$timeoutSec.'; kill -TERM -$__haocode_pid 2>/dev/null; '
+            .'sleep 0.2; kill -KILL -$__haocode_pid 2>/dev/null; '
+            .'printf 124 > '.$statusEsc.' ) & __haocode_wd=$!; '
+            .'wait $__haocode_pid; __haocode_status=$?; '
+            .'kill $__haocode_wd 2>/dev/null; wait $__haocode_wd 2>/dev/null; '
+            .'if [ ! -s '.$statusEsc.' ]; then printf \'%s\' "$__haocode_status" > '.$statusEsc.'; fi; '
+            .'exit "$__haocode_status"'
+        );
         $job = 'cd '.escapeshellarg($cwd).' && {'
             .' if command -v setsid >/dev/null 2>&1; then'
-            .'   setsid '.$inner
+            .'   setsid '.$watched
             .' ; else'
-            .'   '.$inner
+            .'   set -m; '.$watched
             .' ; fi'
             .' } >'.escapeshellarg($outFile).' 2>&1 & echo $!';
 
@@ -513,11 +546,24 @@ DESC;
         // Process finished (or status file present) — harvest output + exit code.
         $output = '(no output)';
         if (is_string($task['outFile']) && file_exists($task['outFile'])) {
-            $raw = @file_get_contents($task['outFile']);
-            if ($raw === false) {
-                $output = '(failed to read task output file)';
-            } elseif ($raw !== '') {
-                $output = $raw;
+            $size = @filesize($task['outFile']);
+            $maxBytes = 100_000;
+            if ($size !== false && $size > $maxBytes) {
+                $fh = @fopen($task['outFile'], 'rb');
+                $raw = $fh !== false ? (string) fread($fh, $maxBytes) : false;
+                if (is_resource($fh)) {
+                    fclose($fh);
+                }
+                $output = ($raw === false || $raw === '')
+                    ? '(failed to read task output file)'
+                    : $raw."\n\n[Output truncated at 100,000 bytes]";
+            } else {
+                $raw = @file_get_contents($task['outFile']);
+                if ($raw === false) {
+                    $output = '(failed to read task output file)';
+                } elseif ($raw !== '') {
+                    $output = $raw;
+                }
             }
             @unlink($task['outFile']);
         }

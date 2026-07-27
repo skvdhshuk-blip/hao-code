@@ -20,13 +20,30 @@ final class AgentRunSandboxBackend implements SandboxBackendInterface
     {
         try {
             $stat = $this->client->stat($path);
-        } catch (\Throwable) {
-            return ['exists' => false];
+        } catch (\Throwable $e) {
+            $message = strtolower($e->getMessage());
+            // Only map explicit not-found signals; auth/rate-limit/5xx stay exceptions.
+            if (str_contains($message, '404')
+                || str_contains($message, 'not found')
+                || str_contains($message, 'does not exist')
+                || str_contains($message, 'no such file')) {
+                return ['exists' => false];
+            }
+            throw $e;
         }
+
+        $type = $stat['type'] ?? null;
+        $isFile = array_key_exists('isFile', $stat)
+            ? (bool) $stat['isFile']
+            : (is_string($type) && strcasecmp($type, 'file') === 0);
+        $isDir = array_key_exists('isDir', $stat)
+            ? (bool) $stat['isDir']
+            : (is_string($type) && (strcasecmp($type, 'dir') === 0 || strcasecmp($type, 'directory') === 0));
+
         return [
             'exists' => true,
-            'isFile' => (bool) ($stat['isFile'] ?? $stat['type'] ?? false),
-            'isDir' => (bool) ($stat['isDir'] ?? false),
+            'isFile' => $isFile,
+            'isDir' => $isDir,
             'size' => (int) ($stat['size'] ?? 0),
             'mtime' => (int) ($stat['mtime'] ?? $stat['modifiedTime'] ?? 0),
         ];
@@ -99,14 +116,28 @@ final class AgentRunSandboxBackend implements SandboxBackendInterface
         return $matches;
     }
 
-    public function exec(string $command, ?string $cwd = null, int $timeoutMs = 120000): array
+    public function exec(string $command, ?string $cwd = null, int $timeoutMs = 120000, ?callable $shouldAbort = null): array
     {
+        if ($shouldAbort !== null && $shouldAbort()) {
+            return ['stdout' => '', 'stderr' => '', 'exitCode' => 130, 'timedOut' => false, 'aborted' => true];
+        }
+
         $result = $this->client->cmd($command, $cwd ?? $this->config->remoteCwd, max(1, (int) ceil($timeoutMs / 1000)));
+        $exitCode = $result['exitCode']
+            ?? $result['code']
+            ?? $result['data']['exitCode']
+            ?? $result['result']['exitCode']
+            ?? null;
+        if (! is_numeric($exitCode)) {
+            throw new \RuntimeException('AgentRun process response is missing a numeric exitCode.');
+        }
+
         return [
             'stdout' => (string) ($result['stdout'] ?? $result['data']['stdout'] ?? $result['result']['stdout'] ?? ''),
             'stderr' => (string) ($result['stderr'] ?? $result['data']['stderr'] ?? $result['result']['stderr'] ?? ''),
-            'exitCode' => (int) ($result['exitCode'] ?? $result['code'] ?? $result['data']['exitCode'] ?? $result['result']['exitCode'] ?? 0),
-            'timedOut' => (bool) ($result['timedOut'] ?? false),
+            'exitCode' => (int) $exitCode,
+            'timedOut' => (bool) ($result['timedOut'] ?? $result['data']['timedOut'] ?? false),
+            'aborted' => false,
         ];
     }
 
@@ -132,6 +163,48 @@ final class AgentRunSandboxBackend implements SandboxBackendInterface
     }
 
     public function close(): void {}
+
+    /** @internal */
+    public function detach(): void
+    {
+        // Remote sandbox identity is retained server-side; nothing local to delete.
+    }
+
+    /**
+     * Durable lease identity only — never credentials.
+     *
+     * @return array<string, mixed>
+     * @internal
+     */
+    public function exportLease(): array
+    {
+        $resolvedId = $this->client->sandboxId();
+
+        return [
+            'version' => 1,
+            'provider' => 'agentrun',
+            'identity' => [
+                'sandbox_id' => $resolvedId,
+                'remote_cwd' => $this->config->remoteCwd,
+            ],
+            // Policy is re-applied from the caller config on resume.
+            'mode' => $this->config->mode,
+            'remote_cwd' => $this->config->remoteCwd,
+            'sync' => $this->config->sync,
+            'cleanup' => $this->config->cleanup,
+            'root' => null,
+            'owns_root' => false,
+            'exclude' => $this->config->exclude,
+            // Non-secret options only (auth re-read from env/caller on resume).
+            'options' => array_filter([
+                'sandboxId' => $resolvedId,
+                'region' => $this->config->options['region'] ?? null,
+                'endpoint' => $this->config->options['endpoint'] ?? null,
+                'timeoutSeconds' => $this->config->options['timeoutSeconds'] ?? null,
+                'accountId' => $this->config->options['accountId'] ?? null,
+            ], static fn (mixed $v): bool => $v !== null && $v !== ''),
+        ];
+    }
 
     public function rootLabel(): string
     {

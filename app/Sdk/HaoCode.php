@@ -874,7 +874,12 @@ class HaoCode
                     $promptForAttempt = self::buildStructuredCorrectionPrompt($schema, $lastValidationErrors);
                     $images = [];
                 }
-                $queryResult = $conversation->send($promptForAttempt, $images);
+                // Initial turn may use tools; correction turns must not re-execute side effects.
+                if ($attempt === 0) {
+                    $queryResult = $conversation->send($promptForAttempt, $images);
+                } else {
+                    $queryResult = $conversation->sendWithoutTools($promptForAttempt);
+                }
             }
 
             $lastRawText = $queryResult->text;
@@ -1009,6 +1014,23 @@ class HaoCode
      */
     private static function validateSchemaIsUsable(array $schema): array
     {
+        $rootType = $schema['type'] ?? null;
+        if (is_string($rootType) && ! in_array($rootType, ['object', 'array'], true)) {
+            return [
+                'StructuredResult only supports object or array JSON roots; '
+                ."got type '{$rootType}'. Rejecting before model spend.",
+            ];
+        }
+        if (is_array($rootType)) {
+            $allowed = array_values(array_intersect($rootType, ['object', 'array']));
+            if ($allowed === []) {
+                return [
+                    'StructuredResult only supports object or array JSON roots; '
+                    .'schema type union has neither.',
+                ];
+            }
+        }
+
         try {
             $schemaObj = json_decode((string) json_encode($schema, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
             \Swaggest\JsonSchema\Schema::import($schemaObj);

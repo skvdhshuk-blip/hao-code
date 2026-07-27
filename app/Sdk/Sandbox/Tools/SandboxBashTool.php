@@ -44,9 +44,21 @@ final class SandboxBashTool extends SandboxTool
         }
 
         try {
-            $result = $this->runtime->backend->exec((string) $input['command'], $context->workingDirectory, (int) ($input['timeout'] ?? 120000));
+            $result = $this->runtime->backend->exec(
+                (string) $input['command'],
+                $context->workingDirectory,
+                (int) ($input['timeout'] ?? 120000),
+                $context->shouldAbort,
+            );
         } catch (\Throwable $e) {
             return ToolResult::error($e->getMessage());
+        }
+
+        if (($result['aborted'] ?? false) === true) {
+            return ToolResult::error('Command interrupted by user.', [
+                'exitCode' => 130,
+                'aborted' => true,
+            ]);
         }
 
         $output = '';

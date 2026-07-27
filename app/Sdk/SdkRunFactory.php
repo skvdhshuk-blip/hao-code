@@ -180,14 +180,16 @@ final class SdkRunFactory
 
         try {
             [$mcpTools, $mcpConnectionManager] = self::loadMcpTools($config, $runContext->projectDirectory);
-            $additionalTools = $sandboxRuntime?->tools() ?? [];
+            $sandboxTools = $sandboxRuntime?->tools() ?? [];
+            self::assertNoReservedToolConflicts($sandboxTools !== [], $mcpTools, $config->tools);
+            $additionalTools = $sandboxTools;
             // Register a WebFetchTool constructed from the run's WebFetch
             // security policy (private-network toggle + CIDR allowlist + byte
             // cap) only when the run actually allows WebFetch. This keeps the
             // safe default — a plain query() exposes no tools — intact while
             // still honoring webfetchAllowPrivateNetworks etc. once WebFetch
             // is opted into. User-supplied WebFetch in $config->tools is
-            // appended afterwards and overrides this one.
+            // appended afterwards but must not overwrite sandbox replacements.
             if (self::allowsWebFetch($config)) {
                 $additionalTools[] = self::buildWebFetchTool($config);
             }
@@ -258,6 +260,33 @@ final class SdkRunFactory
         $value = $snapshot[$key] ?? null;
 
         return is_string($value) && trim($value) !== '' ? $value : null;
+    }
+
+    /**
+     * When sandbox replacements are active, reject custom/MCP tools that would
+     * silently overwrite Read/Write/Glob/Grep/Bash host-boundary tools.
+     *
+     * @param  list<object>  $mcpTools
+     * @param  list<object>  $userTools
+     */
+    private static function assertNoReservedToolConflicts(bool $sandboxActive, array $mcpTools, array $userTools): void
+    {
+        if (! $sandboxActive) {
+            return;
+        }
+        $reserved = array_fill_keys(\HaoCode\Sdk\Sandbox\SandboxRuntime::RESERVED_TOOL_NAMES, true);
+        foreach (array_merge($mcpTools, $userTools) as $tool) {
+            if (! is_object($tool) || ! method_exists($tool, 'name')) {
+                continue;
+            }
+            $name = (string) $tool->name();
+            if (isset($reserved[$name])) {
+                throw new \InvalidArgumentException(
+                    "Tool name '{$name}' is reserved while sandbox mode is active and cannot be "
+                    .'overridden by custom or MCP tools.',
+                );
+            }
+        }
     }
 
     public static function createValidatedRunContext(

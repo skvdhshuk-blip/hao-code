@@ -71,6 +71,24 @@ class Conversation
      */
     public function send(string $prompt, array $images = []): QueryResult
     {
+        return $this->sendInternal($prompt, $images, toolsEnabled: true);
+    }
+
+    /**
+     * Structured JSON correction: same conversation, but no tools are advertised.
+     *
+     * @internal
+     */
+    public function sendWithoutTools(string $prompt): QueryResult
+    {
+        return $this->sendInternal($prompt, [], toolsEnabled: false);
+    }
+
+    /**
+     * @param  list<string|array<string, mixed>>  $images
+     */
+    private function sendInternal(string $prompt, array $images, bool $toolsEnabled): QueryResult
+    {
         if ($this->closed) {
             throw new \RuntimeException('Conversation has been closed.');
         }
@@ -81,14 +99,23 @@ class Conversation
             ? ImageContentBlock::buildUserContent($prompt, $images)
             : $prompt;
 
-        $response = $this->loop->run(
-            userInput: $userInput,
-            onTextDelta: $this->options->onText,
-            onToolStart: $this->options->onToolStart,
-            onToolComplete: $this->options->onToolComplete,
-            onTurnStart: $this->options->onTurnStart,
-            onThinkingDelta: $this->options->onThinking,
-        );
+        if (! $toolsEnabled) {
+            $this->loop->forceNoTools(true);
+        }
+        try {
+            $response = $this->loop->run(
+                userInput: $userInput,
+                onTextDelta: $this->options->onText,
+                onToolStart: $this->options->onToolStart,
+                onToolComplete: $this->options->onToolComplete,
+                onTurnStart: $this->options->onTurnStart,
+                onThinkingDelta: $this->options->onThinking,
+            );
+        } finally {
+            if (! $toolsEnabled) {
+                $this->loop->forceNoTools(false);
+            }
+        }
 
         return new QueryResult(
             text: $response,

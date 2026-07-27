@@ -323,18 +323,20 @@ class SessionManager
     /** @internal */
     public function getInterruptState(string $sessionId, string $interruptId): array
     {
-        $latest = null;
-        foreach ($this->loadSession($sessionId) as $entry) {
-            if (in_array($entry['type'] ?? null, [
-                'interrupt_pending',
-                'interrupt_resolving',
-                'interrupt_resolved',
-                'interrupt_cancelled',
-                'interrupt_failed',
-            ], true)
-                && ($entry['interrupt']['id'] ?? null) === $interruptId) {
-                $latest = $entry;
-            }
+        $sessionId = $this->validateSessionId($sessionId);
+        $path = $this->sessionPath.'/'.$sessionId.'.jsonl';
+        if (! is_file($path)) {
+            throw new \RuntimeException("Interrupt not found: {$interruptId}");
+        }
+        $handle = fopen($path, 'rb');
+        if ($handle === false) {
+            throw new \RuntimeException("Could not open session file for interrupt {$interruptId}.");
+        }
+        try {
+            // Uses fail-closed corrupt-line detection (must not roll back resolving → pending).
+            $latest = $this->findLatestInterruptEntry($handle, $interruptId);
+        } finally {
+            fclose($handle);
         }
         if ($latest === null) {
             throw new \RuntimeException("Interrupt not found: {$interruptId}");
@@ -735,22 +737,43 @@ class SessionManager
     {
         rewind($handle);
         $latest = null;
+        $sawInterruptLine = false;
         while (($line = fgets($handle)) !== false) {
+            $trimmed = trim($line);
+            if ($trimmed === '') {
+                continue;
+            }
             $entry = json_decode($line, true);
-            if (is_array($entry)
-                && in_array($entry['type'] ?? null, [
-                    'interrupt_pending',
-                    'interrupt_resolving',
-                    'interrupt_resolved',
-                    'interrupt_cancelled',
-                    'interrupt_failed',
-                ], true)
+            if (! is_array($entry)) {
+                // Once interrupt lifecycle has started for this id, a corrupt
+                // later line must not allow state to roll back (e.g. resolving
+                // → pending). Fail closed as indeterminate.
+                if ($sawInterruptLine || self::lineMentionsInterruptId($trimmed, $interruptId)) {
+                    throw new \RuntimeException(
+                        "Interrupt {$interruptId} state is indeterminate: session JSONL contains a corrupt line after interrupt activity began. Manual recovery required.",
+                    );
+                }
+                continue;
+            }
+            if (in_array($entry['type'] ?? null, [
+                'interrupt_pending',
+                'interrupt_resolving',
+                'interrupt_resolved',
+                'interrupt_cancelled',
+                'interrupt_failed',
+            ], true)
                 && ($entry['interrupt']['id'] ?? null) === $interruptId) {
+                $sawInterruptLine = true;
                 $latest = $entry;
             }
         }
 
         return $latest;
+    }
+
+    private static function lineMentionsInterruptId(string $line, string $interruptId): bool
+    {
+        return $interruptId !== '' && str_contains($line, $interruptId);
     }
 
     /**

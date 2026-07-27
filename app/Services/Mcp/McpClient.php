@@ -156,10 +156,27 @@ final class McpClient
             $this->transport->startServerEventStream();
         } catch (\Throwable $e) {
             $this->tracer?->recordException($span, $e);
-            $this->transport->close();
+            $this->resetConnectionState();
             throw $e;
         } finally {
             $span?->end();
+        }
+    }
+
+    /**
+     * Clear all connection-scoped state after a failed handshake or close.
+     */
+    private function resetConnectionState(): void
+    {
+        $this->initialized = false;
+        $this->capabilities = null;
+        $this->serverInfo = null;
+        $this->instructions = null;
+        $this->clearCache();
+        try {
+            $this->transport->close();
+        } catch (\Throwable) {
+            // Best-effort; state is already cleared.
         }
     }
 
@@ -595,9 +612,7 @@ final class McpClient
      */
     public function close(): void
     {
-        $this->transport->close();
-        $this->initialized = false;
-        $this->clearCache();
+        $this->resetConnectionState();
     }
 
     public function isConnected(): bool

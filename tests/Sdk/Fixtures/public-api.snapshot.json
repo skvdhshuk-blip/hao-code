@@ -374,6 +374,11 @@
                 "api": true,
                 "internal": false
             },
+            "sendWithoutTools": {
+                "signature": "public function sendWithoutTools(string $prompt) : HaoCode\\Sdk\\QueryResult",
+                "api": false,
+                "internal": true
+            },
             "stream": {
                 "signature": "public function stream(string $prompt, array $images = []) : Generator",
                 "api": true,

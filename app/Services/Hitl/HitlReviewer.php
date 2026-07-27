@@ -8,6 +8,8 @@ use HaoCode\Sdk\HaoCode;
 use HaoCode\Sdk\HaoCodeConfig;
 use HaoCode\Sdk\StructuredResult;
 use HaoCode\Services\Api\ApiErrorException;
+use HaoCode\Services\Cost\BudgetLedger;
+use HaoCode\Services\Cost\UsageAccumulator;
 
 /**
  * Guardian-style model reviewer for gray-zone actions in smart HITL mode.
@@ -54,19 +56,30 @@ final class HitlReviewer
     /** @var null|\Closure(string, array, HaoCodeConfig): StructuredResult */
     private readonly ?\Closure $structuredRunner;
 
+    private readonly ?UsageAccumulator $usageAccumulator;
+
+    private readonly ?BudgetLedger $budgetLedger;
+
     /**
-     * @param array{apiKey: ?string, model: ?string, baseUrl: ?string, providerType: ?string} $providerConfig
+     * @param array{apiKey: ?string, model: ?string, baseUrl: ?string, providerType: ?string, maxBudgetUsd?: ?float, oauthBearer?: ?bool} $providerConfig
      *        Provider settings reused from the run request; `model` already
      *        reflects the hitlReviewModel override when one was supplied.
      * @param null|callable(string, array, HaoCodeConfig): StructuredResult $structuredRunner
      *        Structured-call runner; when null, HaoCode::structured is used.
      *        Injectable so tests can fake the model round-trip.
      */
-    public function __construct(array $providerConfig, string $cwd, ?callable $structuredRunner = null)
-    {
+    public function __construct(
+        array $providerConfig,
+        string $cwd,
+        ?callable $structuredRunner = null,
+        ?UsageAccumulator $usageAccumulator = null,
+        ?BudgetLedger $budgetLedger = null,
+    ) {
         $this->providerConfig = $providerConfig;
         $this->cwd = $cwd;
         $this->structuredRunner = $structuredRunner !== null ? \Closure::fromCallable($structuredRunner) : null;
+        $this->usageAccumulator = $usageAccumulator;
+        $this->budgetLedger = $budgetLedger;
     }
 
     /** True once repeated review failures mean further gray actions must go to a human. */
@@ -137,6 +150,10 @@ final class HitlReviewer
     private function callModel(string $userPrompt, string $toolName, array $input): ?array
     {
         $prompt = $this->buildPrompt($userPrompt, $toolName, $input);
+        $maxBudget = $this->budgetLedger?->getLimit()
+            ?? (isset($this->providerConfig['maxBudgetUsd']) && is_numeric($this->providerConfig['maxBudgetUsd'])
+                ? (float) $this->providerConfig['maxBudgetUsd']
+                : null);
         $config = new HaoCodeConfig(
             apiKey: $this->providerConfig['apiKey'],
             model: $this->providerConfig['model'],
@@ -145,8 +162,12 @@ final class HitlReviewer
             maxTokens: 2048,
             cwd: $this->cwd,
             maxTurns: 3,
+            maxBudgetUsd: $maxBudget,
             allowedTools: [],
             ephemeral: true,
+            oauthBearer: isset($this->providerConfig['oauthBearer'])
+                ? (bool) $this->providerConfig['oauthBearer']
+                : null,
         );
 
         $alarmArmed = false;

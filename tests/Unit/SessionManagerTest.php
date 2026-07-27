@@ -515,6 +515,30 @@ class SessionManagerTest extends TestCase
         $manager->claimInterrupt($manager->getSessionId(), 'int-1', []);
     }
 
+    public function test_corrupt_interrupt_jsonl_line_does_not_roll_back_to_pending(): void
+    {
+        $manager = new SessionManager;
+        $sessionId = $manager->getSessionId();
+        $interrupt = [
+            'id' => 'int-corrupt',
+            'session_id' => $sessionId,
+            'actions' => [],
+            'created_at' => date('c'),
+        ];
+        $manager->recordPendingInterrupt($interrupt, ['blocks' => [], 'results' => []]);
+        $manager->claimInterrupt($sessionId, 'int-corrupt', []);
+
+        $path = $this->tmpDir.'/'.$sessionId.'.jsonl';
+        $lines = file($path);
+        $this->assertIsArray($lines);
+        $lines[count($lines) - 1] = '{"type":"interrupt_resolving","interrupt":{"id":"int-corrupt"'.PHP_EOL;
+        file_put_contents($path, implode('', $lines));
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessageMatches('/indeterminate/i');
+        $manager->getInterruptState($sessionId, 'int-corrupt');
+    }
+
     public function test_fail_interrupt_marks_resolving_as_failed_terminal_state(): void
     {
         $manager = new SessionManager;

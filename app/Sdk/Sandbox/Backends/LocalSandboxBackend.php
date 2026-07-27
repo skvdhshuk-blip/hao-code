@@ -194,7 +194,7 @@ final class LocalSandboxBackend implements SandboxBackendInterface
         return $matches;
     }
 
-    public function exec(string $command, ?string $cwd = null, int $timeoutMs = 120000): array
+    public function exec(string $command, ?string $cwd = null, int $timeoutMs = 120000, ?callable $shouldAbort = null): array
     {
         $cwdLocal = $this->resolve($cwd ?? $this->config->remoteCwd);
         $this->ensureDirectory($cwdLocal);
@@ -228,6 +228,7 @@ final class LocalSandboxBackend implements SandboxBackendInterface
             $opened['process'],
             $opened['pid'],
             max(0.001, $timeoutMs / 1000),
+            $shouldAbort,
         );
 
         $stdout = file_get_contents($stdoutFile) ?: '';
@@ -235,14 +236,16 @@ final class LocalSandboxBackend implements SandboxBackendInterface
         @unlink($stdoutFile);
         @unlink($stderrFile);
 
+        $aborted = $wait['aborted'];
         $timedOut = $wait['timedOut'];
-        $exitCode = $timedOut ? 124 : $wait['exitCode'];
+        $exitCode = $aborted ? 130 : ($timedOut ? 124 : $wait['exitCode']);
 
         return [
             'stdout' => $stdout,
             'stderr' => $stderr,
             'exitCode' => $exitCode,
             'timedOut' => $timedOut,
+            'aborted' => $aborted,
         ];
     }
 
@@ -291,13 +294,22 @@ final class LocalSandboxBackend implements SandboxBackendInterface
     }
 
     /**
+     * Durable lease: identity for reattach; policy is reapplied from caller config.
+     *
      * @return array<string, mixed>
      * @internal
      */
     public function exportLease(): array
     {
         return [
+            'version' => 1,
             'provider' => $this->config->provider,
+            'identity' => [
+                'root' => $this->root,
+                'owns_root' => $this->ownsRoot,
+                'remote_cwd' => $this->config->remoteCwd,
+            ],
+            // Snapshot of original policy for stricter-merge on resume (not secrets).
             'mode' => $this->config->mode,
             'remote_cwd' => $this->config->remoteCwd,
             'sync' => $this->config->sync,
@@ -305,7 +317,10 @@ final class LocalSandboxBackend implements SandboxBackendInterface
             'root' => $this->root,
             'owns_root' => $this->ownsRoot,
             'exclude' => $this->config->exclude,
-            'options' => $this->config->options,
+            'options' => array_diff_key(
+                $this->config->options,
+                array_flip(['apiKey', 'authorization', 'token', 'password', 'secret']),
+            ),
         ];
     }
 
