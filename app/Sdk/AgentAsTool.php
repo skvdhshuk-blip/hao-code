@@ -81,6 +81,7 @@ final class AgentAsTool extends SdkTool
                 // Inherit parent tool implementations (including sandbox replacements)
                 // so the child cannot rebuild host tools from the process registry.
                 parentToolRegistry: $context->toolRegistry,
+                usageAccumulator: $context->runContext?->usageAccumulator,
             );
             $loop = $run->loop;
 
@@ -107,6 +108,7 @@ final class AgentAsTool extends SdkTool
                 'sessionId' => $this->agent->ephemeral ? null : $loop->getSessionManager()->getSessionId(),
             ]);
         } catch (HumanInterruptException $e) {
+            $run?->preserveSandboxOnClose();
             throw $e;
         } catch (\Throwable $e) {
             return ToolResult::error('Agent tool error: '.$e->getMessage());

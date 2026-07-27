@@ -125,6 +125,15 @@ final class AgentRunContextFactory
             $hitlReviewModel,
             $config->sandbox,
             $hitlAllowlistPath,
+            omitProjectInstructions: false,
+            agentType: null,
+            readOnly: false,
+            worktreePath: null,
+            worktreeBranch: null,
+            managedWorktree: false,
+            backgroundOwnerAgentId: null,
+            budgetLedger: null,
+            usageAccumulator: new \HaoCode\Services\Cost\UsageAccumulator,
         );
     }
 }

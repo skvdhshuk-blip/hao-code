@@ -91,6 +91,29 @@ final class NativeSandboxBackend implements SandboxBackendInterface
         $this->filesystem->close();
     }
 
+    /** @internal */
+    public function detach(): void
+    {
+        $this->filesystem->detach();
+    }
+
+    /**
+     * @return array<string, mixed>
+     * @internal
+     */
+    public function exportLease(): array
+    {
+        $lease = $this->filesystem->exportLease();
+        $lease['provider'] = 'native';
+        $lease['options'] = array_merge(
+            is_array($lease['options'] ?? null) ? $lease['options'] : [],
+            $this->config->options,
+            ['engine' => $this->engine],
+        );
+
+        return $lease;
+    }
+
     public function rootLabel(): string
     {
         return $this->engine.':'.$this->filesystem->rootLabel();

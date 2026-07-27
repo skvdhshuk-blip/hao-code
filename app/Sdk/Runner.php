@@ -61,6 +61,9 @@ class Runner
                 sessionId: $ephemeral ? null : $loop->getSessionManager()->getSessionId(),
                 turnsUsed: $loop->getLastRunTurns(),
             );
+        } catch (HumanInterruptException $e) {
+            $run->preserveSandboxOnClose();
+            throw $e;
         } finally {
             $run->close();
         }
@@ -158,6 +161,7 @@ class Runner
             }
 
             if ($thrownException instanceof HumanInterruptException) {
+                $run->preserveSandboxOnClose();
                 yield Message::interrupt($thrownException->interrupt);
 
                 return;

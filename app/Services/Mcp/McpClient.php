@@ -104,10 +104,20 @@ final class McpClient
     public function connect(int $timeoutSeconds = 30): void
     {
         $span = $this->startSpan('initialize');
+        // One absolute deadline covers transport connect + initialize (not each step).
+        $deadline = microtime(true) + max(0.001, (float) $timeoutSeconds);
         try {
-            $this->transport->connect($timeoutSeconds);
+            $connectRemaining = max(0.001, $deadline - microtime(true));
+            $this->transport->connect(max(1, (int) ceil($connectRemaining)));
 
             $this->registerProtocolHandlers();
+
+            $initRemaining = $deadline - microtime(true);
+            if ($initRemaining <= 0.0) {
+                throw McpConnectionException::transport(
+                    "MCP connect timed out after {$timeoutSeconds}s during initialize for '{$this->serverName}'."
+                );
+            }
 
             $result = $this->transport->request('initialize', [
                 'protocolVersion' => self::LATEST_PROTOCOL_VERSION,
@@ -118,7 +128,7 @@ final class McpClient
                     'name' => 'hao-code',
                     'version' => (string) \HaoCode\Support\Runtime\SdkRuntime::environment('HAO_CODE_VERSION', 'dev'),
                 ],
-            ], $timeoutSeconds);
+            ], max(1, (int) ceil($initRemaining)));
 
             if (! is_array($result)) {
                 throw new McpConnectionException("Invalid initialize response from {$this->serverName}");

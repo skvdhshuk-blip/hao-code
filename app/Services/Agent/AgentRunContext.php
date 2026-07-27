@@ -4,6 +4,7 @@ namespace HaoCode\Services\Agent;
 
 use HaoCode\Sdk\Memory\MemoryStoreInterface;
 use HaoCode\Services\Cost\BudgetLedger;
+use HaoCode\Services\Cost\UsageAccumulator;
 use HaoCode\Services\Settings\SettingsManager;
 use HaoCode\Tools\Skill\SkillLoader;
 
@@ -40,6 +41,7 @@ final class AgentRunContext
         public readonly bool $managedWorktree = false,
         public readonly ?string $backgroundOwnerAgentId = null,
         public readonly ?BudgetLedger $budgetLedger = null,
+        public readonly ?UsageAccumulator $usageAccumulator = null,
     ) {}
 
     public function fork(
@@ -95,6 +97,45 @@ final class AgentRunContext
             $managedWorktree ?? $this->managedWorktree,
             $backgroundOwnerAgentId ?? $this->backgroundOwnerAgentId,
             $budgetLedger ?? $this->budgetLedger,
+            // Share the same accumulator so nested agents contribute tokens.
+            $this->usageAccumulator,
+        );
+    }
+
+    /**
+     * Rebind this run to a shared usage ledger (AgentAsTool child assembly).
+     *
+     * @internal
+     */
+    public function withUsageAccumulator(UsageAccumulator $usageAccumulator): self
+    {
+        return new self(
+            $this->workingDirectory,
+            $this->projectDirectory,
+            $this->settings,
+            $this->skillLoader,
+            $this->cancellationToken,
+            $this->interruptOn,
+            $this->enableAskUser,
+            $this->agentId,
+            $this->teamName,
+            $this->responseSchema,
+            $this->memoryStore,
+            $this->includeMemoryInTextOnly,
+            $this->memoryTools,
+            $this->hitlMode,
+            $this->hitlReviewModel,
+            $this->sandbox,
+            $this->hitlAllowlistPath,
+            $this->omitProjectInstructions,
+            $this->agentType,
+            $this->readOnly,
+            $this->worktreePath,
+            $this->worktreeBranch,
+            $this->managedWorktree,
+            $this->backgroundOwnerAgentId,
+            $this->budgetLedger,
+            $usageAccumulator,
         );
     }
 }

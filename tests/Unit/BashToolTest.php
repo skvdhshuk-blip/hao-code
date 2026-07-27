@@ -365,6 +365,32 @@ class BashToolTest extends TestCase
         $this->assertTrue($result->metadata['timedOut'] ?? false);
     }
 
+    public function test_timeout_kills_process_group_children(): void
+    {
+        $marker = tempnam(sys_get_temp_dir(), 'bash_tree_kill_');
+        $this->assertNotFalse($marker);
+        @unlink($marker);
+
+        // Parent shell backgrounds a delayed writer then waits. Timeout must
+        // kill the whole process group so the marker is never written.
+        $command = sprintf(
+            '(sleep 1; printf leaked > %s) & wait',
+            escapeshellarg($marker),
+        );
+
+        $result = $this->tool->call([
+            'command' => $command,
+            'timeout' => 200,
+        ], $this->context);
+
+        $this->assertTrue($result->isError);
+        $this->assertTrue($result->metadata['timedOut'] ?? false);
+
+        // Give a leaked child time to write if the kill tree failed.
+        usleep(1_200_000);
+        $this->assertFileDoesNotExist($marker, 'Timeout must terminate the process group, not only the wrapper shell');
+    }
+
     public function test_call_aborts_long_running_command_when_context_is_interrupted(): void
     {
         $checks = 0;

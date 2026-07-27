@@ -806,8 +806,10 @@ is based on `v1.18.12`. Notable changes since `v1.10.0`:
   bad JSON; `turnsUsed` is per-operation; MCP list uses one total deadline.
 - `v1.18.12` — Structured retries always share one Conversation (even ephemeral)
   with correction-only turns; HITL structured resume re-validates schema;
-  AgentAsTool accepts any parent `LlmProvider` and parent ToolRegistry; fixed
-  agent-composition example.
+  AgentAsTool accepts any parent `LlmProvider` and parent ToolRegistry; durable
+  HITL keeps sandbox roots across interrupt/resume; Bash/LocalSandbox use
+  process-group kill + unified env denylist; nested agent tokens roll into
+  parent usage; MCP connect/initialize share one absolute deadline.
 
 ## License
 

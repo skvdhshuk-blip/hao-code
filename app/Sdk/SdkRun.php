@@ -11,11 +11,23 @@ final class SdkRun
 {
     private bool $closed = false;
 
+    private bool $preserveSandbox = false;
+
     public function __construct(
         public readonly AgentLoop $loop,
         private readonly ?SandboxRuntime $sandboxRuntime = null,
         private readonly ?McpConnectionManager $mcpConnectionManager = null,
-    ) {}
+    ) {
+        $this->loop->attachSandboxRuntime($this->sandboxRuntime);
+    }
+
+    /**
+     * On durable HITL interrupt, keep the sandbox filesystem/session for resume.
+     */
+    public function preserveSandboxOnClose(): void
+    {
+        $this->preserveSandbox = true;
+    }
 
     public function close(): void
     {
@@ -24,7 +36,11 @@ final class SdkRun
         }
 
         try {
-            $this->sandboxRuntime?->close();
+            if ($this->preserveSandbox) {
+                $this->sandboxRuntime?->detach();
+            } else {
+                $this->sandboxRuntime?->close();
+            }
         } finally {
             try {
                 $this->mcpConnectionManager?->disconnectAll();

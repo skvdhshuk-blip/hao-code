@@ -207,6 +207,7 @@ class Conversation
         }
 
         if ($thrownException instanceof HumanInterruptException) {
+            $this->run->preserveSandboxOnClose();
             yield Message::interrupt($thrownException->interrupt);
 
             return;
@@ -373,6 +374,7 @@ class Conversation
             yield $queue->dequeue();
         }
         if ($thrown instanceof HumanInterruptException) {
+            $this->run->preserveSandboxOnClose();
             yield Message::interrupt($thrown->interrupt);
             return;
         }
@@ -538,6 +540,16 @@ class Conversation
     public function abort(): void
     {
         $this->loop->abort();
+    }
+
+    /**
+     * Keep the sandbox filesystem when closing after a durable HITL interrupt.
+     *
+     * @internal
+     */
+    public function preserveSandboxOnClose(): void
+    {
+        $this->run->preserveSandboxOnClose();
     }
 
     /**

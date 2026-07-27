@@ -111,6 +111,30 @@ class SandboxTest extends TestCase
         $this->assertStringContainsString('App.php', $exec['stdout']);
     }
 
+    public function test_local_sandbox_detach_lease_survives_close_and_reattach(): void
+    {
+        $runtime = SandboxManager::create(SandboxConfig::local(cleanup: 'always'));
+        $runtime->backend->writeFile('/workspace/keep.txt', 'durable-hitl');
+        $lease = $runtime->exportLease();
+        $this->assertIsArray($lease);
+        $this->assertArrayHasKey('root', $lease);
+        $root = (string) $lease['root'];
+        $this->assertDirectoryExists($root);
+
+        $runtime->detach();
+        $runtime->close();
+        $this->assertDirectoryExists($root);
+        $this->assertFileExists($root.'/workspace/keep.txt');
+
+        $reattach = SandboxManager::create(
+            \HaoCode\Sdk\Sandbox\SandboxRuntime::configFromLease($lease, SandboxConfig::local(cleanup: 'always')),
+        );
+        $this->assertSame('durable-hitl', $reattach->backend->readFile('/workspace/keep.txt'));
+        $reattach->close();
+        // Original owned the temp root with cleanup always → reattach owns and cleans.
+        $this->assertDirectoryDoesNotExist($root);
+    }
+
     public function test_native_sandbox_executes_in_workspace_and_blocks_host_writes(): void
     {
         if (! $this->nativeSandboxAvailable()) {

@@ -60,6 +60,9 @@ class HaoCode
             $conv = self::resume($config->sessionId, $config);
             try {
                 return $conv->send($prompt, $config->images);
+            } catch (HumanInterruptException $e) {
+                $conv->preserveSandboxOnClose();
+                throw $e;
             } finally {
                 $conv->close();
             }
@@ -68,6 +71,9 @@ class HaoCode
             $conv = self::continueLatest($config->cwd, $config);
             try {
                 return $conv->send($prompt, $config->images);
+            } catch (HumanInterruptException $e) {
+                $conv->preserveSandboxOnClose();
+                throw $e;
             } finally {
                 $conv->close();
             }
@@ -98,7 +104,12 @@ class HaoCode
         if ($config->sessionId !== null) {
             $conversation = self::resume($config->sessionId, $config);
             try {
-                yield from $conversation->stream($prompt, $config->images);
+                foreach ($conversation->stream($prompt, $config->images) as $message) {
+                    if ($message->isInterrupt()) {
+                        $conversation->preserveSandboxOnClose();
+                    }
+                    yield $message;
+                }
             } finally {
                 $conversation->close();
             }
@@ -108,7 +119,12 @@ class HaoCode
         if ($config->continueSession) {
             $conversation = self::continueLatest($config->cwd, $config);
             try {
-                yield from $conversation->stream($prompt, $config->images);
+                foreach ($conversation->stream($prompt, $config->images) as $message) {
+                    if ($message->isInterrupt()) {
+                        $conversation->preserveSandboxOnClose();
+                    }
+                    yield $message;
+                }
             } finally {
                 $conversation->close();
             }
@@ -237,6 +253,7 @@ class HaoCode
             try {
                 $result = $conversation->resumeInterrupt($interruptId, $decisions);
             } catch (HumanInterruptException $e) {
+                $conversation->preserveSandboxOnClose();
                 if ($parentLink !== null) {
                     $sessionManager->recordInterruptParentLink(
                         $e->interrupt->sessionId,
@@ -336,6 +353,7 @@ class HaoCode
             $final = null;
             foreach ($conversation->streamResumeInterrupt($interruptId, $decisions) as $message) {
                 if ($message->isInterrupt()) {
+                    $conversation->preserveSandboxOnClose();
                     if ($parentLink !== null && $message->interrupt !== null) {
                         $sessionManager->recordInterruptParentLink(
                             $message->interrupt->sessionId,
@@ -556,6 +574,17 @@ class HaoCode
         // re-supplying responseSchema.
         if (is_array($checkpoint['response_schema'] ?? null)) {
             $values['responseSchema'] = $checkpoint['response_schema'];
+        }
+
+        // Reattach the same sandbox root/session after durable HITL interrupt.
+        $lease = is_array($runSnapshot['sandbox_lease'] ?? null)
+            ? $runSnapshot['sandbox_lease']
+            : null;
+        if ($lease !== null) {
+            $values['sandbox'] = \HaoCode\Sdk\Sandbox\SandboxRuntime::configFromLease(
+                $lease,
+                $config->sandbox,
+            );
         }
 
         return new HaoCodeConfig(...$values);

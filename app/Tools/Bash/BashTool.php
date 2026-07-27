@@ -2,6 +2,8 @@
 
 namespace HaoCode\Tools\Bash;
 
+use HaoCode\Support\Runtime\ProcessSupervisor;
+use HaoCode\Support\Runtime\SpawnEnvironment;
 use HaoCode\Tools\BaseTool;
 use HaoCode\Tools\ToolInputSchema;
 use HaoCode\Tools\ToolResult;
@@ -111,11 +113,12 @@ DESC;
         // Check for dangerous patterns
         $warnings = $this->detectDangerousPatterns($command);
 
-        if ($background) {
-            return $this->runInBackground($command, $context->workingDirectory, $warnings);
-        }
-
         $timeout = ($input['timeout'] ?? 120000) / 1000;
+        $cwd = self::$sessionWorkingDirectories[$context->sessionId] ?? $context->workingDirectory;
+
+        if ($background) {
+            return $this->runInBackground($command, $cwd, $warnings, $timeout);
+        }
 
         $stdoutFile = tempnam(sys_get_temp_dir(), 'haocode_bash_stdout_');
         $stderrFile = tempnam(sys_get_temp_dir(), 'haocode_bash_stderr_');
@@ -139,44 +142,21 @@ DESC;
             2 => ['file', $stderrFile, 'w'],
         ];
 
-        $cwd = self::$sessionWorkingDirectories[$context->sessionId] ?? $context->workingDirectory;
         $cwdMarker = '__HAOCODE_CWD__' . bin2hex(random_bytes(8)) . '__';
         $wrappedCommand = $this->wrapCommandWithWorkingDirectoryCapture($command, $cwdMarker);
+        $env = SpawnEnvironment::build();
 
-        // Use getenv() to build the environment because $_ENV is often empty
-        // (PHP requires variables_order to include "E" for $_ENV population).
-        // getenv() always works regardless of php.ini settings.
-        $env = getenv();
-        $env['TERM'] = 'xterm-256color';
-
-        // Strip the Policy DSL's hard-coded env denylist before spawning the
-        // subprocess. These 6 keys (LD_PRELOAD, DYLD_*, PYTHONPATH,
-        // NODE_OPTIONS, PERL5OPT) are unconditional red lines defined in
-        // PolicyLoader::REQUIRED_ENV_DENY — they enable code injection into
-        // child processes and must never reach a spawned shell, regardless of
-        // which policy rule matched. Previously env_deny was unenforceable
-        // here because PermissionChecker doesn't forward env to PolicyMatcher
-        // (chatgpt 5.5: the env_deny config was effectively dead code on the
-        // Bash path).
-        foreach (\HaoCode\Services\Permissions\Policy\PolicyLoader::REQUIRED_ENV_DENY as $deniedKey) {
-            unset($env[$deniedKey]);
-        }
-
-        $process = proc_open(
-            $wrappedCommand,
-            $descriptors,
-            $pipes,
-            $cwd,
-            $env,
-        );
-
-        if (!is_resource($process)) {
+        try {
+            $opened = ProcessSupervisor::open($wrappedCommand, $cwd, $env, $descriptors);
+        } catch (\Throwable) {
             @unlink($stdoutFile);
             @unlink($stderrFile);
+
             return ToolResult::error("Failed to execute command: {$command}");
         }
 
-        fclose($pipes[0]);
+        $process = $opened['process'];
+        $pid = $opened['pid'];
 
         $stdoutHandle = fopen($stdoutFile, 'r');
         $stderrHandle = fopen($stderrFile, 'r');
@@ -189,8 +169,8 @@ DESC;
                 fclose($stderrHandle);
             }
 
-            proc_terminate($process, 9);
-            proc_close($process);
+            ProcessSupervisor::terminateTree($pid, true);
+            @proc_close($process);
             @unlink($stdoutFile);
             @unlink($stderrFile);
 
@@ -203,11 +183,12 @@ DESC;
         $timedOut  = false;
         $aborted = false;
         $drainFailed = false;
+        $status = ['running' => true, 'exitcode' => -1];
 
         while (true) {
             if ($context->isAborted()) {
                 $aborted = true;
-                proc_terminate($process, defined('SIGINT') ? SIGINT : 15);
+                ProcessSupervisor::terminateTree($pid, false);
                 break;
             }
 
@@ -225,7 +206,7 @@ DESC;
             $remaining = $deadline - microtime(true);
             if ($remaining <= 0) {
                 $timedOut = true;
-                proc_terminate($process, 9);
+                ProcessSupervisor::terminateTree($pid, false);
                 break;
             }
 
@@ -247,8 +228,13 @@ DESC;
         // On PHP < 8.4, proc_get_status() reaps the child via waitpid(WNOHANG),
         // so a subsequent proc_close() returns -1.  Capture the exit code from
         // the status array while it is still available.
-        $exitCode = $status['exitcode'] ?? -1;
-        proc_close($process);
+        $exitCode = ($status['signaled'] ?? false)
+            ? 128 + (int) ($status['termsig'] ?? 0)
+            : (int) ($status['exitcode'] ?? -1);
+        $closed = @proc_close($process);
+        if ($exitCode < 0 && ! $timedOut && ! $aborted) {
+            $exitCode = $closed;
+        }
         @unlink($stdoutFile);
         @unlink($stderrFile);
 
@@ -361,7 +347,7 @@ DESC;
     /**
      * Run a command in the background.
      */
-    private function runInBackground(string $command, string $cwd, array $warnings): ToolResult
+    private function runInBackground(string $command, string $cwd, array $warnings, float $timeoutSeconds = 120.0): ToolResult
     {
         self::pruneBackgroundTasks();
 
@@ -389,19 +375,13 @@ DESC;
         // can distinguish "still running" from "exit 0".
         @unlink($statusFile);
 
-        // Spawn via proc_open with an env filter so the REQUIRED_ENV_DENY
-        // keys (LD_PRELOAD, DYLD_*, PYTHONPATH, NODE_OPTIONS, PERL5OPT) do
-        // not reach the backgrounded shell. shell_exec inherits the full
-        // PHP env verbatim, which previously made the Policy env_deny
-        // unenforceable on this path too (chatgpt 5.5).
-        $env = getenv();
-        foreach (\HaoCode\Services\Permissions\Policy\PolicyLoader::REQUIRED_ENV_DENY as $deniedKey) {
-            unset($env[$deniedKey]);
-        }
+        $env = SpawnEnvironment::build();
 
         // Explicit if/else (NOT `A && B || C`) so a failing user command does
         // not fall through and re-run under plain bash.
         // Exit status is written to $statusFile so checkTask() can report it.
+        // Timeout uses a soft watchdog that terminates the process group.
+        $timeoutMs = max(1, (int) round($timeoutSeconds * 1000));
         $inner = 'bash -c '.escapeshellarg($command).'; __haocode_status=$?; '
             .'printf \'%s\' "$__haocode_status" > '.escapeshellarg($statusFile).'; '
             .'exit "$__haocode_status"';
@@ -463,6 +443,7 @@ DESC;
             'outFile' => $outFile,
             'statusFile' => $statusFile,
             'startTime' => microtime(true),
+            'deadline' => microtime(true) + $timeoutSeconds,
             'startToken' => $startToken,
             'command' => $command,
         ];
@@ -498,6 +479,18 @@ DESC;
         $statusPath = is_string($task['statusFile'] ?? null) ? $task['statusFile'] : '';
         $exitCode = self::readBackgroundExitCode($statusPath);
         $running = self::isBackgroundProcessAlive($task);
+        $deadline = (float) ($task['deadline'] ?? 0.0);
+        $timedOut = $deadline > 0.0 && microtime(true) >= $deadline;
+
+        if ($exitCode === null && $running === true && $timedOut) {
+            ProcessSupervisor::terminateTree((int) $task['pid'], false);
+            $running = self::isBackgroundProcessAlive($task);
+            if ($running !== true) {
+                $exitCode = self::readBackgroundExitCode($statusPath) ?? -1;
+                // Fall through to harvest as a timed-out completion.
+                $timedOut = true;
+            }
+        }
 
         if ($exitCode === null && $running === true) {
             $elapsed = round(microtime(true) - $task['startTime'], 1);
@@ -539,7 +532,15 @@ DESC;
             'pid' => $task['pid'],
             'running' => false,
             'exitCode' => $code,
+            'timedOut' => $timedOut && $code !== 0,
         ];
+
+        if ($timedOut && $code !== 0) {
+            return ToolResult::error(
+                "Task {$taskId} timed out:\n{$output}",
+                $meta,
+            );
+        }
 
         if ($code === 0) {
             return ToolResult::success("Task {$taskId} completed:\n{$output}", $meta);
@@ -611,9 +612,9 @@ DESC;
             }
 
             $alive = self::isBackgroundProcessAlive($task);
-            if ($alive === true && function_exists('posix_kill')) {
-                // Soft-stop the orphan tree; ignore failures (permissions / races).
-                @posix_kill((int) $task['pid'], defined('SIGTERM') ? SIGTERM : 15);
+            if ($alive === true) {
+                // Soft-stop the orphan process group, not just the launcher PID.
+                ProcessSupervisor::terminateTree((int) $task['pid'], false);
             }
 
             if (is_string($task['outFile'] ?? null) && file_exists($task['outFile'])) {

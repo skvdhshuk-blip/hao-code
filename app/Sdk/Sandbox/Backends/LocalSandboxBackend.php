@@ -10,12 +10,14 @@ final class LocalSandboxBackend implements SandboxBackendInterface
 {
     private string $root;
     private bool $ownsRoot;
+    private bool $preserveOnClose = false;
 
     public function __construct(private readonly SandboxConfig $config)
     {
         if ($config->root !== null && $config->root !== '') {
             $this->root = rtrim($config->root, '/');
-            $this->ownsRoot = false;
+            // Resume path may reclaim ownership of a previously detached temp root.
+            $this->ownsRoot = (bool) ($config->options['owns_root'] ?? false);
             if (! is_dir($this->root) && ! mkdir($this->root, 0755, true)) {
                 throw new \RuntimeException("Failed to create sandbox root: {$this->root}");
             }
@@ -202,54 +204,46 @@ final class LocalSandboxBackend implements SandboxBackendInterface
             throw new \RuntimeException('Failed to allocate command output files.');
         }
 
-        $process = proc_open($command, [
+        $descriptors = [
             0 => ['pipe', 'r'],
             1 => ['file', $stdoutFile, 'w'],
             2 => ['file', $stderrFile, 'w'],
-        ], $pipes, $cwdLocal, getenv() ?: []);
+        ];
+        $env = \HaoCode\Support\Runtime\SpawnEnvironment::build();
 
-        if (! is_resource($process)) {
+        try {
+            $opened = \HaoCode\Support\Runtime\ProcessSupervisor::open(
+                $command,
+                $cwdLocal,
+                $env,
+                $descriptors,
+            );
+        } catch (\Throwable $e) {
             @unlink($stdoutFile);
             @unlink($stderrFile);
-            throw new \RuntimeException("Failed to execute sandbox command: {$command}");
-        }
-        fclose($pipes[0]);
-
-        $deadline = microtime(true) + ($timeoutMs / 1000);
-        $timedOut = false;
-        $observedExitCode = -1;
-        while (true) {
-            $status = proc_get_status($process);
-            if (! ($status['running'] ?? false)) {
-                $observedExitCode = ($status['signaled'] ?? false)
-                    ? 128 + (int) ($status['termsig'] ?? 0)
-                    : (int) ($status['exitcode'] ?? -1);
-                break;
-            }
-            if (microtime(true) > $deadline) {
-                $timedOut = true;
-                proc_terminate($process, 15);
-                usleep(100000);
-                $status = proc_get_status($process);
-                if ($status['running'] ?? false) {
-                    proc_terminate($process, 9);
-                }
-                break;
-            }
-            usleep(10000);
+            throw new \RuntimeException("Failed to execute sandbox command: {$command}", 0, $e);
         }
 
-        // On PHP < 8.4, proc_get_status() can reap the child, causing the
-        // subsequent proc_close() to return -1. Prefer the status value that
-        // was captured when the process first stopped.
-        $closedExitCode = proc_close($process);
-        $exitCode = $observedExitCode >= 0 ? $observedExitCode : $closedExitCode;
+        $wait = \HaoCode\Support\Runtime\ProcessSupervisor::wait(
+            $opened['process'],
+            $opened['pid'],
+            max(0.001, $timeoutMs / 1000),
+        );
+
         $stdout = file_get_contents($stdoutFile) ?: '';
         $stderr = file_get_contents($stderrFile) ?: '';
         @unlink($stdoutFile);
         @unlink($stderrFile);
 
-        return ['stdout' => $stdout, 'stderr' => $stderr, 'exitCode' => $timedOut ? 124 : $exitCode, 'timedOut' => $timedOut];
+        $timedOut = $wait['timedOut'];
+        $exitCode = $timedOut ? 124 : $wait['exitCode'];
+
+        return [
+            'stdout' => $stdout,
+            'stderr' => $stderr,
+            'exitCode' => $exitCode,
+            'timedOut' => $timedOut,
+        ];
     }
 
     public function upload(string $localPath, string $remotePath): void
@@ -278,9 +272,41 @@ final class LocalSandboxBackend implements SandboxBackendInterface
 
     public function close(): void
     {
+        if ($this->preserveOnClose) {
+            return;
+        }
         if ($this->ownsRoot && $this->config->cleanup === 'always') {
             $this->removeDirectory($this->root);
         }
+    }
+
+    /**
+     * Keep the filesystem root for durable HITL resume instead of cleaning it.
+     *
+     * @internal
+     */
+    public function detach(): void
+    {
+        $this->preserveOnClose = true;
+    }
+
+    /**
+     * @return array<string, mixed>
+     * @internal
+     */
+    public function exportLease(): array
+    {
+        return [
+            'provider' => $this->config->provider,
+            'mode' => $this->config->mode,
+            'remote_cwd' => $this->config->remoteCwd,
+            'sync' => $this->config->sync,
+            'cleanup' => $this->config->cleanup,
+            'root' => $this->root,
+            'owns_root' => $this->ownsRoot,
+            'exclude' => $this->config->exclude,
+            'options' => $this->config->options,
+        ];
     }
 
     public function rootLabel(): string

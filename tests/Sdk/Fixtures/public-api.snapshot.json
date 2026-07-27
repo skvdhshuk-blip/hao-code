@@ -359,6 +359,11 @@
                 "api": true,
                 "internal": false
             },
+            "preserveSandboxOnClose": {
+                "signature": "public function preserveSandboxOnClose() : void",
+                "api": false,
+                "internal": true
+            },
             "resumeInterrupt": {
                 "signature": "public function resumeInterrupt(string $interruptId, array $decisions) : HaoCode\\Sdk\\QueryResult",
                 "api": true,

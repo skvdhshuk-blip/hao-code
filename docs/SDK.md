@@ -644,6 +644,12 @@ Other host-only tools, including `LSP`, task/team tools, and cron tools, are not
 sandbox replacements. Use an explicit `allowedTools` list and omit them unless
 the host intentionally wants those capabilities alongside the sandbox.
 
+When a durable HITL interrupt is raised, the active sandbox root (or remote
+identity) is **detached** instead of cleaned up. The interrupt checkpoint stores
+a lease; `resumeInterrupt()` reattaches the same workspace so files written
+before the pause remain available. Final completion still honors the configured
+`cleanup` policy.
+
 ### Local backend
 
 The local backend creates an isolated temp directory. With `sync: 'upload-cwd'`,
@@ -880,11 +886,13 @@ $result->outputTokens();         // int
 ```
 
 `usage['input_tokens']` is the accumulated provider-reported input usage for
-the conversation/run lifetime (not a single HTTP delta). After a durable HITL
-snapshot resume rebuilds the agent loop, both token counters and cost remain
-cumulative so they stay in the same statistical scope. When the provider reports
-prompt-cache telemetry, `usage['cache_read_tokens']` contains the cached portion
-and `usage['cache_creation_tokens']` contains explicit cache writes (Anthropic).
+the conversation/run lifetime (not a single HTTP delta), including nested
+`AgentAsTool` / `Agent` child runs that share the parent usage ledger. After a
+durable HITL snapshot resume rebuilds the agent loop, both token counters and
+cost remain cumulative so they stay in the same statistical scope. When the
+provider reports prompt-cache telemetry, `usage['cache_read_tokens']` contains
+the cached portion and `usage['cache_creation_tokens']` contains explicit cache
+writes (Anthropic).
 
 ---
 

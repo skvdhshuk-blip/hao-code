@@ -76,6 +76,9 @@ class AgentLoop
     /** Most recent user input, used as guardian-review context in smart HITL mode. */
     private ?string $lastUserPrompt = null;
 
+    /** Live sandbox for this run; used to export a durable HITL lease. */
+    private ?\HaoCode\Sdk\Sandbox\SandboxRuntime $sandboxRuntime = null;
+
     public function __construct(
         private readonly QueryEngine $queryEngine,
         private readonly ToolOrchestrator $toolOrchestrator,
@@ -104,6 +107,16 @@ class AgentLoop
     public function setMaxTurns(int $maxTurns): void
     {
         $this->maxTurns = $maxTurns;
+    }
+
+    /**
+     * Bind the run's sandbox so interrupt snapshots can reattach the same root.
+     *
+     * @internal
+     */
+    public function attachSandboxRuntime(?\HaoCode\Sdk\Sandbox\SandboxRuntime $sandboxRuntime): void
+    {
+        $this->sandboxRuntime = $sandboxRuntime;
     }
 
     /**
@@ -508,11 +521,7 @@ class AgentLoop
 
                 // 5. Track usage
                 $usage = $processor->getUsage();
-                $this->lastTurnInputTokens = $usage['context_input_tokens'] ?? $usage['input_tokens'] ?? 0;
-                $this->totalInputTokens += $this->lastTurnInputTokens;
-                $this->totalOutputTokens += $usage['output_tokens'] ?? 0;
-                $this->totalCacheCreationTokens += $usage['cache_creation_input_tokens'] ?? 0;
-                $this->totalCacheReadTokens += $usage['cache_read_input_tokens'] ?? 0;
+                $this->recordUsage($usage);
 
                 // 5b. Cost tracking — set model for per-model pricing
                 $responseModel = $processor->getModel();
@@ -829,6 +838,7 @@ class AgentLoop
             'total_cache_creation_tokens' => $this->totalCacheCreationTokens,
             'total_cache_read_tokens' => $this->totalCacheReadTokens,
             'last_turn_input_tokens' => $this->lastTurnInputTokens,
+            'sandbox_lease' => $this->sandboxRuntime?->exportLease(),
         ];
     }
 
@@ -924,11 +934,7 @@ class AgentLoop
         );
 
         $usage = $processor->getUsage();
-        $this->lastTurnInputTokens = $usage['context_input_tokens'] ?? $usage['input_tokens'] ?? 0;
-        $this->totalInputTokens += $this->lastTurnInputTokens;
-        $this->totalOutputTokens += $usage['output_tokens'] ?? 0;
-        $this->totalCacheCreationTokens += $usage['cache_creation_input_tokens'] ?? 0;
-        $this->totalCacheReadTokens += $usage['cache_read_input_tokens'] ?? 0;
+        $this->recordUsage($usage);
         if ($processor->getModel() !== null) {
             $this->costTracker->setModel($processor->getModel());
         }
@@ -952,7 +958,7 @@ class AgentLoop
 
     public function getTotalInputTokens(): int
     {
-        return $this->totalInputTokens;
+        return $this->runContext?->usageAccumulator?->getInputTokens() ?? $this->totalInputTokens;
     }
 
     public function getLastTurnInputTokens(): int
@@ -967,7 +973,7 @@ class AgentLoop
 
     public function getTotalOutputTokens(): int
     {
-        return $this->totalOutputTokens;
+        return $this->runContext?->usageAccumulator?->getOutputTokens() ?? $this->totalOutputTokens;
     }
 
     public function getEstimatedCost(): float
@@ -999,12 +1005,33 @@ class AgentLoop
 
     public function getCacheCreationTokens(): int
     {
-        return $this->totalCacheCreationTokens;
+        return $this->runContext?->usageAccumulator?->getCacheCreationTokens()
+            ?? $this->totalCacheCreationTokens;
     }
 
     public function getCacheReadTokens(): int
     {
-        return $this->totalCacheReadTokens;
+        return $this->runContext?->usageAccumulator?->getCacheReadTokens()
+            ?? $this->totalCacheReadTokens;
+    }
+
+    /**
+     * @param  array<string, mixed>  $usage
+     */
+    private function recordUsage(array $usage): void
+    {
+        $this->lastTurnInputTokens = (int) ($usage['context_input_tokens'] ?? $usage['input_tokens'] ?? 0);
+        $input = $this->lastTurnInputTokens;
+        $output = (int) ($usage['output_tokens'] ?? 0);
+        $cacheCreation = (int) ($usage['cache_creation_input_tokens'] ?? 0);
+        $cacheRead = (int) ($usage['cache_read_input_tokens'] ?? 0);
+
+        $this->totalInputTokens += $input;
+        $this->totalOutputTokens += $output;
+        $this->totalCacheCreationTokens += $cacheCreation;
+        $this->totalCacheReadTokens += $cacheRead;
+
+        $this->runContext?->usageAccumulator?->add($input, $output, $cacheCreation, $cacheRead);
     }
 
     public function getMessageHistory(): MessageHistory
@@ -1053,6 +1080,26 @@ class AgentLoop
         $this->lastTurnInputTokens = max(0, (int) ($snapshot['last_turn_input_tokens'] ?? 0));
         if (is_numeric($snapshot['estimated_cost_usd'] ?? null)) {
             $this->costTracker->setTotalCost(max(0.0, (float) $snapshot['estimated_cost_usd']));
+        }
+
+        // Seed a fresh shared accumulator so resume QueryResult usage matches the
+        // checkpoint (AgentAsTool children add on top of this base).
+        $acc = $this->runContext?->usageAccumulator;
+        if ($acc !== null
+            && $acc->getInputTokens() === 0
+            && $acc->getOutputTokens() === 0
+            && $acc->getCacheCreationTokens() === 0
+            && $acc->getCacheReadTokens() === 0
+            && ($this->totalInputTokens > 0
+                || $this->totalOutputTokens > 0
+                || $this->totalCacheCreationTokens > 0
+                || $this->totalCacheReadTokens > 0)) {
+            $acc->add(
+                $this->totalInputTokens,
+                $this->totalOutputTokens,
+                $this->totalCacheCreationTokens,
+                $this->totalCacheReadTokens,
+            );
         }
     }
 

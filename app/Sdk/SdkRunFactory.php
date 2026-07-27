@@ -8,6 +8,7 @@ use HaoCode\Services\Api\LlmProvider;
 use HaoCode\Services\Api\PooledProvider;
 use HaoCode\Services\Api\StreamingClient;
 use HaoCode\Services\Cost\BudgetLedger;
+use HaoCode\Services\Cost\UsageAccumulator;
 use HaoCode\Services\Mcp\McpConnectionException;
 use HaoCode\Services\Mcp\McpConnectionManager;
 use HaoCode\Services\Mcp\McpServerConfigManager;
@@ -70,6 +71,7 @@ final class SdkRunFactory
         ?array $resumeSnapshot = null,
         ?BudgetLedger $budgetLedger = null,
         ?ToolRegistry $parentToolRegistry = null,
+        ?UsageAccumulator $usageAccumulator = null,
     ): SdkRun {
         return self::create(
             ($options ?? new RunOptions)->toConfig($agent),
@@ -78,6 +80,7 @@ final class SdkRunFactory
             $resumeSnapshot,
             $budgetLedger,
             $parentToolRegistry,
+            $usageAccumulator,
         );
     }
 
@@ -88,6 +91,7 @@ final class SdkRunFactory
         ?array $resumeSnapshot = null,
         ?BudgetLedger $budgetLedger = null,
         ?ToolRegistry $parentToolRegistry = null,
+        ?UsageAccumulator $usageAccumulator = null,
     ): SdkRun {
         // When a parent LlmProvider is injected (AgentAsTool composition), the
         // child's own apiKey may be empty — credentials live on the provider.
@@ -95,6 +99,9 @@ final class SdkRunFactory
             $config,
             requireApiKey: $streamingClient === null,
         );
+        if ($usageAccumulator !== null) {
+            $runContext = $runContext->withUsageAccumulator($usageAccumulator);
+        }
         $snapshotBudgetLimit = $resumeSnapshot['budget_limit_usd'] ?? null;
         $snapshotLimit = is_numeric($snapshotBudgetLimit) && (float) $snapshotBudgetLimit >= 0
             ? (float) $snapshotBudgetLimit
