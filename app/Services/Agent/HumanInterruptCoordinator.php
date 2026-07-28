@@ -28,10 +28,7 @@ final class HumanInterruptCoordinator
         ?callable $onToolStart = null,
         ?callable $onToolComplete = null,
     ): array {
-        $serialized = array_map(
-            static fn (HumanDecision|array $decision): array => $decision instanceof HumanDecision ? $decision->toArray() : $decision,
-            $decisions,
-        );
+        $serialized = self::serializeDecisions($decisions);
         $pending = $this->sessions->getInterruptState($this->sessions->getSessionId(), $interruptId);
         if (($pending['type'] ?? null) !== 'interrupt_pending') {
             $state = str_replace('interrupt_', '', (string) ($pending['type'] ?? 'unknown'));
@@ -39,7 +36,7 @@ final class HumanInterruptCoordinator
         }
 
         $pendingInterrupt = HumanInterrupt::fromArray($pending['interrupt'] ?? []);
-        $decisionMap = $this->validateDecisions($pendingInterrupt, $serialized);
+        $decisionMap = self::validateSerializedDecisions($pendingInterrupt, $serialized);
 
         // Claim first, then run everything else under failInterrupt so a
         // post-claim crash cannot leave the interrupt permanently "resolving".
@@ -168,8 +165,35 @@ final class HumanInterruptCoordinator
         }
     }
 
+    /**
+     * Validate before a durable sandbox is reattached. The coordinator repeats
+     * validation under the session claim, but this early pass prevents an
+     * invalid decision from opening and then cleaning a still-pending lease.
+     *
+     * @param  array<int, HumanDecision|array<string, mixed>>  $decisions
+     * @internal
+     */
+    public static function assertValidDecisions(HumanInterrupt $interrupt, array $decisions): void
+    {
+        self::validateSerializedDecisions($interrupt, self::serializeDecisions($decisions));
+    }
+
+    /**
+     * @param  array<int, HumanDecision|array<string, mixed>>  $decisions
+     * @return list<array<string, mixed>>
+     */
+    private static function serializeDecisions(array $decisions): array
+    {
+        return array_map(
+            static fn (HumanDecision|array $decision): array => $decision instanceof HumanDecision
+                ? $decision->toArray()
+                : $decision,
+            $decisions,
+        );
+    }
+
     /** @return array<string, HumanDecision> */
-    private function validateDecisions(HumanInterrupt $interrupt, array $serialized): array
+    private static function validateSerializedDecisions(HumanInterrupt $interrupt, array $serialized): array
     {
         $actions = [];
         foreach ($interrupt->actions as $action) {
@@ -189,7 +213,7 @@ final class HumanInterruptCoordinator
                 throw new \InvalidArgumentException("Decision {$decision->type} is not allowed for action {$decision->actionId}.");
             }
             if ($decision->type === 'respond' && $action->toolName === 'AskUserQuestion') {
-                $error = $this->validateAskUserResponse($action->input, $decision->response);
+                $error = self::validateAskUserResponse($action->input, $decision->response);
                 if ($error !== null) {
                     throw new \InvalidArgumentException($error);
                 }
@@ -217,7 +241,7 @@ final class HumanInterruptCoordinator
         );
     }
 
-    private function validateAskUserResponse(array $input, mixed $response): ?string
+    private static function validateAskUserResponse(array $input, mixed $response): ?string
     {
         if (! is_array($response)) {
             return 'AskUserQuestion response must be an array with status and answers.';

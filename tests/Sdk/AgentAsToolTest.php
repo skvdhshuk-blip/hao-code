@@ -78,9 +78,9 @@ class AgentAsToolTest extends TestCase
         $session = $this->createMock(\HaoCode\Services\Session\SessionManager::class);
         $session->method('getSessionId')->willReturn('child-sess');
         $loop->method('getSessionManager')->willReturn($session);
-        $loop->method('getTotalInputTokens')->willReturn(1);
-        $loop->method('getTotalOutputTokens')->willReturn(1);
-        $loop->method('getEstimatedCost')->willReturn(0.0);
+        $loop->method('getLocalInputTokens')->willReturn(1);
+        $loop->method('getLocalOutputTokens')->willReturn(1);
+        $loop->method('getLocalEstimatedCost')->willReturn(0.0);
         $loop->method('setWorkingDirectory');
         $loop->method('run')->willReturn('ok');
 
@@ -153,9 +153,9 @@ class AgentAsToolTest extends TestCase
         $session = $this->createMock(\HaoCode\Services\Session\SessionManager::class);
         $session->method('getSessionId')->willReturn('child-sess');
         $loop->method('getSessionManager')->willReturn($session);
-        $loop->method('getTotalInputTokens')->willReturn(1);
-        $loop->method('getTotalOutputTokens')->willReturn(1);
-        $loop->method('getEstimatedCost')->willReturn(0.0);
+        $loop->method('getLocalInputTokens')->willReturn(1);
+        $loop->method('getLocalOutputTokens')->willReturn(1);
+        $loop->method('getLocalEstimatedCost')->willReturn(0.0);
         $loop->expects($this->once())
             ->method('setWorkingDirectory')
             ->with($parentCwd);

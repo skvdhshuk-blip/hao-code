@@ -205,9 +205,9 @@ DESC;
             );
 
             return ToolResult::success($result, [
-                'inputTokens' => $subLoop->getTotalInputTokens(),
-                'outputTokens' => $subLoop->getTotalOutputTokens(),
-                'cost' => $subLoop->getEstimatedCost(),
+                'inputTokens' => $subLoop->getLocalInputTokens(),
+                'outputTokens' => $subLoop->getLocalOutputTokens(),
+                'cost' => $subLoop->getLocalEstimatedCost(),
             ]);
         } catch (\HaoCode\Sdk\HumanInterruptException $e) {
             throw $e;

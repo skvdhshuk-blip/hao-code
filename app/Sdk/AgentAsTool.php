@@ -102,9 +102,9 @@ final class AgentAsTool extends SdkTool
             $text = $loop->run(userInput: $task);
 
             return ToolResult::success($text, [
-                'inputTokens' => $loop->getTotalInputTokens(),
-                'outputTokens' => $loop->getTotalOutputTokens(),
-                'cost' => $loop->getEstimatedCost(),
+                'inputTokens' => $loop->getLocalInputTokens(),
+                'outputTokens' => $loop->getLocalOutputTokens(),
+                'cost' => $loop->getLocalEstimatedCost(),
                 'sessionId' => $this->agent->ephemeral ? null : $loop->getSessionManager()->getSessionId(),
             ]);
         } catch (HumanInterruptException $e) {

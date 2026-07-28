@@ -40,7 +40,7 @@
     "scripts": {
         "test": "phpunit",
         "test:live": "phpunit --group live",
-        "lint": "find app tests -name '*.php' -print0 | xargs -0 -n1 php -l"
+        "lint": "find app tests examples -name '*.php' -print0 | xargs -0 -n1 php -l"
     },
     "suggest": {
         "ext-sqlite3": "For daemon mode (cron job persistence via SQLite)",

@@ -65,6 +65,27 @@ final class McpStreamableHttpTransportTest extends TestCase
         $this->assertSame('file:///tmp', $requests[1]['payload']['result']['roots'][0]['uri']);
     }
 
+    public function test_request_preserves_fractional_remaining_timeout(): void
+    {
+        $capturedTimeout = null;
+        $http = new MockHttpClient(function (string $method, string $url, array $options) use (&$capturedTimeout): MockResponse {
+            $capturedTimeout = $options['timeout'] ?? null;
+            $payload = $this->decodeRequestBody($options);
+
+            return $this->jsonResponse([
+                'jsonrpc' => '2.0',
+                'id' => $payload['id'],
+                'result' => ['ok' => true],
+            ]);
+        });
+        $transport = $this->makeTransport($http);
+
+        $this->assertSame(['ok' => true], $transport->request('tools/list', [], 0.25));
+        $this->assertIsFloat($capturedTimeout);
+        $this->assertLessThanOrEqual(0.25, $capturedTimeout);
+        $this->assertGreaterThanOrEqual(0.001, $capturedTimeout);
+    }
+
     public function test_sse_request_resumes_with_last_event_id(): void
     {
         $requests = [];
@@ -209,7 +230,7 @@ final class McpStreamableHttpTransportTest extends TestCase
             $messages[] = $params['value'];
         });
         $client = new McpClient($transport, 'fixture');
-        $client->connect();
+        $client->connect(1);
 
         $client->poll(0.01);
         $client->poll(0.01);
@@ -222,8 +243,16 @@ final class McpStreamableHttpTransportTest extends TestCase
             'last-event-id: event-1',
             strtolower(implode("\n", $getRequests[1]['options']['headers'])),
         );
-        $this->assertSame(30.0, $getRequests[0]['options']['timeout']);
+        $this->assertGreaterThan(0.0, $getRequests[0]['options']['timeout']);
+        $this->assertLessThanOrEqual(1.0, $getRequests[0]['options']['timeout']);
         $this->assertSame(86400.0, $getRequests[0]['options']['max_duration']);
+        $initializedRequests = array_values(array_filter(
+            $requests,
+            fn (array $request): bool => ($request['payload']['method'] ?? null) === 'notifications/initialized',
+        ));
+        $this->assertCount(1, $initializedRequests);
+        $this->assertGreaterThan(0.0, $initializedRequests[0]['options']['timeout']);
+        $this->assertLessThanOrEqual(1.0, $initializedRequests[0]['options']['timeout']);
         $reverseResponses = array_values(array_filter(
             $requests,
             fn (array $request): bool => $request['method'] === 'POST'

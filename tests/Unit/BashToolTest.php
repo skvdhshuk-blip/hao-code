@@ -2,6 +2,8 @@
 
 namespace Tests\Unit;
 
+use HaoCode\Sdk\AgentRunContextFactory;
+use HaoCode\Sdk\HaoCodeConfig;
 use HaoCode\Tools\Bash\BashTool;
 use HaoCode\Tools\ToolUseContext;
 use PHPUnit\Framework\TestCase;
@@ -565,6 +567,67 @@ class BashToolTest extends TestCase
             'NODE_OPTIONS'            => ['NODE_OPTIONS'],
             'PERL5OPT'                => ['PERL5OPT'],
         ];
+    }
+
+    public function test_custom_policy_env_deny_is_stripped_from_foreground_and_background_commands(): void
+    {
+        $project = sys_get_temp_dir().'/haocode-bash-policy-'.bin2hex(random_bytes(4));
+        mkdir($project.'/.haocode', 0777, true);
+        $policy = $project.'/policy.yml';
+        file_put_contents($policy, <<<'YAML'
+rules:
+  - name: bash-env
+    tool: Bash
+    cmd: env
+    allow_auto: true
+    env_deny:
+      - LD_PRELOAD
+      - DYLD_INSERT_LIBRARIES
+      - DYLD_LIBRARY_PATH
+      - PYTHONPATH
+      - NODE_OPTIONS
+      - PERL5OPT
+      - HAOCODE_CUSTOM_DENY
+YAML);
+        file_put_contents($project.'/.haocode/settings.json', json_encode([
+            'permissions' => ['policy_files' => [$policy]],
+        ], JSON_THROW_ON_ERROR));
+        $context = new ToolUseContext(
+            workingDirectory: $project,
+            sessionId: 'policy-env-'.bin2hex(random_bytes(4)),
+            runContext: AgentRunContextFactory::make(new HaoCodeConfig(cwd: $project)),
+        );
+        putenv('HAOCODE_CUSTOM_DENY=must-not-leak');
+
+        try {
+            $foreground = $this->tool->call(['command' => 'env'], $context);
+            $this->assertFalse($foreground->isError, $foreground->output);
+            $this->assertStringNotContainsString('HAOCODE_CUSTOM_DENY=must-not-leak', $foreground->output);
+
+            $started = $this->tool->call([
+                'command' => 'env',
+                'run_in_background' => true,
+                'timeout' => 5000,
+            ], $context);
+            $taskId = $started->metadata['taskId'] ?? null;
+            $this->assertIsString($taskId);
+            $completed = null;
+            $deadline = microtime(true) + 5.0;
+            do {
+                usleep(50_000);
+                $completed = BashTool::checkTask($taskId);
+            } while (($completed?->metadata['running'] ?? false) && microtime(true) < $deadline);
+
+            $this->assertNotNull($completed);
+            $this->assertFalse($completed->isError, $completed->output);
+            $this->assertStringNotContainsString('HAOCODE_CUSTOM_DENY=must-not-leak', $completed->output);
+        } finally {
+            putenv('HAOCODE_CUSTOM_DENY');
+            @unlink($project.'/.haocode/settings.json');
+            @unlink($policy);
+            @rmdir($project.'/.haocode');
+            @rmdir($project);
+        }
     }
 
     public function test_dangerously_disable_sandbox_is_rejected_as_unsupported(): void

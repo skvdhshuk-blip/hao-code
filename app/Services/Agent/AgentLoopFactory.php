@@ -267,7 +267,10 @@ class AgentLoopFactory
             );
         }
 
-        $costTracker = new CostTracker(budgetLedger: $runContext?->budgetLedger);
+        $costTracker = new CostTracker(
+            budgetLedger: $runContext?->budgetLedger,
+            usageAccumulator: $runContext?->usageAccumulator,
+        );
         $costTracker->setProviderType($settings->getProviderType());
         $costTracker->setModel($settings->getModel());
 

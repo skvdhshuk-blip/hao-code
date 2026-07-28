@@ -3,10 +3,30 @@
 namespace Tests\Unit;
 
 use HaoCode\Services\Cost\CostTracker;
+use HaoCode\Services\Cost\UsageAccumulator;
 use PHPUnit\Framework\TestCase;
 
 class CostTrackerTest extends TestCase
 {
+    public function test_shared_usage_accumulator_exposes_tree_total_and_local_delta(): void
+    {
+        $usage = new UsageAccumulator;
+        $root = new CostTracker(stopThreshold: 0.0006, usageAccumulator: $usage);
+        $child = new CostTracker(stopThreshold: 0.0006, usageAccumulator: $usage);
+
+        $root->addUsage(100, 10);
+        $child->addUsage(50, 5);
+
+        $rootLocal = (100 * 3 + 10 * 15) / 1_000_000;
+        $childLocal = (50 * 3 + 5 * 15) / 1_000_000;
+        $this->assertEqualsWithDelta($rootLocal, $root->getLocalTotalCost(), 0.0000001);
+        $this->assertEqualsWithDelta($childLocal, $child->getLocalTotalCost(), 0.0000001);
+        $this->assertEqualsWithDelta($rootLocal + $childLocal, $root->getTotalCost(), 0.0000001);
+        $this->assertEqualsWithDelta($rootLocal + $childLocal, $child->getTotalCost(), 0.0000001);
+        $this->assertTrue($root->shouldStop());
+        $this->assertTrue($child->shouldStop());
+    }
+
     public function test_it_calculates_cost_from_tokens(): void
     {
         $tracker = new CostTracker(warnThreshold: 10.0, stopThreshold: 100.0);

@@ -146,7 +146,7 @@ final class McpTransport
      *
      * @throws McpConnectionException
      */
-    public function connect(int $timeoutSeconds = 30): void
+    public function connect(float $timeoutSeconds = 30): void
     {
         match ($this->transport) {
             'stdio' => $this->connectStdio(),
@@ -162,7 +162,7 @@ final class McpTransport
      *
      * @throws McpConnectionException on transport or protocol errors
      */
-    public function request(string $method, array $params = [], int $timeoutSeconds = 60): mixed
+    public function request(string $method, array $params = [], float $timeoutSeconds = 60): mixed
     {
         if ($this->httpSessionExpired) {
             throw new McpSessionExpiredException;
@@ -187,7 +187,7 @@ final class McpTransport
     /**
      * Send a JSON-RPC notification (no response expected).
      */
-    public function notify(string $method, array $params = []): void
+    public function notify(string $method, array $params = [], float $timeoutSeconds = 5): void
     {
         $message = [
             'jsonrpc' => '2.0',
@@ -197,7 +197,7 @@ final class McpTransport
 
         match ($this->transport) {
             'stdio' => $this->writeStdio($message),
-            'http', 'sse' => $this->sendHttpNotification($message),
+            'http', 'sse' => $this->sendHttpNotification($message, $timeoutSeconds),
             default => null,
         };
     }
@@ -279,13 +279,13 @@ final class McpTransport
     /**
      * Start the optional server-initiated GET event stream.
      */
-    public function startServerEventStream(): void
+    public function startServerEventStream(float $timeoutSeconds = self::SERVER_STREAM_TIMEOUT_SECONDS): void
     {
         if (($this->transport !== 'http' && $this->transport !== 'sse') || ! $this->serverEventStreamSupported) {
             return;
         }
 
-        $this->openServerEventStream();
+        $this->openServerEventStream($timeoutSeconds);
     }
 
     /**
@@ -374,7 +374,7 @@ final class McpTransport
         @fflush($this->stdin);
     }
 
-    private function sendStdio(array $message, int $timeoutSeconds): mixed
+    private function sendStdio(array $message, float $timeoutSeconds): mixed
     {
         $this->writeStdio($message);
 
@@ -521,7 +521,7 @@ final class McpTransport
     // ─── HTTP transport (Streamable HTTP / legacy SSE response) ─────────
 
     /** @param array<string, mixed> $message */
-    private function sendHttp(array $message, int $timeoutSeconds): mixed
+    private function sendHttp(array $message, float $timeoutSeconds): mixed
     {
         $this->assertHttpReady();
         $deadline = microtime(true) + $timeoutSeconds;
@@ -547,17 +547,17 @@ final class McpTransport
     }
 
     /** @param array<string, mixed> $message */
-    private function sendHttpNotification(array $message): void
+    private function sendHttpNotification(array $message, float $timeoutSeconds): void
     {
-        $this->sendHttpOneWay($message);
+        $this->sendHttpOneWay($message, $timeoutSeconds);
     }
 
     /** @param array<string, mixed> $message */
-    private function sendHttpOneWay(array $message): void
+    private function sendHttpOneWay(array $message, float $timeoutSeconds = 5): void
     {
         $this->assertHttpReady();
-        $response = $this->createHttpRequest('POST', $message, 5);
-        $status = $this->prepareHttpResponse($response, true, $message, 5);
+        $response = $this->createHttpRequest('POST', $message, $timeoutSeconds);
+        $status = $this->prepareHttpResponse($response, true, $message, $timeoutSeconds);
 
         if ($status === 202 || $status === 204) {
             return;
@@ -575,14 +575,14 @@ final class McpTransport
     private function createHttpRequest(
         string $method,
         ?array $message,
-        int $timeoutSeconds,
+        float $timeoutSeconds,
         ?string $lastEventId = null,
-        ?int $maxDurationSeconds = null,
+        ?float $maxDurationSeconds = null,
     ): ResponseInterface {
         $options = [
             'headers' => $this->buildHttpHeaders($message !== null),
-            'timeout' => max(1, $timeoutSeconds),
-            'max_duration' => max(1, $maxDurationSeconds ?? $timeoutSeconds),
+            'timeout' => max(0.001, $timeoutSeconds),
+            'max_duration' => max(0.001, $maxDurationSeconds ?? $timeoutSeconds),
             'buffer' => false,
         ];
         if ($message !== null) {
@@ -608,10 +608,10 @@ final class McpTransport
         ResponseInterface &$response,
         bool $allowOAuthRetry,
         ?array $message,
-        int $timeoutSeconds,
+        float $timeoutSeconds,
         string $method = 'POST',
         ?string $lastEventId = null,
-        ?int $maxDurationSeconds = null,
+        ?float $maxDurationSeconds = null,
     ): int {
         try {
             $status = $response->getStatusCode();
@@ -861,7 +861,7 @@ final class McpTransport
         return ['matched' => true, 'result' => $message['result'] ?? null];
     }
 
-    private function openServerEventStream(): void
+    private function openServerEventStream(float $timeoutSeconds = self::SERVER_STREAM_TIMEOUT_SECONDS): void
     {
         if ($this->url === null || $this->serverEventStream !== null || ! $this->serverEventStreamSupported) {
             return;
@@ -871,7 +871,7 @@ final class McpTransport
             $response = $this->createHttpRequest(
                 'GET',
                 null,
-                self::SERVER_STREAM_TIMEOUT_SECONDS,
+                $timeoutSeconds,
                 $this->serverLastEventId,
                 self::SERVER_STREAM_MAX_DURATION_SECONDS,
             );
@@ -879,7 +879,7 @@ final class McpTransport
                 $response,
                 true,
                 null,
-                self::SERVER_STREAM_TIMEOUT_SECONDS,
+                $timeoutSeconds,
                 'GET',
                 $this->serverLastEventId,
                 self::SERVER_STREAM_MAX_DURATION_SECONDS,

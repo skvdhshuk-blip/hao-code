@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace Tests\Feature;
 
 use HaoCode\Sdk\AbortController;
+use HaoCode\Sdk\Agent;
 use HaoCode\Sdk\Conversation;
 use HaoCode\Sdk\Credential;
 use HaoCode\Sdk\CredentialPool;
@@ -14,6 +15,7 @@ use HaoCode\Sdk\HumanDecision;
 use HaoCode\Sdk\HumanInterruptException;
 use HaoCode\Sdk\Message;
 use HaoCode\Sdk\QueryResult;
+use HaoCode\Sdk\Sandbox\SandboxConfig;
 use HaoCode\Sdk\SdkSkill;
 use HaoCode\Sdk\SdkTool;
 use HaoCode\Sdk\StructuredResult;
@@ -524,6 +526,11 @@ class SdkE2ETest extends TestCase
             {
                 return "Weather in {$input['city']}: Sunny, 25°C";
             }
+
+            public function isReadOnly(array $input): bool
+            {
+                return true;
+            }
         };
 
         $this->bootWithMock([
@@ -996,6 +1003,11 @@ class SdkE2ETest extends TestCase
             {
                 throw new \RuntimeException('Database connection refused');
             }
+
+            public function isReadOnly(array $input): bool
+            {
+                return true;
+            }
         };
 
         $this->bootWithMock([
@@ -1265,6 +1277,11 @@ class SdkE2ETest extends TestCase
             {
                 return 'alpha-result';
             }
+
+            public function isReadOnly(array $input): bool
+            {
+                return true;
+            }
         };
 
         $toolB = new class extends SdkTool
@@ -1287,6 +1304,11 @@ class SdkE2ETest extends TestCase
             public function handle(array $input): string
             {
                 return 'beta-result';
+            }
+
+            public function isReadOnly(array $input): bool
+            {
+                return true;
             }
         };
 
@@ -1469,6 +1491,11 @@ class SdkE2ETest extends TestCase
             public function handle(array $input): string
             {
                 return 'DB: 3 tables, 150 rows, healthy';
+            }
+
+            public function isReadOnly(array $input): bool
+            {
+                return true;
             }
         };
 
@@ -1797,6 +1824,26 @@ JSON),
         ));
 
         $this->assertSame('ok', $result->configured_field);
+    }
+
+    public function test_structured_root_array_prompt_matches_the_schema(): void
+    {
+        $this->bootWithMock([
+            function (array $payload): MockResponse {
+                $prompt = MockAnthropicSse::lastUserText($payload) ?? '';
+                $this->assertStringContainsString('ONLY a valid JSON array', $prompt);
+                $this->assertStringNotContainsString('ONLY a valid JSON object', $prompt);
+
+                return MockAnthropicSse::textResponse('["alpha","beta"]');
+            },
+        ]);
+
+        $result = HaoCode::structured('Return two labels.', [
+            'type' => 'array',
+            'items' => ['type' => 'string'],
+        ]);
+
+        $this->assertSame(['alpha', 'beta'], $result->toArray());
     }
 
     public function test_stream_and_conversation_forward_thinking_and_turn_events(): void
@@ -2231,6 +2278,7 @@ JSON),
             public function description(): string { return 'Return a stable lookup value.'; }
             public function parameters(): array { return []; }
             public function handle(array $input): string { $this->executions++; return 'lookup-value'; }
+            public function isReadOnly(array $input): bool { return true; }
         };
         $this->bootWithMock([
             MockAnthropicSse::multiToolUseResponse([
@@ -2288,7 +2336,11 @@ JSON),
             },
         ], $requests);
         chdir($this->projectDir);
-        $config = new HaoCodeConfig(ephemeral: false, enableAskUser: true);
+        $config = new HaoCodeConfig(
+            ephemeral: false,
+            enableAskUser: true,
+            sandbox: SandboxConfig::local(cleanup: 'always'),
+        );
         try {
             HaoCode::query('Ask me first', $config);
             $this->fail('Expected AskUser interrupt.');
@@ -2296,6 +2348,14 @@ JSON),
             $interrupt = $e->interrupt;
         }
         $this->assertSame(['respond', 'reject'], $interrupt->actions[0]->allowedDecisions);
+        $state = \HaoCode\Support\Runtime\SdkRuntime::app(
+            \HaoCode\Services\Session\SessionManager::class,
+        )->getInterruptState($interrupt->sessionId, $interrupt->id);
+        $sandboxRoot = $state['checkpoint']['run_snapshot']['sandbox_lease']['identity']['root']
+            ?? $state['checkpoint']['run_snapshot']['sandbox_lease']['root']
+            ?? null;
+        $this->assertIsString($sandboxRoot);
+        $this->assertDirectoryExists($sandboxRoot);
 
         try {
             HaoCode::resumeInterrupt($interrupt->sessionId, $interrupt->id, [
@@ -2305,11 +2365,81 @@ JSON),
         } catch (\InvalidArgumentException $e) {
             $this->assertStringContainsString('allowed options', $e->getMessage());
         }
+        $this->assertDirectoryExists(
+            $sandboxRoot,
+            'Invalid decisions must not open and clean a still-pending sandbox lease.',
+        );
 
         $result = HaoCode::resumeInterrupt($interrupt->sessionId, $interrupt->id, [
             HumanDecision::respond('ask-1', ['status' => 'answered', 'answers' => ['staging']]),
         ], $config);
         $this->assertSame('Environment selected: staging.', $result->text);
+        $this->assertDirectoryDoesNotExist($sandboxRoot);
+    }
+
+    public function test_durable_hitl_resume_reattaches_the_same_sandbox_filesystem(): void
+    {
+        $this->bootWithMock([
+            MockAnthropicSse::toolUseResponse('sandbox-write', 'Write', [
+                'file_path' => 'before-interrupt.txt',
+                'content' => 'durable sandbox state',
+            ]),
+            MockAnthropicSse::toolUseResponse('sandbox-ask', 'AskUserQuestion', [
+                'questions' => [[
+                    'question' => 'Continue?',
+                    'type' => 'multiple_choice',
+                    'options' => ['yes', 'no'],
+                    'required' => true,
+                ]],
+            ]),
+            MockAnthropicSse::toolUseResponse('sandbox-read', 'Read', [
+                'file_path' => 'before-interrupt.txt',
+            ]),
+            function (array $payload): MockResponse {
+                $this->assertStringContainsString(
+                    'durable sandbox state',
+                    (string) MockAnthropicSse::lastToolResultText($payload),
+                );
+
+                return MockAnthropicSse::textResponse('Sandbox state survived resume.');
+            },
+        ]);
+        chdir($this->projectDir);
+        $config = new HaoCodeConfig(
+            allowedTools: ['Write', 'Read', 'AskUserQuestion'],
+            permissionMode: 'bypass_permissions',
+            ephemeral: false,
+            enableAskUser: true,
+            sandbox: SandboxConfig::local(cleanup: 'always'),
+        );
+
+        try {
+            HaoCode::query('Write, ask, then read the same file.', $config);
+            $this->fail('Expected AskUser interrupt.');
+        } catch (HumanInterruptException $e) {
+            $interrupt = $e->interrupt;
+        }
+        $state = \HaoCode\Support\Runtime\SdkRuntime::app(
+            \HaoCode\Services\Session\SessionManager::class,
+        )->getInterruptState($interrupt->sessionId, $interrupt->id);
+        $sandboxRoot = $state['checkpoint']['run_snapshot']['sandbox_lease']['identity']['root']
+            ?? $state['checkpoint']['run_snapshot']['sandbox_lease']['root']
+            ?? null;
+        $this->assertIsString($sandboxRoot);
+        $this->assertSame(
+            'durable sandbox state',
+            file_get_contents($sandboxRoot.'/workspace/before-interrupt.txt'),
+        );
+
+        $result = HaoCode::resumeInterrupt($interrupt->sessionId, $interrupt->id, [
+            HumanDecision::respond('sandbox-ask', [
+                'status' => 'answered',
+                'answers' => ['yes'],
+            ]),
+        ], $config);
+
+        $this->assertSame('Sandbox state survived resume.', $result->text);
+        $this->assertDirectoryDoesNotExist($sandboxRoot);
     }
 
     public function test_edit_decision_revalidates_and_executes_only_the_edited_input(): void
@@ -2452,6 +2582,51 @@ JSON),
         $this->assertSame('fixed', $result->status);
     }
 
+    public function test_stream_structured_resume_validates_schema_and_retries(): void
+    {
+        $this->bootWithMock([
+            MockAnthropicSse::toolUseResponse('stream-structured-write', 'Write', [
+                'file_path' => 'stream-structured.txt',
+                'content' => 'x',
+            ]),
+            MockAnthropicSse::textResponse('{"wrong":true}'),
+            MockAnthropicSse::textResponse('{"status":"stream-fixed"}'),
+        ]);
+        chdir($this->projectDir);
+        $schema = [
+            'type' => 'object',
+            'properties' => ['status' => ['type' => 'string']],
+            'required' => ['status'],
+        ];
+        $config = new HaoCodeConfig(
+            allowedTools: ['Write'],
+            ephemeral: false,
+            interruptOn: ['Write' => true],
+            hitlMode: 'ask',
+            structuredMaxRetries: 1,
+        );
+        try {
+            HaoCode::structured('Write then stream a structured status', $schema, $config);
+            $this->fail('Expected interrupt.');
+        } catch (HumanInterruptException $e) {
+            $interrupt = $e->interrupt;
+        }
+
+        $messages = iterator_to_array(HaoCode::streamResumeInterrupt(
+            $interrupt->sessionId,
+            $interrupt->id,
+            [HumanDecision::approve('stream-structured-write')],
+            $config,
+        ));
+        $results = array_values(array_filter(
+            $messages,
+            static fn (Message $message): bool => $message->isResult(),
+        ));
+
+        $this->assertCount(1, $results);
+        $this->assertSame('{"status":"stream-fixed"}', $results[0]->text);
+    }
+
     public function test_foreground_sub_agent_interrupt_cascades_back_to_parent_query(): void
     {
         $this->bootWithMock([
@@ -2523,6 +2698,42 @@ JSON),
             + (1 + strlen($childText) + strlen($parentText)) * 15
         ) / 1_000_000;
         $this->assertSame($parentText, $result->text);
+        $this->assertEqualsWithDelta($expectedCost, $result->cost, 0.000001);
+    }
+
+    public function test_agent_as_tool_cost_is_included_without_a_budget(): void
+    {
+        $model = 'claude-sonnet-4-6';
+        $childText = 'Child completed the inspection.';
+        $parentText = 'Parent received the child result.';
+        $child = new Agent(
+            name: 'inspector',
+            allowedTools: [],
+        );
+        $this->bootWithMock([
+            MockAnthropicSse::toolUseResponse(
+                'agent-as-tool-cost',
+                'Inspector',
+                ['task' => 'Inspect without tools.'],
+                model: $model,
+            ),
+            MockAnthropicSse::textResponse($childText, model: $model),
+            MockAnthropicSse::textResponse($parentText, model: $model),
+        ], model: $model);
+        chdir($this->projectDir);
+
+        $result = HaoCode::query('Delegate this inspection', new HaoCodeConfig(
+            allowedTools: ['Inspector'],
+            permissionMode: 'bypass_permissions',
+            tools: [$child->asTool('Inspector', 'Inspect a task.')],
+        ));
+
+        $expectedCost = (
+            (64 + 32 + 32) * 3
+            + (1 + strlen($childText) + strlen($parentText)) * 15
+        ) / 1_000_000;
+        $this->assertSame(128, $result->usage['input_tokens']);
+        $this->assertSame(1 + strlen($childText) + strlen($parentText), $result->usage['output_tokens']);
         $this->assertEqualsWithDelta($expectedCost, $result->cost, 0.000001);
     }
 
@@ -2946,24 +3157,27 @@ JSON),
         // Ephemeral + mutating tool: tool once, then invalid JSON, then correction
         // only. The third user turn must be a correction prompt, not a fresh task
         // that would invite re-running Write.
+        $model = 'claude-sonnet-4-6';
+        $invalidJson = '{"status":';
+        $validJson = '{"status":"ok"}';
         $requestCount = 0;
         $toolUseResponses = 0;
         $this->bootWithMock([
-            function () use (&$requestCount, &$toolUseResponses): MockResponse {
+            function () use (&$requestCount, &$toolUseResponses, $model): MockResponse {
                 $requestCount++;
                 $toolUseResponses++;
 
                 return MockAnthropicSse::toolUseResponse('side-effect-1', 'Write', [
                     'file_path' => 'once.txt',
                     'content' => "written-once\n",
-                ]);
+                ], model: $model);
             },
-            function () use (&$requestCount): MockResponse {
+            function () use (&$requestCount, $invalidJson, $model): MockResponse {
                 $requestCount++;
 
-                return MockAnthropicSse::textResponse('{"status":');
+                return MockAnthropicSse::textResponse($invalidJson, model: $model);
             },
-            function (array $payload) use (&$requestCount): MockResponse {
+            function (array $payload) use (&$requestCount, $validJson, $model): MockResponse {
                 $requestCount++;
                 $lastUser = (string) (MockAnthropicSse::lastUserText($payload) ?? '');
                 $this->assertStringContainsString(
@@ -2973,9 +3187,9 @@ JSON),
                 );
                 $this->assertStringNotContainsString('Write once.txt then report status', $lastUser);
 
-                return MockAnthropicSse::textResponse('{"status":"ok"}');
+                return MockAnthropicSse::textResponse($validJson, model: $model);
             },
-        ]);
+        ], model: $model);
 
         chdir($this->projectDir);
 
@@ -2995,6 +3209,12 @@ JSON),
         $this->assertFileExists($this->projectDir.'/once.txt');
         $this->assertSame("written-once\n", file_get_contents($this->projectDir.'/once.txt'));
         $this->assertSame(3, $requestCount);
+        $this->assertSame(128, $result->queryResult?->usage['input_tokens']);
+        $expectedCost = (
+            128 * 3
+            + (1 + strlen($invalidJson) + strlen($validJson)) * 15
+        ) / 1_000_000;
+        $this->assertEqualsWithDelta($expectedCost, $result->queryResult?->cost, 0.000001);
     }
 
     public function test_structured_retries_on_invalid_json_syntax(): void

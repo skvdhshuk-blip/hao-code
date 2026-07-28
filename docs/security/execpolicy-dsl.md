@@ -1,6 +1,6 @@
 # ExecPolicy DSL 使用指南
 
-ExecPolicy 是 HaoCode SDK 的命令执行授权层。每次 `Bash` 工具调用都经过策略匹配；命令链操作符、env_deny 等硬约束命中时返回硬拒绝（fail-closed）。未匹配任何规则的工具调用返回 `NotApplicable`（不是 `Deny`），让外层 PermissionChecker 继续走显式 deny/危险模式/只读自动放行/默认 ask 流程——这样配置了 Bash 规则的 policy 不会误伤 Read/Grep/Glob/MCP 等非 Bash 工具。注意 cron 守护进程路径（JobStore）把 `NotApplicable` 当作 `Deny` 处理，保持无人值守的 fail-closed 语义。
+ExecPolicy 是 HaoCode SDK 的命令执行授权层。每次 `Bash` 工具调用都经过策略匹配。命令链等硬约束命中时，SDK 会拒绝执行（fail-closed）。`env_deny` 会从实际子进程环境中删除匹配变量，普通前台 Bash、后台 Bash 和沙箱 Bash 使用同一规则。未匹配任何规则的工具调用返回 `NotApplicable`（不是 `Deny`），外层 PermissionChecker 再检查显式 deny、危险模式、只读自动放行和默认 ask。这样，Bash policy 不会误伤 Read、Grep、Glob、MCP 等工具。cron 守护进程路径（JobStore）会把 `NotApplicable` 当作 `Deny`，确保无人值守任务默认拒绝。
 
 ## 1. DSL 字段说明
 
@@ -11,7 +11,7 @@ ExecPolicy 是 HaoCode SDK 的命令执行授权层。每次 `Bash` 工具调用
 | `cmd` | string | 必填 | 匹配命令主体；`*` 通配所有命令 |
 | `args_match` | string[] | `[]` | 参数匹配列表（AND 语义）；精确 / `*` 通配 / `/regex/` 三种模式 |
 | `env_allow` | string[] | `[]` | 允许透传的环境变量（声明用，未来白名单模式） |
-| `env_deny` | string[] | `[]` | 拒绝的环境变量；非空时**必须包含全部 6 项硬黑名单**（见第 5 节） |
+| `env_deny` | string[] | `[]` | 不得传给子进程的环境变量；非空时**必须包含全部 6 项硬黑名单**（见第 5 节） |
 | `risk` | string | `normal` | 风险等级：`normal` 或 `high` |
 | `allow_chain` | bool | `false` | 是否允许 `&&` `\|\|` `;` `$()` `` ` `` 等命令链操作符 |
 | `approval_ttl` | int | `0` | **当前未实现**（保留字段）。原设计意图：`risk=high` 审批缓存秒数，`0` = 每次重新确认。Matcher 当前总是把 high-risk 视为"每次重新确认"，忽略此字段。 |
@@ -130,7 +130,7 @@ project policies/*.yml（项目级，按文件名字典序合并）
 bundled policies/default.yml（内置兜底）
 ```
 
-同优先级内，相同 `tool+cmd+args_match` 签名（args_match 排序后比较，空数组视为同一签名）在 `allow_chain`/`risk`/`allow_auto` 上不一致时启动校验报错。同一 `cmd` 但不同 `args_match` 的规则可以共存——这正是 `git status`(normal/auto) 与 `git push --force`(high/no-auto) 共用 `cmd: git` 的依据。
+同优先级内，相同 `tool+cmd+args_match` 签名（args_match 排序后比较，空数组视为同一签名）在 `allow_chain`/`risk`/`allow_auto` 上不一致时启动校验报错。同一 `cmd` 但不同 `args_match` 的规则可以共存。这正是 `git status`（normal/auto）与 `git push --force`（high/no-auto）共用 `cmd: git` 的依据。
 
 ### 3.1 规则匹配顺序（specificity 优先）
 
@@ -175,6 +175,8 @@ PolicyMatcher 在构造时按 specificity 稳定排序，避免 `cmd: "*"` 兜�
 
 **硬黑名单**（非空 `env_deny` 必须全部包含）：
 `LD_PRELOAD` `DYLD_INSERT_LIBRARIES` `DYLD_LIBRARY_PATH` `PYTHONPATH` `NODE_OPTIONS` `PERL5OPT`
+
+SDK 始终从实际执行环境中删除这 6 项。规则还可追加其他变量。普通前台 Bash、后台 Bash、LocalSandbox 和 NativeSandbox 都会使用匹配规则的完整 `env_deny`。
 
 ## 6. 与 permissions.allow/deny glob 的关系
 

@@ -15,6 +15,7 @@ final class UsageAccumulator
     private int $outputTokens = 0;
     private int $cacheCreationTokens = 0;
     private int $cacheReadTokens = 0;
+    private float $cost = 0.0;
 
     public function add(
         int $inputTokens,
@@ -46,5 +47,29 @@ final class UsageAccumulator
     public function getCacheReadTokens(): int
     {
         return $this->cacheReadTokens;
+    }
+
+    public function addCost(float $cost): void
+    {
+        $this->cost += max(0.0, $cost);
+    }
+
+    public function ensureCostAtLeast(float $cost): void
+    {
+        $this->cost = max($this->cost, max(0.0, $cost));
+    }
+
+    public function getCost(): float
+    {
+        return $this->cost;
+    }
+
+    public function reset(): void
+    {
+        $this->inputTokens = 0;
+        $this->outputTokens = 0;
+        $this->cacheCreationTokens = 0;
+        $this->cacheReadTokens = 0;
+        $this->cost = 0.0;
     }
 }

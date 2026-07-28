@@ -4,6 +4,7 @@ namespace HaoCode\Sdk;
 
 use HaoCode\Services\Agent\AgentLoop;
 use HaoCode\Services\Agent\AgentLoopFactory;
+use HaoCode\Services\Agent\HumanInterruptCoordinator;
 use HaoCode\Services\Api\StreamingClient;
 use HaoCode\Services\Cost\BudgetLedger;
 use HaoCode\Services\Session\SessionManager;
@@ -242,6 +243,7 @@ class HaoCode
         $state = $sessionManager->getInterruptState($sessionId, $interruptId);
         $checkpoint = is_array($state['checkpoint'] ?? null) ? $state['checkpoint'] : [];
         $pendingInterrupt = HumanInterrupt::fromArray($state['interrupt'] ?? []);
+        HumanInterruptCoordinator::assertValidDecisions($pendingInterrupt, $decisions);
         $parentLink = $sessionManager->findInterruptParentLink($sessionId, $interruptId);
         $runSnapshot = is_array($checkpoint['run_snapshot'] ?? null) ? $checkpoint['run_snapshot'] : [];
         if (is_array($checkpoint['allowed_tools'] ?? null)) {
@@ -342,6 +344,7 @@ class HaoCode
         $state = $sessionManager->getInterruptState($sessionId, $interruptId);
         $checkpoint = is_array($state['checkpoint'] ?? null) ? $state['checkpoint'] : [];
         $pendingInterrupt = HumanInterrupt::fromArray($state['interrupt'] ?? []);
+        HumanInterruptCoordinator::assertValidDecisions($pendingInterrupt, $decisions);
         $parentLink = $sessionManager->findInterruptParentLink($sessionId, $interruptId);
         $runSnapshot = is_array($checkpoint['run_snapshot'] ?? null) ? $checkpoint['run_snapshot'] : [];
         if (is_array($checkpoint['allowed_tools'] ?? null)) {
@@ -409,6 +412,13 @@ class HaoCode
                 $schema = is_array($checkpoint['response_schema'] ?? null)
                     ? $checkpoint['response_schema']
                     : ($resumeConfig->responseSchema ?? []);
+                if ($schema === []) {
+                    yield Message::error(
+                        'Structured interrupt resume is missing response_schema in the checkpoint.',
+                    );
+
+                    return;
+                }
                 $seed = new QueryResult(
                     text: (string) ($final->text ?? ''),
                     usage: is_array($final->usage ?? null) ? $final->usage : [],
@@ -419,7 +429,7 @@ class HaoCode
                 try {
                     $structured = self::runStructuredStateMachine(
                         conversation: $conversation,
-                        schema: $schema === [] ? ['type' => 'object'] : $schema,
+                        schema: $schema,
                         maxRetries: max(0, $resumeConfig->structuredMaxRetries),
                         seedResult: $seed,
                     );
@@ -488,7 +498,14 @@ class HaoCode
             $worktreePath = $agent['worktree_path'] ?? null;
         }
         $snapshotCwd = is_string($runSnapshot['cwd'] ?? null) ? $runSnapshot['cwd'] : null;
-        $worktreePath = is_string($worktreePath) && $worktreePath !== '' ? $worktreePath : $snapshotCwd;
+        $snapshotWorktree = is_string($runSnapshot['worktree_path'] ?? null)
+            ? $runSnapshot['worktree_path']
+            : null;
+        $hasSandboxLease = is_array($runSnapshot['sandbox_lease'] ?? null);
+        $worktreePath = is_string($worktreePath) && $worktreePath !== ''
+            ? $worktreePath
+            : ($snapshotWorktree
+                ?? ($hasSandboxLease ? null : $snapshotCwd));
         if (! is_string($worktreePath) || $worktreePath === '' || $worktreePath === $config->cwd) {
             return $config;
         }

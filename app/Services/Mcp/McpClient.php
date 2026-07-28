@@ -103,19 +103,31 @@ final class McpClient
      */
     public function connect(int $timeoutSeconds = 30): void
     {
+        $this->connectUntil(
+            microtime(true) + max(0.001, (float) $timeoutSeconds),
+            $timeoutSeconds,
+        );
+    }
+
+    private function connectUntil(float $deadline, float $timeoutLabel): void
+    {
         $span = $this->startSpan('initialize');
         // One absolute deadline covers transport connect + initialize (not each step).
-        $deadline = microtime(true) + max(0.001, (float) $timeoutSeconds);
         try {
-            $connectRemaining = max(0.001, $deadline - microtime(true));
-            $this->transport->connect(max(1, (int) ceil($connectRemaining)));
+            $connectRemaining = $deadline - microtime(true);
+            if ($connectRemaining <= 0.0) {
+                throw McpConnectionException::transport(
+                    "MCP connect timed out after {$timeoutLabel}s for '{$this->serverName}'."
+                );
+            }
+            $this->transport->connect($connectRemaining);
 
             $this->registerProtocolHandlers();
 
             $initRemaining = $deadline - microtime(true);
             if ($initRemaining <= 0.0) {
                 throw McpConnectionException::transport(
-                    "MCP connect timed out after {$timeoutSeconds}s during initialize for '{$this->serverName}'."
+                    "MCP connect timed out after {$timeoutLabel}s during initialize for '{$this->serverName}'."
                 );
             }
 
@@ -128,7 +140,7 @@ final class McpClient
                     'name' => 'hao-code',
                     'version' => (string) \HaoCode\Support\Runtime\SdkRuntime::environment('HAO_CODE_VERSION', 'dev'),
                 ],
-            ], max(1, (int) ceil($initRemaining)));
+            ], $initRemaining);
 
             if (! is_array($result)) {
                 throw new McpConnectionException("Invalid initialize response from {$this->serverName}");
@@ -150,10 +162,22 @@ final class McpClient
             $this->instructions = $result['instructions'] ?? null;
 
             // Send initialized notification
-            $this->transport->notify('notifications/initialized');
+            $notifyRemaining = $deadline - microtime(true);
+            if ($notifyRemaining <= 0.0) {
+                throw McpConnectionException::transport(
+                    "MCP connect timed out after {$timeoutLabel}s before initialized notification for '{$this->serverName}'."
+                );
+            }
+            $this->transport->notify('notifications/initialized', timeoutSeconds: $notifyRemaining);
 
             $this->initialized = true;
-            $this->transport->startServerEventStream();
+            $streamRemaining = $deadline - microtime(true);
+            if ($streamRemaining <= 0.0) {
+                throw McpConnectionException::transport(
+                    "MCP connect timed out after {$timeoutLabel}s before event stream setup for '{$this->serverName}'."
+                );
+            }
+            $this->transport->startServerEventStream($streamRemaining);
         } catch (\Throwable $e) {
             $this->tracer?->recordException($span, $e);
             $this->resetConnectionState();
@@ -444,14 +468,12 @@ final class McpClient
                     "MCP {$method} timed out after {$timeoutSeconds}s while following nextCursor.",
                 );
             }
-            $pageTimeout = max(1, (int) ceil($remaining));
-
             $params = [];
             if (is_string($cursor) && $cursor !== '') {
                 $params['cursor'] = $cursor;
             }
 
-            $result = $this->requestWithSessionRecovery($method, $params, $pageTimeout);
+            $result = $this->requestWithSessionRecovery($method, $params, $remaining, $deadline);
             if (! is_array($result)) {
                 $hasMore = false;
                 break;
@@ -660,14 +682,26 @@ final class McpClient
     /**
      * @param array<string, mixed> $params
      */
-    private function requestWithSessionRecovery(string $method, array $params, int $timeoutSeconds): mixed
+    private function requestWithSessionRecovery(
+        string $method,
+        array $params,
+        float $timeoutSeconds,
+        ?float $deadline = null,
+    ): mixed
     {
-        $deadline = microtime(true) + $timeoutSeconds;
+        $deadline ??= microtime(true) + max(0.001, $timeoutSeconds);
 
         try {
             $this->transport->poll();
 
-            return $this->transport->request($method, $params, $timeoutSeconds);
+            $remaining = $deadline - microtime(true);
+            if ($remaining <= 0.0) {
+                throw McpConnectionException::transport(
+                    "MCP request timed out before dispatch: {$method}"
+                );
+            }
+
+            return $this->transport->request($method, $params, $remaining);
         } catch (McpSessionExpiredException) {
             $remaining = $deadline - microtime(true);
             if ($remaining <= 0.0) {
@@ -679,7 +713,10 @@ final class McpClient
             $this->initialized = false;
             $this->clearCache();
             $this->transport->resetHttpSession();
-            $this->connect(min(30, max(1, (int) ceil($remaining))));
+            $this->connectUntil(
+                min($deadline, microtime(true) + 30.0),
+                min(30.0, $remaining),
+            );
 
             $remaining = $deadline - microtime(true);
             if ($remaining <= 0.0) {
@@ -688,7 +725,7 @@ final class McpClient
                 );
             }
 
-            return $this->transport->request($method, $params, max(1, (int) ceil($remaining)));
+            return $this->transport->request($method, $params, $remaining);
         }
     }
 

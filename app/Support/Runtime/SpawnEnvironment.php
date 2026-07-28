@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace HaoCode\Support\Runtime;
 
 use HaoCode\Services\Permissions\Policy\PolicyLoader;
+use HaoCode\Services\Permissions\Policy\PolicyMatcher;
+use HaoCode\Services\Settings\SettingsManager;
 
 /**
  * Builds the environment array for every local subprocess (Bash, sandbox exec).
@@ -54,5 +56,79 @@ final class SpawnEnvironment
         }
 
         return $clean;
+    }
+
+    /**
+     * Build the exact environment for a policy-governed command.
+     *
+     * @internal
+     *
+     * @return array<string, string>
+     */
+    public static function forCommand(
+        ?SettingsManager $settings,
+        string $tool,
+        string $command,
+        string $cwd,
+    ): array {
+        return self::build(self::deniedKeysForCommand($settings, $tool, $command, $cwd));
+    }
+
+    /**
+     * @internal
+     *
+     * @return list<string>
+     */
+    public static function deniedKeysForCommand(
+        ?SettingsManager $settings,
+        string $tool,
+        string $command,
+        string $cwd,
+    ): array {
+        $denied = PolicyLoader::REQUIRED_ENV_DENY;
+        if ($settings === null) {
+            return $denied;
+        }
+
+        $rules = [];
+        $loader = new PolicyLoader;
+        foreach ($settings->getPolicyFiles() as $file) {
+            $rules = array_merge($rules, $loader->load($file));
+        }
+        if ($rules === []) {
+            return $denied;
+        }
+
+        $parts = preg_split('/\s+/', trim($command), 2);
+        $binary = $parts[0] ?? $command;
+        $args = $parts[1] ?? '';
+        $custom = (new PolicyMatcher($rules))->envDenyFor($tool, $binary, [
+            'args' => $args,
+            'cwd' => $cwd,
+            'raw_command' => $command,
+        ]);
+
+        return array_values(array_unique(array_merge($denied, $custom)));
+    }
+
+    /**
+     * Prefix a sandbox command with an environment scrub. Remote sandbox
+     * backends do not inherit the PHP host env array, so the command boundary
+     * must enforce the same denylist inside the sandbox shell.
+     *
+     * @internal
+     */
+    public static function scrubCommand(string $command, array $deniedKeys): string
+    {
+        $valid = array_values(array_filter(
+            array_unique($deniedKeys),
+            static fn (mixed $key): bool => is_string($key)
+                && preg_match('/^[A-Za-z_][A-Za-z0-9_]*$/', $key) === 1,
+        ));
+        if ($valid === []) {
+            return $command;
+        }
+
+        return 'unset '.implode(' ', $valid).";\n".$command;
     }
 }

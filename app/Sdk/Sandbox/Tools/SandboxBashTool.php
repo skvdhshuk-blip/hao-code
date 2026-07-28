@@ -2,6 +2,7 @@
 
 namespace HaoCode\Sdk\Sandbox\Tools;
 
+use HaoCode\Support\Runtime\SpawnEnvironment;
 use HaoCode\Tools\ToolInputSchema;
 use HaoCode\Tools\ToolResult;
 use HaoCode\Tools\ToolUseContext;
@@ -44,8 +45,15 @@ final class SandboxBashTool extends SandboxTool
         }
 
         try {
+            $command = (string) $input['command'];
+            $denied = SpawnEnvironment::deniedKeysForCommand(
+                $context->runContext?->settings,
+                $this->name(),
+                $command,
+                $context->workingDirectory,
+            );
             $result = $this->runtime->backend->exec(
-                (string) $input['command'],
+                SpawnEnvironment::scrubCommand($command, $denied),
                 $context->workingDirectory,
                 (int) ($input['timeout'] ?? 120000),
                 $context->shouldAbort,

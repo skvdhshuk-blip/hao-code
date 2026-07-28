@@ -155,6 +155,30 @@ class PolicyMatcher
         );
     }
 
+    /**
+     * Return the environment denylist attached to the first matching rule.
+     *
+     * This shares the same tool/cmd/args matcher as authorization so the
+     * process launcher strips the rule that actually governed the command.
+     *
+     * @return list<string>
+     */
+    public function envDenyFor(string $tool, string $cmd, array $context = []): array
+    {
+        $args = $context['args'] ?? '';
+
+        foreach ($this->rules as $rule) {
+            if ($rule->tool === $tool && $this->ruleMatches($rule, $tool, $cmd, $args)) {
+                return array_values(array_filter(
+                    $rule->envDeny,
+                    static fn (mixed $key): bool => is_string($key) && $key !== '',
+                ));
+            }
+        }
+
+        return [];
+    }
+
     private function ruleMatches(PolicyRule $rule, string $tool, string $cmd, string $args): bool
     {
         if (! $this->matchCmd($rule->cmd, $cmd)) {

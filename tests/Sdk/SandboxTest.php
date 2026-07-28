@@ -2,10 +2,12 @@
 
 namespace Tests\Sdk;
 
+use HaoCode\Sdk\AgentRunContextFactory;
 use HaoCode\Sdk\HaoCodeConfig;
 use HaoCode\Sdk\Sandbox\SandboxConfig;
 use HaoCode\Sdk\Sandbox\SandboxManager;
 use HaoCode\Sdk\Sandbox\Tools\SandboxReadTool;
+use HaoCode\Sdk\Sandbox\Tools\SandboxBashTool;
 use HaoCode\Sdk\Sandbox\Tools\SandboxWriteTool;
 use HaoCode\Tools\ToolUseContext;
 use PHPUnit\Framework\TestCase;
@@ -109,6 +111,48 @@ class SandboxTest extends TestCase
         $exec = $runtime->backend->exec('pwd && ls src', '/workspace', 5000);
         $this->assertSame(0, $exec['exitCode']);
         $this->assertStringContainsString('App.php', $exec['stdout']);
+    }
+
+    public function test_sandbox_bash_strips_custom_policy_env_deny(): void
+    {
+        $project = $this->tmpDir('haocode-sandbox-policy-');
+        mkdir($project.'/.haocode', 0777, true);
+        $policy = $project.'/policy.yml';
+        file_put_contents($policy, <<<'YAML'
+rules:
+  - name: sandbox-env
+    tool: Bash
+    cmd: env
+    allow_auto: true
+    env_deny:
+      - LD_PRELOAD
+      - DYLD_INSERT_LIBRARIES
+      - DYLD_LIBRARY_PATH
+      - PYTHONPATH
+      - NODE_OPTIONS
+      - PERL5OPT
+      - HAOCODE_CUSTOM_DENY
+YAML);
+        file_put_contents($project.'/.haocode/settings.json', json_encode([
+            'permissions' => ['policy_files' => [$policy]],
+        ], JSON_THROW_ON_ERROR));
+        $runtime = SandboxManager::create(SandboxConfig::local(mode: 'full'));
+        $context = new ToolUseContext(
+            '/workspace',
+            'sandbox-policy-env',
+            runContext: AgentRunContextFactory::make(new HaoCodeConfig(cwd: $project)),
+        );
+        putenv('HAOCODE_CUSTOM_DENY=must-not-leak');
+
+        try {
+            $result = (new SandboxBashTool($runtime))->call(['command' => 'env'], $context);
+            $this->assertFalse($result->isError, $result->output);
+            $this->assertStringNotContainsString('HAOCODE_CUSTOM_DENY=must-not-leak', $result->output);
+        } finally {
+            putenv('HAOCODE_CUSTOM_DENY');
+            $runtime->close();
+            $this->removeDir($project);
+        }
     }
 
     public function test_local_sandbox_detach_lease_survives_close_and_reattach(): void

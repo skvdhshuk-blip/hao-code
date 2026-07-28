@@ -115,9 +115,19 @@ DESC;
 
         $timeout = ($input['timeout'] ?? 120000) / 1000;
         $cwd = self::$sessionWorkingDirectories[$context->sessionId] ?? $context->workingDirectory;
+        try {
+            $env = SpawnEnvironment::forCommand(
+                $context->runContext?->settings,
+                $this->name(),
+                $command,
+                $cwd,
+            );
+        } catch (\Throwable $e) {
+            return ToolResult::error('Failed to construct policy-safe command environment: '.$e->getMessage());
+        }
 
         if ($background) {
-            return $this->runInBackground($command, $cwd, $warnings, $timeout);
+            return $this->runInBackground($command, $cwd, $warnings, $timeout, $env);
         }
 
         $stdoutFile = tempnam(sys_get_temp_dir(), 'haocode_bash_stdout_');
@@ -144,8 +154,6 @@ DESC;
 
         $cwdMarker = '__HAOCODE_CWD__' . bin2hex(random_bytes(8)) . '__';
         $wrappedCommand = $this->wrapCommandWithWorkingDirectoryCapture($command, $cwdMarker);
-        $env = SpawnEnvironment::build();
-
         try {
             $opened = ProcessSupervisor::open($wrappedCommand, $cwd, $env, $descriptors);
         } catch (\Throwable) {
@@ -370,7 +378,13 @@ DESC;
     /**
      * Run a command in the background.
      */
-    private function runInBackground(string $command, string $cwd, array $warnings, float $timeoutSeconds = 120.0): ToolResult
+    private function runInBackground(
+        string $command,
+        string $cwd,
+        array $warnings,
+        float $timeoutSeconds,
+        array $env,
+    ): ToolResult
     {
         self::pruneBackgroundTasks();
 
@@ -397,8 +411,6 @@ DESC;
         // Status file is written only when the job exits; start empty so readers
         // can distinguish "still running" from "exit 0".
         @unlink($statusFile);
-
-        $env = SpawnEnvironment::build();
 
         // Explicit if/else (NOT `A && B || C`) so a failing user command does
         // not fall through and re-run under plain bash.

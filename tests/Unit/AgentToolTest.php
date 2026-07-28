@@ -42,9 +42,9 @@ class AgentToolTest extends TestCase
     {
         $loop = $this->createMock(AgentLoop::class);
         $loop->method('run')->willReturn($result);
-        $loop->method('getTotalInputTokens')->willReturn(0);
-        $loop->method('getTotalOutputTokens')->willReturn(0);
-        $loop->method('getEstimatedCost')->willReturn(0.0);
+        $loop->method('getLocalInputTokens')->willReturn(0);
+        $loop->method('getLocalOutputTokens')->willReturn(0);
+        $loop->method('getLocalEstimatedCost')->willReturn(0.0);
         return $loop;
     }
 
@@ -137,9 +137,9 @@ class AgentToolTest extends TestCase
     {
         $loop = $this->createMock(AgentLoop::class);
         $loop->method('run')->willReturn('ok');
-        $loop->method('getTotalInputTokens')->willReturn(100);
-        $loop->method('getTotalOutputTokens')->willReturn(50);
-        $loop->method('getEstimatedCost')->willReturn(0.005);
+        $loop->method('getLocalInputTokens')->willReturn(100);
+        $loop->method('getLocalOutputTokens')->willReturn(50);
+        $loop->method('getLocalEstimatedCost')->willReturn(0.005);
 
         $tool = new AgentTool($this->makeFactory($loop));
         $result = $tool->call(['prompt' => 'Analyze this'], $this->context());
@@ -153,9 +153,9 @@ class AgentToolTest extends TestCase
     public function test_default_agent_type_is_general_purpose(): void
     {
         $loop = $this->createMock(AgentLoop::class);
-        $loop->method('getTotalInputTokens')->willReturn(0);
-        $loop->method('getTotalOutputTokens')->willReturn(0);
-        $loop->method('getEstimatedCost')->willReturn(0.0);
+        $loop->method('getLocalInputTokens')->willReturn(0);
+        $loop->method('getLocalOutputTokens')->willReturn(0);
+        $loop->method('getLocalEstimatedCost')->willReturn(0.0);
 
         $promptPassed = '';
         $loop->method('run')->willReturnCallback(function (string $p) use (&$promptPassed) {
@@ -193,9 +193,9 @@ class AgentToolTest extends TestCase
             ->method('run')
             ->with('Explore this repository')
             ->willReturn('sub-agent result');
-        $subLoop->method('getTotalInputTokens')->willReturn(123);
-        $subLoop->method('getTotalOutputTokens')->willReturn(45);
-        $subLoop->method('getEstimatedCost')->willReturn(0.0123);
+        $subLoop->method('getLocalInputTokens')->willReturn(123);
+        $subLoop->method('getLocalOutputTokens')->willReturn(45);
+        $subLoop->method('getLocalEstimatedCost')->willReturn(0.0123);
 
         $factory = $this->createMock(AgentLoopFactory::class);
         $factory->expects($this->once())

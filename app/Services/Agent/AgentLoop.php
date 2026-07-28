@@ -977,6 +977,12 @@ class AgentLoop
         return $this->runContext?->usageAccumulator?->getInputTokens() ?? $this->totalInputTokens;
     }
 
+    /** @internal */
+    public function getLocalInputTokens(): int
+    {
+        return $this->totalInputTokens;
+    }
+
     public function getLastTurnInputTokens(): int
     {
         return $this->lastTurnInputTokens;
@@ -992,9 +998,21 @@ class AgentLoop
         return $this->runContext?->usageAccumulator?->getOutputTokens() ?? $this->totalOutputTokens;
     }
 
+    /** @internal */
+    public function getLocalOutputTokens(): int
+    {
+        return $this->totalOutputTokens;
+    }
+
     public function getEstimatedCost(): float
     {
         return $this->costTracker->getTotalCost();
+    }
+
+    /** @internal */
+    public function getLocalEstimatedCost(): float
+    {
+        return $this->costTracker->getLocalTotalCost();
     }
 
     public function isCostEstimateAvailable(): bool
@@ -1123,6 +1141,7 @@ class AgentLoop
     {
         $this->aborted = false;
         $this->sessionStarted = false;
+        $this->runContext?->usageAccumulator?->reset();
         $this->totalInputTokens = 0;
         $this->totalOutputTokens = 0;
         $this->totalCacheCreationTokens = 0;

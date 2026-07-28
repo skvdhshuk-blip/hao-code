@@ -21,6 +21,7 @@ class CostTracker
         ?float $warnThreshold = null,
         ?float $stopThreshold = null,
         private readonly ?BudgetLedger $budgetLedger = null,
+        private readonly ?UsageAccumulator $usageAccumulator = null,
     ) {
         $sharedLimit = $budgetLedger?->getLimit();
         $this->warnThreshold = $warnThreshold
@@ -77,7 +78,10 @@ class CostTracker
         ) / 1_000_000;
 
         $this->totalCost += $cost;
-        $globalCost = $this->budgetLedger?->add($cost) ?? $this->totalCost;
+        $this->usageAccumulator?->addCost($cost);
+        $globalCost = $this->budgetLedger?->add($cost)
+            ?? $this->usageAccumulator?->getCost()
+            ?? $this->totalCost;
 
         if (!$this->warnedAtThreshold && $globalCost >= $this->warnThreshold) {
             $this->warnedAtThreshold = true;
@@ -93,7 +97,10 @@ class CostTracker
     public function setTotalCost(float $cost): void
     {
         $this->totalCost = max(0.0, $cost);
-        $globalCost = $this->budgetLedger?->ensureAtLeast($this->totalCost) ?? $this->totalCost;
+        $this->usageAccumulator?->ensureCostAtLeast($this->totalCost);
+        $globalCost = $this->budgetLedger?->ensureAtLeast($this->totalCost)
+            ?? $this->usageAccumulator?->getCost()
+            ?? $this->totalCost;
         $this->warnedAtThreshold = $globalCost >= $this->warnThreshold;
     }
 
@@ -105,7 +112,15 @@ class CostTracker
 
     public function getTotalCost(): float
     {
-        return $this->budgetLedger?->getSpent() ?? $this->totalCost;
+        return $this->budgetLedger?->getSpent()
+            ?? $this->usageAccumulator?->getCost()
+            ?? $this->totalCost;
+    }
+
+    /** @internal */
+    public function getLocalTotalCost(): float
+    {
+        return $this->totalCost;
     }
 
     /**
@@ -114,7 +129,7 @@ class CostTracker
     public function shouldStop(): bool
     {
         return $this->budgetLedger?->shouldStop()
-            ?? $this->totalCost >= $this->stopThreshold;
+            ?? $this->getTotalCost() >= $this->stopThreshold;
     }
 
     /**

@@ -761,7 +761,7 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.18.13`. Notable changes since `v1.10.0`:
+is based on `v1.18.14`. Notable changes since `v1.10.0`:
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/
@@ -815,6 +815,11 @@ is based on `v1.18.13`. Notable changes since `v1.10.0`:
   fail-closed; sandbox reserved tool names; shared usage in HITL snapshots;
   structured correction disables tools; scalar schema rejected early; MCP init
   full reset; Sandbox Bash honors abort during exec; background Bash watchdog.
+- `v1.18.14` — Nested agent cost joins shared run accounting without losing
+  per-child deltas; custom ExecPolicy `env_deny` applies consistently to
+  foreground, background, and sandbox Bash; invalid HITL decisions preserve
+  pending sandbox leases; structured streaming resume and MCP deadlines fail
+  closed; release lint now covers examples.
 
 ## License
 
