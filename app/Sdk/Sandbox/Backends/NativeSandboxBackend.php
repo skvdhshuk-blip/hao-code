@@ -2,6 +2,7 @@
 
 namespace HaoCode\Sdk\Sandbox\Backends;
 
+use HaoCode\Sdk\Sandbox\RevisionAwareSandboxBackendInterface;
 use HaoCode\Sdk\Sandbox\SandboxBackendInterface;
 use HaoCode\Sdk\Sandbox\SandboxConfig;
 
@@ -10,7 +11,7 @@ use HaoCode\Sdk\Sandbox\SandboxConfig;
  *
  * @internal
  */
-final class NativeSandboxBackend implements SandboxBackendInterface
+final class NativeSandboxBackend implements SandboxBackendInterface, RevisionAwareSandboxBackendInterface
 {
     private const MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
 
@@ -37,6 +38,14 @@ final class NativeSandboxBackend implements SandboxBackendInterface
     public function writeFile(string $path, string $content): void
     {
         $this->filesystem->writeFile($path, $content);
+    }
+
+    public function writeFileIfUnchanged(
+        string $path,
+        string $content,
+        ?string $expectedSha256,
+    ): void {
+        $this->filesystem->writeFileIfUnchanged($path, $content, $expectedSha256);
     }
 
     public function delete(string $path): void

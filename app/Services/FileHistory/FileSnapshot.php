@@ -13,5 +13,6 @@ class FileSnapshot
         public readonly string $content,
         public readonly string $contentHash,
         public readonly int $timestamp,
+        public readonly ?string $blobName = null,
     ) {}
 }

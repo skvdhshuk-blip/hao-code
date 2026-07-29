@@ -2,6 +2,7 @@
 
 namespace HaoCode\Sdk\Sandbox\Tools;
 
+use HaoCode\Support\Filesystem\FileContentTypeDetector;
 use HaoCode\Tools\ToolInputSchema;
 use HaoCode\Tools\ToolResult;
 use HaoCode\Tools\ToolUseContext;
@@ -12,7 +13,7 @@ final class SandboxReadTool extends SandboxTool
 
     public function description(): string
     {
-        return 'Reads a file from the configured HaoCode sandbox filesystem. Relative paths are resolved inside the sandbox working directory.';
+        return 'Reads a text file from the configured HaoCode sandbox filesystem. Images and PDFs return an explicit error. Relative paths are resolved inside the sandbox working directory.';
     }
 
     public function inputSchema(): ToolInputSchema
@@ -44,6 +45,23 @@ final class SandboxReadTool extends SandboxTool
             return ToolResult::error($e->getMessage());
         }
 
+        $contentType = FileContentTypeDetector::detect(
+            $path,
+            substr($content, 0, 1024),
+        );
+        if ($contentType === 'image') {
+            return ToolResult::error(
+                "Read does not support model-visible image content blocks for {$path}. "
+                .'Pass the image through the SDK image input API instead.',
+            );
+        }
+        if ($contentType === 'pdf') {
+            return ToolResult::error(
+                "PDF text cannot be extracted through sandbox Read for {$path}. "
+                .'Sandbox Read does not return document content blocks or base64 fallbacks.',
+            );
+        }
+
         $lines = preg_split('/\R/', $content) ?: [];
         $total = count($lines);
         if ($offset > $total && $total > 0) {
@@ -62,7 +80,7 @@ final class SandboxReadTool extends SandboxTool
             $output .= sprintf("%6d\t%s\n", $offset + $i, $line);
         }
 
-        $context->recordFileRead($path, $content, $offset, $limit, $isPartial);
+        $context->recordVirtualFileRead($path, $content, $offset, $limit, $isPartial);
 
         return ToolResult::success($output);
     }

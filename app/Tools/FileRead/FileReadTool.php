@@ -2,6 +2,7 @@
 
 namespace HaoCode\Tools\FileRead;
 
+use HaoCode\Support\Filesystem\FileContentTypeDetector;
 use HaoCode\Tools\BaseTool;
 use HaoCode\Tools\ToolInputSchema;
 use HaoCode\Tools\ToolResult;
@@ -24,7 +25,10 @@ Usage:
 - By default, it reads up to 2000 lines starting from the beginning of the file.
 - You can optionally specify a line offset and limit.
 - Results are returned with line numbers starting at 1.
-- This tool can read images (PNG, JPG), PDFs, and Jupyter notebooks.
+- This tool reads text files and Jupyter notebooks, and extracts PDF text when
+  the host has pdftotext available.
+- Tool-result image/document content blocks are not supported. Image files and
+  PDFs without extractable text return an explicit error instead of base64 text.
 - If the file does not exist, an error will be returned.
 DESC;
     }
@@ -66,11 +70,6 @@ DESC;
         $offset = $input['offset'] ?? 1;
         $limit = $input['limit'] ?? 2000;
 
-        if (file_exists($filePath)) {
-            // Track read — content cached below after successful read
-            $context->recordFileRead($filePath);
-        }
-
         if (!file_exists($filePath)) {
             return ToolResult::error("File does not exist: {$filePath}");
         }
@@ -83,36 +82,58 @@ DESC;
             return ToolResult::error("Path is a directory, not a file: {$filePath}");
         }
 
-        // Handle binary files (images, PDFs)
-        $mimeType = mime_content_type($filePath);
-        if ($mimeType && str_starts_with($mimeType, 'image/')) {
-            $imageData = file_get_contents($filePath);
-            $size = strlen($imageData);
-
-            // Validate image size (max 20MB for API)
-            if ($size > 20 * 1024 * 1024) {
-                return ToolResult::error("Image too large: " . round($size / 1024 / 1024, 1) . " MB (max 20 MB)");
-            }
-
-            $base64 = base64_encode($imageData);
-            return ToolResult::success("[Image: {$mimeType}, " . round($size / 1024, 1) . " KB, base64 encoded]\n[data:image/{$this->getImageFormat($mimeType)};base64,{$base64}]");
+        // Keep the text-only contract even when fileinfo is unavailable or a
+        // binary file has been renamed to omit its usual extension.
+        $prefix = @file_get_contents($filePath, false, null, 0, 1024);
+        $mimeType = function_exists('mime_content_type') ? @mime_content_type($filePath) : null;
+        $contentType = FileContentTypeDetector::detect(
+            $filePath,
+            is_string($prefix) ? $prefix : '',
+            is_string($mimeType) ? $mimeType : null,
+        );
+        if ($contentType === 'image') {
+            return ToolResult::error(
+                "Read does not support model-visible image content blocks for {$filePath}. "
+                .'Pass the image through the SDK image input API instead.',
+            );
         }
 
         // Handle PDF files
-        $ext = strtolower(pathinfo($filePath, PATHINFO_EXTENSION));
-        if ($ext === 'pdf') {
-            return $this->readPdf($filePath, $input['pages'] ?? null);
+        if ($contentType === 'pdf') {
+            $result = $this->readPdf($filePath, $input['pages'] ?? null);
+            if (! $result->isError) {
+                $rawContent = file_get_contents($filePath);
+                if ($rawContent !== false) {
+                    $context->recordFileRead(
+                        $filePath,
+                        $rawContent,
+                        isPartialView: isset($input['pages']) && trim((string) $input['pages']) !== '',
+                    );
+                }
+            }
+
+            return $result;
         }
 
         // Handle Jupyter notebooks
-        if ($ext === 'ipynb') {
-            return $this->readNotebook($filePath);
+        if (strtolower(pathinfo($filePath, PATHINFO_EXTENSION)) === 'ipynb') {
+            $rawContent = file_get_contents($filePath);
+            if ($rawContent === false) {
+                return ToolResult::error("Failed to read file: {$filePath}");
+            }
+            $result = $this->readNotebook($filePath, $rawContent);
+            if (! $result->isError) {
+                $context->recordFileRead($filePath, $rawContent, 1, null, false);
+            }
+
+            return $result;
         }
 
-        $lines = file($filePath, FILE_IGNORE_NEW_LINES);
-        if ($lines === false) {
+        $rawContent = file_get_contents($filePath);
+        if ($rawContent === false) {
             return ToolResult::error("Failed to read file: {$filePath}");
         }
+        $lines = $this->splitLines($rawContent);
 
         $totalLines = count($lines);
 
@@ -133,7 +154,6 @@ DESC;
 
         // Cache file content in FileStateCache for Edit/Write read-before-write
         $isPartial = ($offset > 1 || $limit < $totalLines);
-        $rawContent = implode("\n", $lines);
         $context->recordFileRead($filePath, $rawContent, $offset, $limit, $isPartial);
 
         $header = "File: {$filePath} ({$totalLines} lines total)\n";
@@ -196,18 +216,6 @@ DESC;
         return ['isSearch' => false, 'isRead' => true, 'isList' => false];
     }
 
-    private function getImageFormat(string $mimeType): string
-    {
-        return match ($mimeType) {
-            'image/png' => 'png',
-            'image/jpeg' => 'jpeg',
-            'image/jpg' => 'jpeg',
-            'image/gif' => 'gif',
-            'image/webp' => 'webp',
-            default => 'png',
-        };
-    }
-
     private function readPdf(string $filePath, ?string $pageRange = null): ToolResult
     {
         $size = filesize($filePath);
@@ -253,15 +261,14 @@ DESC;
             }
         }
 
-        // Fallback: read as base64 for the API to process
-        $data = file_get_contents($filePath);
-        $base64 = base64_encode($data);
-        return ToolResult::success("[PDF: {$filePath}, " . round($size / 1024, 1) . " KB, base64 encoded]\n[data:application/pdf;base64,{$base64}]");
+        return ToolResult::error(
+            "PDF text could not be extracted from {$filePath}. "
+            .'Read does not support model-visible document content blocks or base64 fallbacks.',
+        );
     }
 
-    private function readNotebook(string $filePath): ToolResult
+    private function readNotebook(string $filePath, string $content): ToolResult
     {
-        $content = file_get_contents($filePath);
         $notebook = json_decode($content, true);
 
         if (!is_array($notebook) || !isset($notebook['cells'])) {
@@ -308,5 +315,28 @@ DESC;
         }
 
         return ToolResult::success($output);
+    }
+
+    /**
+     * Match file(..., FILE_IGNORE_NEW_LINES) without discarding the exact raw
+     * bytes used for the revision receipt.
+     *
+     * @return string[]
+     */
+    private function splitLines(string $content): array
+    {
+        if ($content === '') {
+            return [];
+        }
+
+        $lines = preg_split('/\r\n|\n|\r/', $content);
+        if ($lines === false) {
+            return [];
+        }
+        if (preg_match('/(?:\r\n|\n|\r)$/', $content) === 1) {
+            array_pop($lines);
+        }
+
+        return $lines;
     }
 }

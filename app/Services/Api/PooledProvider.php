@@ -178,16 +178,38 @@ class PooledProvider implements ForkSafeProvider, SettingsAwareProvider
         // Compatibility fallback for third-party providers created before the
         // explicit credential-aware contract was introduced.
         try {
-            $ref = new \ReflectionObject($this->inner);
-            if ($ref->hasProperty('apiKey')) {
-                $prop = $ref->getProperty('apiKey');
-                $prop->setAccessible(true);
-                $prop->setValue($this->inner, $credential->apiKey);
+            $provider = clone $this->inner;
+            $reflection = new \ReflectionObject($provider);
 
-                return $this->inner;
-            }
+            do {
+                foreach ($reflection->getProperties() as $property) {
+                    if ($property->getName() !== 'apiKey'
+                        || $property->getDeclaringClass()->getName() !== $reflection->getName()
+                    ) {
+                        continue;
+                    }
+                    if ($property->isStatic() || $property->isReadOnly()) {
+                        throw new \RuntimeException(
+                            'Credential pool cannot write a static or readonly apiKey property.',
+                        );
+                    }
+
+                    $property->setAccessible(true);
+                    $property->setValue($provider, $credential->apiKey);
+
+                    return $provider;
+                }
+
+                $reflection = $reflection->getParentClass();
+            } while ($reflection !== false);
+        } catch (\RuntimeException $e) {
+            throw $e;
         } catch (\Throwable $e) {
-            throw new \RuntimeException('Credential pool cannot apply an API key to the configured provider.', 0, $e);
+            throw new \RuntimeException(
+                'Credential pool cannot safely clone and apply an API key to the configured provider.',
+                0,
+                $e,
+            );
         }
 
         throw new \RuntimeException(

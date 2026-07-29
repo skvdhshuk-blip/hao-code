@@ -800,7 +800,14 @@ class AgentLoop
                 // 7b. Enforce per-message aggregate budget for large results
                 $storage = $this->toolOrchestrator->getToolResultStorage();
                 if ($storage !== null) {
+                    $uncompactedToolResults = $toolResults;
                     $toolResults = $storage->enforceMessageBudget($toolResults);
+                    $this->invalidateCompactedReadReceipts(
+                        $toolCalls,
+                        $uncompactedToolResults,
+                        $toolResults,
+                        $context,
+                    );
                 }
 
                 // 8. Feed tool results back
@@ -1174,6 +1181,54 @@ class AgentLoop
         $this->lastTurnInputTokens = 0;
         $this->lastRunTurns = 0;
         $this->costTracker->reset();
+    }
+
+    /**
+     * Revoke write authorization when aggregate-budget compaction means the
+     * model received only a persisted preview of an otherwise complete Read.
+     *
+     * @param  array<int, ToolCall>  $toolCalls
+     * @param  array<int, array{tool_use_id: string, content: string, is_error: bool}>  $before
+     * @param  array<int, array{tool_use_id: string, content: string, is_error: bool}>  $after
+     */
+    private function invalidateCompactedReadReceipts(
+        array $toolCalls,
+        array $before,
+        array $after,
+        ToolUseContext $context,
+    ): void {
+        $readPaths = [];
+        foreach ($toolCalls as $toolCall) {
+            $path = $toolCall->input['file_path'] ?? null;
+            if ($toolCall->name === 'Read' && is_string($path) && $path !== '') {
+                $readPaths[$toolCall->id] = $path;
+            }
+        }
+        if ($readPaths === []) {
+            return;
+        }
+
+        $visibleContent = [];
+        foreach ($after as $result) {
+            $id = $result['tool_use_id'] ?? null;
+            $content = $result['content'] ?? null;
+            if (is_string($id) && is_string($content)) {
+                $visibleContent[$id] = $content;
+            }
+        }
+
+        foreach ($before as $result) {
+            $id = $result['tool_use_id'] ?? null;
+            $content = $result['content'] ?? null;
+            if (! is_string($id) || ! is_string($content)
+                || ! isset($readPaths[$id], $visibleContent[$id])
+                || hash_equals($content, $visibleContent[$id])
+            ) {
+                continue;
+            }
+
+            $context->markFileReadIncomplete($readPaths[$id]);
+        }
     }
 
     /**

@@ -3,28 +3,54 @@
 namespace Tests\Unit;
 
 use HaoCode\Services\ToolResult\ToolResultStorage;
+use HaoCode\Support\Runtime\SdkRuntime;
 use PHPUnit\Framework\TestCase;
 
 class ToolResultStorageTest extends TestCase
 {
     private string $testDir;
+    private mixed $oldSessionPath;
 
     protected function setUp(): void
     {
-        $this->testDir = sys_get_temp_dir() . '/haocode_test_storage_' . getmypid();
+        $this->testDir = sys_get_temp_dir().'/haocode_test_storage_'.bin2hex(random_bytes(6));
+        mkdir($this->testDir, 0700, true);
+        $this->oldSessionPath = SdkRuntime::config('haocode.session_path');
+        SdkRuntime::config([
+            'haocode.session_path' => $this->testDir.'/sessions',
+        ]);
     }
 
     protected function tearDown(): void
     {
-        if (is_dir($this->testDir)) {
-            array_map('unlink', glob($this->testDir . '/*'));
-            @rmdir($this->testDir);
-        }
+        SdkRuntime::config([
+            'haocode.session_path' => $this->oldSessionPath,
+        ]);
+        $this->removeTree($this->testDir);
     }
 
-    private function makeStorage(): ToolResultStorage
+    private function makeStorage(?string $sessionId = null): ToolResultStorage
     {
-        return new ToolResultStorage(uniqid('test_' . getmypid() . '_', true));
+        return new ToolResultStorage(
+            $sessionId ?? 'test_'.getmypid().'_'.bin2hex(random_bytes(5)),
+        );
+    }
+
+    private function removeTree(string $path): void
+    {
+        if (is_link($path) || is_file($path)) {
+            @unlink($path);
+
+            return;
+        }
+        if (! is_dir($path)) {
+            return;
+        }
+
+        foreach (new \FilesystemIterator($path) as $item) {
+            $this->removeTree($item->getPathname());
+        }
+        @rmdir($path);
     }
 
     // ─── shouldPersist ──────────────────────────────────────────────────
@@ -60,6 +86,145 @@ class ToolResultStorageTest extends TestCase
         $this->assertArrayHasKey('message', $result);
         $this->assertFileExists($result['filepath']);
         $this->assertStringContainsString('persisted-output', $result['message']);
+        $this->assertStringStartsWith(
+            realpath($this->testDir.'/sessions').DIRECTORY_SEPARATOR,
+            (string) realpath($result['filepath']),
+        );
+        $this->assertMatchesRegularExpression(
+            '/test_tool_123-[a-f0-9]{64}\.txt$/',
+            $result['filepath'],
+        );
+    }
+
+    public function test_persist_secures_session_directories_and_result_file(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('POSIX permission bits are not portable to Windows.');
+        }
+
+        $result = $this->makeStorage('secure_session')->persist('call_1', 'secret');
+
+        $this->assertNotNull($result);
+        clearstatcache(true);
+        $this->assertSame(0700, fileperms($this->testDir.'/sessions') & 0777);
+        $this->assertSame(0700, fileperms($this->testDir.'/sessions/secure_session') & 0777);
+        $this->assertSame(0700, fileperms(dirname($result['filepath'])) & 0777);
+        $this->assertSame(0600, fileperms($result['filepath']) & 0777);
+        $this->assertSame([], glob(dirname($result['filepath']).'/.tool-result-*') ?: []);
+    }
+
+    public function test_persist_preserves_existing_safe_session_root_permissions(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('POSIX permission bits are not portable to Windows.');
+        }
+
+        $sessionRoot = $this->testDir.'/existing-sessions';
+        mkdir($sessionRoot, 0755);
+        chmod($sessionRoot, 0755);
+        SdkRuntime::config(['haocode.session_path' => $sessionRoot]);
+
+        $result = $this->makeStorage('existing_safe')->persist('call_1', 'secret');
+
+        $this->assertNotNull($result);
+        clearstatcache(true);
+        $this->assertSame(0755, fileperms($sessionRoot) & 0777);
+        $this->assertSame(0700, fileperms($sessionRoot.'/existing_safe') & 0777);
+        $this->assertSame(0700, fileperms(dirname($result['filepath'])) & 0777);
+        $this->assertSame(0600, fileperms($result['filepath']) & 0777);
+    }
+
+    public function test_persist_rejects_existing_non_sticky_shared_session_root(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('POSIX permission bits are not portable to Windows.');
+        }
+
+        $sessionRoot = $this->testDir.'/unsafe-sessions';
+        mkdir($sessionRoot, 0700);
+        chmod($sessionRoot, 0777);
+        SdkRuntime::config(['haocode.session_path' => $sessionRoot]);
+
+        $result = $this->makeStorage('unsafe_shared')->persist('call_1', 'secret');
+
+        $this->assertNull($result);
+        clearstatcache(true, $sessionRoot);
+        $this->assertSame(0777, fileperms($sessionRoot) & 0777);
+        $this->assertDirectoryDoesNotExist($sessionRoot.'/unsafe_shared');
+    }
+
+    public function test_persist_accepts_existing_sticky_shared_session_root(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('POSIX permission bits are not portable to Windows.');
+        }
+
+        $sessionRoot = $this->testDir.'/sticky-sessions';
+        mkdir($sessionRoot, 0700);
+        chmod($sessionRoot, 01777);
+        SdkRuntime::config(['haocode.session_path' => $sessionRoot]);
+
+        $result = $this->makeStorage('sticky_shared')->persist('call_1', 'secret');
+
+        $this->assertNotNull($result);
+        clearstatcache(true);
+        $this->assertSame(01777, fileperms($sessionRoot) & 01777);
+        $this->assertSame(0700, fileperms($sessionRoot.'/sticky_shared') & 0777);
+        $this->assertSame(0700, fileperms(dirname($result['filepath'])) & 0777);
+    }
+
+    public function test_constructor_rejects_invalid_session_id(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Invalid session id');
+
+        new ToolResultStorage('../escaped');
+    }
+
+    public function test_persist_fails_closed_when_session_root_is_a_symlink(): void
+    {
+        if (! function_exists('symlink')) {
+            $this->markTestSkipped('Symbolic links are unavailable.');
+        }
+
+        $outside = sys_get_temp_dir().'/haocode_storage_outside_'.bin2hex(random_bytes(6));
+        mkdir($outside, 0700, true);
+        $sessionRoot = $this->testDir.'/sessions';
+        if (! @symlink($outside, $sessionRoot)) {
+            $this->removeTree($outside);
+            $this->markTestSkipped('Unable to create symbolic link.');
+        }
+
+        try {
+            $result = $this->makeStorage('root_symlink')->persist('call_1', 'secret');
+
+            $this->assertNull($result);
+            $this->assertDirectoryDoesNotExist($outside.'/root_symlink');
+        } finally {
+            @unlink($sessionRoot);
+            $this->removeTree($outside);
+        }
+    }
+
+    public function test_constructor_rejects_filesystem_root_without_changing_permissions(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('POSIX root permission assertion.');
+        }
+
+        clearstatcache(true, DIRECTORY_SEPARATOR);
+        $modeBefore = fileperms(DIRECTORY_SEPARATOR) & 0777;
+        SdkRuntime::config(['haocode.session_path' => DIRECTORY_SEPARATOR]);
+
+        try {
+            new ToolResultStorage('root_rejected');
+            $this->fail('Expected filesystem-root storage to be rejected.');
+        } catch (\RuntimeException $exception) {
+            $this->assertStringContainsString('filesystem root', $exception->getMessage());
+        }
+
+        clearstatcache(true, DIRECTORY_SEPARATOR);
+        $this->assertSame($modeBefore, fileperms(DIRECTORY_SEPARATOR) & 0777);
     }
 
     // ─── generatePreview ────────────────────────────────────────────────
@@ -102,7 +267,8 @@ class ToolResultStorageTest extends TestCase
 
     public function test_get_and_restore_state(): void
     {
-        $storage = $this->makeStorage();
+        $sessionId = 'restore_'.bin2hex(random_bytes(4));
+        $storage = $this->makeStorage($sessionId);
         $storage->persist('id_1', str_repeat('x', 100));
 
         $state = $storage->getState();
@@ -110,7 +276,7 @@ class ToolResultStorageTest extends TestCase
         $this->assertArrayHasKey('id_1', $state['replacements']);
 
         // Create new storage and restore
-        $storage2 = $this->makeStorage();
+        $storage2 = $this->makeStorage($sessionId);
         $storage2->restoreState($state);
         $state2 = $storage2->getState();
 
@@ -172,19 +338,25 @@ class ToolResultStorageTest extends TestCase
         // the filename is `____etc_passwd.txt`).
         $realFile = realpath($result['filepath']);
         $this->assertNotFalse($realFile);
-        $this->assertStringContainsString('haocode/sessions', $realFile);
+        $this->assertStringStartsWith(
+            realpath($this->testDir.'/sessions').DIRECTORY_SEPARATOR,
+            $realFile,
+        );
     }
 
     public function test_persist_preserves_safe_id_unchanged(): void
     {
-        // Benign ids must pass through verbatim — no hashing that would hurt
-        // debuggability.
+        // A readable prefix remains, while the complete original id is hashed
+        // to prevent collisions after sanitization.
         $storage = $this->makeStorage();
 
         $result = $storage->persist('toolu_abc123', str_repeat('x', 50000));
 
         $this->assertNotNull($result);
-        $this->assertStringEndsWith('/toolu_abc123.txt', $result['filepath']);
+        $this->assertStringEndsWith(
+            '/toolu_abc123-'.hash('sha256', 'toolu_abc123').'.txt',
+            $result['filepath'],
+        );
     }
 
     public function test_persist_normalizes_slashes_in_id(): void
@@ -196,7 +368,71 @@ class ToolResultStorageTest extends TestCase
         $result = $storage->persist('call_abc/def', str_repeat('x', 50000));
 
         $this->assertNotNull($result);
-        $this->assertStringEndsWith('/call_abc_def.txt', $result['filepath']);
+        $this->assertStringEndsWith(
+            '/call_abc_def-'.hash('sha256', 'call_abc/def').'.txt',
+            $result['filepath'],
+        );
         $this->assertFileExists($result['filepath']);
+    }
+
+    public function test_restore_state_rejects_replacement_outside_current_session_root(): void
+    {
+        $sessionId = 'outside_'.bin2hex(random_bytes(4));
+        $storage = $this->makeStorage($sessionId);
+        $result = $storage->persist('id_outside', 'secret');
+        $this->assertNotNull($result);
+
+        $outside = $this->testDir.'/outside.txt';
+        file_put_contents($outside, 'outside');
+        $state = $storage->getState();
+        $state['replacements']['id_outside'] = str_replace(
+            $result['filepath'],
+            $outside,
+            $state['replacements']['id_outside'],
+        );
+
+        $restored = $this->makeStorage($sessionId);
+        $restored->restoreState($state);
+
+        $this->assertNotContains('id_outside', $restored->getState()['seenIds']);
+        $this->assertArrayNotHasKey('id_outside', $restored->getState()['replacements']);
+    }
+
+    public function test_restore_state_rejects_missing_persisted_file(): void
+    {
+        $sessionId = 'missing_'.bin2hex(random_bytes(4));
+        $storage = $this->makeStorage($sessionId);
+        $result = $storage->persist('id_missing', 'secret');
+        $this->assertNotNull($result);
+        $state = $storage->getState();
+        unlink($result['filepath']);
+
+        $restored = $this->makeStorage($sessionId);
+        $restored->restoreState($state);
+
+        $this->assertArrayNotHasKey('id_missing', $restored->getState()['replacements']);
+    }
+
+    public function test_restore_state_rejects_persisted_file_symlinked_outside_root(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('Symlink behavior requires POSIX coverage.');
+        }
+
+        $sessionId = 'symlink_'.bin2hex(random_bytes(4));
+        $storage = $this->makeStorage($sessionId);
+        $result = $storage->persist('id_symlink', 'secret');
+        $this->assertNotNull($result);
+        $state = $storage->getState();
+
+        $outside = $this->testDir.'/outside-secret.txt';
+        file_put_contents($outside, 'outside');
+        unlink($result['filepath']);
+        symlink($outside, $result['filepath']);
+
+        $restored = $this->makeStorage($sessionId);
+        $restored->restoreState($state);
+
+        $this->assertArrayNotHasKey('id_symlink', $restored->getState()['replacements']);
     }
 }

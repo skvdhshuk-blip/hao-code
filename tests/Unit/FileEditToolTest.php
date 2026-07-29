@@ -235,6 +235,23 @@ class FileEditToolTest extends TestCase
         unlink($path);
     }
 
+    public function test_it_rejects_edit_after_external_change(): void
+    {
+        $file = $this->makeTmpFile("revision one\n");
+        file_put_contents($file, "external revision two\n");
+
+        $result = $this->tool->call([
+            'file_path' => $file,
+            'old_string' => 'revision one',
+            'new_string' => 'agent revision',
+        ], $this->context);
+
+        $this->assertTrue($result->isError);
+        $this->assertStringContainsString('changed since it was read', $result->output);
+        $this->assertSame("external revision two\n", file_get_contents($file));
+        unlink($file);
+    }
+
     public function test_it_refuses_to_edit_binary_files_with_null_bytes(): void
     {
         $file = $this->makeTmpFile("hello\0world");

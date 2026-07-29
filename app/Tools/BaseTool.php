@@ -3,6 +3,7 @@
 namespace HaoCode\Tools;
 
 use HaoCode\Services\Permissions\PermissionDecision;
+use HaoCode\Support\Filesystem\CanonicalPathResolver;
 
 abstract class BaseTool implements \HaoCode\Contracts\ToolInterface
 {
@@ -97,23 +98,6 @@ abstract class BaseTool implements \HaoCode\Contracts\ToolInterface
      */
     protected function resolvePath(string $path, string $workingDir): string
     {
-        // Expand tilde to home directory
-        if (str_starts_with($path, '~/')) {
-            $home = getenv('HOME') ?: ($_SERVER['HOME'] ?? '/root');
-            $path = $home . substr($path, 1);
-        } elseif (str_starts_with($path, '~')) {
-            $home = getenv('HOME') ?: ($_SERVER['HOME'] ?? '/root');
-            $path = $home . substr($path, 1);
-        }
-
-        // Resolve relative paths against working directory
-        if (!str_starts_with($path, '/')) {
-            $path = rtrim($workingDir, '/') . '/' . $path;
-        }
-
-        // Normalize (resolve . and ..)
-        $path = realpath($path) ?: $path;
-
-        return $path;
+        return CanonicalPathResolver::resolve($path, $workingDir);
     }
 }

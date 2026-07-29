@@ -6,6 +6,7 @@ namespace Tests\Feature;
 
 use HaoCode\Sdk\Examples\SupportOpsAgent;
 use HaoCode\Services\Api\StreamingClient;
+use HaoCode\Services\Settings\ModelCatalog;
 use HaoCode\Services\Settings\SettingsManager;
 use Symfony\Component\HttpClient\Response\MockResponse;
 use Tests\Support\MockAnthropicSse;
@@ -161,14 +162,18 @@ class SupportOpsAgentExampleTest extends TestCase
                 'Executive summary: duplicate-charge incident contained; refunds are underway.'
             ),
             function (array $payload): MockResponse {
-                $this->assertSame('What is the single next action?', MockAnthropicSse::lastUserText($payload));
+                $messages = json_encode($payload['messages'] ?? [], JSON_UNESCAPED_UNICODE);
+                $this->assertIsString($messages);
+                $this->assertStringContainsString('What is the single next action?', $messages);
 
                 return MockAnthropicSse::textResponse(
                     'Single next action: disable the retry worker and start refunds.'
                 );
             },
             function (array $payload): MockResponse {
-                $this->assertStringContainsString('IMPORTANT: You MUST respond with ONLY a valid JSON object', MockAnthropicSse::lastUserText($payload) ?? '');
+                $messages = json_encode($payload['messages'] ?? [], JSON_UNESCAPED_UNICODE);
+                $this->assertIsString($messages);
+                $this->assertStringContainsString('IMPORTANT: You MUST respond with ONLY a valid JSON object', $messages);
 
                 return MockAnthropicSse::textResponse(
                     '{"severity":"sev2","owner":"payments-oncall","next_action":"Disable retry worker and refund duplicate captures","customer_message":"We have contained the duplicate-charge issue and are processing refunds.","deploy_safe":false}'
@@ -223,7 +228,7 @@ class SupportOpsAgentExampleTest extends TestCase
         config([
             'haocode.api_key' => 'test-key',
             'haocode.api_base_url' => 'https://mock.anthropic.test',
-            'haocode.model' => 'claude-test',
+            'haocode.model' => ModelCatalog::SONNET,
             'haocode.max_tokens' => 4096,
             'haocode.permission_mode' => 'bypass_permissions',
             'haocode.global_settings_path' => $this->homeDir.'/.haocode/settings.json',
@@ -235,7 +240,7 @@ class SupportOpsAgentExampleTest extends TestCase
         $this->app->singleton(StreamingClient::class, function ($app) use (&$requests, $responses): StreamingClient {
             return new StreamingClient(
                 apiKey: 'test-key',
-                model: 'claude-test',
+                model: ModelCatalog::SONNET,
                 baseUrl: 'https://mock.anthropic.test',
                 maxTokens: 4096,
                 httpClient: MockAnthropicSse::client($responses, $requests),

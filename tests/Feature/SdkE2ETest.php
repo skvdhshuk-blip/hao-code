@@ -1915,7 +1915,7 @@ JSON),
                 'new_string' => 'after',
             ]),
             function (array $payload): MockResponse {
-                $this->assertStringContainsString('must be read before editing', MockAnthropicSse::lastToolResultText($payload) ?? '');
+                $this->assertStringContainsString('must be read before writing', MockAnthropicSse::lastToolResultText($payload) ?? '');
 
                 return MockAnthropicSse::textResponse('Edit was correctly blocked.');
             },
@@ -3445,5 +3445,63 @@ JSON),
             $this->assertStringContainsString('schema is invalid', strtolower($e->getMessage()));
             $this->assertSame(0, $requestCount, 'broken schema must not call the model');
         }
+    }
+
+    public function test_structured_rejects_external_schema_ref_without_io(): void
+    {
+        $scheme = 'haocode-structured-schema-probe';
+        $this->assertNotContains($scheme, stream_get_wrappers());
+        $this->assertTrue(stream_wrapper_register(
+            $scheme,
+            StructuredSchemaProbeStreamWrapper::class,
+        ));
+        StructuredSchemaProbeStreamWrapper::$openCalls = 0;
+        $requestCount = 0;
+        $this->bootWithMock([
+            function () use (&$requestCount): MockResponse {
+                $requestCount++;
+
+                return MockAnthropicSse::textResponse('{}');
+            },
+        ]);
+
+        chdir($this->projectDir);
+
+        try {
+            try {
+                HaoCode::structured('x', [
+                    'type' => 'object',
+                    '$ref' => "{$scheme}://internal.example/schema.json",
+                ], new HaoCodeConfig(structuredMaxRetries: 2));
+                $this->fail('Expected external schema reference to be rejected.');
+            } catch (StructuredResultValidationException $exception) {
+                $this->assertStringContainsString(
+                    'schema is invalid',
+                    strtolower($exception->getMessage()),
+                );
+                $this->assertSame(0, $requestCount, 'unsafe schema must not call the model');
+                $this->assertSame(0, StructuredSchemaProbeStreamWrapper::$openCalls);
+            }
+        } finally {
+            stream_wrapper_unregister($scheme);
+        }
+    }
+}
+
+final class StructuredSchemaProbeStreamWrapper
+{
+    public mixed $context;
+
+    public static int $openCalls = 0;
+
+    public function stream_open(
+        string $path,
+        string $mode,
+        int $options,
+        ?string &$openedPath,
+    ): bool {
+        self::$openCalls++;
+
+        return false;
     }
 }

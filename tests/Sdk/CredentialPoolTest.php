@@ -382,6 +382,41 @@ class CredentialPoolTest extends TestCase
         $this->assertSame(2, $callCount);
         $this->assertSame('key-a', $usedKeys[0]);
         $this->assertSame('key-b', $usedKeys[1]);
+        $property = (new \ReflectionObject($inner))->getProperty('apiKey');
+        $property->setAccessible(true);
+        $this->assertSame('', $property->getValue($inner), 'pool keys must never mutate the shared provider');
+    }
+
+    public function test_pooled_provider_applies_key_to_inherited_private_property_on_clone(): void
+    {
+        $pool = new CredentialPool;
+        $pool->add('legacy', new Credential(apiKey: 'pool-key'));
+        $state = (object) ['keys' => []];
+        $inner = new LegacyInheritedCredentialProvider($state);
+
+        iterator_to_array(
+            (new PooledProvider($inner, $pool, 'legacy'))->streamMessages([], [], []),
+        );
+
+        $this->assertSame(['pool-key'], $state->keys);
+        $this->assertSame('original-key', $inner->originalApiKey());
+    }
+
+    public function test_pooled_provider_rejects_readonly_reflection_fallback(): void
+    {
+        $pool = new CredentialPool;
+        $pool->add('legacy', new Credential(apiKey: 'pool-key'));
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('readonly apiKey');
+
+        iterator_to_array(
+            (new PooledProvider(
+                new ReadonlyLegacyCredentialProvider,
+                $pool,
+                'legacy',
+            ))->streamMessages([], [], []),
+        );
     }
 
     public function test_pooled_provider_does_not_replay_after_response_state_is_committed(): void
@@ -489,5 +524,62 @@ class CredentialPoolTest extends TestCase
     {
         $config = HaoCodeConfig::make('my-key');
         $this->assertNull($config->credentialPool);
+    }
+}
+
+class LegacyCredentialProviderBase implements LlmProvider
+{
+    public function __construct(
+        private readonly object $state,
+        private string $apiKey = 'original-key',
+    ) {}
+
+    public function streamMessages(
+        array $sp,
+        array $msgs,
+        array $tools,
+        ?callable $onRaw = null,
+        ?callable $abort = null,
+    ): \Generator {
+        $this->state->keys[] = $this->apiKey;
+        yield new StreamEvent('ping', []);
+    }
+
+    public function getLastRateLimitHeaders(): array
+    {
+        return [];
+    }
+
+    public function originalApiKey(): string
+    {
+        return $this->apiKey;
+    }
+}
+
+final class LegacyInheritedCredentialProvider extends LegacyCredentialProviderBase
+{
+}
+
+final class ReadonlyLegacyCredentialProvider implements LlmProvider
+{
+    public function __construct(
+        private readonly string $apiKey = 'original-key',
+    ) {}
+
+    public function streamMessages(
+        array $sp,
+        array $msgs,
+        array $tools,
+        ?callable $onRaw = null,
+        ?callable $abort = null,
+    ): \Generator {
+        if (false) {
+            yield;
+        }
+    }
+
+    public function getLastRateLimitHeaders(): array
+    {
+        return [];
     }
 }

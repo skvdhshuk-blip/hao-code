@@ -12,6 +12,7 @@ class BaseToolTest extends TestCase
 {
     private BaseTool $tool;
     private ToolUseContext $context;
+    private string $testDir;
 
     protected function setUp(): void
     {
@@ -29,7 +30,19 @@ class BaseToolTest extends TestCase
             }
         };
 
-        $this->context = new ToolUseContext('/tmp', 'test');
+        $this->testDir = sys_get_temp_dir().'/base_tool_'.bin2hex(random_bytes(6));
+        mkdir($this->testDir, 0700, true);
+        $this->context = new ToolUseContext($this->testDir, 'test');
+    }
+
+    protected function tearDown(): void
+    {
+        foreach (glob($this->testDir.'/*') ?: [] as $path) {
+            if (is_link($path) || is_file($path)) {
+                @unlink($path);
+            }
+        }
+        @rmdir($this->testDir);
     }
 
     // ─── defaults ─────────────────────────────────────────────────────────
@@ -127,5 +140,85 @@ class BaseToolTest extends TestCase
         $home = getenv('HOME') ?: '/root';
         $result = $this->resolvePath('~', $home);
         $this->assertStringNotContainsString('~', $result);
+    }
+
+    public function test_resolve_nonexistent_target_through_existing_symlink_parent(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('POSIX symlink coverage.');
+        }
+
+        $outside = $this->testDir.'_outside';
+        mkdir($outside, 0700, true);
+        symlink($outside, $this->testDir.'/link');
+
+        try {
+            $result = $this->resolvePath('link/new-file.txt', $this->testDir);
+
+            $this->assertSame(
+                realpath($outside).'/new-file.txt',
+                $result,
+            );
+        } finally {
+            @unlink($this->testDir.'/link');
+            @rmdir($outside);
+        }
+    }
+
+    public function test_resolve_preserves_physical_dot_dot_semantics_after_symlink(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('POSIX symlink coverage.');
+        }
+
+        $outside = $this->testDir.'_outside';
+        mkdir($outside.'/inner', 0700, true);
+        mkdir($outside.'/sensitive', 0700, true);
+        symlink($outside.'/inner', $this->testDir.'/link');
+
+        try {
+            $result = $this->resolvePath('link/../sensitive/new.txt', $this->testDir);
+
+            $this->assertSame(
+                realpath($outside.'/sensitive').'/new.txt',
+                $result,
+            );
+        } finally {
+            @unlink($this->testDir.'/link');
+            @rmdir($outside.'/inner');
+            @rmdir($outside.'/sensitive');
+            @rmdir($outside);
+        }
+    }
+
+    public function test_resolve_normalizes_dot_segments_for_nonexistent_path(): void
+    {
+        $result = $this->resolvePath('one/../two/./new.txt', $this->testDir);
+
+        $this->assertSame(realpath($this->testDir).'/two/new.txt', $result);
+    }
+
+    public function test_resolve_does_not_expand_unsupported_named_tilde(): void
+    {
+        $result = $this->resolvePath('~another-user/file.txt', $this->testDir);
+
+        $this->assertSame(
+            realpath($this->testDir).'/~another-user/file.txt',
+            $result,
+        );
+    }
+
+    public function test_resolve_normalizes_windows_drive_path_without_treating_it_as_relative(): void
+    {
+        $result = $this->resolvePath('C:\\work\\one\\..\\two.txt', $this->testDir);
+
+        $this->assertSame('C:\\work\\two.txt', $result);
+    }
+
+    public function test_resolve_normalizes_windows_unc_path(): void
+    {
+        $result = $this->resolvePath('\\\\server\\share\\one\\..\\two.txt', $this->testDir);
+
+        $this->assertSame('\\\\server\\share\\two.txt', $result);
     }
 }

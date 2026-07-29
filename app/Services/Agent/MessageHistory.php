@@ -281,6 +281,17 @@ class MessageHistory
         $this->messages = [];
     }
 
+    /**
+     * Replace the internal transcript without applying API-only normalization.
+     *
+     * @param  array<int, array<string, mixed>>  $messages
+     * @internal
+     */
+    public function replaceMessages(array $messages): void
+    {
+        $this->messages = array_values($messages);
+    }
+
     public function getMessages(): array
     {
         return $this->messages;

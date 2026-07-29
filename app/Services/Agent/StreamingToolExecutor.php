@@ -126,7 +126,12 @@ class StreamingToolExecutor
                 },
             );
             $childState = $this->context->getReadFileStateSnapshot();
-            $newEntries = array_diff_key($childState, $stateBefore);
+            $newEntries = array_filter(
+                $childState,
+                static fn (array $value, string $path): bool =>
+                    ! isset($stateBefore[$path]) || $stateBefore[$path] !== $value,
+                ARRAY_FILTER_USE_BOTH,
+            );
             $payload = [
                 'result' => $result,
                 'toolResult' => $completedResult?->toArray(),
@@ -232,18 +237,24 @@ class StreamingToolExecutor
                 continue;
             }
 
+            $completedResult = null;
             $result = $this->toolOrchestrator->executeToolBlock(
                 $block,
                 $this->context,
                 $this->onToolStart,
-                $this->onToolComplete,
+                function (string $toolName, ToolResult $toolResult) use (&$completedResult): void {
+                    $completedResult = $toolResult;
+                    if ($this->onToolComplete) {
+                        ($this->onToolComplete)($toolName, $toolResult);
+                    }
+                },
             );
 
             $results[$index] = $result;
 
             // Check for Bash tool errors → trigger sibling abort
-            if ($block['name'] === 'Bash' && ($result['is_error'] ?? false)) {
-                $exitCode = $result['metadata']['exitCode'] ?? null;
+            if ($block['name'] === 'Bash' && $completedResult?->isError) {
+                $exitCode = $completedResult->metadata['exitCode'] ?? null;
                 // Only abort on real errors, not semantic non-errors (grep no match, etc.)
                 if ($exitCode !== null && $exitCode !== 0) {
                     $this->siblingAborted = true;

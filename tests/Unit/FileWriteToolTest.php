@@ -127,6 +127,39 @@ class FileWriteToolTest extends TestCase
         $this->assertSame('second version', file_get_contents($path));
     }
 
+    public function test_it_rejects_overwrite_after_external_change(): void
+    {
+        $path = $this->tmpPath('.txt');
+        file_put_contents($path, 'revision one');
+        $this->context->recordFileRead($path, 'revision one');
+        file_put_contents($path, 'external revision two');
+
+        $result = $this->tool->call([
+            'file_path' => $path,
+            'content' => 'stale agent write',
+        ], $this->context);
+
+        $this->assertTrue($result->isError);
+        $this->assertStringContainsString('changed since it was read', $result->output);
+        $this->assertSame('external revision two', file_get_contents($path));
+    }
+
+    public function test_partial_read_does_not_authorize_overwrite(): void
+    {
+        $path = $this->tmpPath('.txt');
+        file_put_contents($path, "one\ntwo\n");
+        $this->context->recordFileRead($path, "one\ntwo\n", 1, 1, true);
+
+        $result = $this->tool->call([
+            'file_path' => $path,
+            'content' => 'stale agent write',
+        ], $this->context);
+
+        $this->assertTrue($result->isError);
+        $this->assertStringContainsString('complete file', $result->output);
+        $this->assertSame("one\ntwo\n", file_get_contents($path));
+    }
+
     // ─── directory creation ───────────────────────────────────────────────
 
     public function test_it_creates_missing_parent_directories(): void

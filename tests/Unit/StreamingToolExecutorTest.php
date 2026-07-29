@@ -5,7 +5,12 @@ namespace Tests\Unit;
 use HaoCode\Services\Agent\StreamingToolExecutor;
 use HaoCode\Services\Agent\ToolOrchestrator;
 use HaoCode\Services\Agent\CancellationToken;
+use HaoCode\Services\Hooks\HookExecutor;
+use HaoCode\Services\Hooks\HookResult;
+use HaoCode\Services\Permissions\PermissionChecker;
+use HaoCode\Services\Permissions\PermissionDecision;
 use HaoCode\Tools\BaseTool;
+use HaoCode\Tools\Bash\BashTool;
 use HaoCode\Tools\ToolInputSchema;
 use HaoCode\Tools\ToolOutcome;
 use HaoCode\Tools\ToolRegistry;
@@ -143,23 +148,128 @@ class StreamingToolExecutorTest extends TestCase
 
     public function test_on_complete_passed_to_orchestrator_for_queued_block(): void
     {
-        $onComplete = fn(string $n, ToolResult $r) => null;
+        $completed = [];
+        $onComplete = function (string $name, ToolResult $result) use (&$completed): void {
+            $completed[] = [$name, $result];
+        };
 
         $orchestrator = $this->createMock(ToolOrchestrator::class);
         $orchestrator->expects($this->once())
             ->method('executeToolBlock')
-            ->with(
-                $this->anything(),
-                $this->anything(),
-                $this->anything(),
-                $this->identicalTo($onComplete),
-            )
-            ->willReturn(['tool_use_id' => 'toolu_1', 'content' => 'ok', 'is_error' => false]);
+            ->willReturnCallback(
+                static function (array $block, ToolUseContext $context, ?callable $onStart, ?callable $callback): array {
+                    $result = ToolResult::success('ok', ['captured' => true]);
+                    $callback?->__invoke($block['name'], $result);
+
+                    return $result->toApiFormat($block['id']);
+                },
+            );
 
         $executor = new StreamingToolExecutor($orchestrator, $this->makeRegistry());
         $executor->setContext(new ToolUseContext('/tmp', 'test'), null, $onComplete);
         $executor->onToolBlockReady($this->makeBlock(), 0);
         $executor->collectResults();
+
+        $this->assertCount(1, $completed);
+        $this->assertSame('MockTool', $completed[0][0]);
+        $this->assertSame(['captured' => true], $completed[0][1]->metadata);
+    }
+
+    public function test_failed_queued_bash_skips_later_sibling_before_side_effect(): void
+    {
+        $sentinel = sys_get_temp_dir().'/haocode_sibling_'.bin2hex(random_bytes(8));
+        $calls = 0;
+
+        $orchestrator = $this->createMock(ToolOrchestrator::class);
+        $orchestrator->method('executeToolBlock')->willReturnCallback(
+            static function (array $block, ToolUseContext $context, ?callable $onStart, ?callable $onComplete) use (&$calls, $sentinel): array {
+                $calls++;
+                if ($block['name'] === 'Bash') {
+                    $result = ToolResult::error('Command exited with code 1', ['exitCode' => 1]);
+                } else {
+                    file_put_contents($sentinel, 'executed');
+                    $result = ToolResult::success('side effect executed');
+                }
+                $onComplete?->__invoke($block['name'], $result);
+
+                return $result->toApiFormat($block['id']);
+            },
+        );
+
+        $executor = new StreamingToolExecutor(
+            $orchestrator,
+            new ToolRegistry(),
+            disableEarlyExecution: true,
+        );
+        $executor->setContext(new ToolUseContext('/tmp', 'test'), null, null);
+        $executor->onToolBlockReady([
+            'id' => 'bash-1',
+            'name' => 'Bash',
+            'input' => ['command' => 'exit 1'],
+        ], 0);
+        $executor->onToolBlockReady([
+            'id' => 'write-1',
+            'name' => 'Write',
+            'input' => ['file_path' => $sentinel, 'content' => 'executed'],
+        ], 1);
+
+        try {
+            $results = $executor->collectResults();
+            $sentinelExists = file_exists($sentinel);
+        } finally {
+            @unlink($sentinel);
+        }
+
+        $this->assertSame(1, $calls);
+        $this->assertFalse($sentinelExists);
+        $this->assertTrue($results[1]['is_error']);
+        $this->assertStringContainsString('sibling Bash command', $results[1]['content']);
+    }
+
+    public function test_real_bash_failure_skips_later_bash_before_side_effect(): void
+    {
+        $sentinel = sys_get_temp_dir().'/haocode_real_sibling_'.bin2hex(random_bytes(8));
+        $registry = new ToolRegistry();
+        $registry->register(new BashTool());
+
+        $permissions = $this->createMock(PermissionChecker::class);
+        $permissions->method('check')->willReturn(PermissionDecision::allow());
+        $hooks = $this->createMock(HookExecutor::class);
+        $hooks->method('execute')->willReturn(new HookResult(allowed: true));
+        $orchestrator = new ToolOrchestrator($registry, $permissions, $hooks);
+
+        $executor = new StreamingToolExecutor(
+            $orchestrator,
+            $registry,
+            disableEarlyExecution: true,
+        );
+        $executor->setContext(
+            new ToolUseContext('/tmp', 'real-sibling-'.bin2hex(random_bytes(8))),
+            null,
+            null,
+        );
+        $executor->onToolBlockReady([
+            'id' => 'real-bash-failure',
+            'name' => 'Bash',
+            'input' => ['command' => 'exit 7'],
+        ], 0);
+        $executor->onToolBlockReady([
+            'id' => 'real-bash-side-effect',
+            'name' => 'Bash',
+            'input' => ['command' => 'touch '.escapeshellarg($sentinel)],
+        ], 1);
+
+        try {
+            $results = $executor->collectResults();
+            $sentinelExists = file_exists($sentinel);
+        } finally {
+            @unlink($sentinel);
+        }
+
+        $this->assertTrue($results[0]['is_error']);
+        $this->assertTrue($results[1]['is_error']);
+        $this->assertStringContainsString('sibling Bash command', $results[1]['content']);
+        $this->assertFalse($sentinelExists);
     }
 
     // ─── existing test ─────────────────────────────────────────────────────

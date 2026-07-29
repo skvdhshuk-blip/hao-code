@@ -2,6 +2,8 @@
 
 namespace HaoCode\Tools\FileWrite;
 
+use HaoCode\Services\FileEdit\AtomicFileWriter;
+use HaoCode\Services\FileEdit\FileConflictException;
 use HaoCode\Services\Security\SecretScanner;
 use HaoCode\Tools\BaseTool;
 use HaoCode\Tools\FileEdit\DiffGenerator;
@@ -57,22 +59,21 @@ DESC;
         $filePath = $input['file_path'];
         $content = $input['content'];
 
-        // Enforce read-before-write for existing files (prevents blind overwrites)
-        if (file_exists($filePath) && !$context->wasFileRead($filePath)) {
+        $existed = file_exists($filePath);
+        $expectedRevision = null;
+        if ($existed && ($revisionError = $context->fileRevisionError($filePath)) !== null) {
             return ToolResult::error(
-                "Read tool first: {$filePath} already exists and must be read before overwriting. " .
+                $revisionError.' '.
                 "Next step: call Read on this exact path, then retry Write."
             );
         }
+        if ($existed) {
+            $expectedRevision = $context->getFileRevision($filePath);
+        }
 
-        // Record file history before overwriting
         $originalContent = null;
-        if (file_exists($filePath)) {
+        if ($existed) {
             $originalContent = file_get_contents($filePath);
-            try {
-                \HaoCode\Support\Runtime\SdkRuntime::app(\HaoCode\Services\FileHistory\FileHistoryManager::class)
-                    ->recordBefore($filePath);
-            } catch (\Throwable) {}
         }
 
         // Ensure parent directory exists
@@ -83,12 +84,26 @@ DESC;
             }
         }
 
-        $existed = file_exists($filePath);
-
-        $result = file_put_contents($filePath, $content);
-
-        if ($result === false) {
-            return ToolResult::error("Failed to write file: {$filePath}");
+        try {
+            (new AtomicFileWriter())->write(
+                $filePath,
+                $content,
+                $expectedRevision,
+                $existed
+                    ? function (string $target) use ($context): void {
+                        try {
+                            \HaoCode\Support\Runtime\SdkRuntime::app(\HaoCode\Services\FileHistory\FileHistoryManager::class)
+                                ->forSession($context->sessionId)
+                                ->recordBefore($target);
+                        } catch (\Throwable) {
+                        }
+                    }
+                    : null,
+            );
+        } catch (FileConflictException $e) {
+            return ToolResult::error($e->getMessage());
+        } catch (\Throwable $e) {
+            return ToolResult::error("Failed to write file: {$filePath}. {$e->getMessage()}");
         }
 
         // A successful write gives the agent authoritative knowledge of the file's

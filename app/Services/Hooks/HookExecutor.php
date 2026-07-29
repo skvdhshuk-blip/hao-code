@@ -25,13 +25,25 @@ class HookExecutor
      *
      * @return HookResult
      */
-    public function execute(string $event, array $context = []): HookResult
+    public function execute(
+        string $event,
+        array $context = [],
+        ?callable $shouldAbort = null,
+    ): HookResult
     {
+        if ($this->abortRequested($shouldAbort)) {
+            return new HookResult(allowed: false, output: 'Hook execution aborted');
+        }
+
         $hooks = $this->hooks[$event] ?? [];
         $outputs = [];
         $modifiedInput = null;
 
         foreach ($hooks as $hook) {
+            if ($this->abortRequested($shouldAbort)) {
+                return new HookResult(allowed: false, output: 'Hook execution aborted');
+            }
+
             // Skip hook if matcher is set and does not match the tool name
             if ($hook->matcher !== null) {
                 $toolName = $context['tool'] ?? '';
@@ -40,7 +52,7 @@ class HookExecutor
                 }
             }
 
-            $hookResult = $this->runHook($event, $hook, $context);
+            $hookResult = $this->runHook($event, $hook, $context, $shouldAbort);
 
             if (!$hookResult->allowed) {
                 return $hookResult;
@@ -65,7 +77,12 @@ class HookExecutor
         );
     }
 
-    private function runHook(string $event, HookDefinition $hook, array $context): HookResult
+    private function runHook(
+        string $event,
+        HookDefinition $hook,
+        array $context,
+        ?callable $shouldAbort,
+    ): HookResult
     {
         $command = $hook->command;
 
@@ -85,8 +102,12 @@ class HookExecutor
             stdin: is_string($stdin) ? $stdin : '{}',
             workingDirectory: $this->workingDirectory,
             environment: $env,
+            shouldAbort: $shouldAbort,
         );
 
+        if ($processResult['aborted']) {
+            return new HookResult(allowed: false, output: 'Hook execution aborted');
+        }
         if (! $processResult['started']) {
             return $this->processFailure($event, 'Failed to execute hook: '.$processResult['error']);
         }
@@ -164,6 +185,19 @@ class HookExecutor
             allowed: false,
             output: 'Hook returned an invalid decision',
         );
+    }
+
+    private function abortRequested(?callable $shouldAbort): bool
+    {
+        if ($shouldAbort === null) {
+            return false;
+        }
+
+        try {
+            return (bool) $shouldAbort();
+        } catch (\Throwable) {
+            return true;
+        }
     }
 
     private function loadHooks(): void

@@ -38,8 +38,13 @@
         "bin/hao-code-sandbox"
     ],
     "scripts": {
-        "test": "phpunit",
-        "test:live": "phpunit --group live",
+        "test": "@test:full",
+        "test:discover": "php scripts/test-discovery-check.php",
+        "test:full": [
+            "@test:discover",
+            "php -d memory_limit=-1 vendor/bin/phpunit --exclude-group live --no-progress"
+        ],
+        "test:live": "php -d memory_limit=-1 vendor/bin/phpunit --group live",
         "lint": "find app tests examples -name '*.php' -print0 | xargs -0 -n1 php -l"
     },
     "suggest": {

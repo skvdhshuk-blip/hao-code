@@ -99,7 +99,7 @@ class ContextCompactor
     public function compact(MessageHistory $history, int $keepLast = 6, ?string $customInstructions = null): string
     {
 
-        $messages = $history->getMessagesForApi();
+        $messages = $history->getMessages();
         $count = count($messages);
 
         if ($count <= $keepLast) {
@@ -135,26 +135,25 @@ class ContextCompactor
             ]);
         }
 
-        // Clear and rebuild with continuation message
-        $history->clear();
-
         $transcriptNote = "[Context Compaction Summary — {$removed} messages compacted]\n\n{$summary}\n\n[End of Summary. Continue the conversation from where it left off without asking further questions.]";
-        $history->addUserMessage($transcriptNote);
-
         $remaining = array_slice($messages, $removed);
+        $rebuilt = [[
+            'role' => 'user',
+            'content' => $transcriptNote,
+        ]];
 
         // If the first remaining message is a user message, insert a bridge assistant
         // acknowledgement so the history never has two consecutive user messages
         // (which the Anthropic API rejects). This can happen when the history ends
         // with an un-replied user turn (e.g., the current input in AgentLoop).
         if (!empty($remaining) && ($remaining[0]['role'] ?? '') === 'user') {
-            $history->addAssistantMessage([
+            $rebuilt[] = [
                 'role' => 'assistant',
                 'content' => '[Acknowledged. Continuing from where we left off.]',
-            ]);
+            ];
         }
 
-        $this->replayMessages($history, $remaining);
+        $history->replaceMessages(array_merge($rebuilt, $remaining));
 
         // Post-compact: re-inject recently-read files so model has context
         $recentFiles = $this->extractRecentFiles($oldMessages);
@@ -220,78 +219,50 @@ class ContextCompactor
     }
 
     /**
-     * Replay messages into history, preserving all content block types.
-     */
-    private function replayMessages(MessageHistory $history, array $messages): void
-    {
-        foreach ($messages as $msg) {
-            $role = $msg['role'] ?? '';
-            $content = $msg['content'] ?? '';
-
-            if ($role === 'user') {
-                if (is_string($content)) {
-                    $history->addUserMessage($content);
-                } elseif (is_array($content)) {
-                    $toolResults = array_filter($content, fn($b) => ($b['type'] ?? '') === 'tool_result');
-                    $textBlocks = array_filter($content, fn($b) => ($b['type'] ?? '') === 'text');
-
-                    if (!empty($textBlocks) && empty($toolResults)) {
-                        // Pure text user message
-                        $text = implode("\n", array_map(fn($b) => $b['text'] ?? '', $textBlocks));
-                        $history->addUserMessage($text);
-                    } elseif (!empty($toolResults)) {
-                        $history->addToolResultMessage(array_values($toolResults));
-                    }
-                }
-            } elseif ($role === 'assistant') {
-                $history->addAssistantMessage($msg);
-            }
-        }
-    }
-
-    /**
      * Micro-compact: clear old tool result content without LLM call.
      */
     public function microCompact(MessageHistory $history, int $keepLastToolResults = 4): string
     {
-        $messages = $history->getMessagesForApi();
+        $messages = $history->getMessages();
         $modified = 0;
         $charsSaved = 0;
 
-        $toolResultIndices = [];
+        $toolResultPositions = [];
         foreach ($messages as $idx => $msg) {
             $content = $msg['content'] ?? '';
             if (is_array($content)) {
-                foreach ($content as $block) {
+                foreach ($content as $blockIdx => $block) {
                     if (($block['type'] ?? '') === 'tool_result') {
-                        $toolResultIndices[] = $idx;
+                        $toolResultPositions[] = "{$idx}:{$blockIdx}";
                     }
                 }
             }
         }
 
-        if (count($toolResultIndices) <= $keepLastToolResults) {
-            return "No micro-compact needed (only " . count($toolResultIndices) . " tool results).";
+        if (count($toolResultPositions) <= $keepLastToolResults) {
+            return "No micro-compact needed (only " . count($toolResultPositions) . " tool results).";
         }
 
-        $resultsToKeep = array_slice($toolResultIndices, -$keepLastToolResults);
+        $resultsToKeep = array_fill_keys(
+            array_slice($toolResultPositions, -$keepLastToolResults),
+            true,
+        );
         $newMessages = [];
 
         foreach ($messages as $idx => $msg) {
             $content = $msg['content'] ?? '';
             $role = $msg['role'] ?? '';
 
-            if (is_array($content) && $role === 'user' && !in_array($idx, $resultsToKeep)) {
+            if (is_array($content) && $role === 'user') {
                 $newContent = [];
-                foreach ($content as $block) {
-                    if (($block['type'] ?? '') === 'tool_result' && $this->isCompactableToolResult($block)) {
+                foreach ($content as $blockIdx => $block) {
+                    $position = "{$idx}:{$blockIdx}";
+                    if (($block['type'] ?? '') === 'tool_result'
+                        && ! isset($resultsToKeep[$position])
+                        && $this->isCompactableToolResult($block)) {
                         $oldLen = mb_strlen($block['content'] ?? '');
-                        $newContent[] = [
-                            'type' => 'tool_result',
-                            'tool_use_id' => $block['tool_use_id'] ?? '',
-                            'content' => '[Old tool result content cleared to save context]',
-                            'is_error' => false,
-                        ];
+                        $block['content'] = '[Old tool result content cleared to save context]';
+                        $newContent[] = $block;
                         $charsSaved += $oldLen;
                         $modified++;
                         continue;
@@ -308,8 +279,7 @@ class ContextCompactor
             return "No compactable tool results found to clear.";
         }
 
-        $history->clear();
-        $this->replayMessages($history, $newMessages);
+        $history->replaceMessages($newMessages);
 
         return "Micro-compacted: cleared {$modified} old tool results, saved ~" . number_format($charsSaved) . " chars.";
     }
@@ -321,7 +291,7 @@ class ContextCompactor
      */
     public function emergencyCompact(MessageHistory $history, int $previewChars = 2000): string
     {
-        $messages = $history->getMessagesForApi();
+        $messages = $history->getMessages();
         $trimmed = 0;
         $charsSaved = 0;
 
@@ -356,8 +326,7 @@ class ContextCompactor
             return 'No oversized tool results found for emergency compaction.';
         }
 
-        $history->clear();
-        $this->replayMessages($history, $messages);
+        $history->replaceMessages($messages);
 
         return "Emergency-compacted {$trimmed} tool results, saved ~".number_format($charsSaved).' chars.';
     }

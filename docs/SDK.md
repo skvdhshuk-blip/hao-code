@@ -2,7 +2,7 @@
 
 Use hao-code as a framework-free PHP library to embed an AI coding agent in your application.
 
-This document describes the `v1.18.14` source line. Published package versions
+This document describes the `v1.18.16` source line. Published package versions
 are identified by Git tags and Packagist.
 
 ```bash
@@ -272,6 +272,10 @@ $conv->close();
 The handle keeps message history in memory for its lifetime. Set
 `ephemeral: false` when that history must also be written to durable session
 storage. Tools remain disabled unless listed in `allowedTools`.
+`Conversation::loadSession()` reconstructs the requested session first, then
+atomically replaces any existing in-memory history and switches the handle to
+the loaded session. Prefer `HaoCode::resume()` when creating a new handle for a
+durable session.
 
 ### resume() / continueLatest()
 
@@ -376,7 +380,9 @@ validated with a real JSON Schema validator
 syntax errors and schema violations enter the same retry path. Configure the
 retry budget with `HaoCodeConfig::$structuredMaxRetries` (default `1`; set to
 `0` to fail fast). Root `type: array` prompts ask for a JSON array; object
-schemas ask for a JSON object.
+schemas ask for a JSON object. Schemas must be self-contained: external or
+filesystem `$ref` targets are never fetched and are rejected before model
+spend; local fragment references such as `#/definitions/item` remain supported.
 
 ```php
 HaoCode::structured(string $prompt, array $jsonSchema, ?HaoCodeConfig $config = null): StructuredResult
@@ -510,6 +516,13 @@ Custom tools and sandbox replacement tools use the same exact-name
 `allowedTools`/`disallowedTools` filters as built-in tools; list each name
 explicitly or use `allowedTools: ['*']`.
 
+The built-in `Read` tool produces text tool results. Images and PDFs without
+extractable text fail explicitly rather than being returned as base64; provide
+images through the SDK image-input APIs described in [Multimodal Input](#multimodal-input).
+The read-before-write guard records only complete, successful reads. Failed or
+partial reads do not authorize `Write` or `Edit`, and if the file's external
+revision changes, the caller must complete another full `Read` before mutation.
+
 This differs from `v1.7.0`, where an explicitly constructed config defaulted to
 all tools, permission bypass, and durable storage. Existing trusted callers must
 set `allowedTools: ['*']`, `permissionMode: 'bypass_permissions'`, and
@@ -609,6 +622,13 @@ Use `SandboxConfig` when the agent needs file or shell tools but must not mutate
 the PHP host project directory. Sandbox mode replaces `Read`, `Write`, `Glob`,
 and `Grep` with sandbox-scoped tools. Set `mode: 'full'` to also replace `Bash`
 with a sandbox-scoped shell.
+
+Sandbox `Write` requires a complete current `Read` before overwriting an
+existing file. Local, native, and Tokimo backends perform the comparison inside
+their atomic publish path. AgentRun rechecks the remote bytes immediately before
+its write request, but its file API does not expose a conditional-write
+primitive; a concurrent remote writer can therefore still race that final
+request.
 
 Choose the backend by the isolation boundary you need:
 
@@ -1649,6 +1669,10 @@ configured). Pre-built blocks are an advanced escape hatch and are passed
 through unchanged, so callers constructing them are responsible for equivalent
 validation.
 
+File-tool `Read` is not an image-ingestion path: it emits text only and rejects
+images or PDFs without extractable text instead of embedding base64 in a tool
+result. Use the image arguments above for multimodal model input.
+
 ### Manual block assembly
 
 For full control, use `ImageContentBlock` directly:
@@ -1866,7 +1890,9 @@ OpenAI Chat Completions streaming uses PHP's native stream wrapper, so a
 `MockHttpClient` does not intercept that SSE transport; use a local HTTP fixture
 server or an explicitly gated live test for that provider.
 
-`composer test` runs the configured SDK compatibility suite. Use targeted paths
-such as `./vendor/bin/phpunit tests/Feature/ContextBuilderTest.php` while working
-on internal modules. See `tests/Feature/SdkE2ETest.php` for the current end-to-end
+`composer test` first verifies that every ordinary `*Test.php` file is covered
+by `phpunit.xml`, then runs the complete non-live suite. Use `composer test:live`
+for explicitly gated provider tests, or targeted paths such as
+`./vendor/bin/phpunit tests/Feature/ContextBuilderTest.php` while working on
+internal modules. See `tests/Feature/SdkE2ETest.php` for the current end-to-end
 SDK examples.

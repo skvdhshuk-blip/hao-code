@@ -103,7 +103,10 @@ DESC;
     public function call(array $input, ToolUseContext $context): ToolResult
     {
         $pattern = $input['pattern'];
-        $path = $input['path'] ?? $context->workingDirectory;
+        $path = $this->resolvePath(
+            $input['path'] ?? $context->workingDirectory,
+            $context->workingDirectory,
+        );
         $outputMode = $input['output_mode'] ?? 'files_with_matches';
         $glob = $input['glob'] ?? null;
         $type = $input['type'] ?? null;
@@ -125,21 +128,37 @@ DESC;
 
         return $this->grepWithPhp(
             $pattern, $path, $outputMode, $glob,
-            $caseInsensitive, $afterLines, $beforeLines, $headLimit
+            $caseInsensitive, $afterLines, $beforeLines, $headLimit,
+            $offset, $type, $multiline,
         );
     }
 
     private function hasRipgrep(): bool
     {
-        $result = exec('which rg 2>/dev/null');
-        return !empty($result);
+        $command = PHP_OS_FAMILY === 'Windows'
+            ? 'where rg 2>NUL'
+            : 'command -v rg 2>/dev/null';
+        $result = exec($command);
+
+        return ! empty($result);
     }
 
     private function grepWithRipgrep(
         string $pattern, string $path, string $outputMode, ?string $glob, ?string $type,
         bool $caseInsensitive, bool $multiline, int $afterLines, int $beforeLines, int $headLimit, int $offset = 0
     ): ToolResult {
-        $cmd = ['rg', '--no-heading'];
+        if ($headLimit === 0) {
+            return ToolResult::success("No matches found for pattern: {$pattern}");
+        }
+
+        $cmd = [
+            'rg',
+            '--no-heading',
+            '--color=never',
+            '--with-filename',
+            '--sort=path',
+            '--no-context-separator',
+        ];
 
         if ($caseInsensitive) {
             $cmd[] = '-i';
@@ -154,13 +173,19 @@ DESC;
             $cmd[] = '--count';
         } elseif ($outputMode === 'files_with_matches') {
             $cmd[] = '-l';
+            $cmd[] = '--max-count=1';
         } else {
             $cmd[] = '--line-number';
-            if ($afterLines > 0) $cmd[] = '-A ' . $afterLines;
-            if ($beforeLines > 0) $cmd[] = '-B ' . $beforeLines;
+            if ($afterLines > 0) $cmd[] = '--after-context=' . $afterLines;
+            if ($beforeLines > 0) $cmd[] = '--before-context=' . $beforeLines;
+            // Bound per-file work without confusing it for the global output
+            // limit applied below. No file can contribute more than the first
+            // offset + head_limit matches needed for that global prefix.
+            $maxCount = $offset > PHP_INT_MAX - $headLimit
+                ? PHP_INT_MAX
+                : $headLimit + $offset;
+            $cmd[] = '--max-count='.$maxCount;
         }
-
-        $cmd[] = '--max-count=' . ($headLimit + $offset);
 
         if ($glob) {
             $cmd[] = '--glob=' . escapeshellarg($glob);
@@ -186,14 +211,18 @@ DESC;
             return ToolResult::error("ripgrep error: " . implode("\n", $output));
         }
 
-        // Apply offset
-        if ($offset > 0) {
-            $output = array_slice($output, $offset);
-        }
+        // head_limit and offset are global output-entry limits. ripgrep's
+        // --max-count is per file, so applying it in the command produces
+        // different results from the PHP fallback on multi-file searches.
+        $output = array_map(
+            fn (string $line): string => $this->normalizeOutputPath($line, $path),
+            $output,
+        );
+        $output = array_slice($output, $offset, $headLimit);
 
         $result = implode("\n", $output);
         if (empty($result)) {
-            return ToolResult::success("No matches found for pattern: {$pattern}");
+            return ToolResult::success($this->noMatchesMessage($pattern));
         }
 
         return ToolResult::success($result);
@@ -201,8 +230,20 @@ DESC;
 
     private function grepWithPhp(
         string $pattern, string $path, string $outputMode, ?string $glob,
-        bool $caseInsensitive, int $afterLines, int $beforeLines, int $headLimit
+        bool $caseInsensitive, int $afterLines, int $beforeLines, int $headLimit,
+        int $offset = 0, ?string $type = null, bool $multiline = false,
     ): ToolResult {
+        if ($type !== null && $type !== '') {
+            return ToolResult::error(
+                'The type filter requires ripgrep; install rg or use the glob parameter.',
+            );
+        }
+        if ($multiline) {
+            return ToolResult::error(
+                'Multiline search requires ripgrep; install rg or disable multiline.',
+            );
+        }
+
         $flags = $caseInsensitive ? 'i' : '';
         // Escape the `/` delimiter so patterns like `app/Services` don't break the regex.
         $safePattern = str_replace('/', '\/', $pattern);
@@ -218,90 +259,144 @@ DESC;
 
         if (is_file($path)) {
             $files = [$path];
-        } else {
-            $iterator = new \RecursiveIteratorIterator(
-                new \RecursiveDirectoryIterator($path, \RecursiveDirectoryIterator::SKIP_DOTS),
-                \RecursiveIteratorIterator::LEAVES_ONLY
-            );
+        } elseif (is_dir($path)) {
             $files = [];
-            foreach ($iterator as $file) {
-                if ($file->isFile()) {
-                    if ($glob) {
-                        $relPath = ltrim(str_replace($path, '', $file->getPathname()), DIRECTORY_SEPARATOR);
-                        if (!fnmatch($glob, $relPath) && !fnmatch($glob, $file->getFilename())) {
-                            continue;
+            try {
+                $iterator = new \RecursiveIteratorIterator(
+                    new \RecursiveDirectoryIterator($path, \RecursiveDirectoryIterator::SKIP_DOTS),
+                    \RecursiveIteratorIterator::LEAVES_ONLY
+                );
+                foreach ($iterator as $file) {
+                    // Match ripgrep's default and never dereference a symlink
+                    // discovered underneath an otherwise permitted search
+                    // root. Its target has not gone through the permission or
+                    // sensitive-path checks applied to the observable input.
+                    if (! $file->isLink() && $file->isFile()) {
+                        if ($glob) {
+                            $relPath = ltrim(str_replace($path, '', $file->getPathname()), DIRECTORY_SEPARATOR);
+                            if (!fnmatch($glob, $relPath) && !fnmatch($glob, $file->getFilename())) {
+                                continue;
+                            }
                         }
+                        $files[] = $file->getPathname();
                     }
-                    $files[] = $file->getPathname();
                 }
+                sort($files, SORT_STRING);
+            } catch (\UnexpectedValueException $e) {
+                return ToolResult::error("Unable to search path {$path}: {$e->getMessage()}");
             }
+        } else {
+            return ToolResult::error("Search path does not exist: {$path}");
         }
 
         $results = [];
         $fileMatches = [];
-        $count = 0;
 
         foreach ($files as $file) {
             $lines = @file($file);
             if ($lines === false) continue;
 
             $totalLines = count($lines);
-            $printedLines = []; // track already-emitted line indices to avoid duplicates
-
+            $matchingLines = [];
             foreach ($lines as $num => $line) {
                 if (preg_match($regex, $line)) {
-                    $count++;
-                    $relativePath = str_replace($path . '/', '', $file);
-
-                    if ($outputMode === 'files_with_matches') {
-                        $fileMatches[$relativePath] = true;
-                    } elseif ($outputMode === 'count') {
-                        $fileMatches[$relativePath] = ($fileMatches[$relativePath] ?? 0) + 1;
-                    } else {
-                        $lineNum = $num + 1;
-                        // Emit before-context lines
-                        if ($beforeLines > 0) {
-                            $start = max(0, $num - $beforeLines);
-                            for ($ci = $start; $ci < $num; $ci++) {
-                                if (!isset($printedLines[$ci])) {
-                                    $results[] = "{$relativePath}:" . ($ci + 1) . '-' . rtrim($lines[$ci]);
-                                    $printedLines[$ci] = true;
-                                }
-                            }
-                        }
-                        // Emit the matching line
-                        if (!isset($printedLines[$num])) {
-                            $results[] = "{$relativePath}:{$lineNum}:" . rtrim($line);
-                            $printedLines[$num] = true;
-                        }
-                        // Emit after-context lines
-                        if ($afterLines > 0) {
-                            $end = min($totalLines - 1, $num + $afterLines);
-                            for ($ci = $num + 1; $ci <= $end; $ci++) {
-                                if (!isset($printedLines[$ci])) {
-                                    $results[] = "{$relativePath}:" . ($ci + 1) . '-' . rtrim($lines[$ci]);
-                                    $printedLines[$ci] = true;
-                                }
-                            }
-                        }
-                    }
-
-                    if ($count >= $headLimit) break 2;
+                    $matchingLines[$num] = true;
                 }
+            }
+            if ($matchingLines === []) {
+                continue;
+            }
+
+            $relativePath = $this->relativePath($file, $path);
+            if ($outputMode === 'files_with_matches') {
+                $fileMatches[$relativePath] = true;
+                continue;
+            }
+            if ($outputMode === 'count') {
+                $fileMatches[$relativePath] = count($matchingLines);
+                continue;
+            }
+
+            $visibleLines = [];
+            foreach (array_keys($matchingLines) as $num) {
+                $start = max(0, $num - $beforeLines);
+                $end = min($totalLines - 1, $num + $afterLines);
+                for ($lineIndex = $start; $lineIndex <= $end; $lineIndex++) {
+                    $visibleLines[$lineIndex] = true;
+                }
+            }
+            ksort($visibleLines);
+            foreach (array_keys($visibleLines) as $lineIndex) {
+                $separator = isset($matchingLines[$lineIndex]) ? ':' : '-';
+                $results[] = $relativePath.$separator.($lineIndex + 1).$separator
+                    .rtrim($lines[$lineIndex]);
             }
         }
 
         if ($outputMode === 'files_with_matches') {
-            $output = empty($fileMatches) ? "No matches found" : implode("\n", array_keys($fileMatches));
+            $entries = array_keys($fileMatches);
         } elseif ($outputMode === 'count') {
-            $output = empty($fileMatches) ? "No matches found" : implode("\n", array_map(
+            $entries = array_map(
                 fn($f, $c) => "{$f}:{$c}", array_keys($fileMatches), array_values($fileMatches)
-            ));
+            );
         } else {
-            $output = empty($results) ? "No matches found" : implode("\n", $results);
+            $entries = $results;
         }
 
-        return ToolResult::success($output);
+        $entries = array_slice($entries, $offset, $headLimit);
+
+        return ToolResult::success(
+            $entries === [] ? $this->noMatchesMessage($pattern) : implode("\n", $entries),
+        );
+    }
+
+    private function relativePath(string $file, string $searchPath): string
+    {
+        if (is_file($searchPath)) {
+            return basename($file);
+        }
+
+        $prefix = rtrim($searchPath, '/\\').DIRECTORY_SEPARATOR;
+
+        return str_starts_with($file, $prefix)
+            ? substr($file, strlen($prefix))
+            : $file;
+    }
+
+    private function normalizeOutputPath(string $line, string $searchPath): string
+    {
+        if (is_file($searchPath)) {
+            return str_starts_with($line, $searchPath)
+                ? basename($searchPath).substr($line, strlen($searchPath))
+                : $line;
+        }
+
+        $prefixes = array_unique([
+            rtrim($searchPath, '/\\').'/',
+            rtrim($searchPath, '/\\').'\\',
+        ]);
+        foreach ($prefixes as $prefix) {
+            if (str_starts_with($line, $prefix)) {
+                return substr($line, strlen($prefix));
+            }
+        }
+
+        return $line;
+    }
+
+    private function noMatchesMessage(string $pattern): string
+    {
+        return "No matches found for pattern: {$pattern}";
+    }
+
+    public function backfillObservableInput(array $input, ToolUseContext $context): array
+    {
+        $input['path'] = $this->resolvePath(
+            is_string($input['path'] ?? null) ? $input['path'] : $context->workingDirectory,
+            $context->workingDirectory,
+        );
+
+        return $input;
     }
 
     public function isReadOnly(array $input): bool

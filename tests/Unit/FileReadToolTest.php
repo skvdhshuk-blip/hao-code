@@ -164,6 +164,58 @@ class FileReadToolTest extends TestCase
         unlink($file);
     }
 
+    public function test_failed_read_does_not_record_a_write_receipt(): void
+    {
+        $file = $this->makeTmpFile("one\ntwo\n");
+
+        $result = $this->tool->call(['file_path' => $file, 'offset' => 10], $this->context);
+
+        $this->assertTrue($result->isError);
+        $this->assertFalse($this->context->wasFileRead($file));
+        unlink($file);
+    }
+
+    public function test_partial_read_does_not_authorize_whole_file_mutation(): void
+    {
+        $file = $this->makeTmpFile("one\ntwo\nthree\n");
+
+        $result = $this->tool->call(['file_path' => $file, 'limit' => 1], $this->context);
+
+        $this->assertFalse($result->isError);
+        $this->assertFalse($this->context->wasFileRead($file));
+        $this->assertStringContainsString('partially read', $this->context->fileRevisionError($file) ?? '');
+        unlink($file);
+    }
+
+    public function test_image_returns_explicit_unsupported_error_without_base64_text(): void
+    {
+        $file = $this->makeTmpFile(base64_decode(
+            'iVBORw0KGgoAAAANSUhEUgAAAAEAAAABCAQAAAC1HAwCAAAAC0lEQVR42mP8/x8AAusB9Y9Z9ZkAAAAASUVORK5CYII=',
+            true,
+        ));
+
+        $result = $this->tool->call(['file_path' => $file], $this->context);
+
+        $this->assertTrue($result->isError);
+        $this->assertStringContainsString('image content blocks', $result->output);
+        $this->assertStringNotContainsString('base64,', $result->output);
+        $this->assertFalse($this->context->wasFileRead($file));
+        unlink($file);
+    }
+
+    public function test_extensionless_pdf_uses_pdf_boundary_and_records_no_receipt(): void
+    {
+        $file = $this->makeTmpFile("%PDF-1.4\nnot an extractable document\n");
+
+        $result = $this->tool->call(['file_path' => $file], $this->context);
+
+        $this->assertTrue($result->isError);
+        $this->assertStringContainsString('PDF text could not be extracted', $result->output);
+        $this->assertStringNotContainsString('%PDF-1.4', $result->output);
+        $this->assertNull($this->context->getFileRevision($file));
+        unlink($file);
+    }
+
     public function test_validate_input_rejects_bare_line_reference_without_path(): void
     {
         $error = $this->tool->validateInput(['file_path' => ':0'], $this->context);

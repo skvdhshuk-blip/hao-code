@@ -2,6 +2,8 @@
 
 namespace HaoCode\Tools\FileEdit;
 
+use HaoCode\Services\FileEdit\AtomicFileWriter;
+use HaoCode\Services\FileEdit\FileConflictException;
 use HaoCode\Tools\BaseTool;
 use HaoCode\Tools\ToolInputSchema;
 use HaoCode\Tools\ToolResult;
@@ -70,13 +72,13 @@ DESC;
             return ToolResult::error("File does not exist: {$filePath}");
         }
 
-        // Enforce read-before-write
-        if (!$context->wasFileRead($filePath)) {
+        if (($revisionError = $context->fileRevisionError($filePath)) !== null) {
             return ToolResult::error(
-                "Read tool first: {$filePath} must be read before editing. " .
+                $revisionError.' '.
                 "Next step: call Read on this exact path, then retry Edit."
             );
         }
+        $expectedRevision = $context->getFileRevision($filePath);
 
         if (!is_writable($filePath)) {
             return ToolResult::error("File is not writable: {$filePath}");
@@ -85,12 +87,6 @@ DESC;
         if (is_dir($filePath)) {
             return ToolResult::error("Path is a directory, not a file: {$filePath}");
         }
-
-        // Record file history before editing
-        try {
-            \HaoCode\Support\Runtime\SdkRuntime::app(\HaoCode\Services\FileHistory\FileHistoryManager::class)
-                ->recordBefore($filePath);
-        } catch (\Throwable) {}
 
         $content = file_get_contents($filePath);
         if ($content === false) {
@@ -153,10 +149,26 @@ DESC;
             $newContent = $this->normalizeLineEndings($newContent, $lineEnding);
         }
 
-        $result = file_put_contents($filePath, $newContent);
-        if ($result === false) {
-            return ToolResult::error("Failed to write file: {$filePath}");
+        try {
+            (new AtomicFileWriter())->write(
+                $filePath,
+                $newContent,
+                $expectedRevision,
+                function (string $target) use ($context): void {
+                    try {
+                        \HaoCode\Support\Runtime\SdkRuntime::app(\HaoCode\Services\FileHistory\FileHistoryManager::class)
+                            ->forSession($context->sessionId)
+                            ->recordBefore($target);
+                    } catch (\Throwable) {
+                    }
+                },
+            );
+        } catch (FileConflictException $e) {
+            return ToolResult::error($e->getMessage());
+        } catch (\Throwable $e) {
+            return ToolResult::error("Failed to write file: {$filePath}. {$e->getMessage()}");
         }
+        $context->recordFileRead($filePath, $newContent, 1, null, false);
 
         // Generate diff output
         $changeSummary = DiffGenerator::changeSummary($originalContent, $newContent);

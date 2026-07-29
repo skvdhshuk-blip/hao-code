@@ -4,6 +4,7 @@ namespace Tests\Unit;
 
 use HaoCode\Services\Agent\BackgroundAgentManager;
 use HaoCode\Services\Agent\TeamManager;
+use HaoCode\Services\FileHistory\FileHistoryManager;
 use HaoCode\Services\Task\TaskManager;
 use HaoCode\Support\Runtime\SdkRuntime;
 use PHPUnit\Framework\TestCase;
@@ -45,6 +46,39 @@ class SdkRuntimeStorageTest extends TestCase
         $this->expectExceptionMessage('storage path cannot be changed');
 
         SdkRuntime::boot(dirname(__DIR__, 2), $newPath);
+    }
+
+    public function test_file_history_follows_custom_session_path(): void
+    {
+        $sessionPath = $this->storagePath.'/custom-sessions';
+        SdkRuntime::config(['haocode.session_path' => $sessionPath]);
+        SdkRuntime::app()->forgetInstance(FileHistoryManager::class);
+        if (! is_dir($this->storagePath)) {
+            mkdir($this->storagePath, 0755, true);
+        }
+        $file = $this->storagePath.'/tracked.txt';
+        file_put_contents($file, 'tracked');
+
+        SdkRuntime::app(FileHistoryManager::class)
+            ->forSession('custom-session')
+            ->recordBefore($file);
+
+        $this->assertFileExists(
+            $sessionPath.'/.file-history/'
+                .hash('sha256', 'custom-session')
+                .'/manifest.json',
+        );
+    }
+
+    public function test_file_history_rejects_empty_session_path(): void
+    {
+        SdkRuntime::config(['haocode.session_path' => '']);
+        SdkRuntime::app()->forgetInstance(FileHistoryManager::class);
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('Session storage path must be a non-empty string.');
+
+        SdkRuntime::app(FileHistoryManager::class);
     }
 
     private function removeDirectory(string $directory): void

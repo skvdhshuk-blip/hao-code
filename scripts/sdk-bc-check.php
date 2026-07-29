@@ -78,6 +78,69 @@ $classes = [
 ];
 
 /**
+ * Discover every SDK class whose source contains an @api annotation.
+ *
+ * The explicit list above preserves the historical snapshot (including a
+ * small number of internal compatibility shims). Discovery prevents a newly
+ * annotated class from silently falling outside the BC gate.
+ *
+ * @return list<class-string>
+ */
+function discoverApiClasses(string $sdkDirectory): array
+{
+    $sdkRoot = realpath($sdkDirectory);
+    if ($sdkRoot === false) {
+        throw new RuntimeException("SDK source directory does not exist: {$sdkDirectory}");
+    }
+
+    $classes = [];
+    $iterator = new RecursiveIteratorIterator(
+        new RecursiveDirectoryIterator($sdkRoot, FilesystemIterator::SKIP_DOTS),
+    );
+    foreach ($iterator as $file) {
+        if (! $file->isFile() || $file->getExtension() !== 'php') {
+            continue;
+        }
+
+        $source = file_get_contents($file->getPathname());
+        if ($source === false) {
+            throw new RuntimeException("Unable to read SDK source: {$file->getPathname()}");
+        }
+        if (preg_match('/@api\b/', $source) !== 1) {
+            continue;
+        }
+
+        $relative = substr($file->getPathname(), strlen($sdkRoot) + 1, -4);
+        $className = 'HaoCode\\Sdk\\'.str_replace(
+            DIRECTORY_SEPARATOR,
+            '\\',
+            $relative,
+        );
+        if (! class_exists($className)
+            && ! interface_exists($className)
+            && ! trait_exists($className)
+            && ! enum_exists($className)
+        ) {
+            throw new RuntimeException(
+                "Unable to autoload @api SDK declaration: {$className}",
+            );
+        }
+
+        $classes[] = $className;
+    }
+
+    sort($classes);
+
+    return array_values(array_unique($classes));
+}
+
+foreach (discoverApiClasses(__DIR__.'/../app/Sdk') as $apiClass) {
+    if (! in_array($apiClass, $classes, true)) {
+        $classes[] = $apiClass;
+    }
+}
+
+/**
  * Returns true if the doc comment contains @api.
  */
 function isApi(?string $docComment): bool

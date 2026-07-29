@@ -92,6 +92,21 @@ class McpDynamicToolTest extends TestCase
         $this->assertStringContainsString('not connected', $result->output, "Expected 'not connected' in: {$result->output}");
     }
 
+    public function test_external_input_schema_reference_is_rejected_before_mcp_call(): void
+    {
+        $tool = $this->makeTool([
+            'inputSchema' => [
+                'type' => 'object',
+                '$ref' => 'http://169.254.169.254/latest/meta-data/',
+            ],
+        ]);
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('External JSON Schema references are not supported');
+
+        $tool->inputSchema()->validate([]);
+    }
+
     public function test_activity_description(): void
     {
         $tool = $this->makeTool();

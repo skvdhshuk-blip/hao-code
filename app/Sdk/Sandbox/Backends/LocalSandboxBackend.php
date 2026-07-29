@@ -2,11 +2,15 @@
 
 namespace HaoCode\Sdk\Sandbox\Backends;
 
+use HaoCode\Services\FileEdit\AtomicFileWriter;
+use HaoCode\Services\FileEdit\FileConflictException;
+use HaoCode\Services\FileEdit\FileRevision;
+use HaoCode\Sdk\Sandbox\RevisionAwareSandboxBackendInterface;
 use HaoCode\Sdk\Sandbox\SandboxBackendInterface;
 use HaoCode\Sdk\Sandbox\SandboxConfig;
 
 /** @api */
-final class LocalSandboxBackend implements SandboxBackendInterface
+final class LocalSandboxBackend implements SandboxBackendInterface, RevisionAwareSandboxBackendInterface
 {
     private string $root;
     private bool $ownsRoot;
@@ -24,7 +28,7 @@ final class LocalSandboxBackend implements SandboxBackendInterface
         } else {
             $this->root = sys_get_temp_dir().'/haocode-sandbox-'.bin2hex(random_bytes(8));
             $this->ownsRoot = true;
-            if (! mkdir($this->root, 0755, true)) {
+            if (! mkdir($this->root, 0700, true)) {
                 throw new \RuntimeException("Failed to create sandbox root: {$this->root}");
             }
         }
@@ -82,6 +86,33 @@ final class LocalSandboxBackend implements SandboxBackendInterface
         if (file_put_contents($local, $content) === false) {
             throw new \RuntimeException("Failed to write sandbox file: {$path}");
         }
+    }
+
+    /** @internal */
+    public function writeFileIfUnchanged(
+        string $path,
+        string $content,
+        ?string $expectedSha256,
+    ): void {
+        $local = $this->resolve($path);
+        $this->ensureDirectory(dirname($local));
+
+        $expectedRevision = null;
+        if ($expectedSha256 !== null) {
+            $expectedRevision = FileRevision::capture($local);
+            if ($expectedRevision === null
+                || ! hash_equals($expectedSha256, $expectedRevision->sha256)) {
+                throw new FileConflictException(
+                    "Sandbox file changed since it was read: {$path}. Read it again before writing.",
+                );
+            }
+        }
+
+        (new AtomicFileWriter())->write(
+            $local,
+            $content,
+            $expectedRevision,
+        );
     }
 
     public function delete(string $path): void

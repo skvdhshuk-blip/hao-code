@@ -3,6 +3,7 @@
 namespace Tests\Unit;
 
 use HaoCode\Tools\WebFetch\WebFetchTool;
+use HaoCode\Tools\ToolOutcome;
 use HaoCode\Tools\ToolUseContext;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\HttpClient\MockHttpClient;
@@ -131,6 +132,55 @@ class WebFetchToolTest extends TestCase
         $this->assertStringContainsString('Failed to fetch', $result->output);
     }
 
+    public function test_pre_aborted_context_does_not_issue_http_request(): void
+    {
+        $calls = 0;
+        $tool = new WebFetchTool(ssrfAllowList: ['127.0.0.1/32']);
+        $tool->setClient(new MockHttpClient(function () use (&$calls) {
+            $calls++;
+
+            return new MockResponse('must not run');
+        }));
+        $context = new ToolUseContext(
+            sys_get_temp_dir(),
+            'aborted',
+            shouldAbort: static fn (): bool => true,
+        );
+
+        $result = $tool->call(['url' => 'http://127.0.0.1:9999/pre-abort'], $context);
+
+        $this->assertSame(ToolOutcome::Aborted, $result->outcome());
+        $this->assertSame(0, $calls);
+    }
+
+    public function test_mid_stream_abort_stops_fetch_with_aborted_outcome(): void
+    {
+        $state = (object) ['aborted' => false];
+        $body = (function () use ($state) {
+            yield 'first';
+            $state->aborted = true;
+            yield 'second';
+        })();
+        $tool = new WebFetchTool(ssrfAllowList: ['127.0.0.1/32']);
+        $tool->setClient(new MockHttpClient([
+            new MockResponse($body, [
+                'http_code' => 200,
+                'response_headers' => ['content-type' => 'text/plain'],
+            ]),
+        ]));
+        $context = new ToolUseContext(
+            sys_get_temp_dir(),
+            'mid-abort',
+            shouldAbort: static fn (): bool => $state->aborted,
+        );
+
+        $result = $tool->call(['url' => 'http://127.0.0.1:9999/mid-abort'], $context);
+
+        $this->assertTrue($state->aborted);
+        $this->assertSame(ToolOutcome::Aborted, $result->outcome());
+        $this->assertSame('Tool execution aborted', $result->output);
+    }
+
     // ─── format parameter distinguishes text vs markdown ──────────────────
 
     public function test_markdown_format_preserves_headings_and_links(): void
@@ -255,6 +305,33 @@ class WebFetchToolTest extends TestCase
         $tool->call(['url' => 'http://127.0.0.1:9999/cache-hit'], $this->context);
 
         $this->assertSame(1, $calls, 'second identical call must be served from cache');
+    }
+
+    public function test_pre_aborted_context_does_not_read_an_existing_cache_entry(): void
+    {
+        $calls = 0;
+        $tool = new WebFetchTool(ssrfAllowList: ['127.0.0.1/32']);
+        $tool->setClient(new MockHttpClient(function () use (&$calls) {
+            $calls++;
+
+            return new MockResponse('cached', [
+                'http_code' => 200,
+                'response_headers' => ['content-type' => 'text/plain'],
+            ]);
+        }));
+        $url = 'http://127.0.0.1:9999/abort-cache';
+        $first = $tool->call(['url' => $url], $this->context);
+        $this->assertFalse($first->isError);
+
+        $abortedContext = new ToolUseContext(
+            sys_get_temp_dir(),
+            'aborted-cache',
+            shouldAbort: static fn (): bool => true,
+        );
+        $second = $tool->call(['url' => $url], $abortedContext);
+
+        $this->assertSame(1, $calls);
+        $this->assertSame(ToolOutcome::Aborted, $second->outcome());
     }
 
     public function test_cache_stores_only_the_truncated_rendered_output(): void

@@ -12,6 +12,7 @@ use HaoCode\Tools\Skill\SkillCapability;
 use HaoCode\Tools\Skill\SkillModelResolver;
 use HaoCode\Tools\ToolRegistry;
 use HaoCode\Tools\ToolUseContext;
+use HaoCode\Tools\ToolOutcome;
 use HaoCode\Tools\ToolResult;
 
 class ToolOrchestrator
@@ -268,6 +269,15 @@ class ToolOrchestrator
         ?callable $onToolStart = null,
         ?callable $onToolComplete = null,
     ): array {
+        if ($context->isAborted()) {
+            return array_map(
+                static fn (array $block): array => ToolResult::aborted()->toApiFormat(
+                    (string) ($block['id'] ?? ''),
+                ),
+                $toolUseBlocks,
+            );
+        }
+
         if (count($toolUseBlocks) <= 1) {
             // Single tool: no need for parallelism
             $results = [];
@@ -381,7 +391,12 @@ class ToolOrchestrator
                 // Serialize both the tool result and any readFileState changes so the
                 // parent can merge them back (fixes read-before-write across fork).
                 $childState = $context->getReadFileStateSnapshot();
-                $newEntries = array_diff_key($childState, $parentStateBefore);
+                $newEntries = array_filter(
+                    $childState,
+                    static fn (array $value, string $path): bool =>
+                        ! isset($parentStateBefore[$path]) || $parentStateBefore[$path] !== $value,
+                    ARRAY_FILTER_USE_BOTH,
+                );
                 $payload = [
                     'result' => $result,
                     'toolResult' => $completedResult?->toArray(),
@@ -532,6 +547,10 @@ class ToolOrchestrator
         $input = $block['input'] ?? [];
         $isPrepared = ($block['_haocode_prepared'] ?? false) === true;
 
+        if ($context->isAborted()) {
+            return ToolResult::aborted()->toApiFormat($toolUseId);
+        }
+
         $tool = $this->toolRegistry->getTool($toolName);
 
         if ($tool === null || !$tool->isEnabled()) {
@@ -555,10 +574,17 @@ class ToolOrchestrator
             $input = $preparedInput['input'];
 
             // Stage 3: PreToolUse hooks
+            if ($context->isAborted()) {
+                return ToolResult::aborted()->toApiFormat($toolUseId);
+            }
             $hookResult = $this->hookExecutor->execute('PreToolUse', [
                 'tool' => $toolName,
                 'input' => $input,
-            ]);
+            ], static fn (): bool => $context->isAborted());
+
+            if ($context->isAborted()) {
+                return ToolResult::aborted()->toApiFormat($toolUseId);
+            }
 
             if (! $hookResult->allowed) {
                 return [
@@ -614,48 +640,75 @@ class ToolOrchestrator
             ];
         }
 
+        if ($context->isAborted()) {
+            return ToolResult::aborted()->toApiFormat($toolUseId);
+        }
+
         if ($onStart) {
             $onStart($toolName, $input);
+        }
+
+        if ($context->isAborted()) {
+            $result = ToolResult::aborted();
+            if ($onComplete) {
+                $onComplete($toolName, $result);
+            }
+
+            return $result->toApiFormat($toolUseId);
         }
 
         // Execute the tool
         try {
             $result = $tool->call($input, $context);
-            $this->activateSkillScope($toolName, $result, $context);
+            if ($context->isAborted() || $result->outcome() === ToolOutcome::Aborted) {
+                $result = $result->outcome() === ToolOutcome::Aborted
+                    ? $result
+                    : ToolResult::aborted();
+            } else {
+                $this->activateSkillScope($toolName, $result, $context);
 
-            // PostToolUse hooks (success path)
-            $postHookResult = $this->hookExecutor->execute('PostToolUse', [
-                'tool' => $toolName,
-                'input' => $input,
-                'output' => $result->output,
-                'isError' => $result->isError,
-            ]);
+                // PostToolUse hooks (success path)
+                $postHookResult = $this->hookExecutor->execute('PostToolUse', [
+                    'tool' => $toolName,
+                    'input' => $input,
+                    'output' => $result->output,
+                    'isError' => $result->isError,
+                ], static fn (): bool => $context->isAborted());
 
-            if ($postHookResult->output) {
-                $result = new ToolResult(
-                    output: $result->output . "\n[Hook] " . $postHookResult->output,
-                    isError: $result->isError,
-                    metadata: $result->metadata,
-                );
+                if ($context->isAborted()) {
+                    $result = ToolResult::aborted();
+                } elseif ($postHookResult->output) {
+                    $result = new ToolResult(
+                        output: $result->output . "\n[Hook] " . $postHookResult->output,
+                        isError: $result->isError,
+                        metadata: $result->metadata,
+                    );
+                }
             }
         } catch (\HaoCode\Sdk\HumanInterruptException $e) {
             throw $e;
         } catch (\Throwable $e) {
-            $result = ToolResult::error("Tool execution error: " . $e->getMessage());
+            if ($context->isAborted()) {
+                $result = ToolResult::aborted();
+            } else {
+                $result = ToolResult::error("Tool execution error: " . $e->getMessage());
 
-            // PostToolUseFailure hooks (error path)
-            $failHookResult = $this->hookExecutor->execute('PostToolUseFailure', [
-                'tool' => $toolName,
-                'input' => $input,
-                'error' => $e->getMessage(),
-            ]);
+                // PostToolUseFailure hooks (error path)
+                $failHookResult = $this->hookExecutor->execute('PostToolUseFailure', [
+                    'tool' => $toolName,
+                    'input' => $input,
+                    'error' => $e->getMessage(),
+                ], static fn (): bool => $context->isAborted());
 
-            if ($failHookResult->output) {
-                $result = new ToolResult(
-                    output: $result->output . "\n[Hook] " . $failHookResult->output,
-                    isError: true,
-                    metadata: $result->metadata,
-                );
+                if ($context->isAborted()) {
+                    $result = ToolResult::aborted();
+                } elseif ($failHookResult->output) {
+                    $result = new ToolResult(
+                        output: $result->output . "\n[Hook] " . $failHookResult->output,
+                        isError: true,
+                        metadata: $result->metadata,
+                    );
+                }
             }
         }
 
@@ -665,12 +718,17 @@ class ToolOrchestrator
         // tool_result so the agent is reminded to reuse the content it already
         // has. A Write/Edit on the same path resets the counter because after
         // a mutation re-reading is expected.
-        $result = $this->annotateRepeatedReads($toolName, $input, $result);
+        if ($result->outcome() !== ToolOutcome::Aborted) {
+            $result = $this->annotateRepeatedReads($toolName, $input, $result);
+        }
 
         // Persist large results to disk (or truncate as fallback)
         $toolMaxChars = $tool->maxResultSizeChars();
         $maxChars = min($toolMaxChars, ToolResultStorage::MAX_SINGLE_RESULT_CHARS);
-        if (mb_strlen($result->output) > $maxChars) {
+        $resultWasCompacted = false;
+        if ($result->outcome() !== ToolOutcome::Aborted
+            && mb_strlen($result->output) > $maxChars
+        ) {
             if ($toolMaxChars < PHP_INT_MAX && $this->toolResultStorage !== null) {
                 $persisted = $this->toolResultStorage->persist($toolUseId, $result->output);
                 if ($persisted !== null) {
@@ -679,6 +737,7 @@ class ToolOrchestrator
                         isError: $result->isError,
                         metadata: $result->metadata,
                     );
+                    $resultWasCompacted = true;
                 }
             }
             // Fallback: inline truncation if persistence failed or unavailable
@@ -691,7 +750,13 @@ class ToolOrchestrator
                     isError: $result->isError,
                     metadata: $result->metadata,
                 );
+                $resultWasCompacted = true;
             }
+        }
+        if ($resultWasCompacted && $toolName === 'Read'
+            && is_string($input['file_path'] ?? null)
+        ) {
+            $context->markFileReadIncomplete($input['file_path']);
         }
 
         if ($onComplete) {
@@ -715,6 +780,10 @@ class ToolOrchestrator
             'is_error' => true,
         ]];
 
+        if ($context->isAborted()) {
+            return $error('Tool execution aborted');
+        }
+
         if ($tool === null || ! $tool->isEnabled()) {
             return $error("Unknown tool: {$toolName}");
         }
@@ -725,7 +794,14 @@ class ToolOrchestrator
         }
         $input = $preparedInput['input'];
 
-        $hookResult = $this->hookExecutor->execute('PreToolUse', ['tool' => $toolName, 'input' => $input]);
+        $hookResult = $this->hookExecutor->execute(
+            'PreToolUse',
+            ['tool' => $toolName, 'input' => $input],
+            static fn (): bool => $context->isAborted(),
+        );
+        if ($context->isAborted()) {
+            return $error('Tool execution aborted');
+        }
         if (! $hookResult->allowed) {
             return $error('Blocked by hook: '.$hookResult->output);
         }

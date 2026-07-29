@@ -7,6 +7,7 @@ use HaoCode\Services\Agent\ContextBuilder;
 use HaoCode\Services\Agent\MessageHistory;
 use HaoCode\Services\Agent\QueryEngine;
 use HaoCode\Services\Agent\StreamProcessor;
+use HaoCode\Services\Agent\ToolCall;
 use HaoCode\Services\Agent\ToolOrchestrator;
 use HaoCode\Services\Compact\ContextCompactor;
 use HaoCode\Services\Cost\CostTracker;
@@ -14,6 +15,8 @@ use HaoCode\Services\Hooks\HookExecutor;
 use HaoCode\Services\Hooks\HookResult;
 use HaoCode\Services\Permissions\PermissionChecker;
 use HaoCode\Services\Session\SessionManager;
+use HaoCode\Services\ToolResult\ToolResultStorage;
+use HaoCode\Support\Runtime\SdkRuntime;
 use HaoCode\Tools\BaseTool;
 use HaoCode\Tools\ToolInputSchema;
 use HaoCode\Tools\ToolResult;
@@ -145,6 +148,73 @@ class AgentLoopTest extends TestCase
 
         $this->assertSame('done', $loop->run('hi'));
         $this->assertSame(1, $pumps);
+    }
+
+    public function test_aggregate_budget_compaction_revokes_only_replaced_read_receipts(): void
+    {
+        $root = sys_get_temp_dir().'/haocode-aggregate-read-'.bin2hex(random_bytes(6));
+        mkdir($root, 0700, true);
+        $oldSessionPath = SdkRuntime::config('haocode.session_path');
+        SdkRuntime::config(['haocode.session_path' => $root.'/sessions']);
+        $context = new ToolUseContext($root, 'aggregate-read');
+        $toolCalls = [];
+        $before = [];
+
+        try {
+            for ($index = 1; $index <= 4; $index++) {
+                $id = "read-{$index}";
+                $relativePath = "file-{$index}.txt";
+                $path = $root.'/'.$relativePath;
+                $content = str_repeat((string) $index, 35_000);
+                file_put_contents($path, $content);
+                $context->recordFileRead($path, $content);
+                $toolCalls[] = new ToolCall($id, 'Read', ['file_path' => $relativePath]);
+                $before[] = [
+                    'tool_use_id' => $id,
+                    'content' => $content,
+                    'is_error' => false,
+                ];
+            }
+
+            $storage = new ToolResultStorage('aggregate-read');
+            $after = $storage->enforceMessageBudget($before);
+            $method = (new \ReflectionClass(AgentLoop::class))
+                ->getMethod('invalidateCompactedReadReceipts');
+            $method->setAccessible(true);
+            $loop = $this->makeLoop($this->createMock(QueryEngine::class));
+            $method->invoke($loop, $toolCalls, $before, $after, $context);
+
+            $afterById = [];
+            foreach ($after as $result) {
+                $afterById[$result['tool_use_id']] = $result['content'];
+            }
+            $compactedIds = [];
+            foreach ($before as $result) {
+                if ($afterById[$result['tool_use_id']] !== $result['content']) {
+                    $compactedIds[] = $result['tool_use_id'];
+                }
+            }
+
+            $this->assertNotEmpty($compactedIds);
+            foreach ($toolCalls as $toolCall) {
+                $this->assertSame(
+                    ! in_array($toolCall->id, $compactedIds, true),
+                    $context->wasFileRead($root.'/'.$toolCall->input['file_path']),
+                );
+            }
+        } finally {
+            SdkRuntime::config(['haocode.session_path' => $oldSessionPath]);
+            if (is_dir($root)) {
+                $iterator = new \RecursiveIteratorIterator(
+                    new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS),
+                    \RecursiveIteratorIterator::CHILD_FIRST,
+                );
+                foreach ($iterator as $item) {
+                    $item->isDir() ? @rmdir($item->getPathname()) : @unlink($item->getPathname());
+                }
+                @rmdir($root);
+            }
+        }
     }
 
     public function test_preflight_budget_rejects_oversized_first_request_before_sampling(): void

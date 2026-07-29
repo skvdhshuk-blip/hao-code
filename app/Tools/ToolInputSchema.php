@@ -33,8 +33,10 @@ class ToolInputSchema
      * falls back to a real JSON Schema validator (swaggest) so MCP dynamic
      * tools and the 47 built-in tools that pass only a JSON Schema still get
      * required/enum/type/nested-object/array-item validation. Schema parse
-     * failures (malformed $ref, unsupported draft, etc.) degrade gracefully
-     * to "allow" so one bad MCP server can't take down every tool call.
+     * failures in self-contained schemas degrade gracefully to "allow" so one
+     * bad MCP server cannot take down every tool call. Schema import uses a
+     * deny-all resolver so external references cannot perform network or local
+     * filesystem I/O on behalf of an untrusted schema.
      */
     public function validate(array $input): array
     {
@@ -91,9 +93,18 @@ class ToolInputSchema
             $dataObj = $input === []
                 ? new \stdClass()
                 : json_decode((string) json_encode($input, JSON_UNESCAPED_SLASHES));
-            \Swaggest\JsonSchema\Schema::import($schemaObj)->in($dataObj);
+            $remoteRefProvider = new \HaoCode\Support\JsonSchema\DenyRemoteRefProvider;
+            $schemaContext = new \Swaggest\JsonSchema\Context($remoteRefProvider);
+            $validationContext = new \Swaggest\JsonSchema\Context($remoteRefProvider);
+            \Swaggest\JsonSchema\Schema::import($schemaObj, $schemaContext)
+                ->in($dataObj, $validationContext);
 
             return [];
+        } catch (\HaoCode\Support\JsonSchema\ExternalReferenceException) {
+            return [
+                'External JSON Schema references are not supported; '
+                .'only local fragment references beginning with "#" are allowed.',
+            ];
         } catch (\Swaggest\JsonSchema\InvalidValue $e) {
             // Data violated the schema — surface as a validation error.
             return [trim($e->getMessage())];

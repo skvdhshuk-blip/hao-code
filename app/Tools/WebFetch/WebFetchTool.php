@@ -125,6 +125,10 @@ DESC;
 
     public function call(array $input, ToolUseContext $context): ToolResult
     {
+        if ($context->isAborted()) {
+            return ToolResult::aborted();
+        }
+
         $url = $input['url'];
         $prompt = $input['prompt'] ?? null;
         $format = ($input['format'] ?? 'text') === 'markdown' ? 'markdown' : 'text';
@@ -138,9 +142,18 @@ DESC;
             $header = "[Cached result]\n";
         } else {
             try {
-                [$content, $contentType, $finalUrl] = $this->fetchWithSsrfGuard($url);
+                [$content, $contentType, $finalUrl] = $this->fetchWithSsrfGuard(
+                    $url,
+                    static fn (): bool => $context->isAborted(),
+                );
+            } catch (WebFetchAbortedException) {
+                return ToolResult::aborted();
             } catch (\Throwable $e) {
                 return ToolResult::error("Failed to fetch URL: {$e->getMessage()}");
+            }
+
+            if ($context->isAborted()) {
+                return ToolResult::aborted();
             }
 
             $mediaType = strtolower(trim(explode(';', $contentType, 2)[0]));
@@ -151,8 +164,15 @@ DESC;
             }
 
             [$content] = $this->truncateForOutput($content);
+            if ($context->isAborted()) {
+                return ToolResult::aborted();
+            }
             $header = '';
             $this->storeCache($cacheKey, $content, $finalUrl);
+        }
+
+        if ($context->isAborted()) {
+            return ToolResult::aborted();
         }
 
         if ($finalUrl !== null && $finalUrl !== $url) {
@@ -237,20 +257,24 @@ DESC;
      *
      * @return array{0: string, 1: string, 2: ?string}  [body, content-type, final URL]
      */
-    private function fetchWithSsrfGuard(string $url): array
+    private function fetchWithSsrfGuard(string $url, ?callable $shouldAbort = null): array
     {
         $finalUrl = $url;
         $redirects = 0;
 
         while (true) {
+            $this->throwIfAborted($shouldAbort);
+
             // Resolve + validate every hop. resolveUrl throws on rejection so
             // we never issue a request against a blocked destination.
             $resolved = SsrfGuard::resolveUrl($finalUrl, $this->ssrfAllowList, $this->allowPrivateNetworks);
+            $this->throwIfAborted($shouldAbort);
 
             // Pin each connection to an already-checked IP. Transport failures
             // may try the next validated address, while an HTTP response is
             // authoritative and never triggers address failover.
-            $result = $this->requestValidatedUrl($finalUrl, $resolved);
+            $result = $this->requestValidatedUrl($finalUrl, $resolved, $shouldAbort);
+            $this->throwIfAborted($shouldAbort);
             $statusCode = $result['status'];
 
             if ($statusCode >= 300 && $statusCode < 400) {
@@ -271,10 +295,16 @@ DESC;
      * @param array{host: string, ips: list<string>} $resolved
      * @return array{status: int, location: ?string, body: string, content_type: string}
      */
-    private function requestValidatedUrl(string $url, array $resolved): array
+    private function requestValidatedUrl(
+        string $url,
+        array $resolved,
+        ?callable $shouldAbort = null,
+    ): array
     {
         $lastTransportError = null;
         foreach ($resolved['ips'] as $ip) {
+            $this->throwIfAborted($shouldAbort);
+
             if (! is_string($ip) || $ip === '') {
                 continue;
             }
@@ -282,8 +312,10 @@ DESC;
             $response = null;
             try {
                 $response = $this->client()->request('GET', $url, $this->requestOptions($resolved, $ip));
+                $this->throwIfAborted($shouldAbort);
                 $statusCode = $response->getStatusCode();
                 $headers = $response->getHeaders(false);
+                $this->throwIfAborted($shouldAbort);
 
                 if ($statusCode >= 300 && $statusCode < 400) {
                     return [
@@ -301,7 +333,11 @@ DESC;
                 return [
                     'status' => $statusCode,
                     'location' => null,
-                    'body' => $this->streamWithByteCap($response, $this->maxBytes),
+                    'body' => $this->streamWithByteCap(
+                        $response,
+                        $this->maxBytes,
+                        $shouldAbort,
+                    ),
                     'content_type' => $headers['content-type'][0] ?? '',
                 ];
             } catch (TransportExceptionInterface $e) {
@@ -525,11 +561,17 @@ DESC;
         return $slash === false ? '' : substr($path, 0, $slash);
     }
 
-    private function streamWithByteCap($response, int $maxBytes): string
+    private function streamWithByteCap(
+        $response,
+        int $maxBytes,
+        ?callable $shouldAbort = null,
+    ): string
     {
+        $this->throwIfAborted($shouldAbort);
         $chunks = [];
         $total = 0;
         foreach ($this->client()->stream($response) as $chunk) {
+            $this->throwIfAborted($shouldAbort);
             if ($chunk->isTimeout()) {
                 continue;
             }
@@ -547,6 +589,23 @@ DESC;
         }
 
         return implode('', $chunks);
+    }
+
+    private function throwIfAborted(?callable $shouldAbort): void
+    {
+        if ($shouldAbort === null) {
+            return;
+        }
+
+        try {
+            $aborted = (bool) $shouldAbort();
+        } catch (\Throwable $e) {
+            throw new WebFetchAbortedException('WebFetch abort probe failed.', 0, $e);
+        }
+
+        if ($aborted) {
+            throw new WebFetchAbortedException('WebFetch was aborted.');
+        }
     }
 
     /**
@@ -679,4 +738,11 @@ DESC;
     {
         return true;
     }
+}
+
+/**
+ * @internal
+ */
+final class WebFetchAbortedException extends \RuntimeException
+{
 }

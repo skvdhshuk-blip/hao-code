@@ -15,6 +15,7 @@ use HaoCode\Sdk\SdkRun;
 use HaoCode\Sdk\SdkRunFactory;
 use HaoCode\Services\Agent\AgentLoop;
 use HaoCode\Services\Agent\AgentLoopFactory;
+use HaoCode\Services\Agent\MessageHistory;
 use HaoCode\Services\Session\SessionManager;
 use Tests\TestCase;
 
@@ -329,6 +330,103 @@ class ConversationInternalsTest extends TestCase
         $this->assertIsCallable($autoDecisionHandlers[0]);
         $this->assertNull($autoDecisionHandlers[1]);
         $this->assertSame('next send completed', $conversation->send('safe after cleanup')->text);
+        $conversation->close();
+    }
+
+    public function test_load_session_atomically_replaces_non_empty_idle_conversation(): void
+    {
+        $history = new MessageHistory;
+        $history->addUserMessage('existing conversation message');
+
+        $activeSessionId = 'current-session';
+        $session = $this->createMock(SessionManager::class);
+        $session->expects($this->once())
+            ->method('loadSession')
+            ->with('another-session')
+            ->willReturn([
+                ['type' => 'user_message', 'content' => 'loaded user message'],
+                [
+                    'type' => 'assistant_turn',
+                    'message' => ['role' => 'assistant', 'content' => 'loaded reply'],
+                ],
+            ]);
+        $session->method('getLastResolvedSessionId')->willReturn('canonical-session');
+        $session->expects($this->once())
+            ->method('switchToSession')
+            ->with('canonical-session')
+            ->willReturnCallback(
+                static function (string $sessionId) use (&$activeSessionId): void {
+                    $activeSessionId = $sessionId;
+                },
+            );
+        $session->method('getSessionId')->willReturnCallback(
+            static function () use (&$activeSessionId): string {
+                return $activeSessionId;
+            },
+        );
+        $this->app->instance(SessionManager::class, $session);
+
+        $loop = $this->createMock(AgentLoop::class);
+        $loop->method('getMessageHistory')->willReturn($history);
+        $loop->method('getSessionManager')->willReturn($session);
+
+        $factory = $this->createMock(AgentLoopFactory::class);
+        $factory->method('createIsolated')->willReturn($loop);
+        $conversation = new Conversation(
+            new HaoCodeConfig(apiKey: 'k', allowedTools: []),
+            $factory,
+        );
+
+        $conversation->loadSession('another-session');
+
+        $this->assertSame(
+            [
+                ['role' => 'user', 'content' => 'loaded user message'],
+                ['role' => 'assistant', 'content' => 'loaded reply'],
+            ],
+            $history->getMessages(),
+        );
+        $this->assertSame('canonical-session', $conversation->getSessionId());
+        $conversation->close();
+    }
+
+    public function test_load_session_failure_preserves_existing_history_and_session(): void
+    {
+        $history = new MessageHistory;
+        $history->addUserMessage('existing conversation message');
+
+        $session = $this->createMock(SessionManager::class);
+        $session->expects($this->once())
+            ->method('loadSession')
+            ->with('missing-session')
+            ->willReturn([]);
+        $session->expects($this->never())->method('switchToSession');
+        $session->method('getSessionId')->willReturn('current-session');
+        $this->app->instance(SessionManager::class, $session);
+
+        $loop = $this->createMock(AgentLoop::class);
+        $loop->method('getMessageHistory')->willReturn($history);
+        $loop->method('getSessionManager')->willReturn($session);
+
+        $factory = $this->createMock(AgentLoopFactory::class);
+        $factory->method('createIsolated')->willReturn($loop);
+        $conversation = new Conversation(
+            new HaoCodeConfig(apiKey: 'k', allowedTools: []),
+            $factory,
+        );
+
+        try {
+            $conversation->loadSession('missing-session');
+            $this->fail('Expected the missing session load to fail.');
+        } catch (\RuntimeException $exception) {
+            $this->assertSame('Session not found: missing-session', $exception->getMessage());
+        }
+
+        $this->assertSame(
+            [['role' => 'user', 'content' => 'existing conversation message']],
+            $history->getMessages(),
+        );
+        $this->assertSame('current-session', $conversation->getSessionId());
         $conversation->close();
     }
 

@@ -2,12 +2,13 @@
 
 namespace HaoCode\Sdk\Sandbox\Backends;
 
+use HaoCode\Sdk\Sandbox\RevisionAwareSandboxBackendInterface;
 use HaoCode\Sdk\Sandbox\SandboxBackendInterface;
 use HaoCode\Sdk\Sandbox\SandboxBinaryResolver;
 use HaoCode\Sdk\Sandbox\SandboxConfig;
 
 /** @internal */
-final class TokimoSandboxBackend implements SandboxBackendInterface
+final class TokimoSandboxBackend implements SandboxBackendInterface, RevisionAwareSandboxBackendInterface
 {
     private readonly LocalSandboxBackend $filesystem;
 
@@ -70,6 +71,14 @@ final class TokimoSandboxBackend implements SandboxBackendInterface
     public function readFile(string $path): string { return $this->filesystem->readFile($path); }
 
     public function writeFile(string $path, string $content): void { $this->filesystem->writeFile($path, $content); }
+
+    public function writeFileIfUnchanged(
+        string $path,
+        string $content,
+        ?string $expectedSha256,
+    ): void {
+        $this->filesystem->writeFileIfUnchanged($path, $content, $expectedSha256);
+    }
 
     public function delete(string $path): void { $this->filesystem->delete($path); }
 

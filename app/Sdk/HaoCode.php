@@ -1050,7 +1050,10 @@ class HaoCode
 
         try {
             $schemaObj = json_decode((string) json_encode($schema, JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR));
-            \Swaggest\JsonSchema\Schema::import($schemaObj);
+            \Swaggest\JsonSchema\Schema::import(
+                $schemaObj,
+                self::safeJsonSchemaContext(),
+            );
 
             return [];
         } catch (\Throwable $e) {
@@ -1072,7 +1075,10 @@ class HaoCode
         try {
             $schemaObj = json_decode((string) json_encode($schema, JSON_UNESCAPED_SLASHES));
             $dataObj = json_decode((string) json_encode($data, JSON_UNESCAPED_SLASHES));
-            \Swaggest\JsonSchema\Schema::import($schemaObj)->in($dataObj);
+            \Swaggest\JsonSchema\Schema::import(
+                $schemaObj,
+                self::safeJsonSchemaContext(),
+            )->in($dataObj, self::safeJsonSchemaContext());
 
             return [];
         } catch (\Swaggest\JsonSchema\InvalidValue $e) {
@@ -1082,6 +1088,18 @@ class HaoCode
             // as a single validation error so the caller can diagnose.
             return ['Schema validation setup failed: '.$e->getMessage()];
         }
+    }
+
+    /**
+     * Keep JSON Schema validation self-contained. Swaggest otherwise installs
+     * a BasicFetcher that performs file_get_contents() on arbitrary $ref URLs
+     * with TLS verification disabled.
+     */
+    private static function safeJsonSchemaContext(): \Swaggest\JsonSchema\Context
+    {
+        return new \Swaggest\JsonSchema\Context(
+            new \HaoCode\Support\JsonSchema\DenyRemoteRefProvider,
+        );
     }
 
     private static function queryWithBudgetLedger(

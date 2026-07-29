@@ -99,18 +99,216 @@ class ToolInputSchemaTest extends TestCase
 
     public function test_validate_with_malformed_json_schema_silently_allows(): void
     {
-        // A broken schema (e.g. recursive $ref, unsupported draft) must NOT
-        // break every call to the tool — degrade to allow. This is the MCP
-        // compatibility safety net: a misbehaving MCP server should not
-        // take down the whole agent.
+        // A broken self-contained schema must NOT break every call to the tool.
+        // Keep the MCP compatibility fallback without performing remote I/O.
         $schema = ToolInputSchema::make([
             'type' => 'object',
-            '$ref' => 'https://example.com/nonexistent-schema.json',
+            '$ref' => '#/$defs/missing',
         ]);
 
         // Should not throw — silent allow.
         $result = $schema->validate(['anything' => 'goes']);
         $this->assertSame(['anything' => 'goes'], $result);
+    }
+
+    public function test_validate_supports_self_contained_fragment_refs(): void
+    {
+        $schema = ToolInputSchema::make([
+            'type' => 'object',
+            'required' => ['payload'],
+            'properties' => [
+                'payload' => ['$ref' => '#/definitions/payload'],
+            ],
+            'definitions' => [
+                'payload' => [
+                    'type' => 'object',
+                    'required' => ['name'],
+                    'properties' => [
+                        'name' => ['type' => 'string'],
+                    ],
+                ],
+            ],
+        ]);
+
+        $valid = ['payload' => ['name' => 'safe']];
+        $this->assertSame($valid, $schema->validate($valid));
+
+        try {
+            $schema->validate(['payload' => []]);
+            $this->fail('Expected local fragment schema validation to reject invalid data.');
+        } catch (\InvalidArgumentException $exception) {
+            $this->assertStringContainsString(
+                'Tool input validation failed',
+                $exception->getMessage(),
+            );
+        }
+    }
+
+    public function test_validate_allows_ref_as_a_property_name(): void
+    {
+        $schema = ToolInputSchema::make([
+            'type' => 'object',
+            'required' => ['$ref'],
+            'properties' => [
+                '$ref' => ['type' => 'string'],
+            ],
+        ]);
+
+        $input = ['$ref' => 'literal property value'];
+        $this->assertSame($input, $schema->validate($input));
+    }
+
+    public function test_validate_does_not_resolve_ref_shaped_literal_data(): void
+    {
+        $scheme = 'haocode-schema-literal-probe';
+        $this->assertNotContains($scheme, stream_get_wrappers());
+        $this->assertTrue(stream_wrapper_register($scheme, SchemaProbeStreamWrapper::class));
+        SchemaProbeStreamWrapper::$openCalls = 0;
+        $literal = ['$ref' => "{$scheme}://internal.example/not-a-schema.json"];
+
+        try {
+            $schema = ToolInputSchema::make([
+                'type' => 'object',
+                'required' => ['payload'],
+                'properties' => [
+                    'payload' => [
+                        'const' => $literal,
+                        'default' => $literal,
+                        'examples' => [$literal],
+                    ],
+                ],
+            ]);
+
+            $input = ['payload' => $literal];
+            $this->assertSame($input, $schema->validate($input));
+            $this->assertSame(0, SchemaProbeStreamWrapper::$openCalls);
+        } finally {
+            stream_wrapper_unregister($scheme);
+        }
+    }
+
+    public function test_validate_keeps_fragment_refs_local_under_an_external_id(): void
+    {
+        $scheme = 'haocode-schema-id-probe';
+        $this->assertNotContains($scheme, stream_get_wrappers());
+        $this->assertTrue(stream_wrapper_register($scheme, SchemaProbeStreamWrapper::class));
+        SchemaProbeStreamWrapper::$openCalls = 0;
+
+        try {
+            $schema = ToolInputSchema::make([
+                '$id' => "{$scheme}://internal.example/root.json",
+                'type' => 'object',
+                'required' => ['payload'],
+                'properties' => [
+                    'payload' => ['$ref' => '#/definitions/payload'],
+                ],
+                'definitions' => [
+                    'payload' => ['type' => 'string'],
+                ],
+            ]);
+
+            $valid = ['payload' => 'safe'];
+            $this->assertSame($valid, $schema->validate($valid));
+
+            try {
+                $schema->validate(['payload' => 123]);
+                $this->fail('Expected local fragment validation to reject invalid data.');
+            } catch (\InvalidArgumentException $exception) {
+                $this->assertStringContainsString(
+                    'Tool input validation failed',
+                    $exception->getMessage(),
+                );
+            }
+
+            $this->assertSame(0, SchemaProbeStreamWrapper::$openCalls);
+        } finally {
+            stream_wrapper_unregister($scheme);
+        }
+    }
+
+    public function test_validate_rejects_relative_ref_under_external_id_without_io(): void
+    {
+        $scheme = 'haocode-schema-relative-probe';
+        $this->assertNotContains($scheme, stream_get_wrappers());
+        $this->assertTrue(stream_wrapper_register($scheme, SchemaProbeStreamWrapper::class));
+        SchemaProbeStreamWrapper::$openCalls = 0;
+
+        try {
+            $schema = ToolInputSchema::make([
+                '$id' => "{$scheme}://internal.example/root.json",
+                'type' => 'object',
+                'properties' => [
+                    'payload' => ['$ref' => 'child.json'],
+                ],
+            ]);
+
+            try {
+                $schema->validate(['payload' => []]);
+                $this->fail('Expected relative schema reference to be rejected.');
+            } catch (\InvalidArgumentException $exception) {
+                $this->assertStringContainsString(
+                    'External JSON Schema references are not supported',
+                    $exception->getMessage(),
+                );
+            }
+
+            $this->assertSame(0, SchemaProbeStreamWrapper::$openCalls);
+        } finally {
+            stream_wrapper_unregister($scheme);
+        }
+    }
+
+    public function test_validate_rejects_external_schema_refs_without_opening_them(): void
+    {
+        $scheme = 'haocode-schema-probe';
+        $this->assertNotContains($scheme, stream_get_wrappers());
+        $this->assertTrue(stream_wrapper_register($scheme, SchemaProbeStreamWrapper::class));
+        SchemaProbeStreamWrapper::$openCalls = 0;
+
+        try {
+            $schema = ToolInputSchema::make([
+                'type' => 'object',
+                'properties' => [
+                    'payload' => [
+                        '$ref' => "{$scheme}://internal.example/schema.json",
+                    ],
+                ],
+            ]);
+
+            try {
+                $schema->validate(['payload' => []]);
+                $this->fail('Expected external schema reference to be rejected.');
+            } catch (\InvalidArgumentException $exception) {
+                $this->assertStringContainsString(
+                    'External JSON Schema references are not supported',
+                    $exception->getMessage(),
+                );
+            }
+
+            $this->assertSame(0, SchemaProbeStreamWrapper::$openCalls);
+        } finally {
+            stream_wrapper_unregister($scheme);
+        }
+    }
+
+    public function test_validate_rejects_file_and_relative_schema_refs(): void
+    {
+        foreach (['file:///etc/passwd', '../schema.json', '//internal/schema.json'] as $ref) {
+            $schema = ToolInputSchema::make([
+                'type' => 'object',
+                '$ref' => $ref,
+            ]);
+
+            try {
+                $schema->validate([]);
+                $this->fail("Expected external schema reference to be rejected: {$ref}");
+            } catch (\InvalidArgumentException $exception) {
+                $this->assertStringContainsString(
+                    'External JSON Schema references are not supported',
+                    $exception->getMessage(),
+                );
+            }
+        }
     }
 
     // ─── validate — with rules ────────────────────────────────────────────
@@ -238,5 +436,23 @@ class ToolInputSchemaTest extends TestCase
         } catch (\InvalidArgumentException $e) {
             $this->assertStringContainsString('validation failed', strtolower($e->getMessage()));
         }
+    }
+}
+
+final class SchemaProbeStreamWrapper
+{
+    public mixed $context;
+
+    public static int $openCalls = 0;
+
+    public function stream_open(
+        string $path,
+        string $mode,
+        int $options,
+        ?string &$openedPath,
+    ): bool {
+        self::$openCalls++;
+
+        return false;
     }
 }

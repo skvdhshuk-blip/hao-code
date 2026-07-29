@@ -27,6 +27,7 @@ final class HookProcessRunner
      * @param  array<string, string>  $environment
      * @return array{
      *     started: bool,
+     *     aborted: bool,
      *     timedOut: bool,
      *     outputLimitExceeded: ?string,
      *     stdout: string,
@@ -40,7 +41,12 @@ final class HookProcessRunner
         string $stdin,
         ?string $workingDirectory,
         array $environment,
+        ?callable $shouldAbort = null,
     ): array {
+        if ($this->abortRequested($shouldAbort)) {
+            return $this->abortedResult();
+        }
+
         [$processCommand, $usesProcessGroup] = $this->isolateProcessTree($command);
         $descriptors = [
             0 => ['pipe', 'r'],
@@ -73,6 +79,7 @@ final class HookProcessRunner
         $stderr = '';
         $stdinOffset = 0;
         $stdinLength = strlen($stdin);
+        $aborted = false;
         $timedOut = false;
         $limitExceeded = null;
         $runnerError = null;
@@ -85,6 +92,11 @@ final class HookProcessRunner
         }
 
         while (true) {
+            if ($this->abortRequested($shouldAbort)) {
+                $aborted = true;
+                break;
+            }
+
             $status = proc_get_status($process);
             if (! $status['running'] && $status['exitcode'] >= 0) {
                 $observedExitCode = $status['exitcode'];
@@ -181,7 +193,7 @@ final class HookProcessRunner
             }
         }
 
-        if ($timedOut || $limitExceeded !== null || $runnerError !== null) {
+        if ($aborted || $timedOut || $limitExceeded !== null || $runnerError !== null) {
             $this->terminate($process, $processId, $processGroupId);
         }
 
@@ -199,6 +211,7 @@ final class HookProcessRunner
 
         return [
             'started' => true,
+            'aborted' => $aborted,
             'timedOut' => $timedOut,
             'outputLimitExceeded' => $limitExceeded,
             'stdout' => $stdout,
@@ -311,6 +324,7 @@ PHP;
     /**
      * @return array{
      *     started: bool,
+     *     aborted: bool,
      *     timedOut: bool,
      *     outputLimitExceeded: ?string,
      *     stdout: string,
@@ -323,6 +337,7 @@ PHP;
     {
         return [
             'started' => false,
+            'aborted' => false,
             'timedOut' => false,
             'outputLimitExceeded' => null,
             'stdout' => '',
@@ -330,5 +345,46 @@ PHP;
             'exitCode' => null,
             'error' => $error,
         ];
+    }
+
+    /**
+     * @return array{
+     *     started: bool,
+     *     aborted: bool,
+     *     timedOut: bool,
+     *     outputLimitExceeded: ?string,
+     *     stdout: string,
+     *     stderr: string,
+     *     exitCode: ?int,
+     *     error: ?string
+     * }
+     */
+    private function abortedResult(): array
+    {
+        return [
+            'started' => false,
+            'aborted' => true,
+            'timedOut' => false,
+            'outputLimitExceeded' => null,
+            'stdout' => '',
+            'stderr' => '',
+            'exitCode' => null,
+            'error' => null,
+        ];
+    }
+
+    private function abortRequested(?callable $shouldAbort): bool
+    {
+        if ($shouldAbort === null) {
+            return false;
+        }
+
+        try {
+            return (bool) $shouldAbort();
+        } catch (\Throwable) {
+            // A broken cancellation probe must fail closed before a hook can
+            // create additional side effects.
+            return true;
+        }
     }
 }

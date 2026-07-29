@@ -3,6 +3,7 @@
 namespace HaoCode\Sdk\Sandbox\Tools;
 
 use HaoCode\Services\Security\SecretScanner;
+use HaoCode\Sdk\Sandbox\RevisionAwareSandboxBackendInterface;
 use HaoCode\Tools\ToolInputSchema;
 use HaoCode\Tools\ToolResult;
 use HaoCode\Tools\ToolUseContext;
@@ -36,20 +37,35 @@ final class SandboxWriteTool extends SandboxTool
         $path = $input['file_path'];
         $content = (string) $input['content'];
         $stat = $this->runtime->backend->stat($path);
-        if (($stat['exists'] ?? false) && ! $context->wasFileRead($path)) {
-            return ToolResult::error("Read tool first: {$path} already exists in sandbox and must be read before overwriting.");
+        $exists = (bool) ($stat['exists'] ?? false);
+        $expectedSha256 = null;
+        if ($exists) {
+            $revision = $context->getFileRevision($path);
+            if ($revision === null) {
+                return ToolResult::error("Read tool first: {$path} already exists in sandbox and must be read before overwriting.");
+            }
+            if (! $revision->complete) {
+                return ToolResult::error("Read the complete sandbox file first: {$path} was only partially read.");
+            }
+            $expectedSha256 = $revision->sha256;
         }
 
         try {
-            $this->runtime->backend->writeFile($path, $content);
+            $backend = $this->runtime->backend;
+            if ($backend instanceof RevisionAwareSandboxBackendInterface) {
+                $backend->writeFileIfUnchanged($path, $content, $expectedSha256);
+            } else {
+                $this->assertRemoteRevisionUnchanged($path, $exists, $expectedSha256);
+                $backend->writeFile($path, $content);
+            }
         } catch (\Throwable $e) {
             return ToolResult::error($e->getMessage());
         }
 
-        $context->recordFileRead($path, $content, 1, null, false);
+        $context->recordVirtualFileRead($path, $content, 1, null, false);
         $lines = substr_count($content, "\n") + ($content !== '' ? 1 : 0);
         $bytes = strlen($content);
-        $output = 'Successfully '.(($stat['exists'] ?? false) ? 'updated' : 'created')." sandbox file {$path} ({$lines} lines, {$bytes} bytes)";
+        $output = 'Successfully '.($exists ? 'updated' : 'created')." sandbox file {$path} ({$lines} lines, {$bytes} bytes)";
         $secrets = (new SecretScanner())->scan($content);
         if ($secrets !== []) {
             $types = array_unique(array_map(fn (array $s): string => (string) $s['type'], $secrets));
@@ -77,4 +93,38 @@ final class SandboxWriteTool extends SandboxTool
 
     public function isReadOnly(array $input): bool { return false; }
     public function getActivityDescription(array $input): ?string { return 'Writing sandbox '.basename($input['file_path'] ?? 'file'); }
+
+    private function assertRemoteRevisionUnchanged(
+        string $path,
+        bool $expectedToExist,
+        ?string $expectedSha256,
+    ): void {
+        $backend = $this->runtime->backend;
+        if (! $expectedToExist) {
+            if (($backend->stat($path)['exists'] ?? false) === true) {
+                throw new \RuntimeException(
+                    "Sandbox file was created concurrently: {$path}. Read it before overwriting.",
+                );
+            }
+
+            return;
+        }
+
+        try {
+            $current = $backend->readFile($path);
+        } catch (\Throwable $exception) {
+            throw new \RuntimeException(
+                "Sandbox file changed since it was read: {$path}. Read it again before writing.",
+                0,
+                $exception,
+            );
+        }
+
+        if ($expectedSha256 === null
+            || ! hash_equals($expectedSha256, hash('sha256', $current))) {
+            throw new \RuntimeException(
+                "Sandbox file changed since it was read: {$path}. Read it again before writing.",
+            );
+        }
+    }
 }

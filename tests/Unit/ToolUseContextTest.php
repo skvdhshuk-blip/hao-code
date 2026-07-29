@@ -67,6 +67,82 @@ class ToolUseContextTest extends TestCase
         }
     }
 
+    public function test_read_receipt_can_be_marked_incomplete_and_forgotten(): void
+    {
+        $file = tempnam(sys_get_temp_dir(), 'haocode-context-');
+        file_put_contents($file, 'content');
+        $context = new ToolUseContext(dirname($file), 'receipt');
+
+        try {
+            $context->recordFileRead($file, 'content');
+            $this->assertTrue($context->wasFileRead($file));
+
+            $context->markFileReadIncomplete(basename($file));
+            $this->assertFalse($context->wasFileRead($file));
+            $this->assertFalse($context->getFileRevision($file)?->complete);
+
+            $context->forgetFileRead($file);
+            $this->assertNull($context->getFileRevision($file));
+            $this->assertNull($context->getFileState($file));
+        } finally {
+            @unlink($file);
+        }
+    }
+
+    public function test_virtual_read_receipt_can_be_revoked_without_host_metadata(): void
+    {
+        $context = new ToolUseContext('/workspace', 'virtual-receipt');
+        $path = '/workspace/remote.txt';
+
+        $context->recordVirtualFileRead($path, 'remote content');
+
+        $revision = $context->getFileRevision($path);
+        $this->assertNotNull($revision);
+        $this->assertFalse($revision->local);
+        $this->assertTrue($revision->complete);
+        $this->assertSame(hash('sha256', 'remote content'), $revision->sha256);
+        $this->assertSame('remote content', $context->getFileState($path)?->content);
+
+        $context->markFileReadIncomplete('remote.txt');
+
+        $this->assertFalse($context->wasFileRead($path));
+        $this->assertFalse($context->getFileRevision($path)?->complete);
+
+        $context->forgetFileRead('remote.txt');
+
+        $this->assertNull($context->getFileRevision($path));
+        $this->assertNull($context->getFileState($path));
+    }
+
+    public function test_virtual_read_receipt_identity_does_not_follow_host_symlinks(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('POSIX symlink coverage.');
+        }
+
+        $base = sys_get_temp_dir().'/haocode-virtual-context-'.bin2hex(random_bytes(5));
+        $outside = $base.'-outside';
+        mkdir($base, 0700);
+        mkdir($outside, 0700);
+        symlink($outside, $base.'/remote');
+        $remoteCwd = $base.'/remote';
+        $context = new ToolUseContext($remoteCwd, 'virtual-symlink');
+
+        try {
+            $context->recordVirtualFileRead('file.txt', 'guest bytes');
+
+            $revision = $context->getFileRevision($remoteCwd.'/file.txt');
+            $this->assertNotNull($revision);
+            $this->assertFalse($revision->local);
+            $this->assertSame($remoteCwd.'/file.txt', $revision->canonicalPath);
+            $this->assertNotSame($outside.'/file.txt', $revision->canonicalPath);
+        } finally {
+            @unlink($base.'/remote');
+            @rmdir($base);
+            @rmdir($outside);
+        }
+    }
+
     public function test_run_context_can_be_propagated_to_tools(): void
     {
         $runContext = new AgentRunContext(

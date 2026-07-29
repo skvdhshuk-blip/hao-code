@@ -2,6 +2,7 @@
 
 namespace Tests\Unit;
 
+use HaoCode\Services\Permissions\SensitivePathGuard;
 use HaoCode\Tools\Glob\GlobTool;
 use HaoCode\Tools\ToolUseContext;
 use PHPUnit\Framework\TestCase;
@@ -30,8 +31,16 @@ class GlobToolTest extends TestCase
 
     private function rmdirRecursive(string $dir): void
     {
-        foreach (glob("{$dir}/*") ?: [] as $item) {
-            is_dir($item) ? $this->rmdirRecursive($item) : unlink($item);
+        if (is_link($dir) || is_file($dir)) {
+            @unlink($dir);
+
+            return;
+        }
+        if (! is_dir($dir)) {
+            return;
+        }
+        foreach (new \FilesystemIterator($dir) as $item) {
+            $this->rmdirRecursive($item->getPathname());
         }
         @rmdir($dir);
     }
@@ -147,6 +156,46 @@ class GlobToolTest extends TestCase
         $this->assertStringContainsString('default.txt', $result->output);
     }
 
+    public function test_relative_path_is_resolved_against_working_directory(): void
+    {
+        $this->touch('sub/inside.php', '<?php');
+
+        $result = $this->call(['pattern' => '*.php', 'path' => 'sub']);
+
+        $this->assertFalse($result->isError);
+        $this->assertStringContainsString('inside.php', $result->output);
+    }
+
+    public function test_backfill_canonicalizes_symlink_before_sensitive_path_check(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('POSIX symlink coverage.');
+        }
+
+        $outside = $this->tmpDir.'_outside/.ssh';
+        mkdir($outside, 0700, true);
+        file_put_contents($outside.'/id_rsa', 'private');
+        symlink($outside, $this->tmpDir.'/linked');
+
+        try {
+            $input = $this->tool->backfillObservableInput(
+                ['pattern' => '*', 'path' => 'linked'],
+                $this->context,
+            );
+
+            $this->assertSame(realpath($outside), $input['path']);
+            $this->assertSame(
+                'SSH directory',
+                SensitivePathGuard::check('Glob', $input),
+            );
+        } finally {
+            @unlink($this->tmpDir.'/linked');
+            @unlink($outside.'/id_rsa');
+            @rmdir($outside);
+            @rmdir(dirname($outside));
+        }
+    }
+
     public function test_it_normalizes_leading_dot_slash_patterns(): void
     {
         $this->touch('main.go', 'package main');
@@ -202,6 +251,32 @@ class GlobToolTest extends TestCase
         $method = $ref->getMethod('globToRegex');
         $method->setAccessible(true);
         return $method->invoke($this->tool, $pattern);
+    }
+
+    private function relativePath(string $filePath, string $basePath): string
+    {
+        $method = (new \ReflectionClass(GlobTool::class))->getMethod('relativePath');
+        $method->setAccessible(true);
+
+        return $method->invoke($this->tool, $filePath, $basePath);
+    }
+
+    public function test_relative_path_normalizes_windows_drive_and_unc_separators(): void
+    {
+        $this->assertSame(
+            'src/Services/App.php',
+            $this->relativePath(
+                'C:\\Workspace\\Project\\src\\Services\\App.php',
+                'c:\\workspace\\project',
+            ),
+        );
+        $this->assertSame(
+            'nested/File.php',
+            $this->relativePath(
+                '\\\\server\\share\\project\\nested\\File.php',
+                '\\\\SERVER\\SHARE\\project',
+            ),
+        );
     }
 
     public function test_glob_to_regex_converts_star_to_non_slash_match(): void

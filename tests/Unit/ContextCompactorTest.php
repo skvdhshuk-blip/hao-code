@@ -468,44 +468,84 @@ class ContextCompactorTest extends TestCase
         $this->assertFalse($result);
     }
 
-    // ─── replayMessages ───────────────────────────────────────────────────
-
-    public function test_replay_messages_handles_user_message_with_text_and_tool_result_blocks(): void
+    public function test_compact_preserves_recent_mixed_content_blocks_exactly(): void
     {
         $history = new MessageHistory;
-        $messages = [[
+        $history->addUserMessage('old user');
+        $history->addAssistantMessage(['role' => 'assistant', 'content' => 'old assistant']);
+        $recent = [
             'role' => 'user',
             'content' => [
-                ['type' => 'text', 'text' => 'Here is the result:'],
-                ['type' => 'tool_result', 'tool_use_id' => 't1', 'content' => 'output'],
+                ['type' => 'tool_result', 'tool_use_id' => 't1', 'content' => 'output', 'is_error' => false],
+                ['type' => 'text', 'text' => 'tail', 'cache_control' => ['type' => 'ephemeral']],
+                ['type' => 'image', 'source' => ['type' => 'base64', 'media_type' => 'image/png', 'data' => 'abc']],
+                ['type' => 'future_block', 'payload' => ['nested' => true]],
             ],
-        ]];
+        ];
+        $history->addUserMessage($recent['content']);
+        $history->addAssistantMessage([
+            'role' => 'assistant',
+            'content' => [['type' => 'text', 'text' => 'kept assistant']],
+        ]);
 
-        $this->invoke('replayMessages', $this->makeCompactor(), $history, $messages);
+        $this->makeCompactor($this->makeQueryEngine('summary'))->compact($history, keepLast: 2);
 
-        $apiMessages = $history->getMessagesForApi();
-        $this->assertCount(1, $apiMessages);
-        $this->assertSame('user', $apiMessages[0]['role']);
-        $this->assertIsArray($apiMessages[0]['content']);
+        $messages = $history->getMessages();
+        $this->assertSame($recent, $messages[2]);
+        $this->assertSame(
+            ['role' => 'assistant', 'content' => [['type' => 'text', 'text' => 'kept assistant']]],
+            $messages[3],
+        );
     }
 
-    public function test_replay_messages_skips_unknown_block_types(): void
+    public function test_compact_preserves_pure_multi_image_message_exactly(): void
     {
         $history = new MessageHistory;
-        $messages = [[
-            'role' => 'user',
-            'content' => [
-                ['type' => 'unknown_type', 'data' => 'ignored'],
-            ],
-        ]];
+        $history->addUserMessage('old user');
+        $history->addAssistantMessage(['role' => 'assistant', 'content' => 'old assistant']);
+        $images = [
+            ['type' => 'image', 'source' => ['type' => 'base64', 'media_type' => 'image/png', 'data' => 'first']],
+            ['type' => 'image', 'source' => ['type' => 'base64', 'media_type' => 'image/jpeg', 'data' => 'second']],
+        ];
+        $history->addUserMessage($images);
+        $history->addAssistantMessage(['role' => 'assistant', 'content' => 'kept']);
 
-        $this->invoke('replayMessages', $this->makeCompactor(), $history, $messages);
+        $this->makeCompactor($this->makeQueryEngine('summary'))->compact($history, keepLast: 2);
 
-        // Unknown block types (not 'text' or 'tool_result') are skipped.
-        // The text blocks filter produces empty array, tool_results filter
-        // produces empty array, so the message is not added.
-        $apiMessages = $history->getMessagesForApi();
-        $this->assertCount(0, $apiMessages);
+        $this->assertSame(['role' => 'user', 'content' => $images], $history->getMessages()[2]);
+    }
+
+    public function test_micro_compact_changes_only_old_tool_result_content(): void
+    {
+        $history = new MessageHistory;
+        $oldBlock = [
+            'type' => 'tool_result',
+            'tool_use_id' => 'old',
+            'content' => str_repeat('x', 1500),
+            'is_error' => true,
+            'cache_control' => ['type' => 'ephemeral'],
+            'extension' => ['keep' => true],
+        ];
+        $tailBlocks = [
+            ['type' => 'text', 'text' => 'tail'],
+            ['type' => 'image', 'source' => ['type' => 'base64', 'media_type' => 'image/png', 'data' => 'abc']],
+            ['type' => 'unknown_type', 'data' => 'keep'],
+        ];
+        $history->addUserMessage(array_merge([$oldBlock], $tailBlocks));
+        $history->addUserMessage([[
+            'type' => 'tool_result',
+            'tool_use_id' => 'new',
+            'content' => str_repeat('y', 1500),
+            'is_error' => false,
+        ]]);
+
+        $this->makeCompactor()->microCompact($history, keepLastToolResults: 1);
+
+        $messages = $history->getMessages();
+        $expectedOld = $oldBlock;
+        $expectedOld['content'] = '[Old tool result content cleared to save context]';
+        $this->assertSame(array_merge([$expectedOld], $tailBlocks), $messages[0]['content']);
+        $this->assertSame(str_repeat('y', 1500), $messages[1]['content'][0]['content']);
     }
 
     public function test_successful_compact_resets_failure_count(): void
@@ -567,5 +607,31 @@ class ContextCompactorTest extends TestCase
             '[Large image tool result omitted during emergency context compaction]',
             $toolResult['content'],
         );
+    }
+
+    public function test_emergency_compact_preserves_non_tool_blocks_and_fields(): void
+    {
+        $history = new MessageHistory;
+        $blocks = [
+            [
+                'type' => 'tool_result',
+                'tool_use_id' => 'toolu_large',
+                'content' => str_repeat('z', 5000),
+                'is_error' => true,
+                'cache_control' => ['type' => 'ephemeral'],
+            ],
+            ['type' => 'text', 'text' => 'tail'],
+            ['type' => 'image', 'source' => ['type' => 'base64', 'media_type' => 'image/png', 'data' => 'abc']],
+            ['type' => 'future_block', 'payload' => ['keep' => true]],
+        ];
+        $history->addUserMessage($blocks);
+
+        $this->makeCompactor()->emergencyCompact($history, previewChars: 20);
+
+        $content = $history->getMessages()[0]['content'];
+        $this->assertSame('toolu_large', $content[0]['tool_use_id']);
+        $this->assertTrue($content[0]['is_error']);
+        $this->assertSame(['type' => 'ephemeral'], $content[0]['cache_control']);
+        $this->assertSame(array_slice($blocks, 1), array_slice($content, 1));
     }
 }

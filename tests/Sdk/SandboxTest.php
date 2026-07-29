@@ -14,6 +14,24 @@ use PHPUnit\Framework\TestCase;
 
 class SandboxTest extends TestCase
 {
+    public function test_generated_local_sandbox_root_is_private(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('POSIX permission bits are not portable to Windows.');
+        }
+
+        $runtime = SandboxManager::create(SandboxConfig::local());
+        try {
+            clearstatcache(true, $runtime->backend->rootLabel());
+            $this->assertSame(
+                0700,
+                fileperms($runtime->backend->rootLabel()) & 0777,
+            );
+        } finally {
+            $runtime->close();
+        }
+    }
+
     public function test_local_sandbox_syncs_cwd_without_writing_host_files(): void
     {
         $cwd = $this->tmpDir('haocode-host-');
@@ -95,6 +113,59 @@ class SandboxTest extends TestCase
         $this->assertFalse($readResult->isError, $readResult->output);
         $this->assertStringContainsString('hello', $readResult->output);
         $this->assertStringContainsString('sandbox', $readResult->output);
+    }
+
+    public function test_sandbox_write_rejects_stale_read_revision(): void
+    {
+        $runtime = SandboxManager::create(SandboxConfig::local());
+        $context = new ToolUseContext('/workspace', 'sandbox-stale-write');
+        $read = new SandboxReadTool($runtime);
+        $write = new SandboxWriteTool($runtime);
+        $path = '/workspace/stale.txt';
+
+        try {
+            $runtime->backend->writeFile($path, 'original');
+            $readResult = $read->call(['file_path' => $path], $context);
+            $this->assertFalse($readResult->isError, $readResult->output);
+            $this->assertFalse($context->getFileRevision($path)?->local ?? true);
+
+            $runtime->backend->writeFile($path, 'external change');
+            $writeResult = $write->call([
+                'file_path' => $path,
+                'content' => 'stale overwrite',
+            ], $context);
+
+            $this->assertTrue($writeResult->isError);
+            $this->assertStringContainsString('changed since it was read', $writeResult->output);
+            $this->assertSame('external change', $runtime->backend->readFile($path));
+        } finally {
+            $runtime->close();
+        }
+    }
+
+    public function test_sandbox_read_rejects_images_and_pdfs_without_recording_receipts(): void
+    {
+        $runtime = SandboxManager::create(SandboxConfig::local());
+        $context = new ToolUseContext('/workspace', 'sandbox-binary-read');
+        $read = new SandboxReadTool($runtime);
+        $imagePath = '/workspace/pixel.bin';
+        $pdfPath = '/workspace/document.bin';
+
+        try {
+            $runtime->backend->writeFile($imagePath, "\x89PNG\r\n\x1A\nbinary");
+            $imageResult = $read->call(['file_path' => $imagePath], $context);
+            $this->assertTrue($imageResult->isError);
+            $this->assertStringContainsString('image content blocks', $imageResult->output);
+            $this->assertNull($context->getFileRevision($imagePath));
+
+            $runtime->backend->writeFile($pdfPath, "%PDF-1.4\nbinary");
+            $pdfResult = $read->call(['file_path' => $pdfPath], $context);
+            $this->assertTrue($pdfResult->isError);
+            $this->assertStringContainsString('PDF text cannot be extracted', $pdfResult->output);
+            $this->assertNull($context->getFileRevision($pdfPath));
+        } finally {
+            $runtime->close();
+        }
     }
 
     public function test_local_sandbox_glob_grep_and_exec(): void

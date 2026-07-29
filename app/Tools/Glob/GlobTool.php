@@ -49,7 +49,10 @@ DESC;
     public function call(array $input, ToolUseContext $context): ToolResult
     {
         $pattern = $this->normalizePattern($input['pattern']);
-        $path = $input['path'] ?? $context->workingDirectory;
+        $path = $this->resolvePath(
+            $input['path'] ?? $context->workingDirectory,
+            $context->workingDirectory,
+        );
 
         if (!is_dir($path)) {
             return ToolResult::error("Directory does not exist: {$path}");
@@ -83,7 +86,7 @@ DESC;
         $output .= ":\n\n";
 
         foreach ($matches as $match) {
-            $relative = str_replace($path . '/', '', $match);
+            $relative = $this->relativePath($match, $path);
             $output .= "  {$relative}\n";
         }
 
@@ -92,6 +95,16 @@ DESC;
         }
 
         return ToolResult::success($output);
+    }
+
+    public function backfillObservableInput(array $input, ToolUseContext $context): array
+    {
+        $input['path'] = $this->resolvePath(
+            is_string($input['path'] ?? null) ? $input['path'] : $context->workingDirectory,
+            $context->workingDirectory,
+        );
+
+        return $input;
     }
 
     private function globRecursive(string $dir, string $pattern, array &$matches): void
@@ -112,7 +125,10 @@ DESC;
         );
 
         foreach ($iterator as $file) {
-            $relativePath = str_replace($dir . '/', '', $file->getPathname());
+            if (! $file->isFile() || $file->isLink()) {
+                continue;
+            }
+            $relativePath = $this->relativePath($file->getPathname(), $dir);
             foreach ($regexPatterns as $regexPattern) {
                 if (preg_match($regexPattern, $relativePath)) {
                     $matches[] = $file->getPathname();
@@ -120,6 +136,28 @@ DESC;
                 }
             }
         }
+    }
+
+    private function relativePath(string $filePath, string $basePath): string
+    {
+        $windowsStyle = DIRECTORY_SEPARATOR === '\\'
+            || preg_match('/^[A-Za-z]:[\\\\\\/]/', $filePath) === 1
+            || preg_match('/^[A-Za-z]:[\\\\\\/]/', $basePath) === 1
+            || str_starts_with($filePath, '\\\\')
+            || str_starts_with($basePath, '\\\\');
+
+        if ($windowsStyle) {
+            $filePath = str_replace('\\', '/', $filePath);
+            $basePath = str_replace('\\', '/', $basePath);
+        }
+
+        $basePath = rtrim($basePath, '/');
+        $prefix = $basePath.'/';
+        $matchesPrefix = $windowsStyle
+            ? strncasecmp($filePath, $prefix, strlen($prefix)) === 0
+            : str_starts_with($filePath, $prefix);
+
+        return $matchesPrefix ? substr($filePath, strlen($prefix)) : $filePath;
     }
 
     private function normalizePattern(string $pattern): string

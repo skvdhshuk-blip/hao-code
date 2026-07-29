@@ -4,6 +4,7 @@ namespace HaoCode\Sdk;
 
 use HaoCode\Services\Agent\AgentLoop;
 use HaoCode\Services\Agent\AgentLoopFactory;
+use HaoCode\Services\Agent\MessageHistory;
 use HaoCode\Services\Api\StreamingClient;
 use HaoCode\Services\Session\SessionManager;
 
@@ -529,6 +530,9 @@ class Conversation
     /**
      * Load a previous session's message history into this conversation.
      *
+     * Existing in-memory history is replaced only after the requested session
+     * has been loaded and reconstructed successfully.
+     *
      * @api
      */
     public function loadSession(string $sessionId): void
@@ -543,6 +547,8 @@ class Conversation
 
     private function loadSessionInternal(string $sessionId): void
     {
+        $history = $this->loop->getMessageHistory();
+
         /** @var SessionManager $sessionManager */
         $sessionManager = \HaoCode\Support\Runtime\SdkRuntime::app(SessionManager::class);
         $entries = $sessionManager->loadSession($sessionId);
@@ -551,31 +557,31 @@ class Conversation
             throw new \RuntimeException("Session not found: {$sessionId}");
         }
 
-        $history = $this->loop->getMessageHistory();
+        $loadedHistory = new MessageHistory;
         $loadedPendingAssistants = [];
 
         foreach ($entries as $entry) {
             $type = $entry['type'] ?? null;
 
             if ($type === 'user_message') {
-                $history->addUserMessage($entry['content'] ?? '');
+                $loadedHistory->addUserMessage($entry['content'] ?? '');
             } elseif ($type === 'assistant_turn' && isset($entry['message'])) {
-                $history->addAssistantMessage($entry['message']);
+                $loadedHistory->addAssistantMessage($entry['message']);
                 if (! empty($entry['tool_results'])) {
-                    $history->addToolResultMessage($entry['tool_results']);
+                    $loadedHistory->addToolResultMessage($entry['tool_results']);
                 }
             } elseif ($type === 'interrupt_pending' && isset($entry['checkpoint']['assistant_message'])) {
                 $interruptId = (string) ($entry['interrupt']['id'] ?? '');
                 if ($interruptId !== '' && isset($loadedPendingAssistants[$interruptId])) {
                     continue;
                 }
-                $history->addAssistantMessage($entry['checkpoint']['assistant_message']);
+                $loadedHistory->addAssistantMessage($entry['checkpoint']['assistant_message']);
                 if ($interruptId !== '') {
                     $loadedPendingAssistants[$interruptId] = true;
                 }
             } elseif (in_array($type, ['interrupt_resolved', 'interrupt_cancelled'], true)
                 && ! empty($entry['tool_results'])) {
-                $history->addToolResultMessage($entry['tool_results']);
+                $loadedHistory->addToolResultMessage($entry['tool_results']);
             }
         }
 
@@ -586,6 +592,7 @@ class Conversation
         // previously a partial id read A but wrote to B).
         $canonicalId = $sessionManager->getLastResolvedSessionId() ?? $sessionId;
         $this->loop->getSessionManager()->switchToSession($canonicalId);
+        $history->replaceMessages($loadedHistory->getMessages());
     }
 
     /**

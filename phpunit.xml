@@ -6,22 +6,8 @@
 >
     <testsuites>
         <testsuite name="SDK">
-            <directory>tests/Sdk</directory>
-            <file>tests/Feature/SdkE2ETest.php</file>
-            <file>tests/Feature/SmartHitlModeTest.php</file>
-            <file>tests/Feature/ToolInputSchemaTest.php</file>
-            <directory>tests/Unit</directory>
-            <!--
-                Policy DSL + Provider matrix + Tool tests. Provider/LiveMatrixTest
-                self-skips without API keys; everything else is offline. These were
-                previously excluded, which hid Policy DSL regressions (see chatgpt
-                P1 audit): the bundled policies/*.yml never flowed through the
-                real PolicyLoader in CI.
-            -->
-            <directory>tests/Services</directory>
-            <directory>tests/Provider</directory>
+            <directory>tests</directory>
             <exclude>tests/Provider/AbstractMatrixTest.php</exclude>
-            <directory>tests/Tools</directory>
         </testsuite>
     </testsuites>
     <source>

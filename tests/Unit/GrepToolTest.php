@@ -3,6 +3,8 @@
 namespace Tests\Unit;
 
 use HaoCode\Tools\Grep\GrepTool;
+use HaoCode\Services\Permissions\SensitivePathGuard;
+use HaoCode\Tools\ToolResult;
 use HaoCode\Tools\ToolUseContext;
 use PHPUnit\Framework\TestCase;
 
@@ -25,8 +27,23 @@ class GrepToolTest extends TestCase
 
     protected function tearDown(): void
     {
-        array_map('unlink', glob("{$this->tmpDir}/*") ?: []);
-        @rmdir($this->tmpDir);
+        $this->removeTree($this->tmpDir);
+    }
+
+    private function removeTree(string $path): void
+    {
+        if (is_link($path) || is_file($path)) {
+            @unlink($path);
+
+            return;
+        }
+        if (! is_dir($path)) {
+            return;
+        }
+        foreach (new \FilesystemIterator($path) as $item) {
+            $this->removeTree($item->getPathname());
+        }
+        @rmdir($path);
     }
 
     private function writeFile(string $name, string $content): string
@@ -43,14 +60,17 @@ class GrepToolTest extends TestCase
      */
     private function grepPhp(
         string $pattern,
-        string $path = null,
+        ?string $path = null,
         string $outputMode = 'content',
         ?string $glob = null,
         bool $caseInsensitive = false,
         int $afterLines = 0,
         int $beforeLines = 0,
         int $headLimit = 250,
-    ): \HaoCode\Tools\ToolResult {
+        int $offset = 0,
+        ?string $type = null,
+        bool $multiline = false,
+    ): ToolResult {
         $ref = new \ReflectionClass(GrepTool::class);
         $method = $ref->getMethod('grepWithPhp');
         $method->setAccessible(true);
@@ -65,7 +85,50 @@ class GrepToolTest extends TestCase
             $afterLines,
             $beforeLines,
             $headLimit,
+            $offset,
+            $type,
+            $multiline,
         );
+    }
+
+    private function grepRg(
+        string $pattern,
+        string $path,
+        string $outputMode = 'content',
+        ?string $glob = null,
+        ?string $type = null,
+        bool $caseInsensitive = false,
+        bool $multiline = false,
+        int $afterLines = 0,
+        int $beforeLines = 0,
+        int $headLimit = 250,
+        int $offset = 0,
+    ): ToolResult {
+        $method = (new \ReflectionClass(GrepTool::class))->getMethod('grepWithRipgrep');
+        $method->setAccessible(true);
+
+        return $method->invoke(
+            $this->tool,
+            $pattern,
+            $path,
+            $outputMode,
+            $glob,
+            $type,
+            $caseInsensitive,
+            $multiline,
+            $afterLines,
+            $beforeLines,
+            $headLimit,
+            $offset,
+        );
+    }
+
+    private function hasRipgrep(): bool
+    {
+        $method = (new \ReflectionClass(GrepTool::class))->getMethod('hasRipgrep');
+        $method->setAccessible(true);
+
+        return $method->invoke($this->tool);
     }
 
     // ─── Basic matching ───────────────────────────────────────────────────
@@ -185,6 +248,28 @@ class GrepToolTest extends TestCase
         $this->assertLessThanOrEqual(3, $matchCount);
     }
 
+    public function test_php_fallback_applies_global_offset_and_head_limit_across_files(): void
+    {
+        $this->writeFile('a.txt', "match-a\nmatch-b\n");
+        $this->writeFile('b.txt', "match-c\nmatch-d\n");
+
+        $result = $this->grepPhp('match', headLimit: 2, offset: 1);
+
+        $this->assertSame(
+            "a.txt:2:match-b\nb.txt:1:match-c",
+            $result->output,
+        );
+    }
+
+    public function test_head_limit_zero_uses_consistent_no_match_result(): void
+    {
+        $this->writeFile('a.txt', "match\n");
+
+        $result = $this->grepPhp('match', headLimit: 0);
+
+        $this->assertSame('No matches found for pattern: match', $result->output);
+    }
+
     // ─── single file search ───────────────────────────────────────────────
 
     public function test_it_searches_a_single_file_directly(): void
@@ -233,6 +318,7 @@ class GrepToolTest extends TestCase
         // which is itself a match — it should appear exactly once
         $count = substr_count($result->output, 'match2');
         $this->assertSame(1, $count);
+        $this->assertStringContainsString('adj.txt:2:match2', $result->output);
     }
 
     public function test_no_context_lines_without_flags(): void
@@ -270,6 +356,135 @@ class GrepToolTest extends TestCase
         $this->assertFalse($result->isError);
         $this->assertStringContainsString('api/v1', $result->output);
         $this->assertStringNotContainsString('home', $result->output);
+    }
+
+    public function test_relative_search_path_is_resolved_against_tool_context(): void
+    {
+        mkdir($this->tmpDir.'/sub', 0700);
+        file_put_contents($this->tmpDir.'/sub/file.txt', "needle\n");
+
+        $result = $this->tool->call(
+            ['pattern' => 'needle', 'path' => 'sub', 'output_mode' => 'content'],
+            $this->context,
+        );
+
+        $this->assertFalse($result->isError);
+        $this->assertStringContainsString('file.txt:1:needle', $result->output);
+    }
+
+    public function test_backfill_canonicalizes_symlink_before_sensitive_path_check(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('POSIX symlink coverage.');
+        }
+
+        $outside = $this->tmpDir.'_outside/.ssh';
+        mkdir($outside, 0700, true);
+        file_put_contents($outside.'/id_rsa', 'private-key');
+        symlink($outside, $this->tmpDir.'/linked');
+
+        try {
+            $input = $this->tool->backfillObservableInput(
+                ['pattern' => 'private-key', 'path' => 'linked'],
+                $this->context,
+            );
+
+            $this->assertSame(realpath($outside), $input['path']);
+            $this->assertSame(
+                'SSH directory',
+                SensitivePathGuard::check('Grep', $input),
+            );
+        } finally {
+            @unlink($this->tmpDir.'/linked');
+            @unlink($outside.'/id_rsa');
+            @rmdir($outside);
+            @rmdir(dirname($outside));
+        }
+    }
+
+    public function test_php_fallback_does_not_read_symlinked_files_below_search_root(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('POSIX symlink coverage.');
+        }
+
+        $outside = tempnam(sys_get_temp_dir(), 'grep-sensitive-');
+        file_put_contents($outside, 'private-key-material');
+        symlink($outside, $this->tmpDir.'/linked-secret.txt');
+
+        try {
+            $result = $this->grepPhp('private-key-material');
+
+            $this->assertFalse($result->isError);
+            $this->assertSame(
+                'No matches found for pattern: private-key-material',
+                $result->output,
+            );
+        } finally {
+            @unlink($this->tmpDir.'/linked-secret.txt');
+            @unlink($outside);
+        }
+    }
+
+    public function test_php_fallback_explicitly_rejects_unsupported_type_filter(): void
+    {
+        $this->writeFile('a.php', "<?php\n");
+
+        $result = $this->grepPhp('php', type: 'php');
+
+        $this->assertTrue($result->isError);
+        $this->assertStringContainsString('requires ripgrep', $result->output);
+    }
+
+    public function test_php_fallback_explicitly_rejects_multiline_search(): void
+    {
+        $this->writeFile('a.txt', "one\ntwo\n");
+
+        $result = $this->grepPhp('one.*two', multiline: true);
+
+        $this->assertTrue($result->isError);
+        $this->assertStringContainsString('requires ripgrep', $result->output);
+    }
+
+    public function test_ripgrep_and_php_fallback_return_identical_order_paths_context_and_limits(): void
+    {
+        if (! $this->hasRipgrep()) {
+            $this->markTestSkipped('ripgrep is not installed.');
+        }
+
+        $this->writeFile('b.txt', "before-c\nneedle-c\nafter-c\n");
+        $this->writeFile('a.txt', "before-a\nneedle-a\nafter-a\ngap\nneedle-b\ntail\n");
+
+        foreach (['content', 'files_with_matches', 'count'] as $mode) {
+            $after = $mode === 'content' ? 1 : 0;
+            $before = $mode === 'content' ? 1 : 0;
+            $offset = $mode === 'content' ? 1 : 0;
+            $head = $mode === 'content' ? 5 : 10;
+            $php = $this->grepPhp(
+                'needle',
+                outputMode: $mode,
+                afterLines: $after,
+                beforeLines: $before,
+                headLimit: $head,
+                offset: $offset,
+            );
+            $rg = $this->grepRg(
+                'needle',
+                $this->tmpDir,
+                outputMode: $mode,
+                afterLines: $after,
+                beforeLines: $before,
+                headLimit: $head,
+                offset: $offset,
+            );
+
+            $this->assertSame($php->output, $rg->output, "backend mismatch for {$mode}");
+        }
+
+        $this->assertSame(
+            $this->grepPhp('missing', headLimit: 0)->output,
+            $this->grepRg('missing', $this->tmpDir, headLimit: 0)->output,
+        );
     }
 
     // ─── isReadOnly ───────────────────────────────────────────────────────

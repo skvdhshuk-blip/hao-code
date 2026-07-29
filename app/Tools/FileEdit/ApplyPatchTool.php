@@ -13,7 +13,7 @@ use HaoCode\Tools\ToolUseContext;
 /**
  * Tool: apply_patch
  *
- * Accepts a codex envelope patch and applies it atomically.
+ * Accepts a codex envelope patch and applies it with rollback on failure.
  * Supports Add / Update / Delete file operations in a single call.
  *
  * Envelope format:
@@ -48,10 +48,10 @@ class ApplyPatchTool extends BaseTool
     public function description(): string
     {
         return <<<'DESC'
-Apply a codex-envelope format patch atomically to one or more files.
+Apply a codex-envelope format patch transactionally to one or more files.
 
 Supports Add File / Update File / Delete File operations.
-All operations succeed or all fail — no partial writes.
+If an operation fails, already-applied operations are restored.
 Files to be updated or deleted must have been read first (Read-before-Write).
 Max 50 files per patch, total patch size ≤ 1 MiB.
 DESC;

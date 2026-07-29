@@ -397,6 +397,108 @@
         },
         "properties": []
     },
+    "HaoCode\\Sdk\\Credential": {
+        "kind": "class",
+        "api": true,
+        "internal": false,
+        "methods": {
+            "__construct": {
+                "signature": "public function __construct(string $apiKey, string $id = \"\", int $priority = 0, array $meta = [])",
+                "api": false,
+                "internal": false
+            },
+            "idHash": {
+                "signature": "public function idHash() : string",
+                "api": true,
+                "internal": false
+            },
+            "make": {
+                "signature": "public static function make(string $apiKey, int $priority = 0, array $meta = []) : self",
+                "api": true,
+                "internal": false
+            }
+        },
+        "properties": {
+            "apiKey": {
+                "signature": "public readonly string $apiKey",
+                "api": true,
+                "internal": false
+            },
+            "id": {
+                "signature": "public readonly string $id",
+                "api": true,
+                "internal": false
+            },
+            "meta": {
+                "signature": "public readonly array $meta",
+                "api": true,
+                "internal": false
+            },
+            "priority": {
+                "signature": "public readonly int $priority",
+                "api": true,
+                "internal": false
+            }
+        }
+    },
+    "HaoCode\\Sdk\\CredentialPool": {
+        "kind": "class",
+        "api": true,
+        "internal": false,
+        "methods": {
+            "__construct": {
+                "signature": "public function __construct(float $exhaustedTtlSeconds = 60, ?HaoCode\\Services\\Telemetry\\PhoenixTracer $tracer = null, ?callable $clock = null)",
+                "api": false,
+                "internal": false
+            },
+            "add": {
+                "signature": "public function add(string $provider, HaoCode\\Sdk\\Credential $credential) : void",
+                "api": true,
+                "internal": false
+            },
+            "addMany": {
+                "signature": "public function addMany(string $provider, array $credentials) : void",
+                "api": true,
+                "internal": false
+            },
+            "getStats": {
+                "signature": "public function getStats() : array",
+                "api": true,
+                "internal": false
+            },
+            "hasProvider": {
+                "signature": "public function hasProvider(string $provider) : bool",
+                "api": true,
+                "internal": false
+            },
+            "markError": {
+                "signature": "public function markError(HaoCode\\Sdk\\Credential $credential) : void",
+                "api": true,
+                "internal": false
+            },
+            "markExhausted": {
+                "signature": "public function markExhausted(HaoCode\\Sdk\\Credential $credential, ?float $retryAfterSeconds = null) : void",
+                "api": true,
+                "internal": false
+            },
+            "markSuccess": {
+                "signature": "public function markSuccess(HaoCode\\Sdk\\Credential $credential) : void",
+                "api": false,
+                "internal": true
+            },
+            "pickNext": {
+                "signature": "public function pickNext(string $provider) : ?HaoCode\\Sdk\\Credential",
+                "api": true,
+                "internal": false
+            },
+            "restore": {
+                "signature": "public function restore(HaoCode\\Sdk\\Credential $credential) : void",
+                "api": true,
+                "internal": false
+            }
+        },
+        "properties": []
+    },
     "HaoCode\\Sdk\\HaoCode": {
         "kind": "class",
         "api": true,
@@ -1230,6 +1332,68 @@
             }
         }
     },
+    "HaoCode\\Sdk\\RateLimitStorageInterface": {
+        "kind": "interface",
+        "api": true,
+        "internal": false,
+        "methods": {
+            "getWindowStats": {
+                "signature": "public function getWindowStats(string $credentialId, int $windowSeconds = 60) : array",
+                "api": false,
+                "internal": false
+            },
+            "incrementRequests": {
+                "signature": "public function incrementRequests(string $credentialId, int $windowSeconds = 60) : int",
+                "api": false,
+                "internal": false
+            },
+            "incrementTokens": {
+                "signature": "public function incrementTokens(string $credentialId, int $tokens, int $windowSeconds = 60) : int",
+                "api": false,
+                "internal": false
+            }
+        },
+        "properties": []
+    },
+    "HaoCode\\Sdk\\RateLimitTracker": {
+        "kind": "class",
+        "api": true,
+        "internal": false,
+        "methods": {
+            "__construct": {
+                "signature": "public function __construct(?HaoCode\\Services\\Telemetry\\PhoenixTracer $tracer = null, ?callable $clock = null)",
+                "api": false,
+                "internal": false
+            },
+            "checkBlocked": {
+                "signature": "public function checkBlocked(HaoCode\\Sdk\\Credential $credential) : bool",
+                "api": true,
+                "internal": false
+            },
+            "record": {
+                "signature": "public function record(HaoCode\\Sdk\\Credential $credential, int $tokens = 0) : void",
+                "api": true,
+                "internal": false
+            },
+            "setLimit": {
+                "signature": "public function setLimit(HaoCode\\Sdk\\Credential $credential, int $rpm, int $tpm = 0) : void",
+                "api": true,
+                "internal": false
+            },
+            "windowStats": {
+                "signature": "public function windowStats(HaoCode\\Sdk\\Credential $credential) : array",
+                "api": true,
+                "internal": false
+            }
+        },
+        "properties": {
+            "storage": {
+                "signature": "public ?HaoCode\\Sdk\\RateLimitStorageInterface $storage",
+                "api": true,
+                "internal": false
+            }
+        }
+    },
     "HaoCode\\Sdk\\RunOptions": {
         "kind": "class",
         "api": true,
@@ -1352,6 +1516,245 @@
         },
         "properties": []
     },
+    "HaoCode\\Sdk\\Sandbox\\Backends\\AgentRunSandboxBackend": {
+        "kind": "class",
+        "api": true,
+        "internal": false,
+        "methods": {
+            "__construct": {
+                "signature": "public function __construct(HaoCode\\Sdk\\Sandbox\\SandboxConfig $config, ?HaoCode\\Sdk\\Sandbox\\AgentRun\\AgentRunClient $client = null)",
+                "api": false,
+                "internal": false
+            },
+            "close": {
+                "signature": "public function close() : void",
+                "api": false,
+                "internal": false
+            },
+            "delete": {
+                "signature": "public function delete(string $path) : void",
+                "api": false,
+                "internal": false
+            },
+            "detach": {
+                "signature": "public function detach() : void",
+                "api": false,
+                "internal": true
+            },
+            "download": {
+                "signature": "public function download(string $remotePath, string $localPath) : void",
+                "api": false,
+                "internal": false
+            },
+            "exec": {
+                "signature": "public function exec(string $command, ?string $cwd = null, int $timeoutMs = 120000, ?callable $shouldAbort = null) : array",
+                "api": false,
+                "internal": false
+            },
+            "exportLease": {
+                "signature": "public function exportLease() : array",
+                "api": false,
+                "internal": true
+            },
+            "glob": {
+                "signature": "public function glob(string $pattern, ?string $path = null) : array",
+                "api": false,
+                "internal": false
+            },
+            "grep": {
+                "signature": "public function grep(string $pattern, ?string $path = null, ?string $glob = null, bool $caseInsensitive = false, int $limit = 250) : array",
+                "api": false,
+                "internal": false
+            },
+            "list": {
+                "signature": "public function list(string $path) : array",
+                "api": false,
+                "internal": false
+            },
+            "readFile": {
+                "signature": "public function readFile(string $path) : string",
+                "api": false,
+                "internal": false
+            },
+            "rootLabel": {
+                "signature": "public function rootLabel() : string",
+                "api": false,
+                "internal": false
+            },
+            "stat": {
+                "signature": "public function stat(string $path) : array",
+                "api": false,
+                "internal": false
+            },
+            "upload": {
+                "signature": "public function upload(string $localPath, string $remotePath) : void",
+                "api": false,
+                "internal": false
+            },
+            "writeFile": {
+                "signature": "public function writeFile(string $path, string $content) : void",
+                "api": false,
+                "internal": false
+            }
+        },
+        "properties": []
+    },
+    "HaoCode\\Sdk\\Sandbox\\Backends\\LocalSandboxBackend": {
+        "kind": "class",
+        "api": true,
+        "internal": false,
+        "methods": {
+            "__construct": {
+                "signature": "public function __construct(HaoCode\\Sdk\\Sandbox\\SandboxConfig $config)",
+                "api": false,
+                "internal": false
+            },
+            "close": {
+                "signature": "public function close() : void",
+                "api": false,
+                "internal": false
+            },
+            "delete": {
+                "signature": "public function delete(string $path) : void",
+                "api": false,
+                "internal": false
+            },
+            "detach": {
+                "signature": "public function detach() : void",
+                "api": false,
+                "internal": true
+            },
+            "download": {
+                "signature": "public function download(string $remotePath, string $localPath) : void",
+                "api": false,
+                "internal": false
+            },
+            "exec": {
+                "signature": "public function exec(string $command, ?string $cwd = null, int $timeoutMs = 120000, ?callable $shouldAbort = null) : array",
+                "api": false,
+                "internal": false
+            },
+            "exportLease": {
+                "signature": "public function exportLease() : array",
+                "api": false,
+                "internal": true
+            },
+            "glob": {
+                "signature": "public function glob(string $pattern, ?string $path = null) : array",
+                "api": false,
+                "internal": false
+            },
+            "grep": {
+                "signature": "public function grep(string $pattern, ?string $path = null, ?string $glob = null, bool $caseInsensitive = false, int $limit = 250) : array",
+                "api": false,
+                "internal": false
+            },
+            "list": {
+                "signature": "public function list(string $path) : array",
+                "api": false,
+                "internal": false
+            },
+            "readFile": {
+                "signature": "public function readFile(string $path) : string",
+                "api": false,
+                "internal": false
+            },
+            "rootLabel": {
+                "signature": "public function rootLabel() : string",
+                "api": false,
+                "internal": false
+            },
+            "stat": {
+                "signature": "public function stat(string $path) : array",
+                "api": false,
+                "internal": false
+            },
+            "upload": {
+                "signature": "public function upload(string $localPath, string $remotePath) : void",
+                "api": false,
+                "internal": false
+            },
+            "writeFile": {
+                "signature": "public function writeFile(string $path, string $content) : void",
+                "api": false,
+                "internal": false
+            },
+            "writeFileIfUnchanged": {
+                "signature": "public function writeFileIfUnchanged(string $path, string $content, ?string $expectedSha256) : void",
+                "api": false,
+                "internal": true
+            }
+        },
+        "properties": []
+    },
+    "HaoCode\\Sdk\\Sandbox\\SandboxBackendInterface": {
+        "kind": "interface",
+        "api": true,
+        "internal": false,
+        "methods": {
+            "close": {
+                "signature": "public function close() : void",
+                "api": false,
+                "internal": false
+            },
+            "delete": {
+                "signature": "public function delete(string $path) : void",
+                "api": false,
+                "internal": false
+            },
+            "download": {
+                "signature": "public function download(string $remotePath, string $localPath) : void",
+                "api": false,
+                "internal": false
+            },
+            "exec": {
+                "signature": "public function exec(string $command, ?string $cwd = null, int $timeoutMs = 120000, ?callable $shouldAbort = null) : array",
+                "api": false,
+                "internal": false
+            },
+            "glob": {
+                "signature": "public function glob(string $pattern, ?string $path = null) : array",
+                "api": false,
+                "internal": false
+            },
+            "grep": {
+                "signature": "public function grep(string $pattern, ?string $path = null, ?string $glob = null, bool $caseInsensitive = false, int $limit = 250) : array",
+                "api": false,
+                "internal": false
+            },
+            "list": {
+                "signature": "public function list(string $path) : array",
+                "api": false,
+                "internal": false
+            },
+            "readFile": {
+                "signature": "public function readFile(string $path) : string",
+                "api": false,
+                "internal": false
+            },
+            "rootLabel": {
+                "signature": "public function rootLabel() : string",
+                "api": false,
+                "internal": false
+            },
+            "stat": {
+                "signature": "public function stat(string $path) : array",
+                "api": false,
+                "internal": false
+            },
+            "upload": {
+                "signature": "public function upload(string $localPath, string $remotePath) : void",
+                "api": false,
+                "internal": false
+            },
+            "writeFile": {
+                "signature": "public function writeFile(string $path, string $content) : void",
+                "api": false,
+                "internal": false
+            }
+        },
+        "properties": []
+    },
     "HaoCode\\Sdk\\Sandbox\\SandboxConfig": {
         "kind": "class",
         "api": true,
@@ -1427,6 +1830,55 @@
             "sync": {
                 "signature": "public readonly string $sync",
                 "api": true,
+                "internal": false
+            }
+        }
+    },
+    "HaoCode\\Sdk\\Sandbox\\SandboxRuntime": {
+        "kind": "class",
+        "api": true,
+        "internal": false,
+        "methods": {
+            "__construct": {
+                "signature": "public function __construct(HaoCode\\Sdk\\Sandbox\\SandboxConfig $config, HaoCode\\Sdk\\Sandbox\\SandboxBackendInterface $backend)",
+                "api": false,
+                "internal": false
+            },
+            "close": {
+                "signature": "public function close() : void",
+                "api": false,
+                "internal": true
+            },
+            "configFromLease": {
+                "signature": "public static function configFromLease(array $lease, ?HaoCode\\Sdk\\Sandbox\\SandboxConfig $caller = null) : HaoCode\\Sdk\\Sandbox\\SandboxConfig",
+                "api": false,
+                "internal": true
+            },
+            "detach": {
+                "signature": "public function detach() : void",
+                "api": false,
+                "internal": true
+            },
+            "exportLease": {
+                "signature": "public function exportLease() : ?array",
+                "api": false,
+                "internal": true
+            },
+            "tools": {
+                "signature": "public function tools() : array",
+                "api": false,
+                "internal": true
+            }
+        },
+        "properties": {
+            "backend": {
+                "signature": "public readonly HaoCode\\Sdk\\Sandbox\\SandboxBackendInterface $backend",
+                "api": false,
+                "internal": false
+            },
+            "config": {
+                "signature": "public readonly HaoCode\\Sdk\\Sandbox\\SandboxConfig $config",
+                "api": false,
                 "internal": false
             }
         }

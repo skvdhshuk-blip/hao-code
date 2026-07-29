@@ -139,6 +139,12 @@ top of `Runner`.
 | State | Session IDs, conversation handles, memory summary levels, custom memory storage path |
 | Reliability | Credential-pool failover on rate limits, provider abstraction, SDK-only runtime without framework dependencies |
 
+The built-in `Read` tool returns text only. It does not return images or PDFs
+without extractable text as base64 tool results; pass images through the SDK
+image-input APIs instead. File mutation is also fail closed: a failed or partial
+`Read` does not authorize `Write` or `Edit`, and an external revision change
+requires another complete `Read` before mutation.
+
 ## Main APIs
 
 | Need | API |
@@ -234,6 +240,12 @@ including `LSP` and task/team tools, are not sandbox replacements; use an
 explicit `allowedTools` list as shown below and omit them unless needed. Legacy
 cron tool classes are not registered by the default runtime because no prompt
 execution driver is wired.
+
+Overwriting an existing sandbox file also requires a complete current `Read`.
+Local, native, and Tokimo backends compare the receipt while publishing the
+replacement atomically. AgentRun rechecks the remote bytes immediately before
+writing, but its file API has no conditional-write primitive, so that remote
+check cannot eliminate a concurrent change between the check and write.
 
 Choose the backend by the isolation boundary you need:
 
@@ -763,7 +775,7 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.18.14`. Notable changes since `v1.10.0`:
+is based on `v1.18.16`. Notable changes since `v1.10.0`:
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/
@@ -822,6 +834,16 @@ is based on `v1.18.14`. Notable changes since `v1.10.0`:
   foreground, background, and sandbox Bash; invalid HITL decisions preserve
   pending sandbox leases; structured streaming resume and MCP deadlines fail
   closed; release lint now covers examples.
+- `v1.18.15` — SDK lifecycle and persistence contracts are hardened: durable
+  HITL sandboxes survive non-streaming and repeated-interrupt paths; abandoned
+  streams abort and drain; hooks time out, fail closed, and revalidate modified
+  input; committed credential streams are never replayed; settings and session
+  reads fail closed; parallel tool results retain metadata and outcomes.
+- `v1.18.16` — Local file tools enforce text-only `Read` boundaries, complete
+  and current revision receipts, and atomic conflict-safe mutation; context
+  compaction preserves tool-call/result structure; `Conversation::loadSession()`
+  atomically replaces existing in-memory history; CI discovers and runs every
+  non-live test.
 
 ## License
 

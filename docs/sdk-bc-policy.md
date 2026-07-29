@@ -25,6 +25,16 @@
 | `JsonMemoryStore` | 默认 JSON 长期记忆存储实现 |
 | `AbortController` | 取消控制器 |
 | `StructuredResult` | 结构化输出封装 |
+| `Agent` / `Runner` / `RunOptions` | Agent 定义、执行器与运行参数 |
+| `Credential` / `CredentialPool` | 凭证值对象与轮换池 |
+| `RateLimitTracker` / `RateLimitStorageInterface` | 限流状态与持久化扩展点 |
+| `ImageContentBlock` | 多模态图片输入块 |
+| `SandboxConfig` / `SandboxRuntime` | 沙箱配置与运行句柄 |
+| `SandboxBackendInterface` | 自定义沙箱 backend 契约 |
+| `LocalSandboxBackend` / `AgentRunSandboxBackend` | 公开沙箱 backend 实现 |
+
+BC 脚本除保留历史显式清单外，还会扫描 `app/Sdk/` 中所有含
+`@api` 标记的声明；新增公开类但未更新快照时，`--verify` 会失败。
 
 ### `@internal`
 

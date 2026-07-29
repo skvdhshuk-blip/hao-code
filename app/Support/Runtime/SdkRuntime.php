@@ -212,7 +212,25 @@ final class SdkRuntime
         ));
         $app->singleton(SkillLoader::class);
         $app->singleton(CostTracker::class);
-        $app->singleton(\HaoCode\Services\FileHistory\FileHistoryManager::class);
+        $app->singleton(
+            \HaoCode\Services\FileHistory\FileHistoryManager::class,
+            function (Container $app): \HaoCode\Services\FileHistory\FileHistoryManager {
+                $sessionPath = $app->config(
+                    'haocode.session_path',
+                    $app->storagePath('app/haocode/sessions'),
+                );
+                if (! is_string($sessionPath) || trim($sessionPath) === '') {
+                    throw new \RuntimeException(
+                        'Session storage path must be a non-empty string.',
+                    );
+                }
+
+                return new \HaoCode\Services\FileHistory\FileHistoryManager(
+                    storageRoot: rtrim($sessionPath, '/\\')
+                        .DIRECTORY_SEPARATOR.'.file-history',
+                );
+            },
+        );
         $app->singleton(\HaoCode\Services\Task\TaskManager::class, fn (Container $app) => new \HaoCode\Services\Task\TaskManager(
             $app->storagePath('app/haocode/tasks'),
         ));

@@ -190,6 +190,115 @@ class ToolOrchestratorTest extends TestCase
         $this->assertStringContainsString('Blocked by hook', $result['content']);
     }
 
+    public function test_pre_aborted_context_skips_hooks_permissions_tool_and_start_callback(): void
+    {
+        $registry = new ToolRegistry;
+        $executed = false;
+        $registry->register($this->makeTool('AbortSensitive', function () use (&$executed) {
+            $executed = true;
+
+            return ToolResult::success('ran');
+        }));
+
+        $hooks = $this->createMock(HookExecutor::class);
+        $hooks->expects($this->never())->method('execute');
+        $checker = $this->createMock(PermissionChecker::class);
+        $checker->expects($this->never())->method('check');
+        $started = false;
+        $context = new ToolUseContext(
+            '/tmp',
+            'abort-test',
+            shouldAbort: static fn (): bool => true,
+        );
+
+        $result = $this->makeOrchestrator($registry, $checker, $hooks)->executeToolBlock(
+            ['id' => 'abort-1', 'name' => 'AbortSensitive', 'input' => []],
+            $context,
+            static function () use (&$started): void {
+                $started = true;
+            },
+        );
+
+        $this->assertTrue($result['is_error']);
+        $this->assertSame('Tool execution aborted', $result['content']);
+        $this->assertFalse($executed);
+        $this->assertFalse($started);
+    }
+
+    public function test_pre_aborted_batch_does_not_fork_or_emit_start_callbacks(): void
+    {
+        $registry = new ToolRegistry;
+        $registry->register($this->makeTool(
+            'SafeAbortSensitive',
+            static fn (): ToolResult => ToolResult::success('must not run'),
+            true,
+        ));
+        $started = 0;
+        $context = new ToolUseContext(
+            '/tmp',
+            'abort-batch',
+            shouldAbort: static fn (): bool => true,
+        );
+
+        $results = $this->makeOrchestrator($registry)->executeTools(
+            [
+                ['id' => 'abort-1', 'name' => 'SafeAbortSensitive', 'input' => []],
+                ['id' => 'abort-2', 'name' => 'SafeAbortSensitive', 'input' => []],
+            ],
+            $context,
+            static function () use (&$started): void {
+                $started++;
+            },
+        );
+
+        $this->assertSame(0, $started);
+        $this->assertSame(
+            ['Tool execution aborted', 'Tool execution aborted'],
+            array_column($results, 'content'),
+        );
+    }
+
+    public function test_abort_from_start_callback_skips_tool_and_emits_terminal_completion(): void
+    {
+        $registry = new ToolRegistry;
+        $executed = false;
+        $registry->register($this->makeTool(
+            'StartAbortSensitive',
+            static function () use (&$executed): ToolResult {
+                $executed = true;
+
+                return ToolResult::success('must not run');
+            },
+        ));
+        $aborted = false;
+        $completed = [];
+        $context = new ToolUseContext(
+            '/tmp',
+            'start-abort',
+            shouldAbort: static function () use (&$aborted): bool {
+                return $aborted;
+            },
+        );
+
+        $result = $this->makeOrchestrator($registry)->executeToolBlock(
+            ['id' => 'start-abort-1', 'name' => 'StartAbortSensitive', 'input' => []],
+            $context,
+            static function () use (&$aborted): void {
+                $aborted = true;
+            },
+            static function (string $name, ToolResult $toolResult) use (&$completed): void {
+                $completed[] = [$name, $toolResult];
+            },
+        );
+
+        $this->assertFalse($executed);
+        $this->assertTrue($result['is_error']);
+        $this->assertSame('Tool execution aborted', $result['content']);
+        $this->assertCount(1, $completed);
+        $this->assertSame('StartAbortSensitive', $completed[0][0]);
+        $this->assertSame(ToolOutcome::Aborted, $completed[0][1]->outcome());
+    }
+
     // ─── PreToolUse hook modifying input ──────────────────────────────────
 
     public function test_pre_tool_use_hook_can_modify_input(): void
@@ -502,6 +611,47 @@ class ToolOrchestratorTest extends TestCase
 
         $this->assertStringContainsString('truncated', $result['content']);
         $this->assertLessThan(3000, mb_strlen($result['content']));
+    }
+
+    public function test_compacted_large_read_revokes_complete_read_receipt(): void
+    {
+        $file = tempnam(sys_get_temp_dir(), 'haocode-large-read-');
+        $content = str_repeat('x', 50_000);
+        file_put_contents($file, $content);
+        $registry = new ToolRegistry;
+        $registry->register(new class($content) extends BaseTool {
+            public function __construct(private readonly string $content) {}
+            public function name(): string { return 'Read'; }
+            public function description(): string { return ''; }
+            public function inputSchema(): ToolInputSchema
+            {
+                return ToolInputSchema::make(
+                    ['type' => 'object'],
+                    ['file_path' => ['required', 'string']],
+                );
+            }
+            public function call(array $input, ToolUseContext $context): ToolResult
+            {
+                $context->recordFileRead($input['file_path'], $this->content, 1, null, false);
+
+                return ToolResult::success($this->content);
+            }
+            public function maxResultSizeChars(): int { return PHP_INT_MAX; }
+        });
+        $context = new ToolUseContext(dirname($file), 'large-read');
+
+        try {
+            $result = $this->makeOrchestrator($registry)->executeToolBlock(
+                ['id' => 'large-read', 'name' => 'Read', 'input' => ['file_path' => $file]],
+                $context,
+            );
+
+            $this->assertStringContainsString('truncated', $result['content']);
+            $this->assertFalse($context->wasFileRead($file));
+            $this->assertFalse($context->getFileRevision($file)?->complete);
+        } finally {
+            @unlink($file);
+        }
     }
 
     // ─── onStart / onComplete callbacks ──────────────────────────────────

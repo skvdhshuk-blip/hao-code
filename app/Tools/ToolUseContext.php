@@ -6,6 +6,8 @@ use HaoCode\Services\Agent\AgentRunContext;
 use HaoCode\Services\Api\LlmProvider;
 use HaoCode\Services\Cache\FileState;
 use HaoCode\Services\Cache\FileStateCache;
+use HaoCode\Services\FileEdit\FileRevision;
+use HaoCode\Support\Filesystem\CanonicalPathResolver;
 
 class ToolUseContext
 {
@@ -14,7 +16,7 @@ class ToolUseContext
     /** @var (\Closure(): bool)|null */
     public readonly \Closure|null $shouldAbort;
 
-    /** @var array<string, int> Tracks which files have been read (path => timestamp) */
+    /** @var array<string, array<string, mixed>> canonical path => revision receipt */
     private array $readFileState = [];
 
     private FileStateCache $fileStateCache;
@@ -44,11 +46,16 @@ class ToolUseContext
      */
     public function recordFileRead(string $filePath, ?string $content = null, ?int $offset = null, ?int $limit = null, bool $isPartialView = false): void
     {
-        $resolved = realpath($filePath) ?: $filePath;
-        $this->readFileState[$resolved] = time();
+        $revision = $content !== null
+            ? FileRevision::fromRead($filePath, $content, ! $isPartialView)
+            : FileRevision::capture($filePath, ! $isPartialView);
+        if ($revision === null) {
+            return;
+        }
+        $this->readFileState[$revision->canonicalPath] = $revision->toArray();
 
         if ($content !== null) {
-            $this->fileStateCache->set($filePath, new FileState(
+            $this->fileStateCache->set($revision->canonicalPath, new FileState(
                 content: $content,
                 timestamp: time(),
                 offset: $offset,
@@ -58,9 +65,119 @@ class ToolUseContext
         }
     }
 
+    /**
+     * Record bytes from a virtual/remote filesystem without probing a
+     * same-named path on the host.
+     *
+     * @internal
+     */
+    public function recordVirtualFileRead(
+        string $filePath,
+        string $content,
+        ?int $offset = null,
+        ?int $limit = null,
+        bool $isPartialView = false,
+    ): void {
+        $key = $this->virtualRevisionKey($filePath);
+        $revision = new FileRevision(
+            canonicalPath: $key,
+            device: null,
+            inode: null,
+            size: strlen($content),
+            mtime: null,
+            sha256: hash('sha256', $content),
+            complete: ! $isPartialView,
+            observedAtMicros: (int) round(microtime(true) * 1_000_000),
+            local: false,
+        );
+        $this->readFileState[$key] = $revision->toArray();
+        $this->fileStateCache->set($key, new FileState(
+            content: $content,
+            timestamp: time(),
+            offset: $offset,
+            limit: $limit,
+            isPartialView: $isPartialView,
+        ));
+    }
+
     public function wasFileRead(string $filePath): bool
     {
-        return isset($this->readFileState[realpath($filePath) ?: $filePath]);
+        return $this->getFileRevision($filePath)?->complete === true;
+    }
+
+    public function getFileRevision(string $filePath): ?FileRevision
+    {
+        $key = $this->existingRevisionKey($filePath);
+        $value = $key === null ? null : ($this->readFileState[$key] ?? null);
+
+        return is_array($value) ? FileRevision::fromArray($value) : null;
+    }
+
+    /**
+     * Revoke complete-read authorization while retaining the observed
+     * revision for diagnostics and fork-state merging.
+     *
+     * @internal
+     */
+    public function markFileReadIncomplete(string $filePath): void
+    {
+        $key = $this->existingRevisionKey($filePath);
+        if ($key === null) {
+            return;
+        }
+        $value = $this->readFileState[$key] ?? null;
+        if (! is_array($value) || FileRevision::fromArray($value) === null) {
+            return;
+        }
+
+        $value['complete'] = false;
+        $value['observed_at_micros'] = (int) round(microtime(true) * 1_000_000);
+        $this->readFileState[$key] = $value;
+    }
+
+    /**
+     * Remove both authorization and cached bytes for a prior Read.
+     *
+     * @internal
+     */
+    public function forgetFileRead(string $filePath): void
+    {
+        $virtualKey = $this->virtualRevisionKey($filePath);
+        if (isset($this->readFileState[$virtualKey])) {
+            unset($this->readFileState[$virtualKey]);
+            $this->fileStateCache->delete($virtualKey);
+
+            return;
+        }
+
+        $canonicalKey = $this->revisionKey($filePath);
+        unset($this->readFileState[$canonicalKey]);
+        $this->fileStateCache->delete($canonicalKey);
+    }
+
+    /**
+     * Return a user-facing conflict reason, or null when a complete local
+     * revision still matches the bytes on disk.
+     */
+    public function fileRevisionError(string $filePath): ?string
+    {
+        $revision = $this->getFileRevision($filePath);
+        if ($revision === null) {
+            return "Read tool first: {$filePath} must be read before writing.";
+        }
+        if (! $revision->complete) {
+            return "Read the complete file first: {$filePath} was only partially read.";
+        }
+        if (! $revision->local) {
+            return "File revision cannot be verified locally: {$filePath}. Read it again.";
+        }
+
+        $current = FileRevision::capture($filePath);
+        if ($current === null || ! $revision->sameVersion($current)) {
+            return "File changed since it was read: {$filePath}. Read it again before writing.";
+        }
+
+        return null;
     }
 
     /**
@@ -68,7 +185,9 @@ class ToolUseContext
      */
     public function getFileState(string $filePath): ?FileState
     {
-        return $this->fileStateCache->get($filePath);
+        $key = $this->existingRevisionKey($filePath);
+
+        return $this->fileStateCache->get($key ?? $this->revisionKey($filePath));
     }
 
     public function getFileStateCache(): FileStateCache
@@ -86,7 +205,7 @@ class ToolUseContext
      * Used by parallel tool execution: the child process captures its state
      * and the parent merges it back after the child exits.
      *
-     * @return array<string, int>
+     * @return array<string, array<string, mixed>>
      */
     public function getReadFileStateSnapshot(): array
     {
@@ -97,14 +216,63 @@ class ToolUseContext
      * Merge a readFileState snapshot (from a child process) into the current state.
      * Only adds entries that are newer or missing in the parent.
      *
-     * @param array<string, int> $snapshot
+     * @param array<string, array<string, mixed>> $snapshot
      */
     public function mergeReadFileStateSnapshot(array $snapshot): void
     {
-        foreach ($snapshot as $path => $timestamp) {
-            if (!isset($this->readFileState[$path]) || $timestamp > $this->readFileState[$path]) {
-                $this->readFileState[$path] = $timestamp;
+        foreach ($snapshot as $path => $value) {
+            if (! is_array($value) || FileRevision::fromArray($value) === null) {
+                continue;
+            }
+
+            $existing = $this->readFileState[$path] ?? null;
+            if (! is_array($existing)
+                || ($value['observed_at_micros'] ?? 0) > ($existing['observed_at_micros'] ?? 0)) {
+                $this->readFileState[$path] = $value;
             }
         }
+    }
+
+    private function revisionKey(string $filePath): string
+    {
+        return CanonicalPathResolver::resolve($filePath, $this->workingDirectory);
+    }
+
+    private function existingRevisionKey(string $filePath): ?string
+    {
+        $virtualKey = $this->virtualRevisionKey($filePath);
+        if (isset($this->readFileState[$virtualKey])) {
+            return $virtualKey;
+        }
+
+        $canonicalKey = $this->revisionKey($filePath);
+
+        return isset($this->readFileState[$canonicalKey]) ? $canonicalKey : null;
+    }
+
+    /**
+     * Sandbox paths are guest POSIX paths. Normalize them lexically without
+     * consulting a same-named path or symlink on the host filesystem.
+     */
+    private function virtualRevisionKey(string $filePath): string
+    {
+        $path = $filePath;
+        if (! str_starts_with($path, '/')) {
+            $path = rtrim($this->workingDirectory, '/').'/'.$path;
+        }
+
+        $segments = [];
+        foreach (explode('/', $path) as $segment) {
+            if ($segment === '' || $segment === '.') {
+                continue;
+            }
+            if ($segment === '..') {
+                array_pop($segments);
+                continue;
+            }
+            $segments[] = $segment;
+        }
+
+        return '/'.implode('/', $segments);
     }
 }

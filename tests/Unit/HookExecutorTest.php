@@ -186,6 +186,51 @@ class HookExecutorTest extends TestCase
         $this->assertLessThan(2.0, microtime(true) - $startedAt);
     }
 
+    public function test_pre_aborted_hook_does_not_start_or_create_side_effects(): void
+    {
+        $marker = sys_get_temp_dir().'/haocode-hook-abort-'.bin2hex(random_bytes(8));
+        $command = escapeshellarg(PHP_BINARY)
+            .' -r '.escapeshellarg('file_put_contents($argv[1], "ran");')
+            .' '.escapeshellarg($marker);
+        $executor = $this->makeExecutor([
+            'PreToolUse' => [$this->makeHook('PreToolUse', $command)],
+        ]);
+
+        try {
+            $result = $executor->execute(
+                'PreToolUse',
+                ['tool' => 'Write'],
+                static fn (): bool => true,
+            );
+
+            $this->assertFalse($result->allowed);
+            $this->assertStringContainsString('aborted', $result->output);
+            $this->assertFileDoesNotExist($marker);
+        } finally {
+            @unlink($marker);
+        }
+    }
+
+    public function test_mid_hook_abort_terminates_process_promptly(): void
+    {
+        $runner = new HookProcessRunner(timeoutSeconds: 5.0);
+        $executor = $this->makeExecutor(
+            ['PreToolUse' => [$this->makeHook('PreToolUse', 'sleep 5')]],
+            $runner,
+        );
+        $startedAt = microtime(true);
+
+        $result = $executor->execute(
+            'PreToolUse',
+            [],
+            static fn (): bool => microtime(true) - $startedAt >= 0.1,
+        );
+
+        $this->assertFalse($result->allowed);
+        $this->assertStringContainsString('aborted', $result->output);
+        $this->assertLessThan(2.0, microtime(true) - $startedAt);
+    }
+
     public function test_hook_timeout_terminates_background_descendants(): void
     {
         if (DIRECTORY_SEPARATOR !== '/'
