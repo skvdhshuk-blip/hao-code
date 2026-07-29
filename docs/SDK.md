@@ -2,7 +2,7 @@
 
 Use hao-code as a framework-free PHP library to embed an AI coding agent in your application.
 
-This document describes the `v1.18.16` source line. Published package versions
+This document describes the `v1.18.17` source line. Published package versions
 are identified by Git tags and Packagist.
 
 ```bash
@@ -244,7 +244,7 @@ If a caller stops consuming a stream early, it must also release the
 `Generator` (`unset($stream)` or let it leave scope). PHP does not notify a
 Generator merely because `break` was used while another reference is retained;
 HaoCode rejects overlapping operations until that release triggers the stream's
-abort/drain cleanup.
+abort and cleanup. Abandoning a stream never resumes queued model or tool work.
 
 ### conversation()
 

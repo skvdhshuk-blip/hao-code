@@ -36,6 +36,11 @@ class SensitivePathGuardTest extends TestCase
             'proc environ'            => ['command', 'cat /proc/self/environ', 'process environment harvesting'],
             'keychain extraction'     => ['command', 'security find-generic-password -s x', 'macOS keychain extraction'],
             'runtime state json'      => ['file_path', '/tmp/runtime-state.json', 'adapter runtime state holding secrets'],
+            'windows ssh dir'         => ['file_path', 'C:\\Users\\user\\.ssh\\config', 'SSH directory'],
+            'windows aws credentials' => ['path', 'C:\\Users\\user\\.aws\\credentials', 'AWS credentials directory'],
+            'windows dotenv file'     => ['file_path', 'C:\\project\\.env.local', 'dotenv file'],
+            'windows dotenv ADS'      => ['file_path', 'C:\\project\\.env::$DATA', 'dotenv file'],
+            'windows SSH key ADS'     => ['file_path', 'C:\\Users\\user\\id_ed25519::$DATA', 'SSH private key'],
         ];
     }
 
@@ -97,6 +102,7 @@ class SensitivePathGuardTest extends TestCase
         // Callers that have already realpath-ed a value should be able to
         // re-check the canonical form directly.
         $this->assertSame('SSH directory', SensitivePathGuard::matchSensitive('/home/u/.ssh/config'));
+        $this->assertSame('SSH directory', SensitivePathGuard::matchSensitive('C:\\Users\\u\\.ssh\\config'));
         $this->assertNull(SensitivePathGuard::matchSensitive('/app/src/File.php'));
     }
 }

@@ -47,6 +47,12 @@ final class HookProcessRunner
             return $this->abortedResult();
         }
 
+        if ($workingDirectory !== null && ! is_dir($workingDirectory)) {
+            return $this->notStarted(
+                "Hook working directory does not exist: {$workingDirectory}",
+            );
+        }
+
         [$processCommand, $usesProcessGroup] = $this->isolateProcessTree($command);
         $descriptors = [
             0 => ['pipe', 'r'],

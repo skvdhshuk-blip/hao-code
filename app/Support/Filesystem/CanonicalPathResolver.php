@@ -40,6 +40,12 @@ final class CanonicalPathResolver
             return self::resolveWindowsPath($path);
         }
 
+        if (PHP_OS_FAMILY === 'Windows' && self::isWindowsRootRelative($path)) {
+            return self::resolveWindowsPath(
+                self::windowsDrive($workingDirectory).ltrim($path, '/\\'),
+            );
+        }
+
         if (! self::isUnixAbsolute($path)) {
             if (self::isWindowsAbsolute($workingDirectory)) {
                 return self::resolveWindowsPath(
@@ -64,6 +70,19 @@ final class CanonicalPathResolver
         }
 
         $home = $_SERVER['HOME'] ?? getenv('HOME') ?: null;
+        if (PHP_OS_FAMILY === 'Windows'
+            && (! is_string($home) || $home === '' || ! is_dir($home))
+        ) {
+            $home = getenv('USERPROFILE') ?: null;
+            if (! is_string($home) || $home === '') {
+                $homeDrive = getenv('HOMEDRIVE');
+                $homePath = getenv('HOMEPATH');
+                $home = is_string($homeDrive) && $homeDrive !== ''
+                    && is_string($homePath) && $homePath !== ''
+                    ? $homeDrive.$homePath
+                    : null;
+            }
+        }
         if (! is_string($home) || $home === '') {
             return $path;
         }
@@ -85,6 +104,24 @@ final class CanonicalPathResolver
         return preg_match('/^[A-Za-z]:[\/\\\\]/', $path) === 1
             || str_starts_with($path, '\\\\')
             || preg_match('#^//[^/]#', $path) === 1;
+    }
+
+    private static function isWindowsRootRelative(string $path): bool
+    {
+        return (str_starts_with($path, '/') || str_starts_with($path, '\\'))
+            && ! str_starts_with($path, '\\\\')
+            && preg_match('#^//[^/]#', $path) !== 1;
+    }
+
+    private static function windowsDrive(string $workingDirectory): string
+    {
+        foreach ([$workingDirectory, (string) (getcwd() ?: '')] as $candidate) {
+            if (preg_match('/^([A-Za-z]):[\/\\\\]/', $candidate, $matches) === 1) {
+                return strtoupper($matches[1]).':\\';
+            }
+        }
+
+        return 'C:\\';
     }
 
     private static function normalizeUnixPath(string $path): string

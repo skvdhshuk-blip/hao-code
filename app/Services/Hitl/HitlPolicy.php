@@ -38,9 +38,6 @@ final class HitlPolicy
     /** Input keys whose string values may reference paths or shell commands. */
     private const PATH_LIKE_KEYS = SensitivePathGuard::PATH_LIKE_KEYS;
 
-    /** Credential/secret material that no mode may touch automatically (R1). */
-    private const SENSITIVE_PATTERNS = SensitivePathGuard::SENSITIVE_PATTERNS;
-
     /**
      * Shell obfuscation / arbitrary-execution markers.
      *
@@ -145,7 +142,7 @@ final class HitlPolicy
 
         // R1: credential/secret material is a red line for every tool.
         foreach (self::sensitiveStrings($input) as $candidate) {
-            $hit = self::matchSensitive($candidate);
+            $hit = SensitivePathGuard::matchSensitive($candidate);
             if ($hit !== null) {
                 return self::verdict(self::RED_LINE, "Touches sensitive material ({$hit}).");
             }
@@ -179,16 +176,6 @@ final class HitlPolicy
         return $values;
     }
 
-    private static function matchSensitive(string $value): ?string
-    {
-        foreach (self::SENSITIVE_PATTERNS as $pattern => $label) {
-            if (preg_match($pattern, $value) === 1) {
-                return $label;
-            }
-        }
-        return null;
-    }
-
     /** R3: Write/Edit must stay inside the workspace. @return array{level: string, reason: string} */
     private static function classifyWrite(string $toolName, array $input, string $root): array
     {
@@ -200,7 +187,7 @@ final class HitlPolicy
         if ($resolved === null) {
             return self::verdict(self::ASK, "Path '{$filePath}' could not be resolved safely.");
         }
-        $sensitive = self::matchSensitive($resolved);
+        $sensitive = SensitivePathGuard::matchSensitive($resolved);
         if ($sensitive !== null) {
             return self::verdict(self::RED_LINE, "Resolved path touches sensitive material ({$sensitive}).");
         }
@@ -245,7 +232,7 @@ final class HitlPolicy
             if ($resolved === null) {
                 return self::verdict(self::ASK, "Patch target '{$path}' could not be resolved safely.");
             }
-            $sensitive = self::matchSensitive($resolved);
+            $sensitive = SensitivePathGuard::matchSensitive($resolved);
             if ($sensitive !== null) {
                 return self::verdict(self::RED_LINE, "Patch target touches sensitive material ({$sensitive}).");
             }
@@ -646,7 +633,7 @@ final class HitlPolicy
                 }
                 return self::verdict(self::RED_LINE, "Redirect writes outside the workspace ('{$resolved}').");
             }
-            $sensitive = self::matchSensitive($resolved);
+            $sensitive = SensitivePathGuard::matchSensitive($resolved);
             if ($sensitive !== null) {
                 return self::verdict(self::RED_LINE, "Redirect targets sensitive material ({$sensitive}).");
             }
@@ -980,7 +967,7 @@ final class HitlPolicy
             return null;
         }
         while ($suffix !== []) {
-            $resolved .= '/'.array_pop($suffix);
+            $resolved = rtrim($resolved, '/').'/'.array_pop($suffix);
         }
         return $resolved;
     }

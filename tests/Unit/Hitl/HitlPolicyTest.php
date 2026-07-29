@@ -94,6 +94,8 @@ class HitlPolicyTest extends TestCase
         yield 'Bash cat ~/.ssh/config' => [$R, 'Bash', ['command' => 'cat ~/.ssh/config'], null];
         yield 'Bash cat relative .env' => [$R, 'Bash', ['command' => 'cat .env'], null];
         yield 'Bash cat nested .env.production' => [$R, 'Bash', ['command' => 'cat config/.env.production'], null];
+        yield 'Read Windows SSH key' => [$R, 'Read', ['file_path' => 'C:\\Users\\user\\.ssh\\id_rsa'], null];
+        yield 'Read Windows dotenv ADS' => [$R, 'Read', ['file_path' => 'C:\\project\\.env::$DATA'], null];
         yield 'Bash keychain extraction' => [$R, 'Bash', ['command' => 'security find-generic-password -s x'], null];
         yield 'Bash env dumping' => [$R, 'Bash', ['command' => 'printenv'], null];
 
@@ -147,7 +149,12 @@ class HitlPolicyTest extends TestCase
         $home = getenv('HOME');
         $home = is_string($home) && $home !== '' ? $home : '/nonexistent-home-dir';
         yield 'Bash redirect to /tmp' => [$G, 'Bash', ['command' => 'cat > /tmp/hitl-policy-note'], null];
-        yield 'Bash redirect to /private/tmp' => [$G, 'Bash', ['command' => 'cat > /private/tmp/hitl-policy-note'], null];
+        yield 'Bash redirect to /private/tmp' => [
+            realpath('/private/tmp') !== false ? $G : $R,
+            'Bash',
+            ['command' => 'cat > /private/tmp/hitl-policy-note'],
+            null,
+        ];
         yield 'Bash redirect to sys temp dir subpath' => [$G, 'Bash', ['command' => "echo hi > {$tempDir}/hitl-policy-sub/note.txt"], null];
         yield 'Bash redirect to /etc stays red' => [$R, 'Bash', ['command' => 'cat > /etc/hitl-policy-note'], null];
         yield 'Bash redirect to home dir stays red' => [$R, 'Bash', ['command' => "cat > {$home}/hitl-policy-note"], null];
@@ -323,6 +330,22 @@ class HitlPolicyTest extends TestCase
 
         $this->assertSame(['level', 'reason'], array_keys($verdict));
         $this->assertIsString($verdict['reason']);
+    }
+
+    public function test_missing_absolute_redirect_is_normalized_without_double_root_separator(): void
+    {
+        [$workspace] = self::fixtures();
+        $path = '/haocode-missing-root-'.bin2hex(random_bytes(6)).'/note.txt';
+
+        $verdict = HitlPolicy::classifyAction(
+            'Bash',
+            ['command' => "cat > {$path}"],
+            $workspace,
+        );
+
+        $this->assertSame(HitlPolicy::RED_LINE, $verdict['level']);
+        $this->assertStringContainsString("'{$path}'", $verdict['reason']);
+        $this->assertStringNotContainsString("'//haocode-missing-root-", $verdict['reason']);
     }
 
     public function test_level_constants(): void

@@ -118,7 +118,7 @@ class RunnerTest extends TestCase
         $this->assertSame('fake response', $resultMessage->text);
     }
 
-    public function test_abandoned_stream_aborts_drains_and_clears_the_handler(): void
+    public function test_abandoned_stream_aborts_without_resuming_and_clears_the_handler(): void
     {
         $streamCallbackReturned = false;
         $autoDecisionHandlers = [];
@@ -130,7 +130,7 @@ class RunnerTest extends TestCase
                 $onTextDelta?->__invoke('first delta');
                 $streamCallbackReturned = true;
 
-                return 'completed while draining';
+                return 'must not complete after abandonment';
             },
         );
         $this->loop->expects($this->once())->method('abort');
@@ -149,13 +149,13 @@ class RunnerTest extends TestCase
         unset($messages);
         gc_collect_cycles();
 
-        $this->assertTrue($streamCallbackReturned);
+        $this->assertFalse($streamCallbackReturned);
         $this->assertCount(2, $autoDecisionHandlers);
         $this->assertIsCallable($autoDecisionHandlers[0]);
         $this->assertNull($autoDecisionHandlers[1]);
     }
 
-    public function test_abandoned_stream_preserves_sandbox_when_drain_reaches_an_interrupt(): void
+    public function test_stream_preserves_sandbox_after_interrupt_is_reached(): void
     {
         $runtime = null;
         $interrupt = new HumanInterrupt(
@@ -187,6 +187,8 @@ class RunnerTest extends TestCase
         $messages->rewind();
         $this->assertInstanceOf(SandboxRuntime::class, $runtime);
         $root = $runtime->exportLease()['root'];
+        $messages->next();
+        $this->assertSame('interrupt', $messages->current()->type);
 
         unset($messages);
         gc_collect_cycles();

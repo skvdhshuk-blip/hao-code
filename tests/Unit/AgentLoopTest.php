@@ -39,6 +39,85 @@ class AgentLoopTest extends TestCase
         };
     }
 
+    private function makeSafeSleepTool(int $microseconds = 500000): BaseTool
+    {
+        return new class($microseconds) extends BaseTool {
+            public function __construct(private readonly int $microseconds) {}
+
+            public function name(): string
+            {
+                return 'SafeSleepTool';
+            }
+
+            public function description(): string
+            {
+                return 'A safe tool that sleeps briefly.';
+            }
+
+            public function inputSchema(): ToolInputSchema
+            {
+                return ToolInputSchema::make([
+                    'type' => 'object',
+                    'properties' => [],
+                ]);
+            }
+
+            public function isReadOnly(array $input): bool
+            {
+                return true;
+            }
+
+            public function call(array $input, ToolUseContext $context): ToolResult
+            {
+                usleep($this->microseconds);
+
+                return ToolResult::success('done');
+            }
+        };
+    }
+
+    private function makeEarlyExecutionLoop(QueryEngine $queryEngine, BaseTool $tool): AgentLoop
+    {
+        $toolRegistry = new ToolRegistry;
+        $toolRegistry->register($tool);
+
+        $permissionChecker = $this->createMock(PermissionChecker::class);
+        $permissionChecker->method('check')->willReturn(\HaoCode\Services\Permissions\PermissionDecision::allow());
+
+        $hookExecutor = $this->createMock(HookExecutor::class);
+        $hookExecutor->method('execute')->willReturn(new HookResult(true));
+
+        $toolOrchestrator = new ToolOrchestrator(
+            toolRegistry: $toolRegistry,
+            permissionChecker: $permissionChecker,
+            hookExecutor: $hookExecutor,
+        );
+
+        $contextBuilder = $this->createMock(ContextBuilder::class);
+        $contextBuilder->method('buildSystemPrompt')->willReturn([]);
+
+        $sessionManager = $this->createMock(SessionManager::class);
+        $sessionManager->method('getSessionId')->willReturn('test-session');
+        $sessionManager->method('recordEntry');
+        $sessionManager->method('recordTurn');
+
+        $contextCompactor = $this->createMock(ContextCompactor::class);
+        $contextCompactor->method('shouldAutoCompact')->willReturn(false);
+
+        return new AgentLoop(
+            queryEngine: $queryEngine,
+            toolOrchestrator: $toolOrchestrator,
+            contextBuilder: $contextBuilder,
+            messageHistory: new MessageHistory,
+            permissionChecker: $permissionChecker,
+            sessionManager: $sessionManager,
+            contextCompactor: $contextCompactor,
+            costTracker: new CostTracker,
+            toolRegistry: $toolRegistry,
+            hookExecutor: $hookExecutor,
+        );
+    }
+
     private function makeLoop(
         QueryEngine $queryEngine,
         ?ToolRegistry $registry = null,
@@ -1669,77 +1748,7 @@ class AgentLoopTest extends TestCase
                 throw new \RuntimeException('stream failed after tool start');
             });
 
-        $toolRegistry = new ToolRegistry;
-        $toolRegistry->register(new class extends BaseTool
-        {
-            public function name(): string
-            {
-                return 'SafeSleepTool';
-            }
-
-            public function description(): string
-            {
-                return 'A safe tool that sleeps briefly.';
-            }
-
-            public function inputSchema(): ToolInputSchema
-            {
-                return ToolInputSchema::make([
-                    'type' => 'object',
-                    'properties' => [],
-                ]);
-            }
-
-            public function isReadOnly(array $input): bool
-            {
-                return true;
-            }
-
-            public function call(array $input, ToolUseContext $context): ToolResult
-            {
-                usleep(500000);
-
-                return ToolResult::success('done');
-            }
-        });
-
-        $permissionChecker = $this->createMock(PermissionChecker::class);
-        $permissionChecker->method('check')->willReturn(\HaoCode\Services\Permissions\PermissionDecision::allow());
-
-        $hookExecutor = $this->createMock(HookExecutor::class);
-        $hookExecutor->method('execute')->willReturn(new HookResult(true));
-
-        $toolOrchestrator = new ToolOrchestrator(
-            toolRegistry: $toolRegistry,
-            permissionChecker: $permissionChecker,
-            hookExecutor: $hookExecutor,
-        );
-
-        $contextBuilder = $this->createMock(ContextBuilder::class);
-        $contextBuilder->method('buildSystemPrompt')->willReturn([]);
-
-        $messageHistory = new MessageHistory;
-
-        $sessionManager = $this->createMock(SessionManager::class);
-        $sessionManager->method('getSessionId')->willReturn('test-session');
-        $sessionManager->method('recordEntry');
-        $sessionManager->method('recordTurn');
-
-        $contextCompactor = $this->createMock(ContextCompactor::class);
-        $contextCompactor->method('shouldAutoCompact')->willReturn(false);
-
-        $agent = new AgentLoop(
-            queryEngine: $queryEngine,
-            toolOrchestrator: $toolOrchestrator,
-            contextBuilder: $contextBuilder,
-            messageHistory: $messageHistory,
-            permissionChecker: $permissionChecker,
-            sessionManager: $sessionManager,
-            contextCompactor: $contextCompactor,
-            costTracker: new CostTracker,
-            toolRegistry: $toolRegistry,
-            hookExecutor: $hookExecutor,
-        );
+        $agent = $this->makeEarlyExecutionLoop($queryEngine, $this->makeSafeSleepTool());
 
         // Snapshot existing haocode_stream_ IPC files so we can assert that
         // the forked run cleans up after itself even on stream failure.
@@ -1755,6 +1764,54 @@ class AgentLoopTest extends TestCase
                 $beforeStreamFiles,
                 $afterStreamFiles,
                 'Streaming IPC temp files must be cleaned up after a stream failure.',
+            );
+        }
+    }
+
+    public function test_it_cleans_up_streaming_tools_when_a_suspended_fiber_is_abandoned(): void
+    {
+        if (! function_exists('pcntl_fork') || ! function_exists('posix_kill')) {
+            $this->markTestSkipped('pcntl_fork and posix_kill are required for this test.');
+        }
+
+        $queryEngine = $this->createMock(QueryEngine::class);
+        $queryEngine->expects($this->once())
+            ->method('query')
+            ->willReturnCallback(function (
+                array $systemPrompt,
+                array $messages,
+                ?callable $onTextDelta,
+                ?callable $onToolBlockComplete,
+            ): never {
+                $onToolBlockComplete?->__invoke([
+                    'id' => 'toolu_fiber_cleanup',
+                    'name' => 'SafeSleepTool',
+                    'input' => [],
+                ], 0);
+
+                \Fiber::suspend('tool-started');
+
+                throw new \RuntimeException('Suspended test fiber resumed unexpectedly.');
+            });
+
+        $agent = $this->makeEarlyExecutionLoop($queryEngine, $this->makeSafeSleepTool(5000000));
+        $beforeStreamFiles = glob(sys_get_temp_dir().'/haocode_stream_*') ?: [];
+        sort($beforeStreamFiles);
+
+        $fiber = new \Fiber(static fn (): string => $agent->run('请探索这个仓库'));
+        $this->assertSame('tool-started', $fiber->start());
+
+        $duringStreamFiles = glob(sys_get_temp_dir().'/haocode_stream_*') ?: [];
+        $ownedStreamFiles = array_values(array_diff($duringStreamFiles, $beforeStreamFiles));
+        $this->assertCount(1, $ownedStreamFiles, 'The suspended query must own one streaming IPC file.');
+
+        unset($fiber);
+        gc_collect_cycles();
+
+        foreach ($ownedStreamFiles as $ownedStreamFile) {
+            $this->assertFileDoesNotExist(
+                $ownedStreamFile,
+                'Abandoning the fiber must reap its tool process and remove its IPC file.',
             );
         }
     }

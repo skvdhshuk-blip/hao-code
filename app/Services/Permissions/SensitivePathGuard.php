@@ -29,17 +29,17 @@ final class SensitivePathGuard
      * against any string extracted from {@see PATH_LIKE_KEYS}.
      */
     public const SENSITIVE_PATTERNS = [
-        '/(^|[\/\s])\.ssh(\/|$)/i' => 'SSH directory',
-        '/(^|[\/\s])\.aws(\/|$)/i' => 'AWS credentials directory',
-        '/(^|[\/\s])\.gnupg(\/|$)/i' => 'GnuPG directory',
-        '/(^|[\/\s])\.env([._-]|$)/i' => 'dotenv file',
-        '/(^|[\/\s])credentials?([._\/-]|$)/i' => 'credentials file',
-        '/(^|[\/\s])id_(rsa|dsa|ecdsa|ed25519)(\.|$)/i' => 'SSH private key',
-        '/\.(pem|key|p12|pfx|jks|keystore)($|\/)/i' => 'key/certificate material',
-        '/keychains?([\/\.]|$)/i' => 'OS keychain',
-        '/(^|[\/\s])\.netrc($|\/)/i' => 'netrc file',
-        '/(^|[\/\s])\.npmrc($|\/)/i' => 'npmrc file',
-        '/(^|[\/\s])\.pypirc($|\/)/i' => 'pypirc file',
+        '/(^|[\/\s])\.ssh([\/:]|$)/i' => 'SSH directory',
+        '/(^|[\/\s])\.aws([\/:]|$)/i' => 'AWS credentials directory',
+        '/(^|[\/\s])\.gnupg([\/:]|$)/i' => 'GnuPG directory',
+        '/(^|[\/\s])\.env([._:-]|$)/i' => 'dotenv file',
+        '/(^|[\/\s])credentials?([._\/:-]|$)/i' => 'credentials file',
+        '/(^|[\/\s])id_(rsa|dsa|ecdsa|ed25519)([.:]|$)/i' => 'SSH private key',
+        '/\.(pem|key|p12|pfx|jks|keystore)($|\/|:)/i' => 'key/certificate material',
+        '/keychains?([\/\.:]|$)/i' => 'OS keychain',
+        '/(^|[\/\s])\.netrc($|\/|:)/i' => 'netrc file',
+        '/(^|[\/\s])\.npmrc($|\/|:)/i' => 'npmrc file',
+        '/(^|[\/\s])\.pypirc($|\/|:)/i' => 'pypirc file',
         '/runtime-state\.json/i' => 'adapter runtime state holding secrets',
         '/\bsecurity\s+find-(generic|internet)-password\b/i' => 'macOS keychain extraction',
         '/\/proc\/[^\s\/]*\/environ\b/i' => 'process environment harvesting',
@@ -79,6 +79,10 @@ final class SensitivePathGuard
      */
     public static function matchSensitive(string $value): ?string
     {
+        // CanonicalPathResolver emits native separators. Match the same
+        // credential boundaries on Windows paths as on POSIX paths.
+        $value = str_replace('\\', '/', $value);
+
         foreach (self::SENSITIVE_PATTERNS as $pattern => $label) {
             if (preg_match($pattern, $value) === 1) {
                 return $label;

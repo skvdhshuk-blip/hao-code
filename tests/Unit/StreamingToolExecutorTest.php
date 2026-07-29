@@ -407,6 +407,32 @@ class StreamingToolExecutorTest extends TestCase
         $this->assertSame('Tool execution aborted', $completed[0][1]->output);
     }
 
+    public function test_silent_cleanup_reaps_started_tool_without_completion_callback(): void
+    {
+        if (! function_exists('pcntl_fork')) {
+            $this->markTestSkipped('pcntl is required for early tool execution.');
+        }
+
+        $completed = [];
+        $executor = new StreamingToolExecutor(
+            $this->createMock(ToolOrchestrator::class),
+            $this->makeRegistry(readOnly: true, concurrencySafe: true),
+        );
+        $executor->setContext(
+            new ToolUseContext('/tmp', 'test'),
+            null,
+            function (string $name, ToolResult $result) use (&$completed): void {
+                $completed[] = [$name, $result];
+            },
+        );
+
+        $executor->onToolBlockReady($this->makeBlock(), 0);
+        $executor->cleanup(notifyCompletion: false);
+
+        $this->assertSame([], $completed);
+        $this->assertSame(0, $executor->earlyExecutionCount());
+    }
+
     public function test_cancellation_interrupts_wait_for_forked_tool_and_returns_aborted_result(): void
     {
         if (! function_exists('pcntl_fork') || ! function_exists('pcntl_alarm')) {

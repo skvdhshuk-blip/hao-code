@@ -114,7 +114,11 @@ class BaseToolTest extends TestCase
     public function test_resolve_absolute_path_unchanged(): void
     {
         $result = $this->resolvePath('/absolute/path', '/working');
-        $this->assertStringStartsWith('/absolute', $result);
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->assertMatchesRegularExpression('/^[A-Za-z]:\\\\absolute\\\\path$/', $result);
+        } else {
+            $this->assertStringStartsWith('/absolute', $result);
+        }
     }
 
     public function test_resolve_relative_path_prepends_working_dir(): void
@@ -124,21 +128,22 @@ class BaseToolTest extends TestCase
         // relative path that exists — just use the tmp dir itself
         $result = $this->resolvePath('', $tmpDir);
         // Empty relative resolves to workdir
-        $this->assertStringContainsString($tmpDir, $result);
+        $this->assertSame(realpath($tmpDir), $result);
     }
 
     public function test_resolve_tilde_path_expands_home(): void
     {
-        $home = getenv('HOME') ?: '/root';
+        $home = $this->homeDirectory();
         $result = $this->resolvePath('~/somesubdir', $home);
-        $this->assertStringStartsWith($home, $result);
+        $this->assertStringStartsWith((string) realpath($home), $result);
         $this->assertStringNotContainsString('~', $result);
     }
 
     public function test_resolve_tilde_only_expands_home(): void
     {
-        $home = getenv('HOME') ?: '/root';
+        $home = $this->homeDirectory();
         $result = $this->resolvePath('~', $home);
+        $this->assertSame(realpath($home), $result);
         $this->assertStringNotContainsString('~', $result);
     }
 
@@ -195,7 +200,10 @@ class BaseToolTest extends TestCase
     {
         $result = $this->resolvePath('one/../two/./new.txt', $this->testDir);
 
-        $this->assertSame(realpath($this->testDir).'/two/new.txt', $result);
+        $this->assertSame(
+            realpath($this->testDir).DIRECTORY_SEPARATOR.'two'.DIRECTORY_SEPARATOR.'new.txt',
+            $result,
+        );
     }
 
     public function test_resolve_does_not_expand_unsupported_named_tilde(): void
@@ -203,7 +211,7 @@ class BaseToolTest extends TestCase
         $result = $this->resolvePath('~another-user/file.txt', $this->testDir);
 
         $this->assertSame(
-            realpath($this->testDir).'/~another-user/file.txt',
+            realpath($this->testDir).DIRECTORY_SEPARATOR.'~another-user'.DIRECTORY_SEPARATOR.'file.txt',
             $result,
         );
     }
@@ -219,6 +227,21 @@ class BaseToolTest extends TestCase
     {
         $result = $this->resolvePath('\\\\server\\share\\one\\..\\two.txt', $this->testDir);
 
-        $this->assertSame('\\\\server\\share\\two.txt', $result);
+        $this->assertSame('\\\\server\\share\\two.txt', strtolower($result));
+    }
+
+    private function homeDirectory(): string
+    {
+        foreach ([
+            getenv('HOME'),
+            getenv('USERPROFILE'),
+            (getenv('HOMEDRIVE') ?: '').(getenv('HOMEPATH') ?: ''),
+        ] as $candidate) {
+            if (is_string($candidate) && $candidate !== '' && is_dir($candidate)) {
+                return $candidate;
+            }
+        }
+
+        return sys_get_temp_dir();
     }
 }

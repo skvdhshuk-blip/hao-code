@@ -52,7 +52,9 @@ final class CancellationToken
 
     public function close(): void
     {
-        @unlink($this->signalPath);
+        if (file_exists($this->signalPath)) {
+            @unlink($this->signalPath);
+        }
     }
 
     private function newSignalPath(): string

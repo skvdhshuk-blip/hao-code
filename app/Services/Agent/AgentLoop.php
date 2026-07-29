@@ -839,9 +839,13 @@ class AgentLoop
                         $this->persistSessionTitle($title);
                     }
                 }
-            } catch (\Throwable $e) {
-                $streamingExecutor->cleanup();
-                throw $e;
+            } finally {
+                // Generator abandonment aborts the loop before force-closing
+                // its SDK streaming Fiber. In that cancellation path, reap
+                // resources silently because completion callbacks suspend the
+                // Fiber to yield messages. Ordinary failures still emit the
+                // terminal aborted tool result before surfacing the error.
+                $streamingExecutor->cleanup(notifyCompletion: ! $this->aborted);
             }
         }
 

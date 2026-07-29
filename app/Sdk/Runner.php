@@ -184,7 +184,11 @@ class Runner
         } finally {
             if ($fiber instanceof \Fiber && $fiber->isStarted() && ! $fiber->isTerminated()) {
                 $loop->abort();
-                self::drainFiber($fiber);
+                // Abandonment is cancellation. Do not resume model/tool work
+                // after the caller stopped consuming the stream. Dropping the
+                // suspended fiber also works on PHP 8.1-8.3, where switching
+                // fibers from a Generator destructor is forbidden.
+                $fiber = null;
             }
             if ($thrownException instanceof HumanInterruptException) {
                 $run->preserveSandboxOnClose();
@@ -215,14 +219,4 @@ class Runner
         ];
     }
 
-    private static function drainFiber(\Fiber $fiber): void
-    {
-        while (! $fiber->isTerminated() && $fiber->isSuspended()) {
-            try {
-                $fiber->resume();
-            } catch (\FiberError) {
-                break;
-            }
-        }
-    }
 }

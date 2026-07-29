@@ -199,7 +199,7 @@ class ConversationInternalsTest extends TestCase
         $runtime->backend->delete('/');
     }
 
-    public function test_abandoned_stream_resume_preserves_sandbox_when_drain_reaches_an_interrupt(): void
+    public function test_stream_resume_preserves_sandbox_after_interrupt_is_reached(): void
     {
         $runtime = null;
         $interrupt = $this->interrupt('stream-resume-interrupt');
@@ -235,6 +235,8 @@ class ConversationInternalsTest extends TestCase
         $messages->rewind();
         $this->assertInstanceOf(SandboxRuntime::class, $runtime);
         $root = $runtime->exportLease()['root'];
+        $messages->next();
+        $this->assertSame('interrupt', $messages->current()->type);
 
         unset($messages);
         gc_collect_cycles();
@@ -244,7 +246,7 @@ class ConversationInternalsTest extends TestCase
         $runtime->backend->delete('/');
     }
 
-    public function test_stream_rejects_reentrancy_and_drains_the_fiber_when_abandoned(): void
+    public function test_stream_rejects_reentrancy_and_cancels_the_fiber_when_abandoned(): void
     {
         $session = $this->createMock(SessionManager::class);
         $session->method('getSessionId')->willReturn('sess-stream');
@@ -325,7 +327,7 @@ class ConversationInternalsTest extends TestCase
         unset($messages);
         gc_collect_cycles();
 
-        $this->assertTrue($streamCallbackReturned);
+        $this->assertFalse($streamCallbackReturned);
         $this->assertCount(2, $autoDecisionHandlers);
         $this->assertIsCallable($autoDecisionHandlers[0]);
         $this->assertNull($autoDecisionHandlers[1]);

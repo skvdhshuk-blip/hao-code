@@ -286,9 +286,9 @@ class StreamingToolExecutor
     /**
      * Kill any running child processes (e.g. on stream error, abort, or sibling abort).
      */
-    public function cleanup(): void
+    public function cleanup(bool $notifyCompletion = true): void
     {
-        $this->killEarlyPids();
+        $this->killEarlyPids($notifyCompletion);
         $this->queuedBlocks = [];
     }
 
@@ -303,8 +303,9 @@ class StreamingToolExecutor
     /**
      * Kill all early-forked child processes and clean up temp files.
      */
-    private function killEarlyPids(): void
+    private function killEarlyPids(bool $notifyCompletion = true): void
     {
+        $completedToolNames = [];
         foreach ($this->earlyPids as $info) {
             $this->killPid($info['pid']);
             if (function_exists('pcntl_waitpid')) {
@@ -313,14 +314,23 @@ class StreamingToolExecutor
             if (file_exists($info['temp_file'])) {
                 @unlink($info['temp_file']);
             }
-            if ($this->onToolComplete) {
+            if ($notifyCompletion && $this->onToolComplete) {
+                $completedToolNames[] = $info['block']['name'];
+            }
+        }
+        $this->earlyPids = [];
+
+        // Resource cleanup must finish for every child before callbacks run.
+        // SDK streaming callbacks suspend their Fiber; the consumer may abandon
+        // the generator at the first terminal event and force-close that Fiber.
+        if ($this->onToolComplete) {
+            foreach ($completedToolNames as $toolName) {
                 ($this->onToolComplete)(
-                    $info['block']['name'],
+                    $toolName,
                     ToolResult::aborted(),
                 );
             }
         }
-        $this->earlyPids = [];
     }
 
     private function isCancelled(): bool

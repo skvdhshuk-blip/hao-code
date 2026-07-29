@@ -775,7 +775,7 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.18.16`. Notable changes since `v1.10.0`:
+is based on `v1.18.17`. Notable changes since `v1.10.0`:
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/
@@ -836,14 +836,18 @@ is based on `v1.18.16`. Notable changes since `v1.10.0`:
   closed; release lint now covers examples.
 - `v1.18.15` — SDK lifecycle and persistence contracts are hardened: durable
   HITL sandboxes survive non-streaming and repeated-interrupt paths; abandoned
-  streams abort and drain; hooks time out, fail closed, and revalidate modified
-  input; committed credential streams are never replayed; settings and session
-  reads fail closed; parallel tool results retain metadata and outcomes.
+  streams abort and release execution state; hooks time out, fail closed, and
+  revalidate modified input; committed credential streams are never replayed;
+  settings and session reads fail closed; parallel tool results retain metadata
+  and outcomes.
 - `v1.18.16` — Local file tools enforce text-only `Read` boundaries, complete
   and current revision receipts, and atomic conflict-safe mutation; context
   compaction preserves tool-call/result structure; `Conversation::loadSession()`
   atomically replaces existing in-memory history; CI discovers and runs every
   non-live test.
+- `v1.18.17` — Cross-platform release gates now cover native Windows path and
+  glob behavior, PHP 8.1–8.3 stream abandonment, clean-checkout sandbox tests,
+  fail-closed Hook working directories, and Windows-form sensitive paths.
 
 ## License
 

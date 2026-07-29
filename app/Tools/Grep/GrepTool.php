@@ -273,7 +273,11 @@ DESC;
                     // sensitive-path checks applied to the observable input.
                     if (! $file->isLink() && $file->isFile()) {
                         if ($glob) {
-                            $relPath = ltrim(str_replace($path, '', $file->getPathname()), DIRECTORY_SEPARATOR);
+                            $relPath = str_replace(
+                                '\\',
+                                '/',
+                                ltrim(str_replace($path, '', $file->getPathname()), '/\\'),
+                            );
                             if (!fnmatch($glob, $relPath) && !fnmatch($glob, $file->getFilename())) {
                                 continue;
                             }
@@ -358,9 +362,11 @@ DESC;
 
         $prefix = rtrim($searchPath, '/\\').DIRECTORY_SEPARATOR;
 
-        return str_starts_with($file, $prefix)
+        $relative = str_starts_with($file, $prefix)
             ? substr($file, strlen($prefix))
             : $file;
+
+        return str_replace('\\', '/', $relative);
     }
 
     private function normalizeOutputPath(string $line, string $searchPath): string
