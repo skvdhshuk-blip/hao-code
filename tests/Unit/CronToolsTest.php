@@ -62,6 +62,34 @@ class CronToolsTest extends TestCase
         $this->assertStringContainsString('Invalid cron', $result->output);
     }
 
+    /**
+     * @dataProvider invalidCronProvider
+     */
+    public function test_create_rejects_invalid_cron_ranges_and_tokens(string $cron): void
+    {
+        $result = (new CronCreateTool)->call([
+            'cron' => $cron,
+            'prompt' => 'must not be scheduled',
+        ], $this->context);
+
+        $this->assertTrue($result->isError);
+        $this->assertSame([], CronScheduler::getAllJobs());
+    }
+
+    public static function invalidCronProvider(): array
+    {
+        return [
+            'minute overflow' => ['61 * * * *'],
+            'hour overflow' => ['0 24 * * *'],
+            'day overflow' => ['0 0 32 * *'],
+            'month overflow' => ['0 0 * 13 *'],
+            'weekday overflow' => ['0 0 * * 8'],
+            'unknown token' => ['foo * * * *'],
+            'zero step' => ['*/0 * * * *'],
+            'reversed range' => ['10-5 * * * *'],
+        ];
+    }
+
     public function test_create_defaults_to_recurring_true(): void
     {
         $tool = new CronCreateTool;

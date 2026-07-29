@@ -58,10 +58,8 @@ class CronCreateTool extends BaseTool
         $recurring = $input['recurring'] ?? true;
         $durable = $input['durable'] ?? false;
 
-        // Validate cron expression (5 fields)
-        $parts = preg_split('/\s+/', trim($cron));
-        if (count($parts) !== 5) {
-            return ToolResult::error("Invalid cron: must have 5 fields. Got: {$cron}");
+        if (! CronScheduler::isValidExpression($cron)) {
+            return ToolResult::error("Invalid cron expression: {$cron}");
         }
 
         $jobId = 'cron_' . bin2hex(random_bytes(4));

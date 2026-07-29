@@ -248,11 +248,18 @@ final class SdkRunFactory
             }
         }
 
+        $unsubscribeAbort = null;
         if ($config->abortController !== null) {
-            $config->abortController->onAbort(fn () => $loop->abort());
+            $abortController = $config->abortController;
+            $loop->setAbortRequestedChecker(
+                static fn (): bool => $abortController->isAborted(),
+            );
+            $unsubscribeAbort = $abortController->subscribe(
+                static fn () => $loop->abort(),
+            );
         }
 
-        return new SdkRun($loop, $sandboxRuntime, $mcpConnectionManager);
+        return new SdkRun($loop, $sandboxRuntime, $mcpConnectionManager, $unsubscribeAbort);
     }
 
     private static function snapshotString(array $snapshot, string $key): ?string

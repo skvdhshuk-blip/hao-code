@@ -2,15 +2,21 @@
 
 namespace HaoCode\Services\Hooks;
 
+use HaoCode\Services\Settings\SettingsFileStore;
+
 class HookExecutor
 {
     /** @var array<string, HookDefinition[]> */
     private array $hooks = [];
+    private HookProcessRunner $processRunner;
+    private SettingsFileStore $fileStore;
 
     public function __construct(
         private readonly ?string $workingDirectory = null,
     )
     {
+        $this->processRunner = new HookProcessRunner;
+        $this->fileStore = new SettingsFileStore($workingDirectory);
         $this->loadHooks();
     }
 
@@ -34,7 +40,7 @@ class HookExecutor
                 }
             }
 
-            $hookResult = $this->runHook($hook, $context);
+            $hookResult = $this->runHook($event, $hook, $context);
 
             if (!$hookResult->allowed) {
                 return $hookResult;
@@ -59,7 +65,7 @@ class HookExecutor
         );
     }
 
-    private function runHook(HookDefinition $hook, array $context): HookResult
+    private function runHook(string $event, HookDefinition $hook, array $context): HookResult
     {
         $command = $hook->command;
 
@@ -74,32 +80,37 @@ class HookExecutor
         // Also pass context as JSON on stdin
         $stdin = json_encode($context, JSON_UNESCAPED_UNICODE);
 
-        $descriptors = [
-            0 => ['pipe', 'r'],
-            1 => ['pipe', 'w'],
-            2 => ['pipe', 'w'],
-        ];
+        $processResult = $this->processRunner->run(
+            command: $command,
+            stdin: is_string($stdin) ? $stdin : '{}',
+            workingDirectory: $this->workingDirectory,
+            environment: $env,
+        );
 
-        $process = proc_open($command, $descriptors, $pipes, $this->workingDirectory, $env);
-
-        if (!is_resource($process)) {
-            return new HookResult(allowed: true, output: 'Failed to execute hook');
+        if (! $processResult['started']) {
+            return $this->processFailure($event, 'Failed to execute hook: '.$processResult['error']);
+        }
+        if ($processResult['timedOut']) {
+            return $this->processFailure($event, 'Hook timed out');
+        }
+        if ($processResult['outputLimitExceeded'] !== null) {
+            return $this->processFailure(
+                $event,
+                "Hook {$processResult['outputLimitExceeded']} exceeded the output limit",
+            );
+        }
+        if ($processResult['error'] !== null) {
+            return $this->processFailure($event, 'Hook process failed: '.$processResult['error']);
         }
 
-        fwrite($pipes[0], $stdin);
-        fclose($pipes[0]);
-
-        $stdout = stream_get_contents($pipes[1]);
-        $stderr = stream_get_contents($pipes[2]);
-        fclose($pipes[1]);
-        fclose($pipes[2]);
-
-        $exitCode = proc_close($process);
+        $stdout = $processResult['stdout'];
+        $stderr = $processResult['stderr'];
+        $exitCode = $processResult['exitCode'];
 
         if ($exitCode !== 0) {
             return new HookResult(
                 allowed: false,
-                output: "Hook failed (exit code {$exitCode}): " . trim($stderr ?: $stdout),
+                output: "Hook failed (exit code ".($exitCode ?? 'unknown').'): '.trim($stderr ?: $stdout),
             );
         }
 
@@ -112,40 +123,71 @@ class HookExecutor
 
         // Check for JSON output with modifications
         $json = json_decode($output, true);
-        if (is_array($json)) {
+        if (json_last_error() === JSON_ERROR_NONE) {
+            $invalidDecision = ! is_array($json)
+                || str_starts_with($output, '[')
+                || (array_key_exists('allow', $json) && ! is_bool($json['allow']))
+                || (array_key_exists('input', $json) && ! is_array($json['input']))
+                || (array_key_exists('message', $json) && ! is_string($json['message']));
+            if ($invalidDecision) {
+                return $this->invalidOutput($event, $output);
+            }
+
             return new HookResult(
                 allowed: ($json['allow'] ?? true) !== false,
                 modifiedInput: $json['input'] ?? null,
                 output: $json['message'] ?? '',
             );
         }
+        if ($output !== '' && (str_starts_with($output, '{') || str_starts_with($output, '['))) {
+            return $this->invalidOutput($event, $output);
+        }
 
         return new HookResult(allowed: true, output: $output);
     }
 
+    private function processFailure(string $event, string $message): HookResult
+    {
+        return new HookResult(
+            allowed: $event !== 'PreToolUse',
+            output: $message,
+        );
+    }
+
+    private function invalidOutput(string $event, string $output): HookResult
+    {
+        if ($event !== 'PreToolUse') {
+            return new HookResult(allowed: true, output: $output);
+        }
+
+        return new HookResult(
+            allowed: false,
+            output: 'Hook returned an invalid decision',
+        );
+    }
+
     private function loadHooks(): void
     {
-        // Load hooks from settings files
-        $paths = [];
+        foreach ($this->fileStore->paths() as $path) {
+            $settings = $this->fileStore->read($path);
+            $hooks = $settings['hooks'] ?? [];
+            if (! is_array($hooks)) {
+                continue;
+            }
 
-        $home = $_SERVER['HOME'] ?? getenv('HOME') ?: sys_get_temp_dir();
-        $paths[] = "{$home}/.haocode/settings.json";
-        $paths[] = ($this->workingDirectory ?? getcwd()) . '/.haocode/settings.json';
-
-        foreach ($paths as $path) {
-            if (file_exists($path)) {
-                $settings = json_decode(file_get_contents($path), true) ?: [];
-                $hooks = $settings['hooks'] ?? [];
-
-                foreach ($hooks as $event => $eventHooks) {
-                    foreach ($eventHooks as $hookConfig) {
-                        if (isset($hookConfig['command'])) {
-                            $this->hooks[$event][] = new HookDefinition(
-                                event: $event,
-                                command: $hookConfig['command'],
-                                matcher: $hookConfig['matcher'] ?? null,
-                            );
-                        }
+            foreach ($hooks as $event => $eventHooks) {
+                if (! is_string($event) || ! is_array($eventHooks)) {
+                    continue;
+                }
+                foreach ($eventHooks as $hookConfig) {
+                    if (is_array($hookConfig) && is_string($hookConfig['command'] ?? null)) {
+                        $this->hooks[$event][] = new HookDefinition(
+                            event: $event,
+                            command: $hookConfig['command'],
+                            matcher: is_string($hookConfig['matcher'] ?? null)
+                                ? $hookConfig['matcher']
+                                : null,
+                        );
                     }
                 }
             }

@@ -40,11 +40,11 @@ class Runner
         $run = self::createRun($agent, $options);
         $loop = $run->loop;
 
-        $userInput = $options->images !== []
-            ? ImageContentBlock::buildUserContent($prompt, $options->images)
-            : $prompt;
-
         try {
+            $userInput = $options->images !== []
+                ? ImageContentBlock::buildUserContent($prompt, $options->images, $options->cwd)
+                : $prompt;
+
             $response = $loop->run(
                 userInput: $userInput,
                 onTextDelta: $options->onText,
@@ -83,68 +83,71 @@ class Runner
 
         $run = self::createRun($agent, $options);
         $loop = $run->loop;
-        $queue = new \SplQueue;
-
-        $userInput = $options->images !== []
-            ? ImageContentBlock::buildUserContent($prompt, $options->images)
-            : $prompt;
-
-        $onText = function (string $delta) use ($queue, $options): void {
-            $queue->enqueue(Message::text($delta));
-            if ($options->onText) {
-                ($options->onText)($delta);
-            }
-            \Fiber::getCurrent()?->suspend();
-        };
-
-        $onToolStart = function (string $name, array $input) use ($queue, $options): void {
-            $queue->enqueue(Message::toolStart($name, $input));
-            if ($options->onToolStart) {
-                ($options->onToolStart)($name, $input);
-            }
-            \Fiber::getCurrent()?->suspend();
-        };
-
-        $onToolComplete = function (string $name, $result) use ($queue, $options): void {
-            $queue->enqueue(Message::toolResult($name, $result->output, $result->isError));
-            if ($options->onToolComplete) {
-                ($options->onToolComplete)($name, $result);
-            }
-            \Fiber::getCurrent()?->suspend();
-        };
-
-        $onTurnStart = function (int $turn) use ($queue, $options): void {
-            $queue->enqueue(Message::turn($turn));
-            if ($options->onTurnStart) {
-                ($options->onTurnStart)($turn);
-            }
-            \Fiber::getCurrent()?->suspend();
-        };
-
-        $loop->setAutoDecisionHandler(function (Message $message) use ($queue): void {
-            $queue->enqueue($message);
-            \Fiber::getCurrent()?->suspend();
-        });
-
-        $response = null;
+        $fiber = null;
+        $autoDecisionHandlerRegistered = false;
         $thrownException = null;
-
-        $fiber = new \Fiber(function () use ($loop, $userInput, $onText, $onToolStart, $onToolComplete, $onTurnStart, $options, &$response, &$thrownException): void {
-            try {
-                $response = $loop->run(
-                    userInput: $userInput,
-                    onTextDelta: $onText,
-                    onToolStart: $onToolStart,
-                    onToolComplete: $onToolComplete,
-                    onTurnStart: $onTurnStart,
-                    onThinkingDelta: $options->onThinking,
-                );
-            } catch (\Throwable $e) {
-                $thrownException = $e;
-            }
-        });
-
         try {
+            $queue = new \SplQueue;
+
+            $userInput = $options->images !== []
+                ? ImageContentBlock::buildUserContent($prompt, $options->images, $options->cwd)
+                : $prompt;
+
+            $onText = function (string $delta) use ($queue, $options): void {
+                $queue->enqueue(Message::text($delta));
+                if ($options->onText) {
+                    ($options->onText)($delta);
+                }
+                \Fiber::getCurrent()?->suspend();
+            };
+
+            $onToolStart = function (string $name, array $input) use ($queue, $options): void {
+                $queue->enqueue(Message::toolStart($name, $input));
+                if ($options->onToolStart) {
+                    ($options->onToolStart)($name, $input);
+                }
+                \Fiber::getCurrent()?->suspend();
+            };
+
+            $onToolComplete = function (string $name, $result) use ($queue, $options): void {
+                $queue->enqueue(Message::toolResult($name, $result->output, $result->isError));
+                if ($options->onToolComplete) {
+                    ($options->onToolComplete)($name, $result);
+                }
+                \Fiber::getCurrent()?->suspend();
+            };
+
+            $onTurnStart = function (int $turn) use ($queue, $options): void {
+                $queue->enqueue(Message::turn($turn));
+                if ($options->onTurnStart) {
+                    ($options->onTurnStart)($turn);
+                }
+                \Fiber::getCurrent()?->suspend();
+            };
+
+            $loop->setAutoDecisionHandler(function (Message $message) use ($queue): void {
+                $queue->enqueue($message);
+                \Fiber::getCurrent()?->suspend();
+            });
+            $autoDecisionHandlerRegistered = true;
+
+            $response = null;
+
+            $fiber = new \Fiber(function () use ($loop, $userInput, $onText, $onToolStart, $onToolComplete, $onTurnStart, $options, &$response, &$thrownException): void {
+                try {
+                    $response = $loop->run(
+                        userInput: $userInput,
+                        onTextDelta: $onText,
+                        onToolStart: $onToolStart,
+                        onToolComplete: $onToolComplete,
+                        onTurnStart: $onTurnStart,
+                        onThinkingDelta: $options->onThinking,
+                    );
+                } catch (\Throwable $e) {
+                    $thrownException = $e;
+                }
+            });
+
             $fiber->start();
 
             while (! $fiber->isTerminated()) {
@@ -179,6 +182,16 @@ class Runner
                 sessionId: $ephemeral ? null : $loop->getSessionManager()->getSessionId(),
             );
         } finally {
+            if ($fiber instanceof \Fiber && $fiber->isStarted() && ! $fiber->isTerminated()) {
+                $loop->abort();
+                self::drainFiber($fiber);
+            }
+            if ($thrownException instanceof HumanInterruptException) {
+                $run->preserveSandboxOnClose();
+            }
+            if ($autoDecisionHandlerRegistered) {
+                $loop->setAutoDecisionHandler(null);
+            }
             $run->close();
         }
     }
@@ -200,5 +213,16 @@ class Runner
             'cache_read_tokens' => $loop->getCacheReadTokens(),
             'cost_available' => $loop->isCostEstimateAvailable(),
         ];
+    }
+
+    private static function drainFiber(\Fiber $fiber): void
+    {
+        while (! $fiber->isTerminated() && $fiber->isSuspended()) {
+            try {
+                $fiber->resume();
+            } catch (\FiberError) {
+                break;
+            }
+        }
     }
 }

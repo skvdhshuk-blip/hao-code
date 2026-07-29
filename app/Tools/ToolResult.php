@@ -32,6 +32,47 @@ class ToolResult
     }
 
     /**
+     * Convert to a scalar-only representation safe for process IPC.
+     *
+     * @internal
+     *
+     * @return array{output: string, is_error: bool, metadata: ?array, outcome: string}
+     */
+    public function toArray(): array
+    {
+        return [
+            'output' => $this->output,
+            'is_error' => $this->isError,
+            'metadata' => $this->metadata,
+            'outcome' => $this->outcome()->value,
+        ];
+    }
+
+    /**
+     * Restore a result from its scalar-only IPC representation.
+     *
+     * @internal
+     */
+    public static function fromArray(array $value): self
+    {
+        $output = $value['output'] ?? null;
+        $isError = $value['is_error'] ?? null;
+        $metadata = $value['metadata'] ?? null;
+        $outcome = is_string($value['outcome'] ?? null)
+            ? ToolOutcome::tryFrom($value['outcome'])
+            : null;
+
+        if (! is_string($output)
+            || ! is_bool($isError)
+            || ($metadata !== null && ! is_array($metadata))
+            || $outcome === null) {
+            throw new \InvalidArgumentException('Invalid ToolResult IPC payload.');
+        }
+
+        return new self($output, $isError, $metadata, $outcome);
+    }
+
+    /**
      * Convert to the Anthropic API tool_result content block format.
      */
     public function toApiFormat(string $toolUseId): array

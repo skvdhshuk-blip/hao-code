@@ -169,6 +169,18 @@ class CredentialPool
     }
 
     /**
+     * Reset the consecutive non-rate-limit error count after a complete stream.
+     *
+     * An active rate-limit exhaustion TTL is intentionally retained.
+     *
+     * @internal
+     */
+    public function markSuccess(Credential $credential): void
+    {
+        unset($this->errorCounts[$credential->idHash()]);
+    }
+
+    /**
      * Manually restore a credential to healthy status.
      *
      * @api

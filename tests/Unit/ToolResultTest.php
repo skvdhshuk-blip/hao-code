@@ -61,4 +61,16 @@ class ToolResultTest extends TestCase
         $this->assertSame(ToolOutcome::Failed, ToolResult::error('failed')->outcome());
         $this->assertSame(ToolOutcome::Aborted, ToolResult::aborted()->outcome());
     }
+
+    public function test_array_round_trip_preserves_metadata_and_terminal_outcome(): void
+    {
+        $result = ToolResult::aborted('cancelled', ['pid' => 42]);
+
+        $restored = ToolResult::fromArray($result->toArray());
+
+        $this->assertSame('cancelled', $restored->output);
+        $this->assertTrue($restored->isError);
+        $this->assertSame(['pid' => 42], $restored->metadata);
+        $this->assertSame(ToolOutcome::Aborted, $restored->outcome());
+    }
 }

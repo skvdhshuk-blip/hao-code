@@ -32,9 +32,6 @@ use HaoCode\Tools\Agent\AgentTool;
 use HaoCode\Tools\Agent\SendMessageTool;
 use HaoCode\Tools\Bash\BashTool;
 use HaoCode\Tools\Config\ConfigTool;
-use HaoCode\Tools\Cron\CronCreateTool;
-use HaoCode\Tools\Cron\CronDeleteTool;
-use HaoCode\Tools\Cron\CronListTool;
 use HaoCode\Tools\FileEdit\ApplyPatchTool;
 use HaoCode\Tools\FileEdit\FileEditTool;
 use HaoCode\Tools\FileRead\FileReadTool;
@@ -276,6 +273,10 @@ final class SdkRuntime
         $app->singleton(ToolRegistry::class, function (Container $app) {
             $registry = new ToolRegistry();
 
+            // CronCreate/List/Delete are intentionally not advertised here:
+            // the legacy JSON scheduler has no production execution driver.
+            // Keep the tool classes available for compatibility until a
+            // claim/execute/complete runtime contract is wired end to end.
             foreach ([
                 BashTool::class,
                 FileReadTool::class,
@@ -295,9 +296,6 @@ final class SdkRuntime
                 EnterPlanModeTool::class,
                 ExitPlanModeTool::class,
                 ConfigTool::class,
-                CronCreateTool::class,
-                CronDeleteTool::class,
-                CronListTool::class,
                 EnterWorktreeTool::class,
                 ExitWorktreeTool::class,
                 TaskCreateTool::class,

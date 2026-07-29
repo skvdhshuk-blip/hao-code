@@ -176,6 +176,22 @@ class CronSchedulerTest extends TestCase
         $this->assertIsDue('* * * * 1', $now);
     }
 
+    public function test_day_of_week_seven_is_sunday(): void
+    {
+        $now = new \DateTime('2025-01-05 10:00:00');
+        $this->assertIsDue('* * * * 7', $now);
+        $this->assertIsDue('* * * * 5-7', $now);
+    }
+
+    public function test_day_of_month_and_day_of_week_use_standard_or_semantics(): void
+    {
+        $mondayThatIsNotFirst = new \DateTime('2025-01-06 10:00:00');
+        $firstThatIsNotMonday = new \DateTime('2025-02-01 10:00:00');
+
+        $this->assertIsDue('* * 1 * 1', $mondayThatIsNotFirst);
+        $this->assertIsDue('* * 1 * 1', $firstThatIsNotMonday);
+    }
+
     public function test_invalid_cron_field_count_is_not_due(): void
     {
         $now = new \DateTime('2025-01-01 10:00:00');

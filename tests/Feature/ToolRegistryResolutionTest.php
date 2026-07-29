@@ -14,5 +14,11 @@ class ToolRegistryResolutionTest extends TestCase
         $this->assertInstanceOf(ToolRegistry::class, $registry);
         $this->assertNotNull($registry->getTool('Agent'));
         $this->assertNotNull($registry->getTool('SendMessage'));
+        $this->assertNull(
+            $registry->getTool('CronCreate'),
+            'Cron tools must not be advertised until a production execution driver is wired.',
+        );
+        $this->assertNull($registry->getTool('CronDelete'));
+        $this->assertNull($registry->getTool('CronList'));
     }
 }

@@ -4,23 +4,24 @@ declare(strict_types=1);
 
 namespace HaoCode\Services\Mcp;
 
+use HaoCode\Services\Settings\SettingsFileStore;
+
 class McpServerConfigManager
 {
+    private readonly SettingsFileStore $fileStore;
+
     public function __construct(
         private readonly ?string $workingDirectory = null,
-    ) {}
+    ) {
+        $this->fileStore = new SettingsFileStore($workingDirectory);
+    }
 
     /**
      * @return array{global: string, project: string}
      */
     public function paths(): array
     {
-        $home = $_SERVER['HOME'] ?? getenv('HOME') ?: sys_get_temp_dir();
-
-        return [
-            'global' => \HaoCode\Support\Runtime\SdkRuntime::config('haocode.global_settings_path') ?: $home.'/.haocode/settings.json',
-            'project' => rtrim($this->workingDirectory ?? (getcwd() ?: '/'), '/').'/.haocode/settings.json',
-        ];
+        return $this->fileStore->paths();
     }
 
     /**
@@ -87,11 +88,12 @@ class McpServerConfigManager
     public function addServer(string $name, array $definition, string $scope = 'project'): void
     {
         $path = $this->pathForScope($scope);
-        $settings = $this->readSettingsFile($path);
-        $settings['mcp_servers'] ??= [];
-        $settings['mcp_servers'][$name] = $definition;
-
-        $this->writeSettingsFile($path, $settings);
+        $this->fileStore->update($path, function (array &$settings) use ($name, $definition): void {
+            if (! isset($settings['mcp_servers']) || ! is_array($settings['mcp_servers'])) {
+                $settings['mcp_servers'] = [];
+            }
+            $settings['mcp_servers'][$name] = $definition;
+        });
     }
 
     public function removeServer(string $name, string $scope = 'all'): int
@@ -100,14 +102,21 @@ class McpServerConfigManager
 
         foreach ($this->targetScopes($scope) as $targetScope) {
             $path = $this->pathForScope($targetScope);
-            $settings = $this->readSettingsFile($path);
-            if (! isset($settings['mcp_servers'][$name])) {
+            if (! file_exists($path)) {
                 continue;
             }
+            $removed += (int) $this->fileStore->update(
+                $path,
+                function (array &$settings) use ($name): bool {
+                    if (! isset($settings['mcp_servers'][$name])) {
+                        return false;
+                    }
 
-            unset($settings['mcp_servers'][$name]);
-            $this->writeSettingsFile($path, $settings);
-            $removed++;
+                    unset($settings['mcp_servers'][$name]);
+
+                    return true;
+                },
+            );
         }
 
         return $removed;
@@ -119,29 +128,33 @@ class McpServerConfigManager
 
         foreach ($this->targetScopes($scope) as $targetScope) {
             $path = $this->pathForScope($targetScope);
-            $settings = $this->readSettingsFile($path);
-            if (! isset($settings['mcp_servers']) || ! is_array($settings['mcp_servers'])) {
+            if (! file_exists($path)) {
                 continue;
             }
+            $updated += (int) $this->fileStore->update(
+                $path,
+                function (array &$settings) use ($name, $enabled): int {
+                    if (! isset($settings['mcp_servers']) || ! is_array($settings['mcp_servers'])) {
+                        return 0;
+                    }
 
-            $names = $name === 'all'
-                ? array_keys($settings['mcp_servers'])
-                : [$name];
+                    $names = $name === 'all'
+                        ? array_keys($settings['mcp_servers'])
+                        : [$name];
+                    $scopeUpdated = 0;
+                    foreach ($names as $serverName) {
+                        if (! isset($settings['mcp_servers'][$serverName])
+                            || ! is_array($settings['mcp_servers'][$serverName])) {
+                            continue;
+                        }
 
-            $didChange = false;
-            foreach ($names as $serverName) {
-                if (! isset($settings['mcp_servers'][$serverName]) || ! is_array($settings['mcp_servers'][$serverName])) {
-                    continue;
-                }
+                        $settings['mcp_servers'][$serverName]['enabled'] = $enabled;
+                        $scopeUpdated++;
+                    }
 
-                $settings['mcp_servers'][$serverName]['enabled'] = $enabled;
-                $updated++;
-                $didChange = true;
-            }
-
-            if ($didChange) {
-                $this->writeSettingsFile($path, $settings);
-            }
+                    return $scopeUpdated;
+                },
+            );
         }
 
         return $updated;
@@ -182,30 +195,7 @@ class McpServerConfigManager
      */
     private function readSettingsFile(string $path): array
     {
-        if (! file_exists($path)) {
-            return [];
-        }
-
-        $decoded = json_decode((string) file_get_contents($path), true);
-
-        return is_array($decoded) ? $decoded : [];
-    }
-
-    /**
-     * @param array<string, mixed> $settings
-     */
-    private function writeSettingsFile(string $path, array $settings): void
-    {
-        $dir = dirname($path);
-        if (! is_dir($dir) && ! mkdir($dir, 0755, true) && ! is_dir($dir)) {
-            throw new \RuntimeException("Failed to create MCP settings directory: {$dir}");
-        }
-
-        $json = json_encode($settings, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR)."\n";
-        if (file_put_contents($path, $json, LOCK_EX) === false) {
-            throw new \RuntimeException("Failed to write MCP settings file: {$path}");
-        }
-        @chmod($path, 0600);
+        return $this->fileStore->read($path);
     }
 
     /**

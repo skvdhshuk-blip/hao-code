@@ -88,9 +88,16 @@ class PooledProvider implements ForkSafeProvider, SettingsAwareProvider
             }
 
             $provider = $this->providerFor($credential);
+            $responseStateCommitted = false;
             try {
-                yield from $provider->streamMessages($systemPrompt, $messages, $tools, $onRawEvent, $shouldAbort);
+                foreach ($provider->streamMessages($systemPrompt, $messages, $tools, $onRawEvent, $shouldAbort) as $event) {
+                    if ($event->commitsResponseState()) {
+                        $responseStateCommitted = true;
+                    }
+                    yield $event;
+                }
                 $this->lastRateLimitHeaders = $provider->getLastRateLimitHeaders();
+                $this->pool->markSuccess($credential);
                 $this->rateLimitTracker?->record($credential);
 
                 return;
@@ -100,6 +107,10 @@ class PooledProvider implements ForkSafeProvider, SettingsAwareProvider
                 if ($this->isRateLimitError($e)) {
                     $retryAfter = $this->parseRetryAfter($this->lastRateLimitHeaders);
                     $this->pool->markExhausted($credential, $retryAfter);
+
+                    if ($responseStateCommitted) {
+                        throw $e;
+                    }
 
                     continue;
                 }

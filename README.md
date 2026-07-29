@@ -230,8 +230,10 @@ PHP host project directory. Sandbox mode replaces `Read`, `Write`, `Glob`, and
 `Grep` with sandbox-scoped tools. Set `mode: 'full'` to also replace `Bash` with
 a sandbox-scoped shell. Sandbox configuration disables `Edit`, `apply_patch`,
 `NotebookEdit`, worktree tools, `Agent`, and `SendMessage`. Other host-only tools,
-including `LSP`, task/team tools, and cron tools, are not sandbox replacements;
-use an explicit `allowedTools` list as shown below and omit them unless needed.
+including `LSP` and task/team tools, are not sandbox replacements; use an
+explicit `allowedTools` list as shown below and omit them unless needed. Legacy
+cron tool classes are not registered by the default runtime because no prompt
+execution driver is wired.
 
 Choose the backend by the isolation boundary you need:
 

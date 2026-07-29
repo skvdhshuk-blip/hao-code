@@ -485,6 +485,8 @@ class SdkE2ETest extends TestCase
         $abort->abort();
         $this->assertTrue($abort->isAborted());
         $this->assertTrue($callbackFired);
+        $listeners = new \ReflectionProperty(AbortController::class, 'listeners');
+        $this->assertCount(0, $listeners->getValue($abort));
 
         // Double abort is a no-op
         $abort->abort();
@@ -495,6 +497,162 @@ class SdkE2ETest extends TestCase
             $lateCallbackFired = true;
         });
         $this->assertTrue($lateCallbackFired);
+        $this->assertCount(0, $listeners->getValue($abort));
+    }
+
+    public function test_pre_aborted_controller_does_not_send_a_provider_request(): void
+    {
+        $requestCount = 0;
+        $this->bootWithMock([
+            function () use (&$requestCount): MockResponse {
+                $requestCount++;
+
+                return MockAnthropicSse::textResponse('must not be requested');
+            },
+        ]);
+        $abort = new AbortController;
+        $abort->abort();
+
+        $result = HaoCode::query('Do not start', new HaoCodeConfig(
+            allowedTools: [],
+            abortController: $abort,
+        ));
+
+        $this->assertSame('(aborted)', $result->text);
+        $this->assertSame(0, $requestCount);
+    }
+
+    public function test_abort_notifies_every_listener_before_rethrowing_the_first_failure(): void
+    {
+        $abort = new AbortController;
+        $secondListenerCalled = false;
+        $abort->onAbort(static function (): void {
+            throw new \RuntimeException('listener failed');
+        });
+        $abort->onAbort(static function () use (&$secondListenerCalled): void {
+            $secondListenerCalled = true;
+        });
+
+        try {
+            $abort->abort();
+            $this->fail('Expected the first listener failure to be rethrown.');
+        } catch (\RuntimeException $exception) {
+            $this->assertSame('listener failed', $exception->getMessage());
+        }
+
+        $this->assertTrue($secondListenerCalled);
+    }
+
+    public function test_abort_between_conversation_creation_and_send_does_not_send_a_request(): void
+    {
+        $requestCount = 0;
+        $this->bootWithMock([
+            function () use (&$requestCount): MockResponse {
+                $requestCount++;
+
+                return MockAnthropicSse::textResponse('must not be requested');
+            },
+        ]);
+        $abort = new AbortController;
+        $conversation = HaoCode::conversation(new HaoCodeConfig(
+            allowedTools: [],
+            abortController: $abort,
+        ));
+        $abort->abort();
+
+        $result = $conversation->send('Do not start');
+        $conversation->close();
+
+        $this->assertSame('(aborted)', $result->text);
+        $this->assertSame(0, $requestCount);
+    }
+
+    public function test_completed_runs_unsubscribe_abort_listeners(): void
+    {
+        $this->bootWithMock([
+            MockAnthropicSse::textResponse('first'),
+            MockAnthropicSse::textResponse('second'),
+            MockAnthropicSse::textResponse('third'),
+        ]);
+        $abort = new AbortController;
+        $listeners = new \ReflectionProperty(AbortController::class, 'listeners');
+
+        foreach (['one', 'two', 'three'] as $prompt) {
+            HaoCode::query($prompt, new HaoCodeConfig(
+                allowedTools: [],
+                abortController: $abort,
+            ));
+            $this->assertCount(0, $listeners->getValue($abort));
+        }
+    }
+
+    public function test_pre_aborted_interrupt_resume_does_not_claim_or_execute_the_tool(): void
+    {
+        $execution = new class
+        {
+            public int $count = 0;
+        };
+        $tool = new class($execution) extends SdkTool
+        {
+            public function __construct(private readonly object $execution) {}
+
+            public function name(): string
+            {
+                return 'AbortSensitiveWrite';
+            }
+
+            public function description(): string
+            {
+                return 'Records whether an approved side effect ran.';
+            }
+
+            public function parameters(): array
+            {
+                return [];
+            }
+
+            public function handle(array $input): string
+            {
+                $this->execution->count++;
+
+                return 'executed';
+            }
+        };
+        $this->bootWithMock([
+            MockAnthropicSse::toolUseResponse('abort-sensitive-write', 'AbortSensitiveWrite', []),
+        ]);
+        $abort = new AbortController;
+        $config = new HaoCodeConfig(
+            allowedTools: ['AbortSensitiveWrite'],
+            permissionMode: 'bypass_permissions',
+            ephemeral: false,
+            tools: [$tool],
+            abortController: $abort,
+            interruptOn: ['AbortSensitiveWrite' => true],
+            hitlMode: 'ask',
+        );
+
+        try {
+            HaoCode::query('Pause before the side effect', $config);
+            $this->fail('Expected an interrupt before tool execution.');
+        } catch (HumanInterruptException $exception) {
+            $interrupt = $exception->interrupt;
+        }
+
+        $abort->abort();
+        $result = HaoCode::resumeInterrupt(
+            $interrupt->sessionId,
+            $interrupt->id,
+            [HumanDecision::approve('abort-sensitive-write')],
+            $config,
+        );
+        $pending = \HaoCode\Support\Runtime\SdkRuntime::app(
+            \HaoCode\Services\Session\SessionManager::class,
+        )->getInterruptState($interrupt->sessionId, $interrupt->id);
+
+        $this->assertSame('(aborted)', $result->text);
+        $this->assertSame(0, $execution->count);
+        $this->assertSame('interrupt_pending', $pending['type']);
     }
 
     // ──────────────────────────────────────────────────────────────
@@ -2526,6 +2684,7 @@ JSON),
             ephemeral: false,
             interruptOn: ['Write' => true],
             hitlMode: 'ask',
+            sandbox: SandboxConfig::local(cleanup: 'always'),
         );
         try {
             HaoCode::structured('Write then report', $schema, $config);
@@ -2533,6 +2692,14 @@ JSON),
         } catch (HumanInterruptException $e) {
             $interrupt = $e->interrupt;
         }
+        $state = \HaoCode\Support\Runtime\SdkRuntime::app(
+            \HaoCode\Services\Session\SessionManager::class,
+        )->getInterruptState($interrupt->sessionId, $interrupt->id);
+        $sandboxRoot = $state['checkpoint']['run_snapshot']['sandbox_lease']['identity']['root']
+            ?? $state['checkpoint']['run_snapshot']['sandbox_lease']['root']
+            ?? null;
+        $this->assertIsString($sandboxRoot);
+        $this->assertDirectoryExists($sandboxRoot);
 
         $result = HaoCode::resumeInterrupt($interrupt->sessionId, $interrupt->id, [
             HumanDecision::approve('structured-write'),
@@ -2540,6 +2707,7 @@ JSON),
 
         $this->assertInstanceOf(StructuredResult::class, $result);
         $this->assertSame('done', $result->status);
+        $this->assertDirectoryDoesNotExist($sandboxRoot);
     }
 
     public function test_structured_resume_validates_schema_and_retries(): void

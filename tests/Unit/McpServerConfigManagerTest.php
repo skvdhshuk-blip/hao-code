@@ -35,7 +35,11 @@ class McpServerConfigManagerTest extends TestCase
         foreach (glob($this->tmpDir.'/*/.haocode/settings.json') ?: [] as $file) {
             @unlink($file);
         }
+        foreach (glob($this->tmpDir.'/*/.haocode/settings.json.lock') ?: [] as $file) {
+            @unlink($file);
+        }
         @unlink($this->globalSettingsPath);
+        @unlink($this->globalSettingsPath.'.lock');
         @rmdir(dirname($this->globalSettingsPath));
         @rmdir($this->projectDir.'/.haocode');
         @rmdir($this->projectDir);
@@ -154,5 +158,26 @@ class McpServerConfigManagerTest extends TestCase
             'client_secret_env' => 'MCP_CLIENT_SECRET',
             'access_token_env' => 'MCP_ACCESS_TOKEN',
         ], $server['oauth']);
+    }
+
+    public function test_invalid_settings_json_is_rejected_and_preserved(): void
+    {
+        $path = $this->projectDir.'/.haocode/settings.json';
+        mkdir(dirname($path), 0755, true);
+        $invalid = '{"mcp_servers":';
+        file_put_contents($path, $invalid);
+        $manager = new McpServerConfigManager;
+
+        try {
+            $manager->addServer('must-not-write', [
+                'transport' => 'http',
+                'url' => 'https://example.test/mcp',
+            ]);
+            $this->fail('Expected invalid settings JSON to be rejected.');
+        } catch (\RuntimeException $e) {
+            $this->assertStringContainsString('Invalid JSON in settings file', $e->getMessage());
+        }
+
+        $this->assertSame($invalid, file_get_contents($path));
     }
 }

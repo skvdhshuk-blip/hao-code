@@ -333,9 +333,13 @@ class SessionManager
             throw new \RuntimeException("Could not open session file for interrupt {$interruptId}.");
         }
         try {
+            if (! flock($handle, LOCK_SH)) {
+                throw new \RuntimeException("Could not lock session file for interrupt {$interruptId}.");
+            }
             // Uses fail-closed corrupt-line detection (must not roll back resolving → pending).
             $latest = $this->findLatestInterruptEntry($handle, $interruptId);
         } finally {
+            @flock($handle, LOCK_UN);
             fclose($handle);
         }
         if ($latest === null) {
@@ -686,22 +690,70 @@ class SessionManager
 
     private function readEntriesFromPath(string $path): array
     {
-        $lines = file($path);
-        if ($lines === false) {
-            return [];
+        $handle = @fopen($path, 'rb');
+        if ($handle === false) {
+            throw new \RuntimeException("Could not open session transcript: {$path}");
         }
 
-        $entries = [];
-        foreach ($lines as $line) {
-            if (trim($line)) {
-                $decoded = json_decode($line, true);
-                if (is_array($decoded)) {
-                    $entries[] = $decoded;
-                }
+        try {
+            if (! flock($handle, LOCK_SH)) {
+                throw new \RuntimeException("Could not lock session transcript for reading: {$path}");
             }
+
+            $sessionId = basename($path, '.jsonl');
+            for ($attempt = 0; $attempt < 2; $attempt++) {
+                rewind($handle);
+                clearstatcache(true, $path);
+                $contents = stream_get_contents($handle);
+                if ($contents === false) {
+                    throw new \RuntimeException("Could not read session transcript: {$sessionId}");
+                }
+
+                $entries = [];
+                $lines = explode("\n", $contents);
+                $hasTrailingNewline = str_ends_with($contents, "\n");
+                if ($hasTrailingNewline) {
+                    array_pop($lines);
+                }
+
+                $retryFinalLine = false;
+                foreach ($lines as $index => $line) {
+                    if (trim($line) === '') {
+                        continue;
+                    }
+
+                    $decoded = json_decode($line, true);
+                    if (is_array($decoded)) {
+                        $entries[] = $decoded;
+
+                        continue;
+                    }
+
+                    $lineNumber = $index + 1;
+                    $isUnterminatedFinalLine = ! $hasTrailingNewline && $index === array_key_last($lines);
+                    if ($attempt === 0 && $isUnterminatedFinalLine) {
+                        $retryFinalLine = true;
+                        break;
+                    }
+
+                    throw new \RuntimeException(
+                        "Session {$sessionId} contains invalid JSON on line {$lineNumber}: "
+                        .json_last_error_msg(),
+                    );
+                }
+
+                if (! $retryFinalLine) {
+                    return $entries;
+                }
+
+                usleep(1_000);
+            }
+        } finally {
+            @flock($handle, LOCK_UN);
+            fclose($handle);
         }
 
-        return $entries;
+        throw new \RuntimeException('Could not read session transcript.');
     }
 
     private function getFilePath(): string

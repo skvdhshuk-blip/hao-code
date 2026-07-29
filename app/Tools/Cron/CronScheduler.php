@@ -124,7 +124,7 @@ class CronScheduler
     private static function isCronDue(string $cron, \DateTime $now): bool
     {
         $parts = preg_split('/\s+/', trim($cron));
-        if (count($parts) !== 5) return false;
+        if (count($parts) !== 5 || ! self::isValidExpression($cron)) return false;
 
         $minute = (int) $now->format('i');
         $hour = (int) $now->format('H');
@@ -132,16 +132,94 @@ class CronScheduler
         $month = (int) $now->format('n');
         $dayOfWeek = (int) $now->format('w'); // 0=Sun
 
+        $dayOfMonthMatches = self::matchesField($parts[2], $dayOfMonth, 1, 31);
+        $dayOfWeekMatches = self::matchesField($parts[4], $dayOfWeek, 0, 7, sundayAlias: true);
+        $dayMatches = match (true) {
+            $parts[2] === '*' => $dayOfWeekMatches,
+            $parts[4] === '*' => $dayOfMonthMatches,
+            default => $dayOfMonthMatches || $dayOfWeekMatches,
+        };
+
         return self::matchesField($parts[0], $minute, 0, 59)
             && self::matchesField($parts[1], $hour, 0, 23)
-            && self::matchesField($parts[2], $dayOfMonth, 1, 31)
             && self::matchesField($parts[3], $month, 1, 12)
-            && self::matchesField($parts[4], $dayOfWeek, 0, 6);
+            && $dayMatches;
     }
 
-    private static function matchesField(string $field, int $value, int $min, int $max): bool
+    public static function isValidExpression(string $cron): bool
+    {
+        $parts = preg_split('/\s+/', trim($cron));
+        if (count($parts) !== 5) {
+            return false;
+        }
+
+        foreach ([
+            [$parts[0], 0, 59],
+            [$parts[1], 0, 23],
+            [$parts[2], 1, 31],
+            [$parts[3], 1, 12],
+            [$parts[4], 0, 7],
+        ] as [$field, $min, $max]) {
+            if (! self::isValidField($field, $min, $max)) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static function isValidField(string $field, int $min, int $max): bool
+    {
+        foreach (explode(',', $field) as $part) {
+            if ($part === '*') {
+                continue;
+            }
+            if (preg_match('/^\*\/(\d+)$/', $part, $match) === 1) {
+                $step = (int) $match[1];
+                if ($step < 1 || $step > ($max - $min + 1)) {
+                    return false;
+                }
+                continue;
+            }
+            if (preg_match('/^(\d+)-(\d+)$/', $part, $match) === 1) {
+                $start = (int) $match[1];
+                $end = (int) $match[2];
+                if ($start < $min || $start > $max || $end < $min || $end > $max || $start > $end) {
+                    return false;
+                }
+                continue;
+            }
+            if (preg_match('/^\d+$/', $part) !== 1) {
+                return false;
+            }
+            $number = (int) $part;
+            if ($number < $min || $number > $max) {
+                return false;
+            }
+        }
+
+        return true;
+    }
+
+    private static function matchesField(
+        string $field,
+        int $value,
+        int $min,
+        int $max,
+        bool $sundayAlias = false,
+    ): bool
     {
         if ($field === '*') return true;
+
+        if (str_contains($field, ',')) {
+            foreach (explode(',', $field) as $part) {
+                if (self::matchesField($part, $value, $min, $max, $sundayAlias)) {
+                    return true;
+                }
+            }
+
+            return false;
+        }
 
         // */N pattern
         if (preg_match('/^\*\/(\d+)$/', $field, $m)) {
@@ -150,19 +228,22 @@ class CronScheduler
         }
 
         // N pattern (exact value)
-        if (is_numeric($field)) {
-            return $value === (int) $field;
+        if (preg_match('/^\d+$/', $field) === 1) {
+            $expected = (int) $field;
+            if ($sundayAlias && $expected === 7) {
+                $expected = 0;
+            }
+
+            return $value === $expected;
         }
 
         // N-M range
         if (preg_match('/^(\d+)-(\d+)$/', $field, $m)) {
-            return $value >= (int) $m[1] && $value <= (int) $m[2];
-        }
+            if ($sundayAlias && (int) $m[2] === 7 && $value === 0) {
+                return true;
+            }
 
-        // N,M list
-        if (str_contains($field, ',')) {
-            $values = array_map('intval', explode(',', $field));
-            return in_array($value, $values);
+            return $value >= (int) $m[1] && $value <= (int) $m[2];
         }
 
         return false;

@@ -1092,7 +1092,7 @@ class HaoCode
         $run = self::createRun($config, $budgetLedger);
         $loop = $run->loop;
         $userInput = $config->images !== []
-            ? ImageContentBlock::buildUserContent($prompt, $config->images)
+            ? ImageContentBlock::buildUserContent($prompt, $config->images, $config->cwd)
             : $prompt;
 
         try {

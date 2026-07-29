@@ -109,6 +109,7 @@ class StreamingToolExecutor
         $pid = pcntl_fork();
         if ($pid === -1) {
             // Fork failed, queue for sequential execution
+            @unlink($tempFile);
             $this->queuedBlocks[$index] = $block;
             return;
         }
@@ -128,7 +129,7 @@ class StreamingToolExecutor
             $newEntries = array_diff_key($childState, $stateBefore);
             $payload = [
                 'result' => $result,
-                'toolResult' => $completedResult,
+                'toolResult' => $completedResult?->toArray(),
                 'readState' => $newEntries,
             ];
             file_put_contents($tempFile, serialize($payload));
@@ -206,9 +207,15 @@ class StreamingToolExecutor
             unset($this->earlyPids[$index]);
 
             if ($this->onToolComplete) {
-                $toolResult = ($payload['toolResult'] ?? null) instanceof ToolResult
-                    ? $payload['toolResult']
-                    : $this->resultArrayToToolResult($result);
+                $toolResult = null;
+                if (is_array($payload) && is_array($payload['toolResult'] ?? null)) {
+                    try {
+                        $toolResult = ToolResult::fromArray($payload['toolResult']);
+                    } catch (\InvalidArgumentException) {
+                        // Corrupt or legacy IPC payload: fall back to the API result.
+                    }
+                }
+                $toolResult ??= $this->resultArrayToToolResult($result);
                 ($this->onToolComplete)($info['block']['name'], $toolResult);
             }
         }

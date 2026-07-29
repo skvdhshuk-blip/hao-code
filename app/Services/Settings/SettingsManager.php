@@ -18,9 +18,13 @@ class SettingsManager
 
     private array $runtimeOverrides = [];
 
+    private readonly SettingsFileStore $fileStore;
+
     public function __construct(
         private readonly ?string $workingDirectory = null,
-    ) {}
+    ) {
+        $this->fileStore = new SettingsFileStore($workingDirectory);
+    }
 
     public function getApiKey(): string
     {
@@ -312,6 +316,9 @@ class SettingsManager
     public function getPermissionMode(): PermissionMode
     {
         $settings = $this->loadProjectSettings();
+        $this->validateExplicitSecurityModes($settings);
+        $this->validateExplicitSecurityModes($this->runtimeOverrides);
+        $this->validateConfiguredSecurityModes();
 
         if (array_key_exists('permission_mode', $this->runtimeOverrides)) {
             return $this->normalizePermissionModeValue($this->runtimeOverrides['permission_mode']);
@@ -320,8 +327,12 @@ class SettingsManager
         if (array_key_exists('approval_policy', $this->runtimeOverrides)
             || array_key_exists('sandbox_mode', $this->runtimeOverrides)) {
             return $this->permissionModeFromModernConfig(
-                $this->runtimeOverrides['approval_policy'] ?? null,
-                $this->runtimeOverrides['sandbox_mode'] ?? null,
+                array_key_exists('approval_policy', $this->runtimeOverrides)
+                    ? $this->normalizeApprovalPolicyValue($this->runtimeOverrides['approval_policy'])
+                    : null,
+                array_key_exists('sandbox_mode', $this->runtimeOverrides)
+                    ? $this->normalizeSandboxModeValue($this->runtimeOverrides['sandbox_mode'])
+                    : null,
             );
         }
 
@@ -331,16 +342,25 @@ class SettingsManager
 
         if (array_key_exists('approval_policy', $settings) || array_key_exists('sandbox_mode', $settings)) {
             return $this->permissionModeFromModernConfig(
-                $settings['approval_policy'] ?? null,
-                $settings['sandbox_mode'] ?? null,
+                array_key_exists('approval_policy', $settings)
+                    ? $this->normalizeApprovalPolicyValue($settings['approval_policy'])
+                    : null,
+                array_key_exists('sandbox_mode', $settings)
+                    ? $this->normalizeSandboxModeValue($settings['sandbox_mode'])
+                    : null,
             );
         }
 
-        if (\HaoCode\Support\Runtime\SdkRuntime::config('haocode.approval_policy') !== null
-            || \HaoCode\Support\Runtime\SdkRuntime::config('haocode.sandbox_mode') !== null) {
+        $configApprovalPolicy = \HaoCode\Support\Runtime\SdkRuntime::config('haocode.approval_policy');
+        $configSandboxMode = \HaoCode\Support\Runtime\SdkRuntime::config('haocode.sandbox_mode');
+        if ($configApprovalPolicy !== null || $configSandboxMode !== null) {
             return $this->permissionModeFromModernConfig(
-                \HaoCode\Support\Runtime\SdkRuntime::config('haocode.approval_policy'),
-                \HaoCode\Support\Runtime\SdkRuntime::config('haocode.sandbox_mode'),
+                $configApprovalPolicy === null
+                    ? null
+                    : $this->normalizeApprovalPolicyValue($configApprovalPolicy),
+                $configSandboxMode === null
+                    ? null
+                    : $this->normalizeSandboxModeValue($configSandboxMode),
             );
         }
 
@@ -352,12 +372,12 @@ class SettingsManager
     public function getApprovalPolicy(): string
     {
         $settings = $this->loadProjectSettings();
+        $this->validateExplicitSecurityModes($settings);
+        $this->validateExplicitSecurityModes($this->runtimeOverrides);
+        $this->validateConfiguredSecurityModes();
 
         if (array_key_exists('approval_policy', $this->runtimeOverrides)) {
-            $mode = $this->normalizeApprovalPolicy($this->runtimeOverrides['approval_policy']);
-            if ($mode !== null) {
-                return $mode;
-            }
+            return $this->normalizeApprovalPolicyValue($this->runtimeOverrides['approval_policy']);
         }
 
         if (array_key_exists('permission_mode', $this->runtimeOverrides)
@@ -366,21 +386,16 @@ class SettingsManager
         }
 
         if (array_key_exists('approval_policy', $settings)) {
-            $mode = $this->normalizeApprovalPolicy($settings['approval_policy']);
-            if ($mode !== null) {
-                return $mode;
-            }
+            return $this->normalizeApprovalPolicyValue($settings['approval_policy']);
         }
 
         if (array_key_exists('permission_mode', $settings) || array_key_exists('sandbox_mode', $settings)) {
             return $this->approvalPolicyFromPermissionMode($this->getPermissionMode());
         }
 
-        $configApprovalPolicy = $this->normalizeApprovalPolicy(
-            \HaoCode\Support\Runtime\SdkRuntime::config('haocode.approval_policy'),
-        );
+        $configApprovalPolicy = \HaoCode\Support\Runtime\SdkRuntime::config('haocode.approval_policy');
         if ($configApprovalPolicy !== null) {
-            return $configApprovalPolicy;
+            return $this->normalizeApprovalPolicyValue($configApprovalPolicy);
         }
 
         return $this->approvalPolicyFromPermissionMode($this->getPermissionMode());
@@ -389,12 +404,12 @@ class SettingsManager
     public function getSandboxMode(): string
     {
         $settings = $this->loadProjectSettings();
+        $this->validateExplicitSecurityModes($settings);
+        $this->validateExplicitSecurityModes($this->runtimeOverrides);
+        $this->validateConfiguredSecurityModes();
 
         if (array_key_exists('sandbox_mode', $this->runtimeOverrides)) {
-            $mode = $this->normalizeSandboxMode($this->runtimeOverrides['sandbox_mode']);
-            if ($mode !== null) {
-                return $mode;
-            }
+            return $this->normalizeSandboxModeValue($this->runtimeOverrides['sandbox_mode']);
         }
 
         if (array_key_exists('permission_mode', $this->runtimeOverrides)
@@ -403,21 +418,16 @@ class SettingsManager
         }
 
         if (array_key_exists('sandbox_mode', $settings)) {
-            $mode = $this->normalizeSandboxMode($settings['sandbox_mode']);
-            if ($mode !== null) {
-                return $mode;
-            }
+            return $this->normalizeSandboxModeValue($settings['sandbox_mode']);
         }
 
         if (array_key_exists('permission_mode', $settings) || array_key_exists('approval_policy', $settings)) {
             return $this->sandboxModeFromPermissionMode($this->getPermissionMode());
         }
 
-        $configSandboxMode = $this->normalizeSandboxMode(
-            \HaoCode\Support\Runtime\SdkRuntime::config('haocode.sandbox_mode'),
-        );
+        $configSandboxMode = \HaoCode\Support\Runtime\SdkRuntime::config('haocode.sandbox_mode');
         if ($configSandboxMode !== null) {
-            return $configSandboxMode;
+            return $this->normalizeSandboxModeValue($configSandboxMode);
         }
 
         return $this->sandboxModeFromPermissionMode($this->getPermissionMode());
@@ -714,11 +724,11 @@ class SettingsManager
             return $this->cachedSettings;
         }
 
-        $globalPath = \HaoCode\Support\Runtime\SdkRuntime::config('haocode.global_settings_path')
-            ?? ($_SERVER['HOME'] ?? getenv('HOME') ?: sys_get_temp_dir()).'/.haocode/settings.json';
-        $projectPath = ($this->workingDirectory ?? getcwd()).'/.haocode/settings.json';
+        ['global' => $globalPath, 'project' => $projectPath] = $this->fileStore->paths();
         $global = $this->loadSettingsFile($globalPath);
         $project = $this->loadSettingsFile($projectPath);
+        $this->validateExplicitSecurityModes($global);
+        $this->validateExplicitSecurityModes($project);
 
         $globalPerms = is_array($global['permissions'] ?? null) ? $global['permissions'] : [];
         $projectPerms = is_array($project['permissions'] ?? null) ? $project['permissions'] : [];
@@ -746,13 +756,7 @@ class SettingsManager
 
     private function loadSettingsFile(string $path): array
     {
-        if (! file_exists($path)) {
-            return [];
-        }
-
-        $decoded = json_decode((string) file_get_contents($path), true);
-
-        return is_array($decoded) ? $decoded : [];
+        return $this->fileStore->read($path);
     }
 
     private function resolveSelectedProviderName(array $settings, bool $allowImplicitFallback = true): ?string
@@ -845,16 +849,57 @@ class SettingsManager
 
     private function normalizePermissionModeValue(mixed $value): PermissionMode
     {
-        if (! is_string($value)) {
-            return PermissionMode::Default;
+        if (! is_string($value) || PermissionMode::tryFrom($value) === null) {
+            $display = is_scalar($value) ? (string) $value : get_debug_type($value);
+            throw new \InvalidArgumentException(
+                "Invalid permission mode '{$display}'. Expected default, plan, accept_edits, or bypass_permissions.",
+            );
         }
 
-        return PermissionMode::tryFrom($value) ?? PermissionMode::Default;
+        return PermissionMode::from($value);
+    }
+
+    /**
+     * Validate every explicitly present security field before precedence is
+     * applied, so a valid legacy override cannot hide a misspelled modern mode.
+     *
+     * @param array<string, mixed> $values
+     */
+    private function validateExplicitSecurityModes(array $values): void
+    {
+        if (array_key_exists('permission_mode', $values)) {
+            $this->normalizePermissionModeValue($values['permission_mode']);
+        }
+        if (array_key_exists('approval_policy', $values)) {
+            $this->normalizeApprovalPolicyValue($values['approval_policy']);
+        }
+        if (array_key_exists('sandbox_mode', $values)) {
+            $this->normalizeSandboxModeValue($values['sandbox_mode']);
+        }
+    }
+
+    private function validateConfiguredSecurityModes(): void
+    {
+        $permissionMode = \HaoCode\Support\Runtime\SdkRuntime::config('haocode.permission_mode');
+        $approvalPolicy = \HaoCode\Support\Runtime\SdkRuntime::config('haocode.approval_policy');
+        $sandboxMode = \HaoCode\Support\Runtime\SdkRuntime::config('haocode.sandbox_mode');
+
+        if ($permissionMode !== null) {
+            $this->normalizePermissionModeValue($permissionMode);
+        }
+        if ($approvalPolicy !== null) {
+            $this->normalizeApprovalPolicyValue($approvalPolicy);
+        }
+        if ($sandboxMode !== null) {
+            $this->normalizeSandboxModeValue($sandboxMode);
+        }
     }
 
     private function permissionModeFromModernConfig(mixed $approvalPolicy, mixed $sandboxMode): PermissionMode
     {
-        $normalizedSandbox = $this->normalizeSandboxMode($sandboxMode);
+        $normalizedSandbox = $sandboxMode === null
+            ? null
+            : $this->normalizeSandboxModeValue($sandboxMode);
         if ($normalizedSandbox === 'read-only') {
             return PermissionMode::Plan;
         }
@@ -863,7 +908,9 @@ class SettingsManager
             return PermissionMode::BypassPermissions;
         }
 
-        $normalizedApproval = $this->normalizeApprovalPolicy($approvalPolicy);
+        $normalizedApproval = $approvalPolicy === null
+            ? null
+            : $this->normalizeApprovalPolicyValue($approvalPolicy);
         if ($normalizedApproval === 'never') {
             return PermissionMode::BypassPermissions;
         }
@@ -905,6 +952,19 @@ class SettingsManager
         };
     }
 
+    private function normalizeApprovalPolicyValue(mixed $value): string
+    {
+        $normalized = $this->normalizeApprovalPolicy($value);
+        if ($normalized === null) {
+            $display = is_scalar($value) ? (string) $value : get_debug_type($value);
+            throw new \InvalidArgumentException(
+                "Invalid approval policy '{$display}'. Expected untrusted, on-request, on-failure, or never.",
+            );
+        }
+
+        return $normalized;
+    }
+
     private function normalizeSandboxMode(mixed $value): ?string
     {
         if (! is_string($value)) {
@@ -915,6 +975,19 @@ class SettingsManager
             'read-only', 'workspace-write', 'danger-full-access' => strtolower(trim($value)),
             default => null,
         };
+    }
+
+    private function normalizeSandboxModeValue(mixed $value): string
+    {
+        $normalized = $this->normalizeSandboxMode($value);
+        if ($normalized === null) {
+            $display = is_scalar($value) ? (string) $value : get_debug_type($value);
+            throw new \InvalidArgumentException(
+                "Invalid sandbox mode '{$display}'. Expected read-only, workspace-write, or danger-full-access.",
+            );
+        }
+
+        return $normalized;
     }
 
     private function resolveModelOverride(mixed $value, array $settings): ?string
@@ -1102,27 +1175,14 @@ class SettingsManager
      */
     private function modifyProjectSettings(callable $modifier): void
     {
-        $projectPath = getcwd().'/.haocode/settings.json';
+        $projectPath = $this->fileStore->paths()['project'];
+        $this->fileStore->update($projectPath, function (array &$settings) use ($modifier): void {
+            if (! isset($settings['permissions']) || ! is_array($settings['permissions'])) {
+                $settings['permissions'] = ['allow' => [], 'deny' => []];
+            }
 
-        $settings = [];
-        if (file_exists($projectPath)) {
-            $settings = json_decode(file_get_contents($projectPath), true) ?: [];
-        }
-
-        if (! isset($settings['permissions'])) {
-            $settings['permissions'] = ['allow' => [], 'deny' => []];
-        }
-
-        $modifier($settings);
-
-        $dir = dirname($projectPath);
-        if (! is_dir($dir)) {
-            mkdir($dir, 0755, true);
-        }
-
-        file_put_contents($projectPath, json_encode($settings, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES));
-
-        // Invalidate cache
+            $modifier($settings);
+        });
         $this->cachedSettings = null;
     }
 

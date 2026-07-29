@@ -3,10 +3,14 @@
 namespace Tests\Sdk;
 
 use HaoCode\Sdk\Agent;
+use HaoCode\Sdk\HumanInterrupt;
+use HaoCode\Sdk\HumanInterruptException;
 use HaoCode\Sdk\Message;
 use HaoCode\Sdk\QueryResult;
 use HaoCode\Sdk\RunOptions;
 use HaoCode\Sdk\Runner;
+use HaoCode\Sdk\Sandbox\SandboxConfig;
+use HaoCode\Sdk\Sandbox\SandboxRuntime;
 use HaoCode\Services\Agent\AgentLoop;
 use HaoCode\Services\Agent\AgentLoopFactory;
 use HaoCode\Support\Runtime\SdkRuntime;
@@ -112,6 +116,83 @@ class RunnerTest extends TestCase
 
         $this->assertNotNull($resultMessage, 'Stream should end with a result message');
         $this->assertSame('fake response', $resultMessage->text);
+    }
+
+    public function test_abandoned_stream_aborts_drains_and_clears_the_handler(): void
+    {
+        $streamCallbackReturned = false;
+        $autoDecisionHandlers = [];
+        $this->loop->method('run')->willReturnCallback(
+            static function (
+                string|array $userInput,
+                ?callable $onTextDelta = null,
+            ) use (&$streamCallbackReturned): string {
+                $onTextDelta?->__invoke('first delta');
+                $streamCallbackReturned = true;
+
+                return 'completed while draining';
+            },
+        );
+        $this->loop->expects($this->once())->method('abort');
+        $this->loop->method('setAutoDecisionHandler')->willReturnCallback(
+            static function (?callable $handler) use (&$autoDecisionHandlers): void {
+                $autoDecisionHandlers[] = $handler;
+            },
+        );
+
+        $messages = Runner::stream($this->makeAgent(), 'Stream this');
+        $messages->rewind();
+
+        $this->assertSame('text', $messages->current()->type);
+        $this->assertFalse($streamCallbackReturned);
+
+        unset($messages);
+        gc_collect_cycles();
+
+        $this->assertTrue($streamCallbackReturned);
+        $this->assertCount(2, $autoDecisionHandlers);
+        $this->assertIsCallable($autoDecisionHandlers[0]);
+        $this->assertNull($autoDecisionHandlers[1]);
+    }
+
+    public function test_abandoned_stream_preserves_sandbox_when_drain_reaches_an_interrupt(): void
+    {
+        $runtime = null;
+        $interrupt = new HumanInterrupt(
+            id: 'drained-interrupt',
+            sessionId: 'drained-session',
+            actions: [],
+            createdAt: '2026-07-29T00:00:00+00:00',
+        );
+        $this->loop->method('attachSandboxRuntime')->willReturnCallback(
+            static function (?SandboxRuntime $sandbox) use (&$runtime): void {
+                $runtime = $sandbox;
+            },
+        );
+        $this->loop->method('run')->willReturnCallback(
+            static function (string|array $userInput, ?callable $onTextDelta = null) use ($interrupt): never {
+                $onTextDelta?->__invoke('before interrupt');
+
+                throw new HumanInterruptException($interrupt);
+            },
+        );
+
+        $messages = Runner::stream(new Agent(
+            name: 'interrupting-agent',
+            apiKey: 'test-key',
+            allowedTools: [],
+            sandbox: SandboxConfig::local(cleanup: 'always'),
+            ephemeral: false,
+        ), 'Stream this');
+        $messages->rewind();
+        $this->assertInstanceOf(SandboxRuntime::class, $runtime);
+        $root = $runtime->exportLease()['root'];
+
+        unset($messages);
+        gc_collect_cycles();
+
+        $this->assertDirectoryExists($root);
+        $runtime->backend->delete('/');
     }
 
     public function test_run_uses_durable_session_when_options_say_so(): void

@@ -2,6 +2,7 @@
 
 namespace HaoCode\Sdk;
 
+use HaoCode\Services\Permissions\PermissionMode;
 use HaoCode\Sdk\Memory\MemoryStoreInterface;
 use HaoCode\Sdk\Sandbox\SandboxConfig;
 
@@ -218,7 +219,13 @@ class Agent
          *             property is scheduled for removal in v2.
          */
         public readonly int $structuredMaxRetries = 1,
-    ) {}
+    ) {
+        if (PermissionMode::tryFrom($this->permissionMode) === null) {
+            throw new \InvalidArgumentException(
+                "permissionMode must be 'default', 'plan', 'accept_edits', or 'bypass_permissions'; got '{$this->permissionMode}'.",
+            );
+        }
+    }
 
     /**
      * Return a new Agent with the given tools appended.

@@ -17,6 +17,7 @@ final class SdkRun
         public readonly AgentLoop $loop,
         private readonly ?SandboxRuntime $sandboxRuntime = null,
         private readonly ?McpConnectionManager $mcpConnectionManager = null,
+        private ?\Closure $unsubscribeAbort = null,
     ) {
         $this->loop->attachSandboxRuntime($this->sandboxRuntime);
     }
@@ -36,16 +37,26 @@ final class SdkRun
         }
 
         try {
-            if ($this->preserveSandbox) {
-                $this->sandboxRuntime?->detach();
-            } else {
-                $this->sandboxRuntime?->close();
-            }
+            $unsubscribe = $this->unsubscribeAbort;
+            $this->unsubscribeAbort = null;
+            $unsubscribe?->__invoke();
         } finally {
             try {
-                $this->mcpConnectionManager?->disconnectAll();
+                $this->loop->setAbortRequestedChecker(null);
             } finally {
-                $this->closed = true;
+                try {
+                    if ($this->preserveSandbox) {
+                        $this->sandboxRuntime?->detach();
+                    } else {
+                        $this->sandboxRuntime?->close();
+                    }
+                } finally {
+                    try {
+                        $this->mcpConnectionManager?->disconnectAll();
+                    } finally {
+                        $this->closed = true;
+                    }
+                }
             }
         }
     }

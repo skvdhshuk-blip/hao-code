@@ -108,16 +108,37 @@ class SettingsManagerExtendedTest extends TestCase
         $this->assertSame(PermissionMode::BypassPermissions, $manager->getPermissionMode());
     }
 
-    public function test_permission_mode_falls_back_to_default_for_invalid_value(): void
+    public function test_permission_mode_rejects_invalid_value(): void
     {
         $manager = $this->makeManager();
-        // Inject an invalid value directly into runtime overrides
         $ref = new \ReflectionClass($manager);
         $prop = $ref->getProperty('runtimeOverrides');
         $prop->setAccessible(true);
         $prop->setValue($manager, ['permission_mode' => 'totally_invalid']);
 
-        $this->assertSame(PermissionMode::Default, $manager->getPermissionMode());
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Invalid permission mode');
+        $manager->getPermissionMode();
+    }
+
+    public function test_modern_sandbox_mode_rejects_invalid_explicit_value(): void
+    {
+        $manager = $this->makeManager();
+        $manager->set('sandbox_mode', 'read_only');
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Invalid sandbox mode');
+        $manager->getPermissionMode();
+    }
+
+    public function test_modern_approval_policy_rejects_invalid_explicit_value(): void
+    {
+        $manager = $this->makeManager();
+        $manager->set('approval_policy', 'ask-me');
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Invalid approval policy');
+        $manager->getPermissionMode();
     }
 
     // ─── getModel() / Kimi endpoint detection ────────────────────────────

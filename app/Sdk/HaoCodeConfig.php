@@ -2,6 +2,8 @@
 
 namespace HaoCode\Sdk;
 
+use HaoCode\Services\Permissions\PermissionMode;
+
 /**
  * Configuration for HaoCode SDK queries.
  *
@@ -524,6 +526,11 @@ class HaoCodeConfig
          */
         public readonly bool $allowCwdOverride = false,
     ) {
+        if (PermissionMode::tryFrom($this->permissionMode) === null) {
+            throw new \InvalidArgumentException(
+                "permissionMode must be 'default', 'plan', 'accept_edits', or 'bypass_permissions'; got '{$this->permissionMode}'.",
+            );
+        }
         if ($hitlMode === null) {
             $this->hitlMode = null;
         } elseif (is_string($hitlMode) && in_array($hitlMode, ['ask', 'smart', 'auto'], true)) {

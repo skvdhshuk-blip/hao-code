@@ -375,6 +375,45 @@ class SettingsManagerTest extends TestCase
         $this->assertSame('on-request', $settings->getApprovalPolicy());
     }
 
+    public function test_project_settings_reject_invalid_explicit_sandbox_mode(): void
+    {
+        $projectDir = sys_get_temp_dir().'/haocode_invalid_sandbox_'.bin2hex(random_bytes(6));
+        $settingsDir = $projectDir.'/.haocode';
+        mkdir($settingsDir, 0700, true);
+        file_put_contents(
+            $settingsDir.'/settings.json',
+            json_encode([
+                'permission_mode' => 'default',
+                'sandbox_mode' => 'read_only',
+            ], JSON_THROW_ON_ERROR),
+        );
+
+        try {
+            $this->expectException(\InvalidArgumentException::class);
+            $this->expectExceptionMessage('Invalid sandbox mode');
+            (new SettingsManager($projectDir))->getPermissionMode();
+        } finally {
+            @unlink($settingsDir.'/settings.json');
+            @unlink($settingsDir.'/settings.json.lock');
+            @rmdir($settingsDir);
+            @rmdir($projectDir);
+        }
+    }
+
+    public function test_runtime_legacy_mode_does_not_hide_invalid_project_modern_mode(): void
+    {
+        $settings = new SettingsManager;
+        $reflection = new \ReflectionObject($settings);
+        $reflection->getProperty('cachedSettings')->setValue($settings, [
+            'sandbox_mode' => 'read_only',
+        ]);
+        $settings->set('permission_mode', 'default');
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Invalid sandbox mode');
+        $settings->getPermissionMode();
+    }
+
     public function test_model_provider_alias_tracks_active_provider(): void
     {
         $tmpDir = sys_get_temp_dir() . '/smtest_model_provider_' . getmypid() . '_' . uniqid();
@@ -507,6 +546,59 @@ class SettingsManagerTest extends TestCase
             chdir($origDir);
             @unlink($projectSettingsDir . '/settings.json');
             @rmdir($projectSettingsDir);
+            @rmdir($tmpDir);
+        }
+    }
+
+    public function test_persistent_rule_uses_configured_working_directory_not_process_cwd(): void
+    {
+        $tmpDir = sys_get_temp_dir().'/smtest_configured_cwd_'.bin2hex(random_bytes(4));
+        $configuredProject = $tmpDir.'/configured';
+        $processProject = $tmpDir.'/process';
+        mkdir($configuredProject, 0755, true);
+        mkdir($processProject, 0755, true);
+        config(['haocode.global_settings_path' => $tmpDir.'/missing-global.json']);
+        $originalCwd = getcwd();
+        chdir($processProject);
+
+        try {
+            $settings = new SettingsManager($configuredProject);
+            $settings->addAllowRule('Bash(git:*)');
+
+            $this->assertFileExists($configuredProject.'/.haocode/settings.json');
+            $this->assertFileDoesNotExist($processProject.'/.haocode/settings.json');
+            $this->assertContains(
+                'Bash(git:*)',
+                (new SettingsManager($configuredProject))->getAllowRules(),
+            );
+        } finally {
+            chdir($originalCwd);
+            @unlink($configuredProject.'/.haocode/settings.json');
+            @unlink($configuredProject.'/.haocode/settings.json.lock');
+            @rmdir($configuredProject.'/.haocode');
+            @rmdir($configuredProject);
+            @rmdir($processProject);
+            @rmdir($tmpDir);
+        }
+    }
+
+    public function test_invalid_project_settings_are_not_treated_as_empty(): void
+    {
+        $tmpDir = sys_get_temp_dir().'/smtest_invalid_json_'.bin2hex(random_bytes(4));
+        $settingsDir = $tmpDir.'/.haocode';
+        mkdir($settingsDir, 0755, true);
+        $path = $settingsDir.'/settings.json';
+        file_put_contents($path, '{"permissions":');
+        config(['haocode.global_settings_path' => $tmpDir.'/missing-global.json']);
+
+        try {
+            $this->expectException(\RuntimeException::class);
+            $this->expectExceptionMessage('Invalid JSON in settings file');
+            (new SettingsManager($tmpDir))->getAllowRules();
+        } finally {
+            @unlink($path);
+            @unlink($path.'.lock');
+            @rmdir($settingsDir);
             @rmdir($tmpDir);
         }
     }

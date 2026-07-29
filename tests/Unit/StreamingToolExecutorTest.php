@@ -7,6 +7,7 @@ use HaoCode\Services\Agent\ToolOrchestrator;
 use HaoCode\Services\Agent\CancellationToken;
 use HaoCode\Tools\BaseTool;
 use HaoCode\Tools\ToolInputSchema;
+use HaoCode\Tools\ToolOutcome;
 use HaoCode\Tools\ToolRegistry;
 use HaoCode\Tools\ToolResult;
 use HaoCode\Tools\ToolUseContext;
@@ -336,5 +337,42 @@ class StreamingToolExecutorTest extends TestCase
         $this->assertLessThan(2.5, microtime(true) - $startedAt);
         $this->assertTrue($results[0]['is_error']);
         $this->assertSame('Tool execution aborted', $results[0]['content']);
+    }
+
+    public function test_early_completion_callback_preserves_metadata_and_outcome_across_ipc(): void
+    {
+        if (! function_exists('pcntl_fork') || ! function_exists('posix_kill')) {
+            $this->markTestSkipped('pcntl and posix are required for early tool execution.');
+        }
+
+        $orchestrator = $this->createMock(ToolOrchestrator::class);
+        $orchestrator->method('executeToolBlock')->willReturnCallback(
+            static function (array $block, ToolUseContext $context, ?callable $onStart, ?callable $onComplete): array {
+                $result = ToolResult::aborted('cancelled in child', ['pid' => 42]);
+                $onComplete?->__invoke($block['name'], $result);
+
+                return $result->toApiFormat($block['id']);
+            },
+        );
+
+        $completed = [];
+        $executor = new StreamingToolExecutor(
+            $orchestrator,
+            $this->makeRegistry(readOnly: true, concurrencySafe: true),
+        );
+        $executor->setContext(
+            new ToolUseContext('/tmp', 'test'),
+            null,
+            static function (string $name, ToolResult $result) use (&$completed): void {
+                $completed[] = [$name, $result];
+            },
+        );
+        $executor->onToolBlockReady($this->makeBlock(), 0);
+
+        $executor->collectResults();
+
+        $this->assertCount(1, $completed);
+        $this->assertSame(['pid' => 42], $completed[0][1]->metadata);
+        $this->assertSame(ToolOutcome::Aborted, $completed[0][1]->outcome());
     }
 }

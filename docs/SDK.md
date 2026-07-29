@@ -240,6 +240,12 @@ foreach (HaoCode::stream('Explain dependency injection briefly') as $msg) {
 }
 ```
 
+If a caller stops consuming a stream early, it must also release the
+`Generator` (`unset($stream)` or let it leave scope). PHP does not notify a
+Generator merely because `break` was used while another reference is retained;
+HaoCode rejects overlapping operations until that release triggers the stream's
+abort/drain cleanup.
+
 ### conversation()
 
 Create a multi-turn conversation with persistent context.
@@ -470,6 +476,10 @@ configured output tokens and a safety margin before sending a request.
 | `hitlReviewModel` | `?string` | `null` | Model used to review gray-area actions in `'smart'` mode; `null` reuses the current run's model |
 | `hitlAllowlistPath` | `?string` | `null` | JSON file with user-saved "always allow" Bash rules (exact/prefix, v1+v2); `null` disables the feature. See [Smart HITL modes](#smart-hitl-modes) |
 
+Security modes are validated exactly. Unknown values (including accidental
+whitespace such as `'plan '`) throw instead of falling back to the broader
+`default` mode.
+
 ### Prompts
 
 | Parameter | Type | Default | Description |
@@ -640,9 +650,11 @@ Sandbox modes:
 
 While sandbox mode is active, the SDK disables `Edit`, `apply_patch`,
 `NotebookEdit`, `EnterWorktree`, `ExitWorktree`, `Agent`, and `SendMessage`.
-Other host-only tools, including `LSP`, task/team tools, and cron tools, are not
-sandbox replacements. Use an explicit `allowedTools` list and omit them unless
-the host intentionally wants those capabilities alongside the sandbox.
+Other host-only tools, including `LSP` and task/team tools, are not sandbox
+replacements. Use an explicit `allowedTools` list and omit them unless the host
+intentionally wants those capabilities alongside the sandbox. Legacy
+`CronCreate`/`CronList`/`CronDelete` classes are not registered by the default
+runtime because no prompt execution driver is wired.
 
 When a durable HITL interrupt is raised, the active sandbox root (or remote
 identity) is **detached** instead of cleaned up. The interrupt checkpoint stores
@@ -1629,6 +1641,14 @@ The `images` array accepts four formats. They can be mixed in the same call:
 | Data URI | `'data:image/png;base64,iVBORw0KGgo...'` |
 | Pre-built block | `['type' => 'image', 'source' => ['type' => 'base64', 'media_type' => 'image/jpeg', 'data' => '...']]` |
 
+String-based local files and data URIs are limited to 5 MiB after decoding and
+must be JPEG, PNG, GIF, or WebP. Local files are checked with `fileinfo` rather
+than trusted by extension; data URIs require strict base64. Relative local paths
+resolve from the run's configured `cwd` (or the process cwd when no run cwd is
+configured). Pre-built blocks are an advanced escape hatch and are passed
+through unchanged, so callers constructing them are responsible for equivalent
+validation.
+
 ### Manual block assembly
 
 For full control, use `ImageContentBlock` directly:
@@ -1638,6 +1658,9 @@ use HaoCode\Sdk\ImageContentBlock;
 
 // From a local file (returns an Anthropic-shaped image block)
 $block = ImageContentBlock::from('/path/to/photo.jpg');
+
+// Resolve a relative path from an explicit project directory
+$block = ImageContentBlock::from('assets/photo.jpg', __DIR__);
 
 // From a URL
 $block = ImageContentBlock::from('https://example.com/image.png');

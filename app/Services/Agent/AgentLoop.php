@@ -68,6 +68,9 @@ class AgentLoop
     /** @var \Closure(\HaoCode\Sdk\Message): void|null */
     private ?\Closure $autoDecisionHandler = null;
 
+    /** @var \Closure(): bool|null */
+    private ?\Closure $abortRequestedChecker = null;
+
     /** Decider for smart/auto HITL modes; rebuilt per run so circuit-breaker state stays run-scoped. */
     private ?SmartInterruptDecider $interruptDecider = null;
 
@@ -172,6 +175,17 @@ class AgentLoop
         $this->autoDecisionHandler = $handler === null ? null : \Closure::fromCallable($handler);
     }
 
+    /**
+     * Re-synchronize an external cancellation source after per-operation state
+     * is reset and before any provider request is started.
+     *
+     * @internal
+     */
+    public function setAbortRequestedChecker(?callable $checker): void
+    {
+        $this->abortRequestedChecker = $checker === null ? null : \Closure::fromCallable($checker);
+    }
+
     public function setWorkingDirectory(string $dir): void
     {
         $this->workingDirectory = $dir;
@@ -258,6 +272,12 @@ class AgentLoop
         ?callable $onThinkingDelta = null,
     ): string {
         $this->assertDurableConversationUsable();
+        if ($this->abortRequestedChecker !== null && ($this->abortRequestedChecker)()) {
+            $this->lastRunTurns = 0;
+            $this->abort();
+
+            return '(aborted)';
+        }
         $context = $this->toolUseContext ??= new ToolUseContext(
             workingDirectory: $this->workingDirectory ?? (getcwd() ?: '/'),
             sessionId: $this->sessionManager->getSessionId(),
@@ -396,6 +416,12 @@ class AgentLoop
         $this->cancellationToken->reset();
         $this->interruptDecider = null;
         $this->interruptDeciderResolved = false;
+        $this->lastRunTurns = 0;
+        if ($this->abortRequestedChecker !== null && ($this->abortRequestedChecker)()) {
+            $this->abort();
+
+            return '(aborted)';
+        }
         if ($this->costTracker->shouldStop()) {
             return '(Cost limit reached: '.$this->costTracker->getSummary().')';
         }
@@ -433,7 +459,6 @@ class AgentLoop
         }
 
         $turnCount = 0;
-        $this->lastRunTurns = 0;
         $malformedToolInputRetries = [];
         $totalMalformedToolInputRetries = 0;
         $incompleteResponseRetries = 0;

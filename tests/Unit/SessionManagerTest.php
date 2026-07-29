@@ -598,9 +598,8 @@ class SessionManagerTest extends TestCase
         $this->assertContains('session_title', $types);
     }
 
-    public function test_load_session_skips_malformed_json_lines(): void
+    public function test_load_session_rejects_malformed_json_lines(): void
     {
-        // Write a JSONL file with one valid and one invalid line directly
         $manager = new SessionManager;
         $sid = $manager->getSessionId();
 
@@ -608,13 +607,90 @@ class SessionManagerTest extends TestCase
         $valid = json_encode(['type' => 'user_message', 'content' => 'hello']);
         file_put_contents($filePath, $valid . "\n" . "NOT VALID JSON\n" . $valid . "\n");
 
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage("Session {$sid} contains invalid JSON on line 2");
+        $manager->loadSession($sid);
+    }
+
+    public function test_load_session_rejects_unterminated_malformed_final_line(): void
+    {
+        $manager = new SessionManager;
+        $sid = $manager->getSessionId();
+        $filePath = $this->tmpDir . '/' . $sid . '.jsonl';
+        file_put_contents(
+            $filePath,
+            json_encode(['type' => 'user_message', 'content' => 'hello'])."\n".'{"type":',
+        );
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage("Session {$sid} contains invalid JSON on line 2");
+        $manager->loadSession($sid);
+    }
+
+    public function test_load_session_accepts_valid_final_line_without_newline(): void
+    {
+        $manager = new SessionManager;
+        $sid = $manager->getSessionId();
+        $filePath = $this->tmpDir . '/' . $sid . '.jsonl';
+        file_put_contents(
+            $filePath,
+            json_encode(['type' => 'user_message', 'content' => 'hello']),
+        );
+
         $entries = $manager->loadSession($sid);
 
-        // Should get 2 valid entries, not 3 (null from the malformed line was dropped)
-        $this->assertCount(2, $entries);
-        foreach ($entries as $entry) {
-            $this->assertIsArray($entry);
+        $this->assertCount(1, $entries);
+        $this->assertSame('hello', $entries[0]['content']);
+    }
+
+    public function test_load_session_waits_for_locked_writer_and_never_observes_partial_line(): void
+    {
+        if (! function_exists('pcntl_fork')) {
+            $this->markTestSkipped('pcntl is required for concurrent session coverage.');
         }
+
+        $manager = new SessionManager;
+        $sid = $manager->getSessionId();
+        $path = $this->tmpDir.'/'.$sid.'.jsonl';
+        $ready = $this->tmpDir.'/writer-ready';
+        $line = json_encode(['type' => 'user_message', 'content' => 'complete'])."\n";
+        $split = intdiv(strlen($line), 2);
+        $pid = pcntl_fork();
+        if ($pid === -1) {
+            $this->fail('Could not fork session writer.');
+        }
+        if ($pid === 0) {
+            $handle = fopen($path, 'c+');
+            if ($handle === false || ! flock($handle, LOCK_EX)) {
+                exit(1);
+            }
+            ftruncate($handle, 0);
+            fwrite($handle, substr($line, 0, $split));
+            fflush($handle);
+            file_put_contents($ready, 'ready');
+            usleep(150_000);
+            fwrite($handle, substr($line, $split));
+            fflush($handle);
+            flock($handle, LOCK_UN);
+            fclose($handle);
+            exit(0);
+        }
+
+        $deadline = microtime(true) + 2.0;
+        while (! file_exists($ready) && microtime(true) < $deadline) {
+            usleep(1_000);
+        }
+        $this->assertFileExists($ready);
+
+        $startedAt = microtime(true);
+        $entries = $manager->loadSession($sid);
+        $elapsed = microtime(true) - $startedAt;
+        pcntl_waitpid($pid, $status);
+
+        $this->assertSame(0, pcntl_wexitstatus($status));
+        $this->assertGreaterThan(0.1, $elapsed);
+        $this->assertSame('complete', $entries[0]['content']);
+        @unlink($ready);
     }
 
     public function test_branch_session_creates_new_transcript_and_switches_session(): void

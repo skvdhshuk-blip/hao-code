@@ -28,6 +28,22 @@ class AgentTest extends TestCase
         $this->assertTrue($agent->ephemeral);
     }
 
+    public function test_agent_rejects_unknown_permission_mode(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('permissionMode');
+
+        new Agent(permissionMode: 'plan ');
+    }
+
+    public function test_config_rejects_unknown_permission_mode(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('permissionMode');
+
+        new HaoCodeConfig(permissionMode: 'plan ');
+    }
+
     public function test_with_methods_are_immutable_and_return_new_instances(): void
     {
         $agent = new Agent();

@@ -18,6 +18,11 @@
                 "signature": "public function onAbort(callable $callback) : void",
                 "api": true,
                 "internal": false
+            },
+            "subscribe": {
+                "signature": "public function subscribe(callable $callback) : Closure",
+                "api": false,
+                "internal": true
             }
         },
         "properties": []
@@ -939,12 +944,12 @@
         "internal": false,
         "methods": {
             "buildUserContent": {
-                "signature": "public static function buildUserContent(string $prompt, array $images = []) : array|string",
+                "signature": "public static function buildUserContent(string $prompt, array $images = [], ?string $cwd = null) : array|string",
                 "api": true,
                 "internal": false
             },
             "from": {
-                "signature": "public static function from(array|string $source) : array",
+                "signature": "public static function from(array|string $source, ?string $cwd = null) : array",
                 "api": true,
                 "internal": false
             }

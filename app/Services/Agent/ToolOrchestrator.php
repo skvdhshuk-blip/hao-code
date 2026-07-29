@@ -2,6 +2,7 @@
 
 namespace HaoCode\Services\Agent;
 
+use HaoCode\Contracts\ToolInterface;
 use HaoCode\Services\Hooks\HookExecutor;
 use HaoCode\Services\Permissions\PermissionChecker;
 use HaoCode\Services\Telemetry\PhoenixTracer;
@@ -344,6 +345,7 @@ class ToolOrchestrator
         $tempFiles = [];
         $pids = [];
         $results = [];
+        $completedResults = [];
 
         // Capture the parent's readFileState snapshot before forking so we can
         // detect which entries the child added.
@@ -359,6 +361,7 @@ class ToolOrchestrator
             $pid = pcntl_fork();
             if ($pid === -1) {
                 // Fork failed, execute inline
+                @unlink($tempFile);
                 $results[$idx] = $this->executeSingleTool($block, $context, $onStart, $onComplete);
                 unset($tempFiles[$idx]);
                 continue;
@@ -366,12 +369,24 @@ class ToolOrchestrator
 
             if ($pid === 0) {
                 // Child process
-                $result = $this->executeSingleTool($block, $context, null, null);
+                $completedResult = null;
+                $result = $this->executeSingleTool(
+                    $block,
+                    $context,
+                    null,
+                    static function (string $toolName, ToolResult $toolResult) use (&$completedResult): void {
+                        $completedResult = $toolResult;
+                    },
+                );
                 // Serialize both the tool result and any readFileState changes so the
                 // parent can merge them back (fixes read-before-write across fork).
                 $childState = $context->getReadFileStateSnapshot();
                 $newEntries = array_diff_key($childState, $parentStateBefore);
-                $payload = ['result' => $result, 'readState' => $newEntries];
+                $payload = [
+                    'result' => $result,
+                    'toolResult' => $completedResult?->toArray(),
+                    'readState' => $newEntries,
+                ];
                 file_put_contents($tempFile, serialize($payload));
                 exit(0);
             }
@@ -397,6 +412,13 @@ class ToolOrchestrator
                 if (is_array($data) && isset($data['result'])) {
                     // New format: result + readState
                     $results[$idx] = $data['result'];
+                    if (is_array($data['toolResult'] ?? null)) {
+                        try {
+                            $completedResults[$idx] = ToolResult::fromArray($data['toolResult']);
+                        } catch (\InvalidArgumentException) {
+                            // Corrupt or legacy IPC payload: reconstruct below.
+                        }
+                    }
                     if (!empty($data['readState'])) {
                         $context->mergeReadFileStateSnapshot($data['readState']);
                     }
@@ -414,7 +436,7 @@ class ToolOrchestrator
             }
             if ($onComplete) {
                 $toolName = $blocks[$idx]['name'];
-                $result = new ToolResult(
+                $result = $completedResults[$idx] ?? new ToolResult(
                     output: (string) ($results[$idx]['content'] ?? ''),
                     isError: (bool) ($results[$idx]['is_error'] ?? false),
                 );
@@ -521,72 +543,67 @@ class ToolOrchestrator
         }
 
         if (! $isPrepared) {
-        // Stage 1: Schema validation
-        try {
-            $input = $tool->inputSchema()->validate($input);
-        } catch (\InvalidArgumentException $e) {
-            return [
-                'tool_use_id' => $toolUseId,
-                'content' => '<tool_use_error>InputValidationError: ' . $e->getMessage() . '</tool_use_error>',
-                'is_error' => true,
-            ];
-        }
-
-        // Stage 2: Tool-specific semantic validation
-        $validationError = $tool->validateInput($input, $context);
-        if ($validationError !== null) {
-            return [
-                'tool_use_id' => $toolUseId,
-                'content' => '<tool_use_error>Validation: ' . $validationError . '</tool_use_error>',
-                'is_error' => true,
-            ];
-        }
-
-        // Stage 2b: Normalize input paths before hooks/permissions observe them
-        $input = $tool->backfillObservableInput($input, $context);
-
-        // Stage 3: PreToolUse hooks
-        $hookResult = $this->hookExecutor->execute('PreToolUse', [
-            'tool' => $toolName,
-            'input' => $input,
-        ]);
-
-        if (!$hookResult->allowed) {
-            return [
-                'tool_use_id' => $toolUseId,
-                'content' => 'Blocked by hook: ' . $hookResult->output,
-                'is_error' => true,
-            ];
-        }
-
-        if ($hookResult->modifiedInput !== null) {
-            $input = $hookResult->modifiedInput;
-        }
-
-        // Stage 4: Permission check
-        $decision = $this->permissionChecker->check($tool, $input, $context);
-
-        if (!$decision->allowed) {
-            // Only prompt the user for "ask" decisions (needsPrompt=true).
-            // Hard "deny" decisions (deny rules, plan-mode writes) must never be
-            // overridden by a permission prompt — they should always fail immediately.
-            if ($decision->needsPrompt && $this->permissionPromptHandler) {
-                $userApproved = ($this->permissionPromptHandler)($toolName, $input);
-                if (!$userApproved) {
-                    return [
-                        'tool_use_id' => $toolUseId,
-                        'content' => 'Permission denied by user',
-                        'is_error' => true,
-                    ];
-                }
-            } else {
+            // Stages 1-2b: validate and normalize before hooks observe the input.
+            $preparedInput = $this->validateAndNormalizeInput($tool, $input, $context);
+            if ($preparedInput['error'] !== null) {
                 return [
                     'tool_use_id' => $toolUseId,
-                    'content' => "Permission denied: " . ($decision->reason ?? 'Not allowed'),
+                    'content' => $preparedInput['error'],
                     'is_error' => true,
                 ];
             }
-        }
+            $input = $preparedInput['input'];
+
+            // Stage 3: PreToolUse hooks
+            $hookResult = $this->hookExecutor->execute('PreToolUse', [
+                'tool' => $toolName,
+                'input' => $input,
+            ]);
+
+            if (! $hookResult->allowed) {
+                return [
+                    'tool_use_id' => $toolUseId,
+                    'content' => 'Blocked by hook: '.$hookResult->output,
+                    'is_error' => true,
+                ];
+            }
+
+            if ($hookResult->modifiedInput !== null) {
+                $preparedInput = $this->validateAndNormalizeInput($tool, $hookResult->modifiedInput, $context);
+                if ($preparedInput['error'] !== null) {
+                    return [
+                        'tool_use_id' => $toolUseId,
+                        'content' => $preparedInput['error'],
+                        'is_error' => true,
+                    ];
+                }
+                $input = $preparedInput['input'];
+            }
+
+            // Stage 4: Permission check
+            $decision = $this->permissionChecker->check($tool, $input, $context);
+
+            if (! $decision->allowed) {
+                // Only prompt the user for "ask" decisions (needsPrompt=true).
+                // Hard "deny" decisions (deny rules, plan-mode writes) must never be
+                // overridden by a permission prompt — they should always fail immediately.
+                if ($decision->needsPrompt && $this->permissionPromptHandler) {
+                    $userApproved = ($this->permissionPromptHandler)($toolName, $input);
+                    if (! $userApproved) {
+                        return [
+                            'tool_use_id' => $toolUseId,
+                            'content' => 'Permission denied by user',
+                            'is_error' => true,
+                        ];
+                    }
+                } else {
+                    return [
+                        'tool_use_id' => $toolUseId,
+                        'content' => "Permission denied: ".($decision->reason ?? 'Not allowed'),
+                        'is_error' => true,
+                    ];
+                }
+            }
         }
 
         if (! $this->isAllowedByActiveSkillScope($toolName, is_array($input) ? $input : [])) {
@@ -701,27 +718,27 @@ class ToolOrchestrator
         if ($tool === null || ! $tool->isEnabled()) {
             return $error("Unknown tool: {$toolName}");
         }
-        try {
-            $input = $tool->inputSchema()->validate($input);
-        } catch (\InvalidArgumentException $e) {
-            return $error('<tool_use_error>InputValidationError: '.$e->getMessage().'</tool_use_error>');
-        }
 
-        $validationError = $tool->validateInput($input, $context);
-        if ($validationError !== null) {
-            return $error('<tool_use_error>Validation: '.$validationError.'</tool_use_error>');
+        $preparedInput = $this->validateAndNormalizeInput($tool, $input, $context);
+        if ($preparedInput['error'] !== null) {
+            return $error($preparedInput['error']);
         }
+        $input = $preparedInput['input'];
 
-        $input = $tool->backfillObservableInput($input, $context);
-        if (! $this->isAllowedByActiveSkillScope($toolName, $input)) {
-            return $error("Tool {$toolName} is not allowed by the active skill scope.");
-        }
         $hookResult = $this->hookExecutor->execute('PreToolUse', ['tool' => $toolName, 'input' => $input]);
         if (! $hookResult->allowed) {
             return $error('Blocked by hook: '.$hookResult->output);
         }
         if ($hookResult->modifiedInput !== null) {
-            $input = $hookResult->modifiedInput;
+            $preparedInput = $this->validateAndNormalizeInput($tool, $hookResult->modifiedInput, $context);
+            if ($preparedInput['error'] !== null) {
+                return $error($preparedInput['error']);
+            }
+            $input = $preparedInput['input'];
+        }
+
+        if (! $this->isAllowedByActiveSkillScope($toolName, $input)) {
+            return $error("Tool {$toolName} is not allowed by the active skill scope.");
         }
 
         $decision = $this->permissionChecker->check($tool, $input, $context);
@@ -771,6 +788,39 @@ class ToolOrchestrator
                 allowedDecisions: $allowed,
                 agentId: $context->runContext?->agentId,
             ),
+        ];
+    }
+
+    /**
+     * Apply the complete validation and observable-input normalization pipeline.
+     *
+     * @return array{input: array, error: ?string}
+     */
+    private function validateAndNormalizeInput(
+        ToolInterface $tool,
+        array $input,
+        ToolUseContext $context,
+    ): array {
+        try {
+            $input = $tool->inputSchema()->validate($input);
+        } catch (\InvalidArgumentException $e) {
+            return [
+                'input' => [],
+                'error' => '<tool_use_error>InputValidationError: '.$e->getMessage().'</tool_use_error>',
+            ];
+        }
+
+        $validationError = $tool->validateInput($input, $context);
+        if ($validationError !== null) {
+            return [
+                'input' => [],
+                'error' => '<tool_use_error>Validation: '.$validationError.'</tool_use_error>',
+            ];
+        }
+
+        return [
+            'input' => $tool->backfillObservableInput($input, $context),
+            'error' => null,
         ];
     }
 

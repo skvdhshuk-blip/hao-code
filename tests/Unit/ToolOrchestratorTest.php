@@ -9,6 +9,7 @@ use HaoCode\Services\Permissions\PermissionChecker;
 use HaoCode\Services\Permissions\PermissionDecision;
 use HaoCode\Tools\BaseTool;
 use HaoCode\Tools\ToolInputSchema;
+use HaoCode\Tools\ToolOutcome;
 use HaoCode\Tools\ToolRegistry;
 use HaoCode\Tools\ToolResult;
 use HaoCode\Tools\ToolUseContext;
@@ -56,6 +57,34 @@ class ToolOrchestratorTest extends TestCase
             public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object'], []); }
             public function call(array $input, ToolUseContext $ctx): ToolResult { return ($this->fn)($input, $ctx); }
             public function isReadOnly(array $input): bool { return $this->ro; }
+        };
+    }
+
+    private function makeRequiredPathTool(callable $call): BaseTool
+    {
+        return new class($call) extends BaseTool {
+            public function __construct(private $fn) {}
+            public function name(): string { return 'PathTool'; }
+            public function description(): string { return ''; }
+            public function inputSchema(): ToolInputSchema
+            {
+                return ToolInputSchema::make(
+                    ['type' => 'object'],
+                    ['path' => ['required', 'string']],
+                );
+            }
+            public function backfillObservableInput(array $input, ToolUseContext $context): array
+            {
+                if (! str_starts_with($input['path'], '/')) {
+                    $input['path'] = rtrim($context->workingDirectory, '/').'/'.$input['path'];
+                }
+
+                return $input;
+            }
+            public function call(array $input, ToolUseContext $context): ToolResult
+            {
+                return ($this->fn)($input, $context);
+            }
         };
     }
 
@@ -183,6 +212,157 @@ class ToolOrchestratorTest extends TestCase
         $o = $this->makeOrchestrator($registry, null, $hooks);
         $o->executeToolBlock(['id' => 'id1', 'name' => 'Echo', 'input' => []], $this->context());
         $this->assertSame('value', $received['injected']);
+    }
+
+    public function test_hook_modified_input_is_revalidated_before_tool_execution(): void
+    {
+        $registry = new ToolRegistry;
+        $executed = false;
+        $registry->register($this->makeRequiredPathTool(function () use (&$executed) {
+            $executed = true;
+            return ToolResult::success('should not run');
+        }));
+
+        $hooks = $this->createMock(HookExecutor::class);
+        $hooks->method('execute')->willReturnCallback(static function (string $event): HookResult {
+            return $event === 'PreToolUse'
+                ? new HookResult(true, [])
+                : new HookResult(true);
+        });
+
+        $orchestrator = $this->makeOrchestrator($registry, null, $hooks);
+        $result = $orchestrator->executeToolBlock(
+            ['id' => 'path-1', 'name' => 'PathTool', 'input' => ['path' => 'original.txt']],
+            $this->context(),
+        );
+
+        $this->assertTrue($result['is_error']);
+        $this->assertStringContainsString('InputValidationError', $result['content']);
+        $this->assertStringContainsString('path field is required', $result['content']);
+        $this->assertFalse($executed);
+    }
+
+    public function test_hook_modified_input_runs_semantic_validation_again(): void
+    {
+        $registry = new ToolRegistry;
+        $state = new \stdClass;
+        $state->executed = false;
+        $registry->register(new class($state) extends BaseTool {
+            public function __construct(private \stdClass $state) {}
+            public function name(): string { return 'SemanticHookTool'; }
+            public function description(): string { return ''; }
+            public function inputSchema(): ToolInputSchema
+            {
+                return ToolInputSchema::make(
+                    ['type' => 'object'],
+                    ['mode' => ['required', 'string']],
+                );
+            }
+            public function validateInput(array $input, ToolUseContext $context): ?string
+            {
+                return $input['mode'] === 'invalid' ? 'mode is invalid' : null;
+            }
+            public function call(array $input, ToolUseContext $context): ToolResult
+            {
+                $this->state->executed = true;
+                return ToolResult::success('should not run');
+            }
+        });
+
+        $hooks = $this->createMock(HookExecutor::class);
+        $hooks->method('execute')->willReturn(new HookResult(true, ['mode' => 'invalid']));
+
+        $orchestrator = $this->makeOrchestrator($registry, null, $hooks);
+        $result = $orchestrator->executeToolBlock(
+            ['id' => 'semantic-1', 'name' => 'SemanticHookTool', 'input' => ['mode' => 'valid']],
+            $this->context(),
+        );
+
+        $this->assertTrue($result['is_error']);
+        $this->assertStringContainsString('Validation: mode is invalid', $result['content']);
+        $this->assertFalse($state->executed);
+    }
+
+    public function test_hook_modified_relative_path_is_normalized_before_permission_check(): void
+    {
+        $registry = new ToolRegistry;
+        $executedInput = null;
+        $registry->register($this->makeRequiredPathTool(function (array $input) use (&$executedInput) {
+            $executedInput = $input;
+            return ToolResult::success('ok');
+        }));
+
+        $hooks = $this->createMock(HookExecutor::class);
+        $hooks->method('execute')->willReturnCallback(static function (string $event): HookResult {
+            return $event === 'PreToolUse'
+                ? new HookResult(true, ['path' => 'hook-relative.txt'])
+                : new HookResult(true);
+        });
+
+        $permissionInput = null;
+        $checker = $this->createMock(PermissionChecker::class);
+        $checker->method('check')->willReturnCallback(
+            static function ($tool, array $input) use (&$permissionInput): PermissionDecision {
+                $permissionInput = $input;
+                return PermissionDecision::allow();
+            },
+        );
+
+        $orchestrator = $this->makeOrchestrator($registry, $checker, $hooks);
+        $result = $orchestrator->executeToolBlock(
+            ['id' => 'path-1', 'name' => 'PathTool', 'input' => ['path' => 'original.txt']],
+            $this->context(),
+        );
+
+        $this->assertFalse($result['is_error']);
+        $this->assertSame('/tmp/hook-relative.txt', $permissionInput['path']);
+        $this->assertSame('/tmp/hook-relative.txt', $executedInput['path']);
+    }
+
+    public function test_human_review_revalidates_hook_modified_input(): void
+    {
+        $registry = new ToolRegistry;
+        $registry->register($this->makeRequiredPathTool(fn () => ToolResult::success('should not run')));
+
+        $hooks = $this->createMock(HookExecutor::class);
+        $hooks->method('execute')->willReturn(new HookResult(true, []));
+
+        $orchestrator = $this->makeOrchestrator($registry, null, $hooks);
+        $orchestrator->configureHumanInterrupts(['PathTool' => true], false);
+        $review = $orchestrator->prepareHumanReview([
+            ['id' => 'path-1', 'name' => 'PathTool', 'input' => ['path' => 'original.txt']],
+        ], $this->context());
+
+        $this->assertSame([], $review['actions']);
+        $this->assertTrue($review['results'][0]['is_error']);
+        $this->assertStringContainsString('InputValidationError', $review['results'][0]['content']);
+    }
+
+    public function test_human_review_normalizes_hook_modified_path_before_permission_check(): void
+    {
+        $registry = new ToolRegistry;
+        $registry->register($this->makeRequiredPathTool(fn () => ToolResult::success('ok')));
+
+        $hooks = $this->createMock(HookExecutor::class);
+        $hooks->method('execute')->willReturn(new HookResult(true, ['path' => 'review-relative.txt']));
+
+        $permissionInput = null;
+        $checker = $this->createMock(PermissionChecker::class);
+        $checker->method('check')->willReturnCallback(
+            static function ($tool, array $input) use (&$permissionInput): PermissionDecision {
+                $permissionInput = $input;
+                return PermissionDecision::allow();
+            },
+        );
+
+        $orchestrator = $this->makeOrchestrator($registry, $checker, $hooks);
+        $orchestrator->configureHumanInterrupts(['PathTool' => true], false);
+        $review = $orchestrator->prepareHumanReview([
+            ['id' => 'path-1', 'name' => 'PathTool', 'input' => ['path' => 'original.txt']],
+        ], $this->context());
+
+        $this->assertSame('/tmp/review-relative.txt', $permissionInput['path']);
+        $this->assertSame('/tmp/review-relative.txt', $review['actions'][0]->input['path']);
     }
 
     // ─── permission denied ────────────────────────────────────────────────
@@ -647,6 +827,41 @@ class ToolOrchestratorTest extends TestCase
         $this->assertSame('SafeErrorTool', $completedResults[0][0]);
         $this->assertTrue($completedResults[0][1]->isError);
         $this->assertTrue($completedResults[1][1]->isError);
+    }
+
+    public function test_parallel_tool_completion_preserves_metadata_and_outcome(): void
+    {
+        if (! function_exists('pcntl_fork')) {
+            $this->markTestSkipped('pcntl is required for parallel tool IPC.');
+        }
+
+        $registry = new ToolRegistry;
+        $registry->register($this->makeTool(
+            'SafeAbortTool',
+            static fn (array $input): ToolResult => ToolResult::aborted(
+                'cancelled: '.($input['label'] ?? ''),
+                ['pid' => 42],
+            ),
+            true,
+        ));
+        $completed = [];
+
+        $this->makeOrchestrator($registry)->executeTools(
+            toolUseBlocks: [
+                ['id' => 'toolu_1', 'name' => 'SafeAbortTool', 'input' => ['label' => 'one']],
+                ['id' => 'toolu_2', 'name' => 'SafeAbortTool', 'input' => ['label' => 'two']],
+            ],
+            context: new ToolUseContext('/tmp', 'test-session'),
+            onToolComplete: static function (string $toolName, ToolResult $result) use (&$completed): void {
+                $completed[] = [$toolName, $result];
+            },
+        );
+
+        $this->assertCount(2, $completed);
+        $this->assertSame(['pid' => 42], $completed[0][1]->metadata);
+        $this->assertSame(ToolOutcome::Aborted, $completed[0][1]->outcome());
+        $this->assertSame(['pid' => 42], $completed[1][1]->metadata);
+        $this->assertSame(ToolOutcome::Aborted, $completed[1][1]->outcome());
     }
 
     // ─── repeated Read hint ───────────────────────────────────────────────
