@@ -440,6 +440,40 @@ class BashToolTest extends TestCase
         $this->assertIsString($result->output);
     }
 
+    public function test_foreground_output_limit_terminates_command_before_later_side_effects(): void
+    {
+        $marker = tempnam(sys_get_temp_dir(), 'bash_fg_output_limit_');
+        $this->assertNotFalse($marker);
+        @unlink($marker);
+
+        $command = sprintf(
+            'python3 -c %s',
+            escapeshellarg(
+                'import sys, time; '
+                .'sys.stdout.write("x" * 200000); sys.stdout.flush(); '
+                .'time.sleep(1); '
+                .'open('.var_export($marker, true).', "w").write("leaked")'
+            ),
+        );
+
+        $start = microtime(true);
+        $result = $this->tool->call([
+            'command' => $command,
+            'timeout' => 5000,
+        ], $this->context);
+        $elapsed = microtime(true) - $start;
+
+        $this->assertTrue($result->isError, $result->output);
+        $this->assertSame(1, $result->metadata['exitCode'] ?? null);
+        $this->assertTrue($result->metadata['outputLimited'] ?? false);
+        $this->assertStringContainsString('Output truncated', $result->output);
+        $this->assertLessThanOrEqual(101_000, strlen($result->output));
+        $this->assertLessThan(3.0, $elapsed, 'Output limit should terminate promptly');
+
+        usleep(1_100_000);
+        $this->assertFileDoesNotExist($marker, 'Output limit must terminate before delayed side effects run');
+    }
+
     // ─── call: timeout enforcement ────────────────────────────────────────
 
     public function test_call_times_out_long_running_command(): void

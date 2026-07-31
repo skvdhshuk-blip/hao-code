@@ -165,26 +165,19 @@ DESC;
             return $this->runInBackground($command, $cwd, $warnings, $timeout, $env);
         }
 
-        $stdoutFile = tempnam(sys_get_temp_dir(), 'haocode_bash_stdout_');
-        $stderrFile = tempnam(sys_get_temp_dir(), 'haocode_bash_stderr_');
-
-        if ($stdoutFile === false || $stderrFile === false) {
-            if (is_string($stdoutFile) && file_exists($stdoutFile)) {
-                @unlink($stdoutFile);
-            }
-            if (is_string($stderrFile) && file_exists($stderrFile)) {
-                @unlink($stderrFile);
-            }
-
+        $capture = $this->allocateForegroundCaptureFiles();
+        if ($capture === null) {
             return ToolResult::error('Failed to allocate temporary files for command output.');
         }
 
         $descriptors = [
             0 => ['pipe', 'r'],
-            // Use files instead of pipes so foreground commands that launch
-            // background children with `&` do not keep the tool waiting for EOF.
-            1 => ['file', $stdoutFile, 'w'],
-            2 => ['file', $stderrFile, 'w'],
+            // Use file descriptors rather than proc_open pipes so foreground
+            // commands that launch background children with `&` do not keep the
+            // tool waiting for EOF. On POSIX the files are FIFOs, letting the
+            // parent enforce the capture byte cap before data reaches disk.
+            1 => ['file', $capture['stdoutFile'], 'w'],
+            2 => ['file', $capture['stderrFile'], 'w'],
         ];
 
         $cwdMarker = '__HAOCODE_CWD__' . bin2hex(random_bytes(8)) . '__';
@@ -192,33 +185,13 @@ DESC;
         try {
             $opened = ProcessSupervisor::open($wrappedCommand, $cwd, $env, $descriptors);
         } catch (\Throwable) {
-            @unlink($stdoutFile);
-            @unlink($stderrFile);
+            $this->closeForegroundCaptureFiles($capture);
 
             return ToolResult::error("Failed to execute command: {$command}");
         }
 
         $process = $opened['process'];
         $pid = $opened['pid'];
-
-        $stdoutHandle = fopen($stdoutFile, 'r');
-        $stderrHandle = fopen($stderrFile, 'r');
-
-        if (!is_resource($stdoutHandle) || !is_resource($stderrHandle)) {
-            if (is_resource($stdoutHandle)) {
-                fclose($stdoutHandle);
-            }
-            if (is_resource($stderrHandle)) {
-                fclose($stderrHandle);
-            }
-
-            ProcessSupervisor::terminateTree($pid, true);
-            @proc_close($process);
-            @unlink($stdoutFile);
-            @unlink($stderrFile);
-
-            return ToolResult::error("Failed to capture command output: {$command}");
-        }
 
         $stdout = '';
         $stderr = '';
@@ -227,7 +200,7 @@ DESC;
         $aborted = false;
         $drainFailed = false;
         $outputTruncated = false;
-        $maxOutputChars = self::MAX_CAPTURED_OUTPUT_BYTES;
+        $capturedOutputBytes = 0;
         $status = ['running' => true, 'exitcode' => -1];
 
         while (true) {
@@ -237,30 +210,14 @@ DESC;
                 break;
             }
 
-            [$stdoutChunk, $stdoutFailed] = $this->drainPipe($stdoutHandle);
-            [$stderrChunk, $stderrFailed] = $this->drainPipe($stderrHandle);
-            // Cap retained output during the run to bound PHP memory; still drain pipes.
-            if (mb_strlen($stdout) < $maxOutputChars) {
-                $room = $maxOutputChars - mb_strlen($stdout);
-                if (mb_strlen($stdoutChunk) > $room) {
-                    $stdout .= mb_substr($stdoutChunk, 0, $room);
-                    $outputTruncated = true;
-                } else {
-                    $stdout .= $stdoutChunk;
-                }
-            } elseif ($stdoutChunk !== '') {
+            [$stdoutChunk, $stdoutFailed] = $this->drainPipe($capture['stdoutHandle']);
+            [$stderrChunk, $stderrFailed] = $this->drainPipe($capture['stderrHandle']);
+            $limitNotice = "\n\n[Output truncated at ".self::MAX_CAPTURED_OUTPUT_BYTES.' bytes; command terminated]';
+            if ($this->appendCapturedChunk($stdout, $stdoutChunk, $capturedOutputBytes, self::MAX_CAPTURED_OUTPUT_BYTES, $limitNotice)
+                || $this->appendCapturedChunk($stderr, $stderrChunk, $capturedOutputBytes, self::MAX_CAPTURED_OUTPUT_BYTES, $limitNotice)) {
                 $outputTruncated = true;
-            }
-            if (mb_strlen($stderr) < $maxOutputChars) {
-                $room = $maxOutputChars - mb_strlen($stderr);
-                if (mb_strlen($stderrChunk) > $room) {
-                    $stderr .= mb_substr($stderrChunk, 0, $room);
-                    $outputTruncated = true;
-                } else {
-                    $stderr .= $stderrChunk;
-                }
-            } elseif ($stderrChunk !== '') {
-                $outputTruncated = true;
+                ProcessSupervisor::terminateTree($pid, false);
+                break;
             }
             $drainFailed = $drainFailed || $stdoutFailed || $stderrFailed;
 
@@ -280,16 +237,21 @@ DESC;
             usleep((int) min($remaining * 1_000_000, 200_000));
         }
 
-        [$stdoutChunk, $stdoutFailed] = $this->drainPipe($stdoutHandle);
-        [$stderrChunk, $stderrFailed] = $this->drainPipe($stderrHandle);
-        $stdout .= $stdoutChunk;
-        $stderr .= $stderrChunk;
-        $drainFailed = $drainFailed || $stdoutFailed || $stderrFailed;
+        if (! $outputTruncated) {
+            [$stdoutChunk, $stdoutFailed] = $this->drainPipe($capture['stdoutHandle']);
+            [$stderrChunk, $stderrFailed] = $this->drainPipe($capture['stderrHandle']);
+            $limitNotice = "\n\n[Output truncated at ".self::MAX_CAPTURED_OUTPUT_BYTES.' bytes; command terminated]';
+            if ($this->appendCapturedChunk($stdout, $stdoutChunk, $capturedOutputBytes, self::MAX_CAPTURED_OUTPUT_BYTES, $limitNotice)
+                || $this->appendCapturedChunk($stderr, $stderrChunk, $capturedOutputBytes, self::MAX_CAPTURED_OUTPUT_BYTES, $limitNotice)) {
+                $outputTruncated = true;
+                ProcessSupervisor::terminateTree($pid, false);
+            }
+            $drainFailed = $drainFailed || $stdoutFailed || $stderrFailed;
+        }
 
         [$stdout, $capturedWorkingDirectory] = $this->extractWorkingDirectoryMarker($stdout, $cwdMarker);
 
-        fclose($stdoutHandle);
-        fclose($stderrHandle);
+        $this->closeForegroundCaptureFiles($capture);
 
         // On PHP < 8.4, proc_get_status() reaps the child via waitpid(WNOHANG),
         // so a subsequent proc_close() returns -1.  Capture the exit code from
@@ -298,11 +260,11 @@ DESC;
             ? 128 + (int) ($status['termsig'] ?? 0)
             : (int) ($status['exitcode'] ?? -1);
         $closed = @proc_close($process);
-        if ($exitCode < 0 && ! $timedOut && ! $aborted) {
+        if ($outputTruncated) {
+            $exitCode = 1;
+        } elseif ($exitCode < 0 && ! $timedOut && ! $aborted) {
             $exitCode = $closed;
         }
-        @unlink($stdoutFile);
-        @unlink($stderrFile);
 
         if ($aborted) {
             $partial = trim($stdout . ($stderr ? "\n" . $stderr : ''));
@@ -323,6 +285,18 @@ DESC;
             return ToolResult::error(
                 "Command timed out after {$timeout}s.{$partialNote}",
                 ['exitCode' => -1, 'timedOut' => true],
+            );
+        }
+
+        if ($outputTruncated) {
+            $partial = trim($stdout . ($stderr ? "\n" . $stderr : ''));
+            if (!empty($warnings)) {
+                $partial = "<warnings>\n" . implode("\n", $warnings) . "\n</warnings>\n\n" . $partial;
+            }
+
+            return ToolResult::error(
+                "Command output exceeded ".self::MAX_CAPTURED_OUTPUT_BYTES." bytes and was terminated.\nPartial output:\n{$partial}",
+                ['exitCode' => 1, 'outputLimited' => true],
             );
         }
 
@@ -349,9 +323,9 @@ DESC;
             $output .= "\n\n[warning: one or more stream reads failed while capturing command output]";
         }
 
-        // Truncate very long output (also covered during drain; keep final guard).
-        if ($outputTruncated || mb_strlen($output) > self::MAX_CAPTURED_OUTPUT_BYTES) {
-            $output = mb_substr($output, 0, self::MAX_CAPTURED_OUTPUT_BYTES) . "\n\n[Output truncated at 100,000 characters]";
+        // Final guard for multibyte accounting differences; normal capture is byte-capped.
+        if (strlen($output) > self::MAX_CAPTURED_OUTPUT_BYTES) {
+            $output = substr($output, 0, self::MAX_CAPTURED_OUTPUT_BYTES) . "\n\n[Output truncated at 100,000 bytes]";
         }
 
         // Prepend warnings
@@ -408,6 +382,93 @@ DESC;
         }
 
         return [$stdout, trim($capturedWorkingDirectory)];
+    }
+
+    /**
+     * Allocate stdout/stderr capture endpoints for foreground Bash.
+     *
+     * @return array{stdoutFile: string, stderrFile: string, stdoutHandle: resource, stderrHandle: resource}|null
+     */
+    private function allocateForegroundCaptureFiles(): ?array
+    {
+        $stdoutFile = tempnam(sys_get_temp_dir(), 'haocode_bash_stdout_');
+        $stderrFile = tempnam(sys_get_temp_dir(), 'haocode_bash_stderr_');
+
+        if ($stdoutFile === false || $stderrFile === false) {
+            if (is_string($stdoutFile) && file_exists($stdoutFile)) {
+                @unlink($stdoutFile);
+            }
+            if (is_string($stderrFile) && file_exists($stderrFile)) {
+                @unlink($stderrFile);
+            }
+
+            return null;
+        }
+
+        $useFifo = PHP_OS_FAMILY !== 'Windows' && function_exists('posix_mkfifo');
+        if ($useFifo) {
+            @unlink($stdoutFile);
+            @unlink($stderrFile);
+            $stdoutFifo = @posix_mkfifo($stdoutFile, 0600);
+            $stderrFifo = @posix_mkfifo($stderrFile, 0600);
+            $useFifo = $stdoutFifo && $stderrFifo;
+            if (! $useFifo) {
+                @unlink($stdoutFile);
+                @unlink($stderrFile);
+                $stdoutFile = tempnam(sys_get_temp_dir(), 'haocode_bash_stdout_');
+                $stderrFile = tempnam(sys_get_temp_dir(), 'haocode_bash_stderr_');
+                if ($stdoutFile === false || $stderrFile === false) {
+                    if (is_string($stdoutFile) && file_exists($stdoutFile)) {
+                        @unlink($stdoutFile);
+                    }
+                    if (is_string($stderrFile) && file_exists($stderrFile)) {
+                        @unlink($stderrFile);
+                    }
+
+                    return null;
+                }
+            }
+        }
+
+        $mode = $useFifo ? 'r+' : 'r';
+        $stdoutHandle = @fopen($stdoutFile, $mode);
+        $stderrHandle = @fopen($stderrFile, $mode);
+
+        if (! is_resource($stdoutHandle) || ! is_resource($stderrHandle)) {
+            if (is_resource($stdoutHandle)) {
+                fclose($stdoutHandle);
+            }
+            if (is_resource($stderrHandle)) {
+                fclose($stderrHandle);
+            }
+            @unlink($stdoutFile);
+            @unlink($stderrFile);
+
+            return null;
+        }
+
+        stream_set_blocking($stdoutHandle, false);
+        stream_set_blocking($stderrHandle, false);
+
+        return [
+            'stdoutFile' => $stdoutFile,
+            'stderrFile' => $stderrFile,
+            'stdoutHandle' => $stdoutHandle,
+            'stderrHandle' => $stderrHandle,
+        ];
+    }
+
+    /** @param array{stdoutFile: string, stderrFile: string, stdoutHandle: resource, stderrHandle: resource} $capture */
+    private function closeForegroundCaptureFiles(array $capture): void
+    {
+        if (is_resource($capture['stdoutHandle'])) {
+            fclose($capture['stdoutHandle']);
+        }
+        if (is_resource($capture['stderrHandle'])) {
+            fclose($capture['stderrHandle']);
+        }
+        @unlink($capture['stdoutFile']);
+        @unlink($capture['stderrFile']);
     }
 
     /**
@@ -668,6 +729,43 @@ DESC;
         }
 
         return [$chunk, false];
+    }
+
+    /**
+     * Append command output while enforcing one combined stdout+stderr byte cap.
+     *
+     * @return bool true when the output limit was reached
+     */
+    private function appendCapturedChunk(
+        string &$target,
+        string $chunk,
+        int &$capturedOutputBytes,
+        int $maxOutputBytes,
+        string $limitNotice,
+    ): bool {
+        if ($chunk === '') {
+            return false;
+        }
+
+        $room = $maxOutputBytes - $capturedOutputBytes;
+        if ($room <= 0) {
+            return true;
+        }
+
+        if (strlen($chunk) > $room) {
+            $roomForNotice = min(strlen($limitNotice), $room);
+            $roomForChunk = max(0, $room - $roomForNotice);
+            $data = substr($chunk, 0, $roomForChunk).substr($limitNotice, 0, $roomForNotice);
+            $target .= $data;
+            $capturedOutputBytes += strlen($data);
+
+            return true;
+        }
+
+        $target .= $chunk;
+        $capturedOutputBytes += strlen($chunk);
+
+        return false;
     }
 
     /**

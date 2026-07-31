@@ -775,7 +775,7 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.18.23`. Notable changes since `v1.10.0`:
+is based on `v1.18.24`. Notable changes since `v1.10.0`:
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/
@@ -867,6 +867,9 @@ is based on `v1.18.23`. Notable changes since `v1.10.0`:
   result window, the PHP fallback scans files line-by-line, and Glob bounds
   brace expansion, visited files, ignored heavy directories, and retained top
   results.
+- `v1.18.24` — Foreground Bash captures stdout/stderr through bounded endpoints,
+  terminates runaway output at the byte cap, and still returns promptly when a
+  command leaves its own background child running.
 
 ## License
 
