@@ -41,7 +41,7 @@ jobs:
         run: composer audit --format=plain
 
   windows-paths:
-    name: Windows path compatibility
+    name: Windows tool compatibility
     runs-on: windows-latest
 
     steps:
@@ -63,13 +63,15 @@ jobs:
       - name: Check test discovery
         run: composer run test:discover
 
-      - name: Run focused path compatibility tests
+      - name: Run focused Windows compatibility tests
         run: >-
           php -d memory_limit=-1 vendor/bin/phpunit
           tests/Unit/BaseToolTest.php
+          tests/Unit/DiffGeneratorTest.php
           tests/Unit/GrepToolTest.php
           tests/Unit/GlobToolTest.php
           tests/Unit/Hitl/HitlWindowsCompatibilityTest.php
+          tests/Unit/ProcessSupervisorTest.php
           tests/Unit/SensitivePathGuardTest.php
           tests/Unit/TestDiscoveryCheckTest.php
           --no-progress

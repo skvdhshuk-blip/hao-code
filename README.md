@@ -775,7 +775,7 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.18.28`. Notable changes since `v1.10.0`:
+is based on `v1.18.29`. Notable changes since `v1.10.0`:
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/
@@ -883,6 +883,8 @@ is based on `v1.18.28`. Notable changes since `v1.10.0`:
 - `v1.18.28` — Internal unified diffs are generated in PHP without relying on
   the host `diff` command, and Bash-backed process startup now reports a clear
   missing-`bash` diagnostic before attempting command execution.
+- `v1.18.29` — The Windows release gate now runs the internal diff and local
+  process startup contract tests in addition to path compatibility checks.
 
 ## License
 
