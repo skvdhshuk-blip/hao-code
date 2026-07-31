@@ -11,14 +11,15 @@ use PHPUnit\Framework\TestCase;
 class JobExecutorTest extends TestCase
 {
     private JobExecutor $executor;
+    private PhoenixTracer $tracer;
 
     protected function setUp(): void
     {
         $settings = $this->createMock(SettingsManager::class);
         $settings->method('getTelemetryConfig')->willReturn([]);
 
-        $tracer = PhoenixTracer::fromSettings($settings);
-        $this->executor = new JobExecutor($tracer, new SecretScanner);
+        $this->tracer = PhoenixTracer::fromSettings($settings);
+        $this->executor = new JobExecutor($this->tracer, new SecretScanner);
     }
 
     private function makeJob(string $id, string $command): array
@@ -96,5 +97,39 @@ class JobExecutorTest extends TestCase
         );
 
         $this->assertLessThanOrEqual(4096, strlen($result['stderr_tail']));
+    }
+
+    public function test_stdout_pipe_pressure_is_drained(): void
+    {
+        $command = escapeshellarg(PHP_BINARY).' -r '.escapeshellarg(
+            'fwrite(STDOUT, str_repeat("x", 262144));'
+        );
+
+        $executor = new JobExecutor($this->tracer, new SecretScanner, timeoutSeconds: 2);
+        $result = $executor->execute($this->makeJob('j1', $command));
+
+        $this->assertSame(0, $result['exit_code']);
+        $this->assertLessThanOrEqual(4096, strlen($result['stderr_tail']));
+    }
+
+    public function test_timeout_terminates_descendants_before_delayed_side_effect(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('POSIX shell timing test.');
+        }
+
+        $marker = sys_get_temp_dir().'/haocode-cron-timeout-'.bin2hex(random_bytes(4));
+        $command = 'sh -c '.escapeshellarg('sleep 2; printf leaked > '.escapeshellarg($marker));
+
+        try {
+            $executor = new JobExecutor($this->tracer, new SecretScanner, timeoutSeconds: 1);
+            $result = $executor->execute($this->makeJob('j1', $command));
+
+            $this->assertSame(-1, $result['exit_code']);
+            usleep(1_300_000);
+            $this->assertFileDoesNotExist($marker);
+        } finally {
+            @unlink($marker);
+        }
     }
 }

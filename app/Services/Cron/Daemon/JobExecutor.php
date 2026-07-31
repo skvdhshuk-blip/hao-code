@@ -4,6 +4,7 @@ namespace HaoCode\Services\Cron\Daemon;
 
 use HaoCode\Services\Security\SecretScanner;
 use HaoCode\Services\Telemetry\PhoenixTracer;
+use HaoCode\Support\Runtime\ProcessSupervisor;
 use OpenTelemetry\API\Trace\SpanInterface;
 use OpenTelemetry\API\Trace\StatusCode;
 
@@ -19,6 +20,8 @@ class JobExecutor
     private const GRACEFUL_TIMEOUT = 30;
 
     private const STDERR_TAIL_BYTES = 4096;
+
+    private int $timeoutSeconds;
 
     /** Whitelisted env var prefixes/names passed to child process */
     private const ENV_ALLOWLIST = [
@@ -43,7 +46,10 @@ class JobExecutor
     public function __construct(
         private readonly PhoenixTracer $tracer,
         private readonly SecretScanner $secretScanner,
-    ) {}
+        ?int $timeoutSeconds = null,
+    ) {
+        $this->timeoutSeconds = max(1, $timeoutSeconds ?? self::GRACEFUL_TIMEOUT);
+    }
 
     /**
      * @return array{exit_code: int, stderr_tail: string, secret_detected: bool, started_at: int, ended_at: int}
@@ -60,75 +66,89 @@ class JobExecutor
 
         $env = $this->buildEnv($traceparent);
         $descriptors = [
-            0 => ['pipe', 'r'],  // stdin
-            1 => ['pipe', 'w'],  // stdout
-            2 => ['pipe', 'w'],  // stderr
+            0 => ['file', PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null', 'r'],
+            1 => ['pipe', 'w'],
+            2 => ['pipe', 'w'],
         ];
 
-        $process = proc_open(['sh', '-c', $job['command']], $descriptors, $pipes, null, $env);
-
-        if (! is_resource($process)) {
+        try {
+            $opened = ProcessSupervisor::open(
+                (string) $job['command'],
+                getcwd() ?: sys_get_temp_dir(),
+                $env,
+                $descriptors,
+            );
+        } catch (\RuntimeException $e) {
             $endedAt = time();
             $this->endSpan($span, -1, $endedAt - $startedAt, false);
 
             return [
                 'exit_code' => -1,
-                'stderr_tail' => 'proc_open failed',
+                'stderr_tail' => $e->getMessage(),
                 'secret_detected' => false,
                 'started_at' => $startedAt,
                 'ended_at' => $endedAt,
             ];
         }
 
-        fclose($pipes[0]);
+        $process = $opened['process'];
+        $pid = $opened['pid'];
+        $pipes = $opened['pipes'];
+
         stream_set_blocking($pipes[1], false);
         stream_set_blocking($pipes[2], false);
 
         $stderrBuffer = '';
         $exitCode = -1;
-        $deadline = time() + self::GRACEFUL_TIMEOUT;
-        $killed = false;
+        $deadline = microtime(true) + $this->timeoutSeconds;
+        $timedOut = false;
 
         while (true) {
-            $status = proc_get_status($process);
+            $this->drainPipes($pipes, $stderrBuffer);
 
-            // Drain stderr
-            $chunk = fread($pipes[2], 8192);
-            if ($chunk !== false && $chunk !== '') {
-                $stderrBuffer .= $chunk;
-            }
+            $status = proc_get_status($process);
 
             if (! $status['running']) {
                 $exitCode = $status['exitcode'];
                 break;
             }
 
-            if (time() > $deadline) {
-                // Graceful kill attempt
-                proc_terminate($process, SIGTERM);
-                usleep(500000); // 0.5s grace
-
-                $status = proc_get_status($process);
-                if ($status['running']) {
-                    // Hard kill
-                    proc_terminate($process, SIGKILL);
-                }
-                $killed = true;
+            if (microtime(true) >= $deadline) {
+                $timedOut = true;
+                ProcessSupervisor::terminateTree($pid);
                 $exitCode = -1;
                 break;
             }
 
-            usleep(100000); // 100ms poll
+            $read = [];
+            foreach ([1, 2] as $index) {
+                if (isset($pipes[$index]) && is_resource($pipes[$index]) && ! feof($pipes[$index])) {
+                    $read[] = $pipes[$index];
+                }
+            }
+
+            if ($read === []) {
+                usleep(10_000);
+                continue;
+            }
+
+            $remainingUs = max(1, (int) (($deadline - microtime(true)) * 1_000_000));
+            $remainingUs = min($remainingUs, 100_000);
+            $seconds = intdiv($remainingUs, 1_000_000);
+            $microseconds = $remainingUs % 1_000_000;
+            $write = null;
+            $except = null;
+            @stream_select($read, $write, $except, $seconds, $microseconds);
         }
 
-        // Final drain
-        while (($chunk = fread($pipes[2], 8192)) !== false && $chunk !== '') {
-            $stderrBuffer .= $chunk;
-        }
+        $this->drainPipes($pipes, $stderrBuffer);
 
         fclose($pipes[1]);
         fclose($pipes[2]);
-        proc_close($process);
+        $closed = proc_close($process);
+        if ($exitCode < 0 && ! $timedOut) {
+            $exitCode = $closed;
+        }
 
         $endedAt = time();
 
@@ -141,7 +161,7 @@ class JobExecutor
         $secretDetected = $this->secretScanner->containsSecrets($stderrBuffer);
         $maskedStderr = $secretDetected ? $this->secretScanner->redact($stderrBuffer) : $stderrBuffer;
 
-        $this->endSpan($span, $killed ? -1 : $exitCode, $endedAt - $startedAt, $secretDetected);
+        $this->endSpan($span, $timedOut ? -1 : $exitCode, $endedAt - $startedAt, $secretDetected);
 
         return [
             'exit_code' => $exitCode,
@@ -150,6 +170,33 @@ class JobExecutor
             'started_at' => $startedAt,
             'ended_at' => $endedAt,
         ];
+    }
+
+    /**
+     * Drain both output pipes so a cron job cannot block on stdout while we only
+     * persist stderr. Stdout is intentionally discarded; stderr is kept as a
+     * bounded tail for diagnostics and secret scanning.
+     *
+     * @param array<int, resource> $pipes
+     */
+    private function drainPipes(array $pipes, string &$stderrBuffer): void
+    {
+        foreach ([1, 2] as $index) {
+            if (! isset($pipes[$index]) || ! is_resource($pipes[$index])) {
+                continue;
+            }
+
+            while (($chunk = fread($pipes[$index], 8192)) !== false && $chunk !== '') {
+                if ($index !== 2) {
+                    continue;
+                }
+
+                $stderrBuffer .= $chunk;
+                if (strlen($stderrBuffer) > self::STDERR_TAIL_BYTES) {
+                    $stderrBuffer = substr($stderrBuffer, -self::STDERR_TAIL_BYTES);
+                }
+            }
+        }
     }
 
     private function buildEnv(?string $traceparent): array
