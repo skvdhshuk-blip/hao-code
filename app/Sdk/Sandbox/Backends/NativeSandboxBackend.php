@@ -234,7 +234,7 @@ SB;
     /**
      * @param string[] $command
      * @param  callable(): bool|null  $shouldAbort
-     * @return array{stdout: string, stderr: string, exitCode: int, timedOut: bool, aborted?: bool}
+     * @return array{stdout: string, stderr: string, exitCode: int, timedOut: bool, aborted?: bool, outputLimited?: bool}
      */
     private function run(array $command, string $cwd, int $timeoutMs, ?callable $shouldAbort = null): array
     {
@@ -267,6 +267,7 @@ SB;
         $deadline = microtime(true) + (max(1, $timeoutMs) / 1000);
         $timedOut = false;
         $aborted = false;
+        $outputLimited = false;
         $exitCode = -1;
         $pid = (int) (proc_get_status($process)['pid'] ?? 0);
 
@@ -276,8 +277,12 @@ SB;
                 \HaoCode\Support\Runtime\ProcessSupervisor::terminateTree($pid, false);
                 break;
             }
-            $this->captureOutput($pipes[1], $stdout, $stdoutTruncated);
-            $this->captureOutput($pipes[2], $stderr, $stderrTruncated);
+            if ($this->captureOutput($pipes[1], $stdout, $stdoutTruncated)
+                || $this->captureOutput($pipes[2], $stderr, $stderrTruncated)) {
+                $outputLimited = true;
+                \HaoCode\Support\Runtime\ProcessSupervisor::terminateTree($pid, false);
+                break;
+            }
             $status = proc_get_status($process);
             if (! ($status['running'] ?? false)) {
                 $exitCode = ($status['signaled'] ?? false)
@@ -293,12 +298,17 @@ SB;
             usleep(10000);
         } while (true);
 
-        $this->captureOutput($pipes[1], $stdout, $stdoutTruncated);
-        $this->captureOutput($pipes[2], $stderr, $stderrTruncated);
+        if (! $outputLimited && ($this->captureOutput($pipes[1], $stdout, $stdoutTruncated)
+            || $this->captureOutput($pipes[2], $stderr, $stderrTruncated))) {
+            $outputLimited = true;
+            \HaoCode\Support\Runtime\ProcessSupervisor::terminateTree($pid, false);
+        }
         fclose($pipes[1]);
         fclose($pipes[2]);
         $closedExitCode = proc_close($process);
-        if ($exitCode < 0 && $closedExitCode >= 0) {
+        if ($outputLimited) {
+            $exitCode = 1;
+        } elseif ($exitCode < 0 && $closedExitCode >= 0) {
             $exitCode = $closedExitCode;
         }
         if ($stdoutTruncated) {
@@ -314,15 +324,16 @@ SB;
             'exitCode' => $aborted ? 130 : ($timedOut ? 124 : $exitCode),
             'timedOut' => $timedOut,
             'aborted' => $aborted,
+            'outputLimited' => $outputLimited,
         ];
     }
 
     /** @param resource $stream */
-    private function captureOutput($stream, string &$output, bool &$truncated): void
+    private function captureOutput($stream, string &$output, bool &$truncated): bool
     {
         $chunk = stream_get_contents($stream);
         if ($chunk === false || $chunk === '') {
-            return;
+            return false;
         }
 
         $remaining = self::MAX_OUTPUT_BYTES - strlen($output);
@@ -331,7 +342,11 @@ SB;
         }
         if (strlen($chunk) > max(0, $remaining)) {
             $truncated = true;
+
+            return true;
         }
+
+        return false;
     }
 
     private function networkAllowed(): bool

@@ -775,7 +775,7 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.18.39`. Notable changes since `v1.10.0`:
+is based on `v1.18.40`. Notable changes since `v1.10.0`:
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/
@@ -915,6 +915,10 @@ is based on `v1.18.39`. Notable changes since `v1.10.0`:
 - `v1.18.39` — Local sandbox Bash now captures stdout and stderr through
   bounded pipes, terminates commands that exceed the capture cap, and reports
   output-limit metadata instead of allowing unbounded temporary output files.
+- `v1.18.40` — Native, Tokimo, and AgentRun sandbox exec paths now share the
+  `outputLimited` metadata contract; native sandbox commands are terminated when
+  captured output exceeds the backend cap, while remote sandbox responses are
+  bounded before reaching tool results.
 
 ## License
 

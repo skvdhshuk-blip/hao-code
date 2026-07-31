@@ -36,6 +36,31 @@ class TokimoSandboxBackendTest extends TestCase
         $this->removeDir($rootfs);
     }
 
+    public function test_tokimo_backend_caps_large_exec_output(): void
+    {
+        $cwd = $this->tmpDir('haocode-tokimo-cwd-');
+        $rootfs = $this->tmpDir('haocode-tokimo-rootfs-');
+
+        $runtime = SandboxManager::create(SandboxConfig::tokimo(
+            baseRootfs: $rootfs,
+            binary: dirname(__DIR__).'/fixtures/fake-tokimo-runner.php',
+            sync: 'upload-cwd',
+        ), $cwd);
+
+        try {
+            $result = $runtime->backend->exec('large-output', '/workspace', 1000);
+
+            $this->assertSame(1, $result['exitCode']);
+            $this->assertTrue($result['outputLimited'] ?? false);
+            $this->assertLessThanOrEqual(101000, strlen($result['stdout']));
+            $this->assertStringContainsString('stdout truncated', $result['stdout']);
+        } finally {
+            $runtime->close();
+            $this->removeDir($cwd);
+            $this->removeDir($rootfs);
+        }
+    }
+
     public function test_tokimo_config_rejects_invalid_resource_and_network_settings(): void
     {
         try {

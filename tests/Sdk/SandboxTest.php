@@ -4,6 +4,8 @@ namespace Tests\Sdk;
 
 use HaoCode\Sdk\AgentRunContextFactory;
 use HaoCode\Sdk\HaoCodeConfig;
+use HaoCode\Sdk\Sandbox\Backends\LocalSandboxBackend;
+use HaoCode\Sdk\Sandbox\Backends\NativeSandboxBackend;
 use HaoCode\Sdk\Sandbox\SandboxConfig;
 use HaoCode\Sdk\Sandbox\SandboxManager;
 use HaoCode\Sdk\Sandbox\Tools\SandboxGlobTool;
@@ -310,6 +312,47 @@ class SandboxTest extends TestCase
         }
     }
 
+    public function test_native_sandbox_runner_caps_output_and_terminates_promptly(): void
+    {
+        $config = SandboxConfig::local(mode: 'full');
+        $filesystem = new LocalSandboxBackend($config);
+        $backend = (new \ReflectionClass(NativeSandboxBackend::class))->newInstanceWithoutConstructor();
+        $reflection = new \ReflectionClass($backend);
+        $reflection->getProperty('config')->setValue($backend, $config);
+        $reflection->getProperty('filesystem')->setValue($backend, $filesystem);
+
+        $marker = tempnam(sys_get_temp_dir(), 'haocode_native_exec_limit_');
+        $this->assertNotFalse($marker);
+        @unlink($marker);
+
+        try {
+            $run = $reflection->getMethod('run');
+            $run->setAccessible(true);
+            $result = $run->invoke(
+                $backend,
+                [
+                    PHP_BINARY,
+                    '-r',
+                    'echo str_repeat("x", 5 * 1024 * 1024); flush(); usleep(1000000); file_put_contents('.var_export($marker, true).', "leaked");',
+                ],
+                $filesystem->rootLabel().'/workspace',
+                5000,
+                null,
+            );
+
+            $this->assertSame(1, $result['exitCode']);
+            $this->assertTrue($result['outputLimited'] ?? false);
+            $this->assertFalse($result['timedOut']);
+            $this->assertStringContainsString('stdout truncated', $result['stdout']);
+
+            usleep(1_100_000);
+            $this->assertFileDoesNotExist($marker, 'Native output limit must terminate before delayed side effects run');
+        } finally {
+            @unlink($marker);
+            $filesystem->close();
+        }
+    }
+
     public function test_local_sandbox_search_prunes_ignored_directories_before_recursing(): void
     {
         if (PHP_OS_FAMILY === 'Windows') {
@@ -533,7 +576,8 @@ YAML);
         $runtime = SandboxManager::create(SandboxConfig::native());
         $result = $runtime->backend->exec('yes x | head -c 5000000', '/workspace', 10000);
 
-        $this->assertSame(0, $result['exitCode'], $result['stderr']);
+        $this->assertSame(1, $result['exitCode'], $result['stderr']);
+        $this->assertTrue($result['outputLimited'] ?? false);
         $this->assertLessThan(4_200_000, strlen($result['stdout']));
         $this->assertStringContainsString('[stdout truncated at 4194304 bytes]', $result['stdout']);
         $runtime->close();

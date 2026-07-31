@@ -52,5 +52,22 @@ class AgentRunSandboxBackendTest extends TestCase
         $this->assertSame(7, $exec['exitCode']);
         $this->assertSame("ok\n", $exec['stdout']);
         $this->assertSame('warn', $exec['stderr']);
+        $this->assertFalse($exec['outputLimited'] ?? true);
+    }
+
+    public function test_backend_caps_large_exec_output(): void
+    {
+        $responses = [
+            new MockResponse('{"result":{"stdout":"'.str_repeat('x', 150000).'","stderr":"","exitCode":0}}', ['http_code' => 200]),
+        ];
+        $http = new MockHttpClient($responses);
+        $client = new AgentRunClient(accountId: '1234567890', sandboxId: 'sbx-1', apiKey: 'ak-template', httpClient: $http);
+        $backend = new AgentRunSandboxBackend(SandboxConfig::agentRun(accountId: '1234567890', sandboxId: 'sbx-1', apiKey: 'ak-template'), $client);
+
+        $exec = $backend->exec('yes', '/tmp', 5000);
+
+        $this->assertTrue($exec['outputLimited'] ?? false);
+        $this->assertLessThanOrEqual(101000, strlen($exec['stdout']));
+        $this->assertStringContainsString('stdout truncated', $exec['stdout']);
     }
 }

@@ -10,6 +10,8 @@ use HaoCode\Sdk\Sandbox\SandboxConfig;
 /** @internal */
 final class TokimoSandboxBackend implements SandboxBackendInterface, RevisionAwareSandboxBackendInterface
 {
+    private const MAX_EXEC_OUTPUT_BYTES = 100_000;
+
     private readonly LocalSandboxBackend $filesystem;
 
     /** @var resource|null */
@@ -94,7 +96,7 @@ final class TokimoSandboxBackend implements SandboxBackendInterface, RevisionAwa
     public function exec(string $command, ?string $cwd = null, int $timeoutMs = 120000, ?callable $shouldAbort = null): array
     {
         if ($shouldAbort !== null && $shouldAbort()) {
-            return ['stdout' => '', 'stderr' => '', 'exitCode' => 130, 'timedOut' => false, 'aborted' => true];
+            return ['stdout' => '', 'stderr' => '', 'exitCode' => 130, 'timedOut' => false, 'aborted' => true, 'outputLimited' => false];
         }
 
         $this->start();
@@ -113,12 +115,18 @@ final class TokimoSandboxBackend implements SandboxBackendInterface, RevisionAwa
             throw new \RuntimeException('Tokimo runner returned invalid base64 command output.');
         }
 
+        $outputLimited = (bool) ($response['output_limited'] ?? $response['outputLimited'] ?? false);
+        $stdoutLimited = $this->capExecOutput($stdout, 'stdout');
+        $stderrLimited = $this->capExecOutput($stderr, 'stderr');
+        $outputLimited = $outputLimited || $stdoutLimited || $stderrLimited;
+
         return [
             'stdout' => $stdout,
             'stderr' => $stderr,
-            'exitCode' => (int) ($response['exit_code'] ?? -1),
+            'exitCode' => $outputLimited ? 1 : (int) ($response['exit_code'] ?? -1),
             'timedOut' => (bool) ($response['timed_out'] ?? false),
             'aborted' => false,
+            'outputLimited' => $outputLimited,
         ];
     }
 
@@ -373,6 +381,18 @@ final class TokimoSandboxBackend implements SandboxBackendInterface, RevisionAwa
         }
         $message = (string) ($response['error'] ?? 'unknown runner error');
         throw new \RuntimeException($prefix.': '.$message);
+    }
+
+    private function capExecOutput(string &$output, string $streamName): bool
+    {
+        if (strlen($output) <= self::MAX_EXEC_OUTPUT_BYTES) {
+            return false;
+        }
+
+        $output = substr($output, 0, self::MAX_EXEC_OUTPUT_BYTES)
+            ."\n\n[{$streamName} truncated at ".self::MAX_EXEC_OUTPUT_BYTES.' bytes]';
+
+        return true;
     }
 
     private function requiredStringOption(string $name): string

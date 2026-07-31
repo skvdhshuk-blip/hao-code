@@ -9,6 +9,8 @@ use HaoCode\Sdk\Sandbox\SandboxConfig;
 /** @api */
 final class AgentRunSandboxBackend implements SandboxBackendInterface
 {
+    private const MAX_EXEC_OUTPUT_BYTES = 100_000;
+
     private AgentRunClient $client;
 
     public function __construct(private readonly SandboxConfig $config, ?AgentRunClient $client = null)
@@ -119,7 +121,7 @@ final class AgentRunSandboxBackend implements SandboxBackendInterface
     public function exec(string $command, ?string $cwd = null, int $timeoutMs = 120000, ?callable $shouldAbort = null): array
     {
         if ($shouldAbort !== null && $shouldAbort()) {
-            return ['stdout' => '', 'stderr' => '', 'exitCode' => 130, 'timedOut' => false, 'aborted' => true];
+            return ['stdout' => '', 'stderr' => '', 'exitCode' => 130, 'timedOut' => false, 'aborted' => true, 'outputLimited' => false];
         }
 
         $result = $this->client->cmd($command, $cwd ?? $this->config->remoteCwd, max(1, (int) ceil($timeoutMs / 1000)));
@@ -132,12 +134,20 @@ final class AgentRunSandboxBackend implements SandboxBackendInterface
             throw new \RuntimeException('AgentRun process response is missing a numeric exitCode.');
         }
 
+        $stdout = (string) ($result['stdout'] ?? $result['data']['stdout'] ?? $result['result']['stdout'] ?? '');
+        $stderr = (string) ($result['stderr'] ?? $result['data']['stderr'] ?? $result['result']['stderr'] ?? '');
+        $outputLimited = (bool) ($result['outputLimited'] ?? $result['output_limited'] ?? $result['data']['outputLimited'] ?? $result['result']['outputLimited'] ?? false);
+        $stdoutLimited = $this->capExecOutput($stdout, 'stdout');
+        $stderrLimited = $this->capExecOutput($stderr, 'stderr');
+        $outputLimited = $outputLimited || $stdoutLimited || $stderrLimited;
+
         return [
-            'stdout' => (string) ($result['stdout'] ?? $result['data']['stdout'] ?? $result['result']['stdout'] ?? ''),
-            'stderr' => (string) ($result['stderr'] ?? $result['data']['stderr'] ?? $result['result']['stderr'] ?? ''),
+            'stdout' => $stdout,
+            'stderr' => $stderr,
             'exitCode' => (int) $exitCode,
             'timedOut' => (bool) ($result['timedOut'] ?? $result['data']['timedOut'] ?? false),
             'aborted' => false,
+            'outputLimited' => $outputLimited,
         ];
     }
 
@@ -215,5 +225,17 @@ final class AgentRunSandboxBackend implements SandboxBackendInterface
     {
         $pattern = ltrim($pattern, './');
         return rtrim($cwd, '/').'/'.$pattern;
+    }
+
+    private function capExecOutput(string &$output, string $streamName): bool
+    {
+        if (strlen($output) <= self::MAX_EXEC_OUTPUT_BYTES) {
+            return false;
+        }
+
+        $output = substr($output, 0, self::MAX_EXEC_OUTPUT_BYTES)
+            ."\n\n[{$streamName} truncated at ".self::MAX_EXEC_OUTPUT_BYTES.' bytes]';
+
+        return true;
     }
 }

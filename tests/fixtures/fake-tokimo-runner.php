@@ -22,7 +22,9 @@ while (($line = fgets(STDIN)) !== false) {
         continue;
     }
 
-    $output = ($request['command'] ?? '').'|'.($request['cwd'] ?? '');
+    $output = ($request['command'] ?? '') === 'large-output'
+        ? str_repeat('x', 150000)
+        : (($request['command'] ?? '').'|'.($request['cwd'] ?? ''));
     fwrite(STDOUT, json_encode([
         'ok' => true,
         'stdout_base64' => base64_encode($output),

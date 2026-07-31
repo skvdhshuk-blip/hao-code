@@ -25,7 +25,7 @@ interface SandboxBackendInterface
 
     /**
      * @param  callable(): bool|null  $shouldAbort
-     * @return array{stdout: string, stderr: string, exitCode: int, timedOut: bool, aborted?: bool}
+     * @return array{stdout: string, stderr: string, exitCode: int, timedOut: bool, aborted?: bool, outputLimited?: bool}
      */
     public function exec(string $command, ?string $cwd = null, int $timeoutMs = 120000, ?callable $shouldAbort = null): array;
 
