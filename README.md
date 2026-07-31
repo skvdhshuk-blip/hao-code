@@ -775,7 +775,7 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.18.40`. Notable changes since `v1.10.0`:
+is based on `v1.18.41`. Notable changes since `v1.10.0`:
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/
@@ -919,6 +919,9 @@ is based on `v1.18.40`. Notable changes since `v1.10.0`:
   `outputLimited` metadata contract; native sandbox commands are terminated when
   captured output exceeds the backend cap, while remote sandbox responses are
   bounded before reaching tool results.
+- `v1.18.41` — AgentRun sandbox exec now returns the same non-zero exit status
+  as other sandbox backends when SDK-side output bounding marks a command
+  `outputLimited`.
 
 ## License
 

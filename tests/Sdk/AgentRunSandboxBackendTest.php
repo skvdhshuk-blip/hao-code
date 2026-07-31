@@ -66,6 +66,7 @@ class AgentRunSandboxBackendTest extends TestCase
 
         $exec = $backend->exec('yes', '/tmp', 5000);
 
+        $this->assertSame(1, $exec['exitCode']);
         $this->assertTrue($exec['outputLimited'] ?? false);
         $this->assertLessThanOrEqual(101000, strlen($exec['stdout']));
         $this->assertStringContainsString('stdout truncated', $exec['stdout']);

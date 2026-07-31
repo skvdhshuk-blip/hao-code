@@ -144,7 +144,7 @@ final class AgentRunSandboxBackend implements SandboxBackendInterface
         return [
             'stdout' => $stdout,
             'stderr' => $stderr,
-            'exitCode' => (int) $exitCode,
+            'exitCode' => $outputLimited ? 1 : (int) $exitCode,
             'timedOut' => (bool) ($result['timedOut'] ?? $result['data']['timedOut'] ?? false),
             'aborted' => false,
             'outputLimited' => $outputLimited,
