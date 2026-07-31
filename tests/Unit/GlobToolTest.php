@@ -255,6 +255,23 @@ class GlobToolTest extends TestCase
         $this->assertStringNotContainsString('vendor/package/ignored.php', $result->output);
     }
 
+    public function test_it_respects_root_gitignore(): void
+    {
+        $this->touch('.gitignore', "ignored-dir/\n*.log\n!important.log\n");
+        $this->touch('src/keep.php', '<?php');
+        $this->touch('ignored-dir/hidden.php', '<?php');
+        $this->touch('debug.log', 'log');
+        $this->touch('important.log', 'log');
+
+        $result = $this->call(['pattern' => '**/*']);
+
+        $this->assertFalse($result->isError);
+        $this->assertStringContainsString('src/keep.php', $result->output);
+        $this->assertStringContainsString('important.log', $result->output);
+        $this->assertStringNotContainsString('ignored-dir/hidden.php', $result->output);
+        $this->assertStringNotContainsString('debug.log', $result->output);
+    }
+
     public function test_it_prunes_default_ignored_directories_before_recursing(): void
     {
         if (PHP_OS_FAMILY === 'Windows') {

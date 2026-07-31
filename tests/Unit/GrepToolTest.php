@@ -455,6 +455,24 @@ class GrepToolTest extends TestCase
         $this->assertStringNotContainsString('vendor/package', $result->output);
     }
 
+    public function test_php_fallback_respects_root_gitignore(): void
+    {
+        file_put_contents($this->tmpDir.'/.gitignore', "ignored-dir/\n*.log\n!important.log\n");
+        mkdir($this->tmpDir.'/ignored-dir', 0755, true);
+        $this->writeFile('src.txt', "needle\n");
+        $this->writeFile('debug.log', "needle\n");
+        $this->writeFile('important.log', "needle\n");
+        file_put_contents($this->tmpDir.'/ignored-dir/hidden.txt', "needle\n");
+
+        $result = $this->grepPhp('needle', outputMode: 'files_with_matches');
+
+        $this->assertFalse($result->isError);
+        $this->assertStringContainsString('src.txt', $result->output);
+        $this->assertStringContainsString('important.log', $result->output);
+        $this->assertStringNotContainsString('debug.log', $result->output);
+        $this->assertStringNotContainsString('ignored-dir/hidden.txt', $result->output);
+    }
+
     public function test_php_fallback_prunes_default_ignored_directories_before_recursing(): void
     {
         if (PHP_OS_FAMILY === 'Windows') {

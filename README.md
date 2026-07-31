@@ -775,7 +775,7 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.18.46`. Notable changes since `v1.10.0`:
+is based on `v1.18.48`. Notable changes since `v1.10.0`:
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/
@@ -938,6 +938,12 @@ is based on `v1.18.46`. Notable changes since `v1.10.0`:
 - `v1.18.46` — Parallel and streaming-early tool forks now cap serialized IPC
   payloads before writing or reading temp files, preventing oversized metadata
   from bypassing tool-result output caps while preserving aborted/error outcomes.
+- `v1.18.47` — Release metadata refresh for the verified `v1.18.46` hardening
+  source line, keeping downstream package indexing aligned with the current
+  audited commit.
+- `v1.18.48` — Host Grep PHP fallback and Glob now honor root `.gitignore`
+  rules before returning or descending into ignored files, reducing duplicate
+  worktree/vendor search cost while preserving bounded traversal semantics.
 
 ## License
 

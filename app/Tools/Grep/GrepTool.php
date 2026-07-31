@@ -440,18 +440,20 @@ DESC;
             $files = [$path];
         } elseif (is_dir($path)) {
             $files = [];
+            $gitignorePatterns = $this->loadGitignorePatterns($path);
             try {
                 $directory = new \RecursiveDirectoryIterator($path, \RecursiveDirectoryIterator::SKIP_DOTS);
                 $filter = new \RecursiveCallbackFilterIterator(
                     $directory,
-                    function (\SplFileInfo $current) use ($path): bool {
+                    function (\SplFileInfo $current) use ($path, $gitignorePatterns): bool {
                         $relativePath = str_replace(
                             '\\',
                             '/',
                             ltrim(str_replace($path, '', $current->getPathname()), '/\\'),
                         );
 
-                        if ($this->isIgnoredPath($relativePath)) {
+                        if ($this->isIgnoredPath($relativePath)
+                            || $this->isGitignoreIgnored($relativePath, $current->isDir(), $gitignorePatterns)) {
                             return false;
                         }
 
@@ -635,6 +637,101 @@ DESC;
         $relativePath = str_replace('\\', '/', ltrim($relativePath, '/'));
         foreach (self::IGNORED_DIRECTORIES as $ignored) {
             if ($relativePath === $ignored || str_starts_with($relativePath, $ignored.'/')) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /** @return list<array{pattern:string, negated:bool, directory:bool, anchored:bool}> */
+    private function loadGitignorePatterns(string $root): array
+    {
+        $gitignore = rtrim($root, '/\\').DIRECTORY_SEPARATOR.'.gitignore';
+        if (! is_file($gitignore) || ! is_readable($gitignore)) {
+            return [];
+        }
+
+        $patterns = [];
+        $lines = @file($gitignore, FILE_IGNORE_NEW_LINES);
+        if (! is_array($lines)) {
+            return [];
+        }
+
+        foreach ($lines as $line) {
+            $line = trim($line);
+            if ($line === '' || str_starts_with($line, '#')) {
+                continue;
+            }
+
+            $negated = str_starts_with($line, '!');
+            if ($negated) {
+                $line = substr($line, 1);
+            }
+
+            $line = str_replace('\\', '/', trim($line));
+            if ($line === '') {
+                continue;
+            }
+
+            $anchored = str_starts_with($line, '/');
+            $line = ltrim($line, '/');
+            $directory = str_ends_with($line, '/');
+            $line = rtrim($line, '/');
+            if ($line === '') {
+                continue;
+            }
+
+            $patterns[] = [
+                'pattern' => $line,
+                'negated' => $negated,
+                'directory' => $directory,
+                'anchored' => $anchored,
+            ];
+        }
+
+        return $patterns;
+    }
+
+    /** @param list<array{pattern:string, negated:bool, directory:bool, anchored:bool}> $patterns */
+    private function isGitignoreIgnored(string $relativePath, bool $isDirectory, array $patterns): bool
+    {
+        if ($patterns === []) {
+            return false;
+        }
+
+        $relativePath = str_replace('\\', '/', ltrim($relativePath, '/'));
+        $ignored = false;
+        foreach ($patterns as $pattern) {
+            if (! $this->matchesGitignorePattern($relativePath, $isDirectory, $pattern)) {
+                continue;
+            }
+            $ignored = ! $pattern['negated'];
+        }
+
+        return $ignored;
+    }
+
+    /** @param array{pattern:string, negated:bool, directory:bool, anchored:bool} $pattern */
+    private function matchesGitignorePattern(string $relativePath, bool $isDirectory, array $pattern): bool
+    {
+        $rawPattern = $pattern['pattern'];
+        if ($pattern['directory'] && ! $isDirectory && ! str_starts_with($relativePath, $rawPattern.'/')) {
+            return false;
+        }
+
+        $flags = defined('FNM_PATHNAME') ? FNM_PATHNAME : 0;
+        if ($pattern['anchored'] || str_contains($rawPattern, '/')) {
+            return fnmatch($rawPattern, $relativePath, $flags)
+                || str_starts_with($relativePath, $rawPattern.'/');
+        }
+
+        $segments = explode('/', $relativePath);
+        foreach ($segments as $index => $segment) {
+            if (! fnmatch($rawPattern, $segment)) {
+                continue;
+            }
+            if ($index === count($segments) - 1 || $pattern['directory']) {
                 return true;
             }
         }
