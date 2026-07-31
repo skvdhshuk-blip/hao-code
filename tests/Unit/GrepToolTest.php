@@ -4,6 +4,7 @@ namespace Tests\Unit;
 
 use HaoCode\Tools\Grep\GrepTool;
 use HaoCode\Services\Permissions\SensitivePathGuard;
+use HaoCode\Tools\ToolOutcome;
 use HaoCode\Tools\ToolResult;
 use HaoCode\Tools\ToolUseContext;
 use PHPUnit\Framework\TestCase;
@@ -70,6 +71,7 @@ class GrepToolTest extends TestCase
         int $offset = 0,
         ?string $type = null,
         bool $multiline = false,
+        ?callable $shouldAbort = null,
     ): ToolResult {
         $ref = new \ReflectionClass(GrepTool::class);
         $method = $ref->getMethod('grepWithPhp');
@@ -88,6 +90,7 @@ class GrepToolTest extends TestCase
             $offset,
             $type,
             $multiline,
+            $shouldAbort,
         );
     }
 
@@ -450,6 +453,66 @@ class GrepToolTest extends TestCase
         $this->assertStringContainsString('src.txt', $result->output);
         $this->assertStringNotContainsString('.claude/worktrees', $result->output);
         $this->assertStringNotContainsString('vendor/package', $result->output);
+    }
+
+    public function test_php_fallback_prunes_default_ignored_directories_before_recursing(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('POSIX permission coverage.');
+        }
+
+        $this->writeFile('src.txt', "needle\n");
+        mkdir($this->tmpDir.'/vendor', 0755, true);
+        $locked = $this->tmpDir.'/vendor/locked';
+        mkdir($locked, 0000);
+
+        try {
+            $result = $this->grepPhp('needle', outputMode: 'files_with_matches');
+
+            $this->assertFalse($result->isError);
+            $this->assertSame('src.txt', $result->output);
+
+            $source = file_get_contents((new \ReflectionClass(GrepTool::class))->getFileName());
+            $this->assertIsString($source);
+            $this->assertStringContainsString('RecursiveCallbackFilterIterator', $source);
+            $this->assertStringContainsString('CATCH_GET_CHILD', $source);
+        } finally {
+            @chmod($locked, 0700);
+        }
+    }
+
+    public function test_call_returns_aborted_when_context_requests_cancel(): void
+    {
+        $this->writeFile('src.txt', "needle\n");
+        $context = new ToolUseContext(
+            workingDirectory: $this->tmpDir,
+            sessionId: 'test-session',
+            shouldAbort: static fn (): bool => true,
+        );
+
+        $result = $this->tool->call(
+            ['pattern' => 'needle', 'output_mode' => 'files_with_matches'],
+            $context,
+        );
+
+        $this->assertSame(ToolOutcome::Aborted, $result->outcome());
+    }
+
+    public function test_php_fallback_honors_abort_during_scan(): void
+    {
+        $this->writeFile('src.txt', str_repeat("needle\n", 20));
+        $checks = 0;
+
+        $result = $this->grepPhp(
+            'needle',
+            shouldAbort: static function () use (&$checks): bool {
+                $checks++;
+
+                return $checks > 2;
+            },
+        );
+
+        $this->assertSame(ToolOutcome::Aborted, $result->outcome());
     }
 
     public function test_ripgrep_skips_default_ignored_directories(): void

@@ -87,7 +87,20 @@ DESC;
         $totalCount = 0;
         $visitedFiles = 0;
         $truncatedByVisitLimit = false;
-        $this->globRecursive($path, $regexPatterns, $matches, $totalCount, $visitedFiles, $truncatedByVisitLimit);
+        $aborted = false;
+        $this->globRecursive(
+            $path,
+            $regexPatterns,
+            $matches,
+            $totalCount,
+            $visitedFiles,
+            $truncatedByVisitLimit,
+            $context->isAborted(...),
+            $aborted,
+        );
+        if ($aborted) {
+            return ToolResult::aborted('Glob search aborted.');
+        }
 
         if (empty($matches)) {
             return ToolResult::success("No files matched pattern: {$pattern}");
@@ -141,24 +154,41 @@ DESC;
         int &$totalCount,
         int &$visitedFiles,
         bool &$truncatedByVisitLimit,
+        ?callable $shouldAbort = null,
+        bool &$aborted = false,
     ): void
     {
         if (!is_dir($dir)) {
             return;
         }
 
-        // Handle ** patterns by using recursive iterator
+        $directory = new \RecursiveDirectoryIterator($dir, \RecursiveDirectoryIterator::SKIP_DOTS);
+        $filter = new \RecursiveCallbackFilterIterator(
+            $directory,
+            function (\SplFileInfo $current) use ($dir): bool {
+                $relativePath = $this->relativePath($current->getPathname(), $dir);
+
+                if ($this->isIgnoredPath($relativePath)) {
+                    return false;
+                }
+
+                return ! $current->isDir() || ! $current->isLink();
+            },
+        );
         $iterator = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator($dir, \RecursiveDirectoryIterator::SKIP_DOTS),
-            \RecursiveIteratorIterator::LEAVES_ONLY
+            $filter,
+            \RecursiveIteratorIterator::LEAVES_ONLY,
+            \RecursiveIteratorIterator::CATCH_GET_CHILD,
         );
 
         foreach ($iterator as $file) {
+            if ($shouldAbort !== null && $shouldAbort()) {
+                $aborted = true;
+                break;
+            }
+
             $pathname = $file->getPathname();
             $relativePath = $this->relativePath($pathname, $dir);
-            if ($this->isIgnoredPath($relativePath)) {
-                continue;
-            }
             if (! $file->isFile() || $file->isLink()) {
                 continue;
             }

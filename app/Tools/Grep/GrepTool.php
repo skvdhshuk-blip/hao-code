@@ -131,18 +131,23 @@ DESC;
         $headLimit = $input['head_limit'] ?? 250;
         $offset = $input['offset'] ?? 0;
 
+        if ($context->isAborted()) {
+            return ToolResult::aborted('Grep search aborted.');
+        }
+
         // Try ripgrep first, fallback to PHP implementation
         if ($this->hasRipgrep()) {
             return $this->grepWithRipgrep(
                 $pattern, $path, $outputMode, $glob, $type,
-                $caseInsensitive, $multiline, $afterLines, $beforeLines, $headLimit, $offset
+                $caseInsensitive, $multiline, $afterLines, $beforeLines, $headLimit, $offset,
+                $context->isAborted(...),
             );
         }
 
         return $this->grepWithPhp(
             $pattern, $path, $outputMode, $glob,
             $caseInsensitive, $afterLines, $beforeLines, $headLimit,
-            $offset, $type, $multiline,
+            $offset, $type, $multiline, $context->isAborted(...),
         );
     }
 
@@ -186,7 +191,8 @@ DESC;
 
     private function grepWithRipgrep(
         string $pattern, string $path, string $outputMode, ?string $glob, ?string $type,
-        bool $caseInsensitive, bool $multiline, int $afterLines, int $beforeLines, int $headLimit, int $offset = 0
+        bool $caseInsensitive, bool $multiline, int $afterLines, int $beforeLines, int $headLimit, int $offset = 0,
+        ?callable $shouldAbort = null,
     ): ToolResult {
         if ($headLimit === 0) {
             return ToolResult::success("No matches found for pattern: {$pattern}");
@@ -212,7 +218,11 @@ DESC;
 
         foreach (self::IGNORED_DIRECTORIES as $ignored) {
             $cmd[] = '--glob';
+            $cmd[] = '!'.$ignored;
+            $cmd[] = '--glob';
             $cmd[] = '!'.$ignored.'/**';
+            $cmd[] = '--glob';
+            $cmd[] = '!**/'.$ignored;
             $cmd[] = '--glob';
             $cmd[] = '!**/'.$ignored.'/**';
         }
@@ -253,11 +263,16 @@ DESC;
             $cmd,
             $path,
             $headLimit + $offset,
+            $shouldAbort,
         );
 
         // rg returns 1 when no matches found
         if ($exitCode === 1) {
             return ToolResult::success("No matches found for pattern: {$pattern}");
+        }
+
+        if ($exitCode === 130) {
+            return ToolResult::aborted('Grep search aborted.');
         }
 
         if ($exitCode > 1) {
@@ -285,7 +300,7 @@ DESC;
      * @param list<string> $argv
      * @return array{0: int, 1: list<string>, 2: string, 3: bool}
      */
-    private function runRipgrepStreaming(array $argv, string $path, int $lineLimit): array
+    private function runRipgrepStreaming(array $argv, string $path, int $lineLimit, ?callable $shouldAbort = null): array
     {
         $process = @proc_open($argv, [
             0 => ['file', PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null', 'r'],
@@ -311,6 +326,18 @@ DESC;
         $exitCode = -1;
 
         while (true) {
+            if ($shouldAbort !== null && $shouldAbort()) {
+                ProcessSupervisor::terminateTree($pid, false);
+                foreach ([1, 2] as $index) {
+                    if (is_resource($pipes[$index] ?? null)) {
+                        fclose($pipes[$index]);
+                    }
+                }
+                @proc_close($process);
+
+                return [130, $lines, 'ripgrep aborted.', true];
+            }
+
             $chunk = is_resource($pipes[1] ?? null) ? @fread($pipes[1], 65536) : false;
             if (is_string($chunk) && $chunk !== '') {
                 $stdoutBuffer .= $chunk;
@@ -375,8 +402,12 @@ DESC;
     private function grepWithPhp(
         string $pattern, string $path, string $outputMode, ?string $glob,
         bool $caseInsensitive, int $afterLines, int $beforeLines, int $headLimit,
-        int $offset = 0, ?string $type = null, bool $multiline = false,
+        int $offset = 0, ?string $type = null, bool $multiline = false, ?callable $shouldAbort = null,
     ): ToolResult {
+        if ($shouldAbort !== null && $shouldAbort()) {
+            return ToolResult::aborted('Grep search aborted.');
+        }
+
         if ($type !== null && $type !== '') {
             return ToolResult::error(
                 'The type filter requires ripgrep; install rg or use the glob parameter.',
@@ -410,19 +441,38 @@ DESC;
         } elseif (is_dir($path)) {
             $files = [];
             try {
+                $directory = new \RecursiveDirectoryIterator($path, \RecursiveDirectoryIterator::SKIP_DOTS);
+                $filter = new \RecursiveCallbackFilterIterator(
+                    $directory,
+                    function (\SplFileInfo $current) use ($path): bool {
+                        $relativePath = str_replace(
+                            '\\',
+                            '/',
+                            ltrim(str_replace($path, '', $current->getPathname()), '/\\'),
+                        );
+
+                        if ($this->isIgnoredPath($relativePath)) {
+                            return false;
+                        }
+
+                        return ! $current->isDir() || ! $current->isLink();
+                    },
+                );
                 $iterator = new \RecursiveIteratorIterator(
-                    new \RecursiveDirectoryIterator($path, \RecursiveDirectoryIterator::SKIP_DOTS),
-                    \RecursiveIteratorIterator::LEAVES_ONLY
+                    $filter,
+                    \RecursiveIteratorIterator::LEAVES_ONLY,
+                    \RecursiveIteratorIterator::CATCH_GET_CHILD,
                 );
                 foreach ($iterator as $file) {
+                    if ($shouldAbort !== null && $shouldAbort()) {
+                        return ToolResult::aborted('Grep search aborted.');
+                    }
+
                     $relPath = str_replace(
                         '\\',
                         '/',
                         ltrim(str_replace($path, '', $file->getPathname()), '/\\'),
                     );
-                    if ($this->isIgnoredPath($relPath)) {
-                        continue;
-                    }
                     // Match ripgrep's default and never dereference a symlink
                     // discovered underneath an otherwise permitted search
                     // root. Its target has not gone through the permission or
@@ -452,6 +502,10 @@ DESC;
         $seenEntries = 0;
 
         foreach ($files as $file) {
+            if ($shouldAbort !== null && $shouldAbort()) {
+                return ToolResult::aborted('Grep search aborted.');
+            }
+
             $handle = @fopen($file, 'rb');
             if (! is_resource($handle)) {
                 continue;
@@ -461,6 +515,12 @@ DESC;
             if ($outputMode === 'files_with_matches') {
                 $matched = false;
                 while (($line = fgets($handle)) !== false) {
+                    if ($shouldAbort !== null && $shouldAbort()) {
+                        fclose($handle);
+
+                        return ToolResult::aborted('Grep search aborted.');
+                    }
+
                     if (preg_match($regex, $line)) {
                         $matched = true;
                         break;
@@ -475,6 +535,12 @@ DESC;
             if ($outputMode === 'count') {
                 $count = 0;
                 while (($line = fgets($handle)) !== false) {
+                    if ($shouldAbort !== null && $shouldAbort()) {
+                        fclose($handle);
+
+                        return ToolResult::aborted('Grep search aborted.');
+                    }
+
                     if (preg_match($regex, $line)) {
                         $count++;
                     }
@@ -491,6 +557,12 @@ DESC;
             $afterRemaining = 0;
             $lineNumber = 0;
             while (($line = fgets($handle)) !== false) {
+                if ($shouldAbort !== null && $shouldAbort()) {
+                    fclose($handle);
+
+                    return ToolResult::aborted('Grep search aborted.');
+                }
+
                 $lineNumber++;
                 $matched = preg_match($regex, $line) === 1;
                 if ($matched) {

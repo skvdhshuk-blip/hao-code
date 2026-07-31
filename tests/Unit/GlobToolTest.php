@@ -4,6 +4,7 @@ namespace Tests\Unit;
 
 use HaoCode\Services\Permissions\SensitivePathGuard;
 use HaoCode\Tools\Glob\GlobTool;
+use HaoCode\Tools\ToolOutcome;
 use HaoCode\Tools\ToolUseContext;
 use PHPUnit\Framework\TestCase;
 
@@ -252,6 +253,47 @@ class GlobToolTest extends TestCase
         $this->assertStringNotContainsString('.git/ignored.php', $result->output);
         $this->assertStringNotContainsString('.claude/worktrees/demo/ignored.php', $result->output);
         $this->assertStringNotContainsString('vendor/package/ignored.php', $result->output);
+    }
+
+    public function test_it_prunes_default_ignored_directories_before_recursing(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('POSIX permission coverage.');
+        }
+
+        $this->touch('src/keep.php', '<?php');
+        mkdir($this->tmpDir.'/vendor', 0755, true);
+        $locked = $this->tmpDir.'/vendor/locked';
+        mkdir($locked, 0000);
+
+        try {
+            $result = $this->call(['pattern' => '**/*.php']);
+
+            $this->assertFalse($result->isError);
+            $this->assertStringContainsString('src/keep.php', $result->output);
+            $this->assertStringNotContainsString('vendor', $result->output);
+
+            $source = file_get_contents((new \ReflectionClass(GlobTool::class))->getFileName());
+            $this->assertIsString($source);
+            $this->assertStringContainsString('RecursiveCallbackFilterIterator', $source);
+            $this->assertStringContainsString('CATCH_GET_CHILD', $source);
+        } finally {
+            @chmod($locked, 0700);
+        }
+    }
+
+    public function test_it_returns_aborted_when_context_requests_cancel(): void
+    {
+        $this->touch('src/keep.php', '<?php');
+        $context = new ToolUseContext(
+            workingDirectory: $this->tmpDir,
+            sessionId: 'test',
+            shouldAbort: static fn (): bool => true,
+        );
+
+        $result = $this->tool->call(['pattern' => '**/*.php'], $context);
+
+        $this->assertSame(ToolOutcome::Aborted, $result->outcome());
     }
 
     public function test_it_rejects_excessive_brace_expansion(): void
