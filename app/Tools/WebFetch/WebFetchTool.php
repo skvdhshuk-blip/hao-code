@@ -157,6 +157,7 @@ DESC;
             }
 
             $mediaType = strtolower(trim(explode(';', $contentType, 2)[0]));
+            $content = $this->normalizeUtf8Text($content);
             if (in_array($mediaType, ['text/html', 'application/xhtml+xml'], true)) {
                 $content = $format === 'markdown'
                     ? $this->htmlToMarkdown($content)
@@ -330,6 +331,19 @@ DESC;
                     throw new \RuntimeException("HTTP {$statusCode} for URL: {$url}");
                 }
 
+                $contentType = $headers['content-type'][0] ?? '';
+                if (! $this->isAllowedTextContentType($contentType)) {
+                    $length = $headers['content-length'][0] ?? null;
+                    $size = is_string($length) && preg_match('/^\d+$/', $length) === 1
+                        ? " ({$length} bytes)"
+                        : '';
+                    $type = trim($contentType) !== '' ? $contentType : 'missing Content-Type';
+                    throw new \RuntimeException(
+                        "Unsupported response Content-Type for WebFetch: {$type}{$size}. "
+                        .'Only text, JSON, XML, and JavaScript responses are returned.',
+                    );
+                }
+
                 return [
                     'status' => $statusCode,
                     'location' => null,
@@ -338,7 +352,7 @@ DESC;
                         $this->maxBytes,
                         $shouldAbort,
                     ),
-                    'content_type' => $headers['content-type'][0] ?? '',
+                    'content_type' => $contentType,
                 ];
             } catch (TransportExceptionInterface $e) {
                 $lastTransportError = $e;
@@ -376,7 +390,7 @@ DESC;
         return [
             'headers' => [
                 'User-Agent' => 'HaoCode/1.0 (PHP SDK)',
-                'Accept' => 'text/html,text/plain,application/json,*/*',
+                'Accept' => 'text/html,text/plain,text/*,application/json,application/*+json,application/xml,application/*+xml,application/javascript',
             ],
             'max_redirects' => 0,
             // Symfony otherwise inherits HTTP(S)_PROXY from the environment.
@@ -589,6 +603,45 @@ DESC;
         }
 
         return implode('', $chunks);
+    }
+
+    private function isAllowedTextContentType(string $contentType): bool
+    {
+        $mediaType = strtolower(trim(explode(';', $contentType, 2)[0]));
+        if ($mediaType === '') {
+            return false;
+        }
+
+        return str_starts_with($mediaType, 'text/')
+            || in_array($mediaType, [
+                'application/json',
+                'application/xml',
+                'application/xhtml+xml',
+                'application/javascript',
+                'application/x-javascript',
+            ], true)
+            || str_ends_with($mediaType, '+json')
+            || str_ends_with($mediaType, '+xml');
+    }
+
+    private function normalizeUtf8Text(string $content): string
+    {
+        if (preg_match('//u', $content) === 1) {
+            return $content;
+        }
+
+        if (function_exists('iconv')) {
+            $converted = @iconv('UTF-8', 'UTF-8//IGNORE', $content);
+            if (is_string($converted)) {
+                return $converted;
+            }
+        }
+
+        if (function_exists('mb_convert_encoding')) {
+            return mb_convert_encoding($content, 'UTF-8', 'UTF-8');
+        }
+
+        return preg_replace('/[\x80-\xFF]/', '', $content) ?? '';
     }
 
     private function throwIfAborted(?callable $shouldAbort): void

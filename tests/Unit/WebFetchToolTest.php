@@ -255,6 +255,58 @@ class WebFetchToolTest extends TestCase
         ];
     }
 
+    public function test_binary_content_type_is_rejected_before_returning_body_bytes(): void
+    {
+        $tool = new WebFetchTool(ssrfAllowList: ['127.0.0.1/32']);
+        $tool->setClient(new MockHttpClient([
+            new MockResponse("\x89PNG\r\nbinary", [
+                'http_code' => 200,
+                'response_headers' => [
+                    'content-type' => 'image/png',
+                    'content-length' => '12',
+                ],
+            ]),
+        ]));
+
+        $result = $tool->call(['url' => 'http://127.0.0.1:9999/image'], $this->context);
+
+        $this->assertTrue($result->isError);
+        $this->assertStringContainsString('Unsupported response Content-Type', $result->output);
+        $this->assertStringContainsString('image/png', $result->output);
+        $this->assertStringNotContainsString("\x89PNG", $result->output);
+    }
+
+    public function test_missing_content_type_is_rejected(): void
+    {
+        $tool = new WebFetchTool(ssrfAllowList: ['127.0.0.1/32']);
+        $tool->setClient(new MockHttpClient([
+            new MockResponse('body', ['http_code' => 200]),
+        ]));
+
+        $result = $tool->call(['url' => 'http://127.0.0.1:9999/no-type'], $this->context);
+
+        $this->assertTrue($result->isError);
+        $this->assertStringContainsString('missing Content-Type', $result->output);
+    }
+
+    public function test_text_response_is_normalized_to_valid_utf8(): void
+    {
+        $tool = new WebFetchTool(ssrfAllowList: ['127.0.0.1/32']);
+        $tool->setClient(new MockHttpClient([
+            new MockResponse("valid\xFFtext", [
+                'http_code' => 200,
+                'response_headers' => ['content-type' => 'text/plain'],
+            ]),
+        ]));
+
+        $result = $tool->call(['url' => 'http://127.0.0.1:9999/invalid-utf8'], $this->context);
+
+        $this->assertFalse($result->isError, $result->output);
+        $this->assertTrue((bool) preg_match('//u', $result->output));
+        $this->assertStringContainsString('validtext', $result->output);
+        $this->assertStringNotContainsString("\xFF", $result->output);
+    }
+
     // ─── cache isolation across security policies ─────────────────────────
 
     public function test_cache_is_isolated_by_security_policy(): void
