@@ -2,6 +2,7 @@
 
 namespace HaoCode\Services\Agent;
 
+use HaoCode\Support\Runtime\ProcessSupervisor;
 use HaoCode\Tools\ToolRegistry;
 use HaoCode\Tools\ToolUseContext;
 use HaoCode\Tools\ToolResult;
@@ -22,6 +23,8 @@ use HaoCode\Tools\ToolResult;
  */
 class StreamingToolExecutor
 {
+    private const MAX_EARLY_EXECUTIONS = 8;
+
     /** @var array<int, array{pid: int, temp_file: string, block: array}> */
     private array $earlyPids = [];
 
@@ -78,9 +81,13 @@ class StreamingToolExecutor
         }
         $isSafe = $tool
             && $tool->isConcurrencySafe($input)
-            && $tool->isReadOnly($input);
+            && $tool->isReadOnly($input)
+            && ! $this->toolOrchestrator->mayRunPreToolUseHook($tool->name());
 
-        if ($isSafe && function_exists('pcntl_fork') && function_exists('posix_kill')) {
+        if ($isSafe
+            && count($this->earlyPids) < self::MAX_EARLY_EXECUTIONS
+            && function_exists('pcntl_fork')
+            && function_exists('posix_kill')) {
             $this->forkTool($block, $index);
         } else {
             $this->queuedBlocks[$index] = $block;
@@ -115,6 +122,9 @@ class StreamingToolExecutor
         }
 
         if ($pid === 0) {
+            if (function_exists('posix_setsid')) {
+                @posix_setsid();
+            }
             // Child process: execute tool and serialize result + readFileState changes
             $completedResult = null;
             $result = $this->toolOrchestrator->executeToolBlock(
@@ -340,9 +350,7 @@ class StreamingToolExecutor
 
     private function killPid(int $pid): void
     {
-        if (function_exists('posix_kill')) {
-            posix_kill($pid, SIGKILL);
-        }
+        ProcessSupervisor::terminateTree($pid, false);
     }
 
     private function abortedResult(array $block): array

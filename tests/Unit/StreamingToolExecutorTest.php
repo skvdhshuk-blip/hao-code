@@ -344,6 +344,52 @@ class StreamingToolExecutorTest extends TestCase
         $this->assertSame(2, $executor->earlyExecutionCount());
     }
 
+    public function test_pre_tool_use_hook_disables_early_execution(): void
+    {
+        $expectedResult = ['tool_use_id' => 'toolu_1', 'content' => 'done', 'is_error' => false];
+        $orchestrator = $this->createMock(ToolOrchestrator::class);
+        $orchestrator->method('mayRunPreToolUseHook')->with('MockTool')->willReturn(true);
+        $orchestrator->expects($this->once())->method('executeToolBlock')->willReturn($expectedResult);
+
+        $executor = new StreamingToolExecutor(
+            $orchestrator,
+            $this->makeRegistry(readOnly: true, concurrencySafe: true),
+        );
+        $executor->setContext(new ToolUseContext('/tmp', 'test'), null, null);
+        $executor->onToolBlockReady($this->makeBlock(), 0);
+
+        $this->assertSame(0, $executor->earlyExecutionCount());
+        $this->assertSame([$expectedResult], $executor->collectResults());
+    }
+
+    public function test_early_execution_has_worker_limit(): void
+    {
+        if (! function_exists('pcntl_fork') || ! function_exists('posix_kill')) {
+            $this->markTestSkipped('pcntl and posix are required for early tool execution.');
+        }
+
+        $orchestrator = $this->createMock(ToolOrchestrator::class);
+        $orchestrator->method('mayRunPreToolUseHook')->willReturn(false);
+        $orchestrator->method('executeToolBlock')->willReturnCallback(static function (array $block): array {
+            sleep(2);
+
+            return ['tool_use_id' => $block['id'], 'content' => 'ok', 'is_error' => false];
+        });
+
+        $executor = new StreamingToolExecutor(
+            $orchestrator,
+            $this->makeRegistry(readOnly: true, concurrencySafe: true),
+        );
+        $executor->setContext(new ToolUseContext('/tmp', 'test'), null, null);
+
+        for ($i = 0; $i < 12; $i++) {
+            $executor->onToolBlockReady($this->makeBlock('toolu_'.$i), $i);
+        }
+
+        $this->assertSame(8, $executor->earlyExecutionCount());
+        $executor->cleanup(notifyCompletion: false);
+    }
+
     public function test_early_execution_count_zero_when_no_forks(): void
     {
         $executor = new StreamingToolExecutor(
@@ -431,6 +477,52 @@ class StreamingToolExecutorTest extends TestCase
 
         $this->assertSame([], $completed);
         $this->assertSame(0, $executor->earlyExecutionCount());
+    }
+
+    public function test_cleanup_terminates_early_child_process_tree(): void
+    {
+        if (! function_exists('pcntl_fork') || ! function_exists('posix_kill') || PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('pcntl and POSIX process probing are required for process-tree cleanup.');
+        }
+
+        $marker = tempnam(sys_get_temp_dir(), 'haocode_stream_tree_');
+        $this->assertNotFalse($marker);
+        @unlink($marker);
+
+        $orchestrator = $this->createMock(ToolOrchestrator::class);
+        $orchestrator->method('mayRunPreToolUseHook')->willReturn(false);
+        $orchestrator->method('executeToolBlock')->willReturnCallback(static function (array $block) use ($marker): array {
+            $command = 'sleep 1; printf leaked > '.escapeshellarg($marker);
+            $process = proc_open(['sh', '-c', $command], [
+                0 => ['file', PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null', 'r'],
+                1 => ['file', PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null', 'w'],
+                2 => ['file', PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null', 'w'],
+            ], $pipes, sys_get_temp_dir());
+            foreach ($pipes ?? [] as $pipe) {
+                if (is_resource($pipe)) {
+                    fclose($pipe);
+                }
+            }
+            sleep(5);
+            if (is_resource($process)) {
+                @proc_close($process);
+            }
+
+            return ['tool_use_id' => $block['id'], 'content' => 'late', 'is_error' => false];
+        });
+
+        $executor = new StreamingToolExecutor(
+            $orchestrator,
+            $this->makeRegistry(readOnly: true, concurrencySafe: true),
+        );
+        $executor->setContext(new ToolUseContext('/tmp', 'test'), null, null);
+        $executor->onToolBlockReady($this->makeBlock(), 0);
+
+        usleep(200_000);
+        $executor->cleanup(notifyCompletion: false);
+        usleep(1_200_000);
+
+        $this->assertFileDoesNotExist($marker, 'Cleanup must terminate external descendants of the forked tool process');
     }
 
     public function test_cancellation_interrupts_wait_for_forked_tool_and_returns_aborted_result(): void

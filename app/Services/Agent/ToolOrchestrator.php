@@ -21,6 +21,8 @@ class ToolOrchestrator
      *  this many times without an intervening Write/Edit on the same path. */
     private const REPEATED_READ_HINT_THRESHOLD = 4;
 
+    private const MAX_PARALLEL_TOOLS = 8;
+
     private $permissionPromptHandler = null;
     private ?ToolResultStorage $toolResultStorage = null;
     /** @var array<string, int> raw file_path → successful Read count (this session) */
@@ -244,6 +246,12 @@ class ToolOrchestrator
         return $this->activeSkillContext;
     }
 
+    /** @internal */
+    public function mayRunPreToolUseHook(string $toolName): bool
+    {
+        return $this->hookExecutor->hasHooksFor('PreToolUse', $toolName);
+    }
+
     /**
      * Execute a single tool block (public entry point for streaming executor).
      */
@@ -338,7 +346,8 @@ class ToolOrchestrator
             }
             if ($tool
                 && $tool->isConcurrencySafe($classificationInput)
-                && $tool->isReadOnly($classificationInput)) {
+                && $tool->isReadOnly($classificationInput)
+                && ! $this->mayRunPreToolUseHook($tool->name())) {
                 $safeBlocks[$origIdx] = $block;
             } else {
                 $unsafeBlocks[$origIdx] = $block;
@@ -387,6 +396,17 @@ class ToolOrchestrator
             return $results;
         }
 
+        if (count($blocks) > self::MAX_PARALLEL_TOOLS) {
+            $results = [];
+            foreach (array_chunk($blocks, self::MAX_PARALLEL_TOOLS, true) as $chunk) {
+                foreach ($this->executeInParallel($chunk, $context, $onStart, $onComplete) as $idx => $result) {
+                    $results[$idx] = $result;
+                }
+            }
+
+            return $results;
+        }
+
         // Use temp files for IPC
         $tempFiles = [];
         $pids = [];
@@ -414,6 +434,9 @@ class ToolOrchestrator
             }
 
             if ($pid === 0) {
+                if (function_exists('posix_setsid')) {
+                    @posix_setsid();
+                }
                 // Child process
                 $completedResult = null;
                 $result = $this->executeSingleTool(

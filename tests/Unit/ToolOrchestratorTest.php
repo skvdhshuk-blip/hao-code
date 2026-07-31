@@ -43,6 +43,7 @@ class ToolOrchestratorTest extends TestCase
     {
         $h = $this->createMock(HookExecutor::class);
         $h->method('execute')->willReturn(new HookResult(true));
+        $h->method('hasHooksFor')->willReturn(false);
         return $h;
     }
 
@@ -748,6 +749,35 @@ class ToolOrchestratorTest extends TestCase
         $this->assertContains('safe:A', $contents);
         $this->assertContains('safe:B', $contents);
         $this->assertContains('unsafe:C', $contents);
+    }
+
+    public function test_execute_tools_does_not_parallelize_tools_with_pre_tool_use_hooks(): void
+    {
+        $parentPid = getmypid();
+        $registry = new ToolRegistry;
+        $registry->register(new class extends BaseTool {
+            public function name(): string { return 'SafeTool'; }
+            public function description(): string { return ''; }
+            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object'], []); }
+            public function isReadOnly(array $input): bool { return true; }
+            public function isConcurrencySafe(array $input): bool { return true; }
+            public function call(array $input, ToolUseContext $ctx): ToolResult {
+                return ToolResult::success((string) getmypid());
+            }
+        });
+        $checker = $this->allowAllChecker();
+        $hooks = $this->createMock(HookExecutor::class);
+        $hooks->method('execute')->willReturn(new HookResult(true));
+        $hooks->method('hasHooksFor')->with('PreToolUse', 'SafeTool')->willReturn(true);
+
+        $orchestrator = new ToolOrchestrator($registry, $checker, $hooks);
+        $results = $orchestrator->executeTools([
+            ['id' => 'id_s1', 'name' => 'SafeTool', 'input' => []],
+            ['id' => 'id_s2', 'name' => 'SafeTool', 'input' => []],
+        ], new ToolUseContext('/tmp', 'test'));
+
+        $this->assertSame((string) $parentPid, $results[0]['content']);
+        $this->assertSame((string) $parentPid, $results[1]['content']);
     }
 
     public function test_execute_tools_preserves_original_call_order_for_interleaved_blocks(): void

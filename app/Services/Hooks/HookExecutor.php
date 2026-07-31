@@ -77,6 +77,17 @@ class HookExecutor
         );
     }
 
+    public function hasHooksFor(string $event, ?string $toolName = null): bool
+    {
+        foreach ($this->hooks[$event] ?? [] as $hook) {
+            if ($toolName === null || $hook->matcher === null || fnmatch($hook->matcher, $toolName)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
     private function runHook(
         string $event,
         HookDefinition $hook,

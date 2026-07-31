@@ -775,7 +775,7 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.18.21`. Notable changes since `v1.10.0`:
+is based on `v1.18.22`. Notable changes since `v1.10.0`:
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/
@@ -860,6 +860,9 @@ is based on `v1.18.21`. Notable changes since `v1.10.0`:
 - `v1.18.21` — MCP stdio requests now write stdin, read stdout, and drain stderr
   under one deadline, preventing stderr pipe pressure from deadlocking normal
   JSON-RPC responses and closing stdio process trees on shutdown.
+- `v1.18.22` — Parallel tool execution avoids early/parallel forks when
+  `PreToolUse` hooks may rewrite input, caps forked workers, and makes forked
+  tool children process-group leaders so cleanup cancels descendant processes.
 
 ## License
 
