@@ -184,10 +184,10 @@ DESC;
         $wrappedCommand = $this->wrapCommandWithWorkingDirectoryCapture($command, $cwdMarker);
         try {
             $opened = ProcessSupervisor::open($wrappedCommand, $cwd, $env, $descriptors);
-        } catch (\Throwable) {
+        } catch (\Throwable $e) {
             $this->closeForegroundCaptureFiles($capture);
 
-            return ToolResult::error("Failed to execute command: {$command}");
+            return ToolResult::error("Failed to execute command: {$command}\n".$e->getMessage());
         }
 
         $process = $opened['process'];

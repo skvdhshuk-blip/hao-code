@@ -24,6 +24,25 @@ class DiffGeneratorTest extends TestCase
         $this->assertSame('', $diff);
     }
 
+    public function test_unified_diff_uses_php_fallback_without_shell_exec(): void
+    {
+        $source = file_get_contents((new \ReflectionClass(DiffGenerator::class))->getFileName());
+
+        $this->assertIsString($source);
+        $this->assertStringNotContainsString('shell_exec', $source);
+        $this->assertStringNotContainsString('diff -u', $source);
+    }
+
+    public function test_unified_diff_handles_insertions_and_deletions(): void
+    {
+        $diff = DiffGenerator::unifiedDiff("alpha\nbeta\ngamma\n", "alpha\ngamma\ndelta\n", 'demo.txt');
+
+        $this->assertStringContainsString("--- demo.txt\n", $diff);
+        $this->assertStringContainsString("+++ demo.txt\n", $diff);
+        $this->assertStringContainsString('-beta', $diff);
+        $this->assertStringContainsString('+delta', $diff);
+    }
+
     public function test_structured_patch_returns_hunks(): void
     {
         $old = "a\nb\nc\n";

@@ -252,7 +252,7 @@ final class LocalSandboxBackend implements SandboxBackendInterface, RevisionAwar
         } catch (\Throwable $e) {
             @unlink($stdoutFile);
             @unlink($stderrFile);
-            throw new \RuntimeException("Failed to execute sandbox command: {$command}", 0, $e);
+            throw new \RuntimeException("Failed to execute sandbox command: {$command}\n".$e->getMessage(), 0, $e);
         }
 
         $wait = \HaoCode\Support\Runtime\ProcessSupervisor::wait(

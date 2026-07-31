@@ -12,28 +12,68 @@ class DiffGenerator
 {
     /**
      * Generate a unified diff between old and new content.
-     * Uses the system `diff` command for accuracy, falls back to PHP.
      */
     public static function unifiedDiff(string $oldContent, string $newContent, string $filePath = 'file'): string
     {
-        $oldFile = tempnam(sys_get_temp_dir(), 'haocode_diff_old_');
-        $newFile = tempnam(sys_get_temp_dir(), 'haocode_diff_new_');
-
-        try {
-            file_put_contents($oldFile, $oldContent);
-            file_put_contents($newFile, $newContent);
-
-            $escapedOld = escapeshellarg($oldFile);
-            $escapedNew = escapeshellarg($newFile);
-            $label = escapeshellarg($filePath);
-
-            $output = shell_exec("diff -u --label {$label} --label {$label} {$escapedOld} {$escapedNew} 2>/dev/null");
-
-            return $output ?? '';
-        } finally {
-            @unlink($oldFile);
-            @unlink($newFile);
+        if ($oldContent === $newContent) {
+            return '';
         }
+
+        $oldLines = self::splitContentLines($oldContent);
+        $newLines = self::splitContentLines($newContent);
+
+        $oldCount = count($oldLines);
+        $newCount = count($newLines);
+
+        $prefix = 0;
+        while ($prefix < $oldCount && $prefix < $newCount && $oldLines[$prefix] === $newLines[$prefix]) {
+            $prefix++;
+        }
+
+        $suffix = 0;
+        while ($suffix < ($oldCount - $prefix)
+            && $suffix < ($newCount - $prefix)
+            && $oldLines[$oldCount - $suffix - 1] === $newLines[$newCount - $suffix - 1]) {
+            $suffix++;
+        }
+
+        $context = 3;
+        $oldChangeEnd = $oldCount - $suffix;
+        $newChangeEnd = $newCount - $suffix;
+        $hunkOldStart = max(0, $prefix - $context);
+        $hunkNewStart = max(0, $prefix - $context);
+        $hunkOldEnd = min($oldCount, $oldChangeEnd + $context);
+        $hunkNewEnd = min($newCount, $newChangeEnd + $context);
+
+        $oldLength = $hunkOldEnd - $hunkOldStart;
+        $newLength = $hunkNewEnd - $hunkNewStart;
+        $oldStartLine = $oldLength === 0 ? $hunkOldStart : $hunkOldStart + 1;
+        $newStartLine = $newLength === 0 ? $hunkNewStart : $hunkNewStart + 1;
+
+        $diff = "--- {$filePath}\n";
+        $diff .= "+++ {$filePath}\n";
+        $diff .= sprintf(
+            "@@ -%d,%d +%d,%d @@\n",
+            $oldStartLine,
+            $oldLength,
+            $newStartLine,
+            $newLength,
+        );
+
+        for ($i = $hunkOldStart; $i < $prefix; $i++) {
+            $diff .= ' '.$oldLines[$i]."\n";
+        }
+        for ($i = $prefix; $i < $oldChangeEnd; $i++) {
+            $diff .= '-'.$oldLines[$i]."\n";
+        }
+        for ($i = $prefix; $i < $newChangeEnd; $i++) {
+            $diff .= '+'.$newLines[$i]."\n";
+        }
+        for ($i = $oldChangeEnd; $i < $hunkOldEnd; $i++) {
+            $diff .= ' '.$oldLines[$i]."\n";
+        }
+
+        return $diff;
     }
 
     /**
@@ -112,5 +152,20 @@ class DiffGenerator
         }
 
         return implode(' ', $parts) . ' lines';
+    }
+
+    /** @return list<string> */
+    private static function splitContentLines(string $content): array
+    {
+        if ($content === '') {
+            return [];
+        }
+
+        $lines = explode("\n", str_replace("\r\n", "\n", $content));
+        if (end($lines) === '') {
+            array_pop($lines);
+        }
+
+        return array_values($lines);
     }
 }

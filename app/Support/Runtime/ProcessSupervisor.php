@@ -21,16 +21,23 @@ final class ProcessSupervisor
         array $env,
         array $descriptors,
     ): array {
+        $path = $env['PATH'] ?? (getenv('PATH') ?: '');
+        $bash = self::findExecutable('bash', $path);
+        if ($bash === null) {
+            throw new \RuntimeException('Bash executable was not found on PATH; Bash-based tools require bash to run commands.');
+        }
+
         // Prefer setsid so the child is a session/group leader and can be
         // signalled as a whole tree via kill(-pid, sig). Without setsid,
         // enable job control and an EXIT trap that kills the shell's group.
-        if (self::hasSetsid()) {
-            $cmd = ['setsid', 'bash', '-lc', $commandScript];
+        $setsid = self::findExecutable('setsid', $path);
+        if ($setsid !== null) {
+            $cmd = [$setsid, $bash, '-lc', $commandScript];
         } else {
             $guarded = 'set -m; '
                 .'trap \'status=$?; kill -TERM -$$ 2>/dev/null; kill -KILL -$$ 2>/dev/null; exit $status\' EXIT INT TERM HUP; '
                 .$commandScript;
-            $cmd = ['bash', '-lc', $guarded];
+            $cmd = [$bash, '-lc', $guarded];
         }
 
         $process = @proc_open($cmd, $descriptors, $pipes, $cwd, $env);
@@ -175,16 +182,31 @@ final class ProcessSupervisor
 
     public static function hasSetsid(): bool
     {
-        static $cached = null;
-        if ($cached !== null) {
-            return $cached;
-        }
         if (PHP_OS_FAMILY === 'Windows') {
-            return $cached = false;
+            return false;
         }
-        $path = @shell_exec('command -v setsid 2>/dev/null');
-        $cached = is_string($path) && trim($path) !== '';
 
-        return $cached;
+        return self::findExecutable('setsid', getenv('PATH') ?: '') !== null;
+    }
+
+    private static function findExecutable(string $name, string $path): ?string
+    {
+        $extensions = PHP_OS_FAMILY === 'Windows'
+            ? array_values(array_unique(array_filter(array_merge([''], explode(';', getenv('PATHEXT') ?: '.EXE;.BAT;.CMD')))))
+            : [''];
+
+        foreach (explode(PATH_SEPARATOR, $path) as $directory) {
+            if ($directory === '') {
+                continue;
+            }
+            foreach ($extensions as $extension) {
+                $candidate = rtrim($directory, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR.$name.$extension;
+                if (is_file($candidate) && is_executable($candidate)) {
+                    return $candidate;
+                }
+            }
+        }
+
+        return null;
     }
 }
