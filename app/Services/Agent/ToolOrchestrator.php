@@ -22,6 +22,7 @@ class ToolOrchestrator
     private const REPEATED_READ_HINT_THRESHOLD = 4;
 
     private const MAX_PARALLEL_TOOLS = 8;
+    private const MAX_IPC_PAYLOAD_BYTES = 1_000_000;
 
     private $permissionPromptHandler = null;
     private ?ToolResultStorage $toolResultStorage = null;
@@ -461,7 +462,7 @@ class ToolOrchestrator
                     'toolResult' => $completedResult?->toArray(),
                     'readState' => $newEntries,
                 ];
-                file_put_contents($tempFile, serialize($payload));
+                $this->writeIpcPayload($tempFile, $payload, $block);
                 exit(0);
             }
 
@@ -479,10 +480,10 @@ class ToolOrchestrator
                 // allowed_classes => false blocks PHP object injection even if a
                 // gadget chain is present in dependencies and an attacker can
                 // influence the file contents.
-                $data = @unserialize(
-                    (string) file_get_contents($tempFiles[$idx]),
-                    ['allowed_classes' => false],
-                );
+                $rawPayload = $this->readIpcPayload($tempFiles[$idx]);
+                $data = $rawPayload === false
+                    ? false
+                    : @unserialize($rawPayload, ['allowed_classes' => false]);
                 if (is_array($data) && isset($data['result'])) {
                     // New format: result + readState
                     $results[$idx] = $data['result'];
@@ -543,6 +544,32 @@ class ToolOrchestrator
         @chmod($path, 0600);
 
         return $path;
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function writeIpcPayload(string $tempFile, array $payload, array $block): void
+    {
+        $serialized = serialize($payload);
+        if (strlen($serialized) > self::MAX_IPC_PAYLOAD_BYTES) {
+            $fallback = ToolResult::error('Tool result exceeded IPC size limit.');
+            $serialized = serialize([
+                'result' => $fallback->toApiFormat((string) ($block['id'] ?? '')),
+                'toolResult' => $fallback->toArray(),
+                'readState' => [],
+            ]);
+        }
+
+        file_put_contents($tempFile, $serialized);
+    }
+
+    private function readIpcPayload(string $tempFile): string|false
+    {
+        $size = @filesize($tempFile);
+        if ($size === false || $size > self::MAX_IPC_PAYLOAD_BYTES) {
+            return false;
+        }
+
+        return @file_get_contents($tempFile);
     }
 
     private function executeSingleTool(

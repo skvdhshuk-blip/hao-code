@@ -24,6 +24,7 @@ use HaoCode\Tools\ToolResult;
 class StreamingToolExecutor
 {
     private const MAX_EARLY_EXECUTIONS = 8;
+    private const MAX_IPC_PAYLOAD_BYTES = 1_000_000;
 
     /** @var array<int, array{pid: int, temp_file: string, block: array}> */
     private array $earlyPids = [];
@@ -147,7 +148,7 @@ class StreamingToolExecutor
                 'toolResult' => $completedResult?->toArray(),
                 'readState' => $newEntries,
             ];
-            file_put_contents($tempFile, serialize($payload));
+            $this->writeIpcPayload($tempFile, $payload, $block);
             exit(0);
         }
 
@@ -190,7 +191,7 @@ class StreamingToolExecutor
                 }
             } while ($waitResult === 0);
 
-            $data = $aborted ? false : @file_get_contents($info['temp_file']);
+            $data = $aborted ? false : $this->readIpcPayload($info['temp_file']);
             // allowed_classes => false blocks PHP object injection — the temp
             // file is owned by us but written by the child fork, and a
             // compromised dependency could otherwise trigger a gadget chain.
@@ -351,6 +352,32 @@ class StreamingToolExecutor
     private function killPid(int $pid): void
     {
         ProcessSupervisor::terminateTree($pid, false);
+    }
+
+    /** @param array<string, mixed> $payload */
+    private function writeIpcPayload(string $tempFile, array $payload, array $block): void
+    {
+        $serialized = serialize($payload);
+        if (strlen($serialized) > self::MAX_IPC_PAYLOAD_BYTES) {
+            $fallback = ToolResult::error('Tool result exceeded IPC size limit.');
+            $serialized = serialize([
+                'result' => $fallback->toApiFormat((string) ($block['id'] ?? '')),
+                'toolResult' => $fallback->toArray(),
+                'readState' => [],
+            ]);
+        }
+
+        file_put_contents($tempFile, $serialized);
+    }
+
+    private function readIpcPayload(string $tempFile): string|false
+    {
+        $size = @filesize($tempFile);
+        if ($size === false || $size > self::MAX_IPC_PAYLOAD_BYTES) {
+            return false;
+        }
+
+        return @file_get_contents($tempFile);
     }
 
     private function abortedResult(array $block): array
