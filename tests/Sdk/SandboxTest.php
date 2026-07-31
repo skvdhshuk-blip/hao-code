@@ -171,6 +171,80 @@ class SandboxTest extends TestCase
         }
     }
 
+    public function test_local_sandbox_read_streams_line_windows_without_caching_full_content(): void
+    {
+        $runtime = SandboxManager::create(SandboxConfig::local());
+        $context = new ToolUseContext('/workspace', 'sandbox-large-read');
+        $read = new SandboxReadTool($runtime);
+        $path = '/workspace/large.txt';
+
+        try {
+            $runtime->backend->writeFile($path, implode("\n", array_map(
+                static fn (int $i): string => 'line-'.$i,
+                range(1, 3000),
+            )));
+
+            $result = $read->call(['file_path' => $path, 'offset' => 100, 'limit' => 2], $context);
+
+            $this->assertFalse($result->isError, $result->output);
+            $this->assertStringContainsString('File: /workspace/large.txt (3000 lines total, sandbox)', $result->output);
+            $this->assertStringContainsString("   100\tline-100", $result->output);
+            $this->assertStringContainsString("   101\tline-101", $result->output);
+            $this->assertFalse($context->getFileRevision($path)?->complete ?? true);
+            $this->assertNull($context->getFileState($path));
+        } finally {
+            $runtime->close();
+        }
+    }
+
+    public function test_local_sandbox_complete_streamed_read_still_authorizes_write(): void
+    {
+        $runtime = SandboxManager::create(SandboxConfig::local());
+        $context = new ToolUseContext('/workspace', 'sandbox-complete-streamed-read');
+        $read = new SandboxReadTool($runtime);
+        $write = new SandboxWriteTool($runtime);
+        $path = '/workspace/full.txt';
+
+        try {
+            $runtime->backend->writeFile($path, "one\ntwo\nthree");
+            $readResult = $read->call(['file_path' => $path, 'limit' => 10], $context);
+            $this->assertFalse($readResult->isError, $readResult->output);
+            $this->assertTrue($context->getFileRevision($path)?->complete ?? false);
+            $this->assertNull($context->getFileState($path));
+
+            $writeResult = $write->call(['file_path' => $path, 'content' => "updated\ncontent"], $context);
+            $this->assertFalse($writeResult->isError, $writeResult->output);
+            $this->assertSame("updated\ncontent", $runtime->backend->readFile($path));
+        } finally {
+            $runtime->close();
+        }
+    }
+
+    public function test_local_sandbox_read_rejects_extreme_lines_and_reports_abort(): void
+    {
+        $runtime = SandboxManager::create(SandboxConfig::local());
+        $context = new ToolUseContext('/workspace', 'sandbox-long-line-read');
+        $aborted = new ToolUseContext(
+            '/workspace',
+            'sandbox-read-aborted',
+            shouldAbort: static fn (): bool => true,
+        );
+        $read = new SandboxReadTool($runtime);
+
+        try {
+            $runtime->backend->writeFile('/workspace/long.txt', str_repeat('x', 1_000_001));
+            $tooLong = $read->call(['file_path' => '/workspace/long.txt'], $context);
+            $this->assertTrue($tooLong->isError);
+            $this->assertStringContainsString('Line exceeds', $tooLong->output);
+            $this->assertNull($context->getFileRevision('/workspace/long.txt'));
+
+            $runtime->backend->writeFile('/workspace/a.txt', "hello\n");
+            $this->assertSame(ToolOutcome::Aborted, $read->call(['file_path' => '/workspace/a.txt'], $aborted)->outcome());
+        } finally {
+            $runtime->close();
+        }
+    }
+
     public function test_local_sandbox_glob_grep_and_exec(): void
     {
         $runtime = SandboxManager::create(SandboxConfig::local(mode: 'full'));

@@ -128,6 +128,41 @@ class ToolUseContext
     }
 
     /**
+     * Record a virtual/remote filesystem revision when the caller streamed the
+     * bytes and intentionally did not retain the full content in memory.
+     *
+     * @internal
+     */
+    public function recordObservedVirtualFileRevision(
+        string $filePath,
+        int $size,
+        string $sha256,
+        ?int $offset = null,
+        ?int $limit = null,
+        bool $isPartialView = false,
+        ?int $totalLines = null,
+    ): void {
+        $key = $this->virtualRevisionKey($filePath);
+        $revision = new FileRevision(
+            canonicalPath: $key,
+            device: null,
+            inode: null,
+            size: $size,
+            mtime: null,
+            sha256: $sha256,
+            complete: ! $isPartialView,
+            observedAtMicros: (int) round(microtime(true) * 1_000_000),
+            local: false,
+        );
+        $receipt = $revision->toArray();
+        if ($isPartialView) {
+            $receipt['complete'] = false;
+            $receipt = $this->withLineCoverage($receipt, $offset, $limit, $totalLines);
+        }
+        $this->storeReadRevision($key, $receipt);
+    }
+
+    /**
      * Record an already-captured local file revision.
      *
      * @internal

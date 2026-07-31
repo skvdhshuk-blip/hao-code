@@ -775,7 +775,7 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.18.37`. Notable changes since `v1.10.0`:
+is based on `v1.18.38`. Notable changes since `v1.10.0`:
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/
@@ -909,6 +909,9 @@ is based on `v1.18.37`. Notable changes since `v1.10.0`:
 - `v1.18.37` — Local sandbox Glob and Grep now prune default ignored
   directories before descending, cap retained glob results, stream grep line
   reads, and preserve sandbox search abort and zero-limit semantics.
+- `v1.18.38` — Local sandbox Read now streams text line windows while hashing
+  the full file revision, avoids caching full file contents for partial reads,
+  rejects extreme single-line buffers, and honors abort signals.
 
 ## License
 
