@@ -2,6 +2,8 @@
 
 namespace HaoCode\Tools\Worktree;
 
+use HaoCode\Services\FileEdit\AtomicFileWriter;
+use HaoCode\Services\FileEdit\FileRevision;
 use HaoCode\Services\Git\HardenedGitRunner;
 use HaoCode\Tools\Bash\BashTool;
 use HaoCode\Tools\BaseTool;
@@ -79,10 +81,25 @@ class EnterWorktreeTool extends BaseTool
             return ToolResult::error('Refusing to create worktree: .claude is a symlink.');
         }
         $worktreeBase = $claudeDir . '/worktrees';
+        if (is_link($worktreeBase)) {
+            return ToolResult::error('Refusing to create worktree: .claude/worktrees is a symlink.');
+        }
         if (!is_dir($worktreeBase)) {
             if (! mkdir($worktreeBase, 0755, true)) {
                 return ToolResult::error("Failed to create worktree directory: {$worktreeBase}");
             }
+        }
+        $resolvedClaudeDir = realpath($claudeDir);
+        $resolvedWorktreeBase = realpath($worktreeBase);
+        if (
+            $resolvedClaudeDir === false
+            || $resolvedWorktreeBase === false
+            || ! str_starts_with(
+                rtrim($resolvedWorktreeBase, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR,
+                rtrim($resolvedClaudeDir, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR
+            )
+        ) {
+            return ToolResult::error('Refusing to create worktree outside the repository .claude directory.');
         }
 
         $worktreePath = $worktreeBase . '/' . $name;
@@ -103,10 +120,27 @@ class EnterWorktreeTool extends BaseTool
             return ToolResult::error("Failed to create worktree: {$created['stderr']}{$created['stdout']}");
         }
 
+        $gitignoreWarning = null;
+
         // Add .claude/worktrees to .gitignore if not already
         $gitignoreContent = file_exists($gitignore) ? file_get_contents($gitignore) : '';
-        if (!str_contains($gitignoreContent, '.claude/worktrees')) {
-            file_put_contents($gitignore, "\n.claude/worktrees\n", FILE_APPEND);
+        if ($gitignoreContent === false) {
+            $gitignoreWarning = 'Warning: failed to read .gitignore; .claude/worktrees was not added.';
+        } elseif (!str_contains($gitignoreContent, '.claude/worktrees')) {
+            $expectedRevision = file_exists($gitignore) ? FileRevision::capture($gitignore) : null;
+            if (file_exists($gitignore) && $expectedRevision === null) {
+                $gitignoreWarning = 'Warning: failed to capture .gitignore revision; .claude/worktrees was not added.';
+            } else {
+                try {
+                    (new AtomicFileWriter())->write(
+                        $gitignore,
+                        rtrim($gitignoreContent, "\r\n")."\n.claude/worktrees\n",
+                        $expectedRevision,
+                    );
+                } catch (\Throwable $e) {
+                    $gitignoreWarning = "Warning: failed to update .gitignore: {$e->getMessage()}";
+                }
+            }
         }
         $resolvedWorktree = realpath($worktreePath) ?: $worktreePath;
         $context->setWorkingDirectory($resolvedWorktree);
@@ -117,7 +151,8 @@ class EnterWorktreeTool extends BaseTool
             "Path: {$resolvedWorktree}\n" .
             "Branch: {$branchName}\n" .
             "The session's working directory has been switched to the worktree.\n" .
-            "Use ExitWorktree to leave the worktree when done."
+            "Use ExitWorktree to leave the worktree when done." .
+            ($gitignoreWarning !== null ? "\n{$gitignoreWarning}" : '')
         );
     }
 

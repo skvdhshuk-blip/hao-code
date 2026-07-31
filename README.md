@@ -775,7 +775,7 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.18.43`. Notable changes since `v1.10.0`:
+is based on `v1.18.44`. Notable changes since `v1.10.0`:
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/
@@ -928,6 +928,9 @@ is based on `v1.18.43`. Notable changes since `v1.10.0`:
 - `v1.18.43` — Cron daemon jobs now keep that supervised execution path without
   starting a login shell, so per-user shell profiles cannot bypass the cron
   environment allowlist or add hidden startup side effects.
+- `v1.18.44` — Worktree creation now rejects `.claude/worktrees` symlinks,
+  verifies the worktree base remains inside `.claude`, and updates `.gitignore`
+  through the atomic writer instead of a direct append.
 
 ## License
 

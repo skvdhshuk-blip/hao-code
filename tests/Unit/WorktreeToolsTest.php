@@ -152,6 +152,7 @@ class WorktreeToolsTest extends TestCase
             $worktree = $context->workingDirectory;
             $this->assertNotSame($repo, $worktree);
             $this->assertDirectoryExists($worktree);
+            $this->assertStringContainsString('.claude/worktrees', file_get_contents($repo.'/.gitignore'));
 
             $exit = (new ExitWorktreeTool)->call(['action' => 'keep'], $context);
             $this->assertFalse($exit->isError, $exit->output);
@@ -228,6 +229,42 @@ class WorktreeToolsTest extends TestCase
                 $this->removeTree($outside);
             }
         }
+    }
+
+    public function test_enter_rejects_worktrees_symlink(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('POSIX symlink coverage.');
+        }
+
+        $repo = $this->makeGitRepo('haocode-worktrees-symlink-');
+        $outside = sys_get_temp_dir().'/haocode-worktrees-target-'.bin2hex(random_bytes(4));
+        mkdir($repo.'/.claude', 0700, true);
+        mkdir($outside, 0700, true);
+        symlink($outside, $repo.'/.claude/worktrees');
+
+        try {
+            $context = new ToolUseContext($repo, 'worktree-base-symlink');
+            $result = (new EnterWorktreeTool)->call(['name' => 'blocked'], $context);
+
+            $this->assertTrue($result->isError);
+            $this->assertStringContainsString('symlink', $result->output);
+            $this->assertDirectoryDoesNotExist($outside.'/blocked');
+            $this->assertSame($repo, $context->workingDirectory);
+        } finally {
+            @unlink($repo.'/.claude/worktrees');
+            $this->removeTree($repo);
+            $this->removeTree($outside);
+        }
+    }
+
+    public function test_enter_updates_gitignore_without_file_append(): void
+    {
+        $source = file_get_contents(__DIR__.'/../../app/Tools/Worktree/EnterWorktreeTool.php');
+
+        $this->assertIsString($source);
+        $this->assertStringContainsString('AtomicFileWriter', $source);
+        $this->assertStringNotContainsString('FILE_APPEND', $source);
     }
 
     public function test_enter_does_not_run_post_checkout_hook(): void
