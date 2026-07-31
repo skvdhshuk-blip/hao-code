@@ -2,6 +2,7 @@
 
 namespace HaoCode\Tools\Grep;
 
+use HaoCode\Support\Runtime\ProcessSupervisor;
 use HaoCode\Tools\BaseTool;
 use HaoCode\Tools\ToolInputSchema;
 use HaoCode\Tools\ToolResult;
@@ -9,6 +10,18 @@ use HaoCode\Tools\ToolUseContext;
 
 class GrepTool extends BaseTool
 {
+    private const MAX_VISITED_FILES = 20_000;
+    private const RIPGREP_TIMEOUT_SECONDS = 10.0;
+    private const RIPGREP_STDERR_MAX = 32_000;
+    private const IGNORED_DIRECTORIES = [
+        '.git',
+        '.hg',
+        '.svn',
+        '.claude/worktrees',
+        'node_modules',
+        'vendor',
+    ];
+
     public function name(): string
     {
         return 'Grep';
@@ -169,6 +182,13 @@ DESC;
             $cmd[] = '--multiline-dotall';
         }
 
+        foreach (self::IGNORED_DIRECTORIES as $ignored) {
+            $cmd[] = '--glob';
+            $cmd[] = '!'.$ignored.'/**';
+            $cmd[] = '--glob';
+            $cmd[] = '!**/'.$ignored.'/**';
+        }
+
         if ($outputMode === 'count') {
             $cmd[] = '--count';
         } elseif ($outputMode === 'files_with_matches') {
@@ -188,19 +208,24 @@ DESC;
         }
 
         if ($glob) {
-            $cmd[] = '--glob=' . escapeshellarg($glob);
+            $cmd[] = '--glob';
+            $cmd[] = $glob;
         }
 
         if ($type) {
-            $cmd[] = '--type=' . escapeshellarg($type);
+            $cmd[] = '--type';
+            $cmd[] = $type;
         }
 
         $cmd[] = '--';
-        $cmd[] = escapeshellarg($pattern);
-        $cmd[] = escapeshellarg($path);
+        $cmd[] = $pattern;
+        $cmd[] = $path;
 
-        $command = implode(' ', $cmd);
-        exec($command . ' 2>&1', $output, $exitCode);
+        [$exitCode, $output, $stderr, $truncated] = $this->runRipgrepStreaming(
+            $cmd,
+            $path,
+            $headLimit + $offset,
+        );
 
         // rg returns 1 when no matches found
         if ($exitCode === 1) {
@@ -208,7 +233,7 @@ DESC;
         }
 
         if ($exitCode > 1) {
-            return ToolResult::error("ripgrep error: " . implode("\n", $output));
+            return ToolResult::error("ripgrep error: " . $stderr);
         }
 
         // head_limit and offset are global output-entry limits. ripgrep's
@@ -226,6 +251,97 @@ DESC;
         }
 
         return ToolResult::success($result);
+    }
+
+    /**
+     * @param list<string> $argv
+     * @return array{0: int, 1: list<string>, 2: string, 3: bool}
+     */
+    private function runRipgrepStreaming(array $argv, string $path, int $lineLimit): array
+    {
+        $process = @proc_open($argv, [
+            0 => ['file', PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null', 'r'],
+            1 => ['pipe', 'w'],
+            2 => ['pipe', 'w'],
+        ], $pipes, is_dir($path) ? $path : dirname($path));
+        if (! is_resource($process)) {
+            return [2, [], 'Failed to start ripgrep.', false];
+        }
+        foreach ([1, 2] as $index) {
+            if (is_resource($pipes[$index] ?? null)) {
+                stream_set_blocking($pipes[$index], false);
+            }
+        }
+
+        $status = proc_get_status($process);
+        $pid = (int) ($status['pid'] ?? 0);
+        $deadline = microtime(true) + self::RIPGREP_TIMEOUT_SECONDS;
+        $stdoutBuffer = '';
+        $stderr = '';
+        $lines = [];
+        $truncated = false;
+        $exitCode = -1;
+
+        while (true) {
+            $chunk = is_resource($pipes[1] ?? null) ? @fread($pipes[1], 65536) : false;
+            if (is_string($chunk) && $chunk !== '') {
+                $stdoutBuffer .= $chunk;
+                while (($newline = strpos($stdoutBuffer, "\n")) !== false) {
+                    $lines[] = substr($stdoutBuffer, 0, $newline);
+                    $stdoutBuffer = substr($stdoutBuffer, $newline + 1);
+                    if (count($lines) >= $lineLimit) {
+                        $truncated = true;
+                        ProcessSupervisor::terminateTree($pid, false);
+                        break 2;
+                    }
+                }
+            }
+
+            $err = is_resource($pipes[2] ?? null) ? @fread($pipes[2], 8192) : false;
+            if (is_string($err) && $err !== '') {
+                $stderr .= $err;
+                if (strlen($stderr) > self::RIPGREP_STDERR_MAX) {
+                    $stderr = substr($stderr, -self::RIPGREP_STDERR_MAX);
+                }
+            }
+
+            $status = proc_get_status($process);
+            if (! ($status['running'] ?? false)) {
+                $exitCode = ($status['signaled'] ?? false)
+                    ? 128 + (int) ($status['termsig'] ?? 0)
+                    : (int) ($status['exitcode'] ?? -1);
+                break;
+            }
+            if (microtime(true) >= $deadline) {
+                ProcessSupervisor::terminateTree($pid, false);
+                foreach ([1, 2] as $index) {
+                    if (is_resource($pipes[$index] ?? null)) {
+                        fclose($pipes[$index]);
+                    }
+                }
+                @proc_close($process);
+
+                return [2, $lines, 'ripgrep timed out.', true];
+            }
+
+            usleep(10_000);
+        }
+
+        if ($stdoutBuffer !== '' && count($lines) < $lineLimit) {
+            $lines[] = rtrim($stdoutBuffer, "\r\n");
+        }
+
+        foreach ([1, 2] as $index) {
+            if (is_resource($pipes[$index] ?? null)) {
+                fclose($pipes[$index]);
+            }
+        }
+        $closed = @proc_close($process);
+        if ($exitCode < 0 && ! $truncated) {
+            $exitCode = $closed;
+        }
+
+        return [$truncated ? 0 : $exitCode, $lines, trim($stderr), $truncated];
     }
 
     private function grepWithPhp(
@@ -257,6 +373,10 @@ DESC;
             return ToolResult::error("Invalid regex pattern: {$pattern}");
         }
 
+        if ($headLimit === 0) {
+            return ToolResult::success($this->noMatchesMessage($pattern));
+        }
+
         if (is_file($path)) {
             $files = [$path];
         } elseif (is_dir($path)) {
@@ -267,22 +387,28 @@ DESC;
                     \RecursiveIteratorIterator::LEAVES_ONLY
                 );
                 foreach ($iterator as $file) {
+                    $relPath = str_replace(
+                        '\\',
+                        '/',
+                        ltrim(str_replace($path, '', $file->getPathname()), '/\\'),
+                    );
+                    if ($this->isIgnoredPath($relPath)) {
+                        continue;
+                    }
                     // Match ripgrep's default and never dereference a symlink
                     // discovered underneath an otherwise permitted search
                     // root. Its target has not gone through the permission or
                     // sensitive-path checks applied to the observable input.
                     if (! $file->isLink() && $file->isFile()) {
                         if ($glob) {
-                            $relPath = str_replace(
-                                '\\',
-                                '/',
-                                ltrim(str_replace($path, '', $file->getPathname()), '/\\'),
-                            );
                             if (!fnmatch($glob, $relPath) && !fnmatch($glob, $file->getFilename())) {
                                 continue;
                             }
                         }
                         $files[] = $file->getPathname();
+                        if (count($files) >= self::MAX_VISITED_FILES) {
+                            break;
+                        }
                     }
                 }
                 sort($files, SORT_STRING);
@@ -295,63 +421,125 @@ DESC;
 
         $results = [];
         $fileMatches = [];
+        $seenEntries = 0;
 
         foreach ($files as $file) {
-            $lines = @file($file);
-            if ($lines === false) continue;
-
-            $totalLines = count($lines);
-            $matchingLines = [];
-            foreach ($lines as $num => $line) {
-                if (preg_match($regex, $line)) {
-                    $matchingLines[$num] = true;
-                }
-            }
-            if ($matchingLines === []) {
+            $handle = @fopen($file, 'rb');
+            if (! is_resource($handle)) {
                 continue;
             }
 
             $relativePath = $this->relativePath($file, $path);
             if ($outputMode === 'files_with_matches') {
-                $fileMatches[$relativePath] = true;
+                $matched = false;
+                while (($line = fgets($handle)) !== false) {
+                    if (preg_match($regex, $line)) {
+                        $matched = true;
+                        break;
+                    }
+                }
+                fclose($handle);
+                if ($matched && $this->addLimitedEntry($relativePath, $fileMatches, $seenEntries, $offset, $headLimit)) {
+                    break;
+                }
                 continue;
             }
             if ($outputMode === 'count') {
-                $fileMatches[$relativePath] = count($matchingLines);
+                $count = 0;
+                while (($line = fgets($handle)) !== false) {
+                    if (preg_match($regex, $line)) {
+                        $count++;
+                    }
+                }
+                fclose($handle);
+                if ($count > 0 && $this->addLimitedEntry("{$relativePath}:{$count}", $fileMatches, $seenEntries, $offset, $headLimit)) {
+                    break;
+                }
                 continue;
             }
 
-            $visibleLines = [];
-            foreach (array_keys($matchingLines) as $num) {
-                $start = max(0, $num - $beforeLines);
-                $end = min($totalLines - 1, $num + $afterLines);
-                for ($lineIndex = $start; $lineIndex <= $end; $lineIndex++) {
-                    $visibleLines[$lineIndex] = true;
+            $beforeBuffer = [];
+            $emitted = [];
+            $afterRemaining = 0;
+            $lineNumber = 0;
+            while (($line = fgets($handle)) !== false) {
+                $lineNumber++;
+                $matched = preg_match($regex, $line) === 1;
+                if ($matched) {
+                    foreach ($beforeBuffer as [$ctxNumber, $ctxLine]) {
+                        if (isset($emitted[$ctxNumber])) {
+                            continue;
+                        }
+                        $emitted[$ctxNumber] = true;
+                        if ($this->addLimitedEntry($relativePath.'-'.$ctxNumber.'-'.rtrim($ctxLine), $results, $seenEntries, $offset, $headLimit)) {
+                            fclose($handle);
+                            $handle = null;
+                            break 3;
+                        }
+                    }
+                    if (! isset($emitted[$lineNumber])) {
+                        $emitted[$lineNumber] = true;
+                        if ($this->addLimitedEntry($relativePath.':'.$lineNumber.':'.rtrim($line), $results, $seenEntries, $offset, $headLimit)) {
+                            fclose($handle);
+                            $handle = null;
+                            break 2;
+                        }
+                    }
+                    $afterRemaining = max($afterRemaining, $afterLines);
+                } elseif ($afterRemaining > 0 && ! isset($emitted[$lineNumber])) {
+                    $emitted[$lineNumber] = true;
+                    if ($this->addLimitedEntry($relativePath.'-'.$lineNumber.'-'.rtrim($line), $results, $seenEntries, $offset, $headLimit)) {
+                        fclose($handle);
+                        $handle = null;
+                        break 2;
+                    }
+                    $afterRemaining--;
+                }
+
+                $beforeBuffer[] = [$lineNumber, $line];
+                if (count($beforeBuffer) > $beforeLines) {
+                    array_shift($beforeBuffer);
                 }
             }
-            ksort($visibleLines);
-            foreach (array_keys($visibleLines) as $lineIndex) {
-                $separator = isset($matchingLines[$lineIndex]) ? ':' : '-';
-                $results[] = $relativePath.$separator.($lineIndex + 1).$separator
-                    .rtrim($lines[$lineIndex]);
+            if (is_resource($handle)) {
+                fclose($handle);
             }
         }
 
         if ($outputMode === 'files_with_matches') {
-            $entries = array_keys($fileMatches);
+            $entries = $fileMatches;
         } elseif ($outputMode === 'count') {
-            $entries = array_map(
-                fn($f, $c) => "{$f}:{$c}", array_keys($fileMatches), array_values($fileMatches)
-            );
+            $entries = $fileMatches;
         } else {
             $entries = $results;
         }
 
-        $entries = array_slice($entries, $offset, $headLimit);
-
         return ToolResult::success(
             $entries === [] ? $this->noMatchesMessage($pattern) : implode("\n", $entries),
         );
+    }
+
+    /** @param list<string> $entries */
+    private function addLimitedEntry(string $entry, array &$entries, int &$seenEntries, int $offset, int $headLimit): bool
+    {
+        $seenEntries++;
+        if ($seenEntries > $offset && count($entries) < $headLimit) {
+            $entries[] = $entry;
+        }
+
+        return $seenEntries >= $offset + $headLimit;
+    }
+
+    private function isIgnoredPath(string $relativePath): bool
+    {
+        $relativePath = str_replace('\\', '/', ltrim($relativePath, '/'));
+        foreach (self::IGNORED_DIRECTORIES as $ignored) {
+            if ($relativePath === $ignored || str_starts_with($relativePath, $ignored.'/')) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function relativePath(string $file, string $searchPath): string

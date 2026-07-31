@@ -426,6 +426,42 @@ class GrepToolTest extends TestCase
         }
     }
 
+    public function test_php_fallback_skips_default_ignored_directories(): void
+    {
+        mkdir($this->tmpDir.'/.claude/worktrees/demo', 0755, true);
+        mkdir($this->tmpDir.'/vendor/package', 0755, true);
+        $this->writeFile('src.txt', "needle\n");
+        file_put_contents($this->tmpDir.'/.claude/worktrees/demo/ignored.txt', "needle\n");
+        file_put_contents($this->tmpDir.'/vendor/package/ignored.txt', "needle\n");
+
+        $result = $this->grepPhp('needle', outputMode: 'files_with_matches');
+
+        $this->assertFalse($result->isError);
+        $this->assertStringContainsString('src.txt', $result->output);
+        $this->assertStringNotContainsString('.claude/worktrees', $result->output);
+        $this->assertStringNotContainsString('vendor/package', $result->output);
+    }
+
+    public function test_ripgrep_skips_default_ignored_directories(): void
+    {
+        if (! $this->hasRipgrep()) {
+            $this->markTestSkipped('ripgrep is not installed.');
+        }
+
+        mkdir($this->tmpDir.'/.claude/worktrees/demo', 0755, true);
+        mkdir($this->tmpDir.'/vendor/package', 0755, true);
+        $this->writeFile('src.txt', "needle\n");
+        file_put_contents($this->tmpDir.'/.claude/worktrees/demo/ignored.txt', "needle\n");
+        file_put_contents($this->tmpDir.'/vendor/package/ignored.txt', "needle\n");
+
+        $result = $this->grepRg('needle', $this->tmpDir, outputMode: 'files_with_matches');
+
+        $this->assertFalse($result->isError);
+        $this->assertStringContainsString('src.txt', $result->output);
+        $this->assertStringNotContainsString('.claude/worktrees', $result->output);
+        $this->assertStringNotContainsString('vendor/package', $result->output);
+    }
+
     public function test_php_fallback_explicitly_rejects_unsupported_type_filter(): void
     {
         $this->writeFile('a.php', "<?php\n");

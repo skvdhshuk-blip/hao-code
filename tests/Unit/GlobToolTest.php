@@ -238,6 +238,32 @@ class GlobToolTest extends TestCase
         $this->assertStringContainsString('3 file(s)', $result->output);
     }
 
+    public function test_it_skips_default_ignored_directories(): void
+    {
+        $this->touch('src/keep.php', '<?php');
+        $this->touch('.git/ignored.php', '<?php');
+        $this->touch('.claude/worktrees/demo/ignored.php', '<?php');
+        $this->touch('vendor/package/ignored.php', '<?php');
+
+        $result = $this->call(['pattern' => '**/*.php']);
+
+        $this->assertFalse($result->isError);
+        $this->assertStringContainsString('src/keep.php', $result->output);
+        $this->assertStringNotContainsString('.git/ignored.php', $result->output);
+        $this->assertStringNotContainsString('.claude/worktrees/demo/ignored.php', $result->output);
+        $this->assertStringNotContainsString('vendor/package/ignored.php', $result->output);
+    }
+
+    public function test_it_rejects_excessive_brace_expansion(): void
+    {
+        $pattern = str_repeat('{a,b}', 9).'*.php';
+
+        $result = $this->call(['pattern' => $pattern]);
+
+        $this->assertTrue($result->isError);
+        $this->assertStringContainsString('brace expansion', $result->output);
+    }
+
     public function test_is_read_only(): void
     {
         $this->assertTrue($this->tool->isReadOnly([]));

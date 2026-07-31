@@ -9,6 +9,19 @@ use HaoCode\Tools\ToolUseContext;
 
 class GlobTool extends BaseTool
 {
+    private const MAX_RESULTS = 100;
+    private const MAX_VISITED_FILES = 20_000;
+    private const MAX_PATTERN_LENGTH = 512;
+    private const MAX_BRACE_EXPANSIONS = 256;
+    private const IGNORED_DIRECTORIES = [
+        '.git',
+        '.hg',
+        '.svn',
+        '.claude/worktrees',
+        'node_modules',
+        'vendor',
+    ];
+
     public function name(): string
     {
         return 'Glob';
@@ -57,10 +70,24 @@ DESC;
         if (!is_dir($path)) {
             return ToolResult::error("Directory does not exist: {$path}");
         }
+        if (strlen($pattern) > self::MAX_PATTERN_LENGTH) {
+            return ToolResult::error('Glob pattern is too long; narrow the search pattern.');
+        }
 
-        // Use recursive glob
+        try {
+            $regexPatterns = array_map(
+                fn (string $expandedPattern): string => $this->globToRegex($expandedPattern),
+                $this->expandBracePatterns($pattern),
+            );
+        } catch (\LengthException $e) {
+            return ToolResult::error($e->getMessage());
+        }
+
         $matches = [];
-        $this->globRecursive($path, $pattern, $matches);
+        $totalCount = 0;
+        $visitedFiles = 0;
+        $truncatedByVisitLimit = false;
+        $this->globRecursive($path, $regexPatterns, $matches, $totalCount, $visitedFiles, $truncatedByVisitLimit);
 
         if (empty($matches)) {
             return ToolResult::success("No files matched pattern: {$pattern}");
@@ -71,17 +98,11 @@ DESC;
             return filemtime($b) - filemtime($a);
         });
 
-        $totalCount = count($matches);
-        $maxResults = 100;
-        $truncated = $totalCount > $maxResults;
-
-        if ($truncated) {
-            $matches = array_slice($matches, 0, $maxResults);
-        }
+        $truncated = $totalCount > self::MAX_RESULTS || $truncatedByVisitLimit;
 
         $output = "Found {$totalCount} file(s) matching '{$pattern}'";
         if ($truncated) {
-            $output .= " (showing first {$maxResults})";
+            $output .= " (showing first ".self::MAX_RESULTS.")";
         }
         $output .= ":\n\n";
 
@@ -90,8 +111,10 @@ DESC;
             $output .= "  {$relative}\n";
         }
 
-        if ($truncated) {
-            $output .= "\n[" . ($totalCount - $maxResults) . " more files not shown. Narrow your pattern to see more.]";
+        if ($truncatedByVisitLimit) {
+            $output .= "\n[Search stopped after visiting ".self::MAX_VISITED_FILES." files. Narrow your path or pattern to continue.]";
+        } elseif ($truncated) {
+            $output .= "\n[" . ($totalCount - self::MAX_RESULTS) . " more files not shown. Narrow your pattern to see more.]";
         }
 
         return ToolResult::success($output);
@@ -107,7 +130,18 @@ DESC;
         return $input;
     }
 
-    private function globRecursive(string $dir, string $pattern, array &$matches): void
+    /**
+     * @param list<string> $regexPatterns
+     * @param list<string> $matches
+     */
+    private function globRecursive(
+        string $dir,
+        array $regexPatterns,
+        array &$matches,
+        int &$totalCount,
+        int &$visitedFiles,
+        bool &$truncatedByVisitLimit,
+    ): void
     {
         if (!is_dir($dir)) {
             return;
@@ -119,23 +153,50 @@ DESC;
             \RecursiveIteratorIterator::LEAVES_ONLY
         );
 
-        $regexPatterns = array_map(
-            fn (string $expandedPattern): string => $this->globToRegex($expandedPattern),
-            $this->expandBracePatterns($pattern),
-        );
-
         foreach ($iterator as $file) {
+            $pathname = $file->getPathname();
+            $relativePath = $this->relativePath($pathname, $dir);
+            if ($this->isIgnoredPath($relativePath)) {
+                continue;
+            }
             if (! $file->isFile() || $file->isLink()) {
                 continue;
             }
-            $relativePath = $this->relativePath($file->getPathname(), $dir);
+            $visitedFiles++;
+            if ($visitedFiles > self::MAX_VISITED_FILES) {
+                $truncatedByVisitLimit = true;
+                break;
+            }
             foreach ($regexPatterns as $regexPattern) {
                 if (preg_match($regexPattern, $relativePath)) {
-                    $matches[] = $file->getPathname();
+                    $totalCount++;
+                    $this->addTopMatch($matches, $pathname);
                     break;
                 }
             }
         }
+    }
+
+    /** @param list<string> $matches */
+    private function addTopMatch(array &$matches, string $path): void
+    {
+        $matches[] = $path;
+        usort($matches, static fn (string $a, string $b): int => filemtime($b) <=> filemtime($a));
+        if (count($matches) > self::MAX_RESULTS) {
+            array_pop($matches);
+        }
+    }
+
+    private function isIgnoredPath(string $relativePath): bool
+    {
+        $relativePath = str_replace('\\', '/', ltrim($relativePath, '/'));
+        foreach (self::IGNORED_DIRECTORIES as $ignored) {
+            if ($relativePath === $ignored || str_starts_with($relativePath, $ignored.'/')) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     private function relativePath(string $filePath, string $basePath): string
@@ -191,6 +252,21 @@ DESC;
      */
     private function expandBracePatterns(string $pattern): array
     {
+        $expanded = $this->expandBracePatternsBounded($pattern, self::MAX_BRACE_EXPANSIONS);
+        if (count($expanded) > self::MAX_BRACE_EXPANSIONS) {
+            throw new \LengthException(
+                'Glob brace expansion is too broad; narrow the pattern to fewer alternatives.',
+            );
+        }
+
+        return array_values(array_unique($expanded));
+    }
+
+    /**
+     * @return list<string>
+     */
+    private function expandBracePatternsBounded(string $pattern, int $limit): array
+    {
         if (! preg_match('/\{([^{}]+)\}/', $pattern, $matches, PREG_OFFSET_CAPTURE)) {
             return [$pattern];
         }
@@ -203,8 +279,11 @@ DESC;
 
         $expanded = [];
         foreach ($options as $option) {
-            foreach ($this->expandBracePatterns($prefix . $option . $suffix) as $variant) {
+            foreach ($this->expandBracePatternsBounded($prefix . $option . $suffix, $limit) as $variant) {
                 $expanded[] = $variant;
+                if (count($expanded) > $limit) {
+                    return $expanded;
+                }
             }
         }
 

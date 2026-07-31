@@ -775,7 +775,7 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.18.22`. Notable changes since `v1.10.0`:
+is based on `v1.18.23`. Notable changes since `v1.10.0`:
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/
@@ -863,6 +863,10 @@ is based on `v1.18.22`. Notable changes since `v1.10.0`:
 - `v1.18.22` — Parallel tool execution avoids early/parallel forks when
   `PreToolUse` hooks may rewrite input, caps forked workers, and makes forked
   tool children process-group leaders so cleanup cancels descendant processes.
+- `v1.18.23` — Grep streams ripgrep output and stops after the requested global
+  result window, the PHP fallback scans files line-by-line, and Glob bounds
+  brace expansion, visited files, ignored heavy directories, and retained top
+  results.
 
 ## License
 
