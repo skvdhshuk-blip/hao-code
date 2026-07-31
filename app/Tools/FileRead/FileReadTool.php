@@ -11,6 +11,12 @@ use HaoCode\Tools\ToolUseContext;
 
 class FileReadTool extends BaseTool
 {
+    private const MAX_TEXT_LINE_BYTES = 1_000_000;
+    private const MAX_PDF_OUTPUT_BYTES = 100_000;
+    private const PDF_TIMEOUT_SECONDS = 10.0;
+    private const MAX_NOTEBOOK_BYTES = 8_388_608; // 8 MiB JSON input cap
+    private const MAX_NOTEBOOK_OUTPUT_BYTES = 100_000;
+
     public function name(): string
     {
         return 'Read';
@@ -103,14 +109,12 @@ DESC;
         if ($contentType === 'pdf') {
             $result = $this->readPdf($filePath, $input['pages'] ?? null);
             if (! $result->isError) {
-                $rawContent = file_get_contents($filePath);
-                if ($rawContent !== false) {
-                    $context->recordFileRead(
-                        $filePath,
-                        $rawContent,
-                        isPartialView: isset($input['pages']) && trim((string) $input['pages']) !== '',
-                    );
-                }
+                $context->recordFileRead(
+                    $filePath,
+                    null,
+                    isPartialView: (isset($input['pages']) && trim((string) $input['pages']) !== '')
+                        || (($result->metadata['outputLimited'] ?? false) === true),
+                );
             }
 
             return $result;
@@ -118,13 +122,26 @@ DESC;
 
         // Handle Jupyter notebooks
         if (strtolower(pathinfo($filePath, PATHINFO_EXTENSION)) === 'ipynb') {
+            $size = filesize($filePath);
+            if ($size !== false && $size > self::MAX_NOTEBOOK_BYTES) {
+                return ToolResult::error(
+                    'Notebook too large: '.round($size / 1024 / 1024, 1).' MB '
+                    .'(max '.round(self::MAX_NOTEBOOK_BYTES / 1024 / 1024, 1).' MB)',
+                );
+            }
             $rawContent = file_get_contents($filePath);
             if ($rawContent === false) {
                 return ToolResult::error("Failed to read file: {$filePath}");
             }
             $result = $this->readNotebook($filePath, $rawContent);
             if (! $result->isError) {
-                $context->recordFileRead($filePath, $rawContent, 1, null, false);
+                $context->recordFileRead(
+                    $filePath,
+                    $rawContent,
+                    1,
+                    null,
+                    ($result->metadata['outputLimited'] ?? false) === true,
+                );
             }
 
             return $result;
@@ -133,6 +150,9 @@ DESC;
         $scan = $this->readTextLineWindow($filePath, $offset, $limit);
         if ($scan === null) {
             return ToolResult::error("Failed to read file: {$filePath}");
+        }
+        if (is_string($scan['error'] ?? null)) {
+            return ToolResult::error($scan['error']);
         }
 
         $totalLines = $scan['totalLines'];
@@ -186,6 +206,16 @@ DESC;
             if (preg_match('/^\d+(\s*-\s*\d+)?$/', $pages) !== 1) {
                 return 'pages must be a page number or range like "3" or "1-5".';
             }
+            if (preg_match('/^(\d+)(?:\s*-\s*(\d+))?$/', $pages, $m) === 1) {
+                $first = (int) $m[1];
+                $last = isset($m[2]) ? (int) $m[2] : $first;
+                if ($first < 1 || $last < 1) {
+                    return 'pages must start at page 1 or later.';
+                }
+                if ($first > $last) {
+                    return 'pages range start must be less than or equal to the end page.';
+                }
+            }
         }
 
         return null;
@@ -234,35 +264,69 @@ DESC;
                 $lastPage = (int) $m[1];
             }
 
-            if ($firstPage !== null && $lastPage !== null && ($lastPage - $firstPage + 1) > 20) {
-                return ToolResult::error("Maximum 20 pages per request. Requested: " . ($lastPage - $firstPage + 1));
+            if ($firstPage !== null && $lastPage !== null) {
+                if ($firstPage < 1 || $lastPage < 1) {
+                    return ToolResult::error('PDF pages must start at page 1 or later.');
+                }
+                if ($firstPage > $lastPage) {
+                    return ToolResult::error('PDF page range start must be less than or equal to the end page.');
+                }
+                if (($lastPage - $firstPage + 1) > 20) {
+                    return ToolResult::error("Maximum 20 pages per request. Requested: " . ($lastPage - $firstPage + 1));
+                }
             }
         }
 
-        // Try using pdftotext for text extraction
-        $pdftotextOutput = shell_exec("which pdftotext 2>/dev/null");
-        if (!empty(trim($pdftotextOutput ?? ''))) {
-            $cmd = "pdftotext -layout";
-            if ($firstPage !== null) {
-                $cmd .= " -f {$firstPage}";
-            }
-            if ($lastPage !== null) {
-                $cmd .= " -l {$lastPage}";
-            }
-            $cmd .= " " . escapeshellarg($filePath) . " - 2>/dev/null";
+        $pdftotext = $this->findExecutable('pdftotext');
+        if ($pdftotext === null) {
+            return ToolResult::error(
+                "PDF text could not be extracted from {$filePath}: pdftotext is not installed or not on PATH. "
+                .'Read does not support model-visible document content blocks or base64 fallbacks.',
+            );
+        }
 
-            $text = shell_exec($cmd);
-            if (!empty($text)) {
-                $pageCount = shell_exec("pdfinfo " . escapeshellarg($filePath) . " 2>/dev/null | grep Pages | awk '{print $2}'");
-                $pages = trim($pageCount ?? 'unknown');
-                $rangeInfo = $pageRange !== null ? ", pages {$pageRange}" : '';
-                return ToolResult::success("[PDF: {$filePath}, {$pages} total pages{$rangeInfo}, text extracted]\n\n" . $text);
+        $args = [$pdftotext, '-layout'];
+        if ($firstPage !== null) {
+            $args[] = '-f';
+            $args[] = (string) $firstPage;
+        }
+        if ($lastPage !== null) {
+            $args[] = '-l';
+            $args[] = (string) $lastPage;
+        }
+        $args[] = $filePath;
+        $args[] = '-';
+
+        $extracted = $this->runProcessWithOutputCap($args, self::PDF_TIMEOUT_SECONDS, self::MAX_PDF_OUTPUT_BYTES);
+        if ($extracted['timedOut']) {
+            return ToolResult::error('PDF text extraction timed out after '.self::PDF_TIMEOUT_SECONDS.' seconds.');
+        }
+        if ($extracted['exitCode'] !== 0 || trim($extracted['stdout']) === '') {
+            return ToolResult::error(
+                "PDF text could not be extracted from {$filePath}. "
+                .'Read does not support model-visible document content blocks or base64 fallbacks.',
+            );
+        }
+
+        $pages = 'unknown';
+        $pdfinfo = $this->findExecutable('pdfinfo');
+        if ($pdfinfo !== null) {
+            $info = $this->runProcessWithOutputCap([$pdfinfo, $filePath], 5.0, 32_768);
+            if ($info['exitCode'] === 0 && preg_match('/^Pages:\s*(\d+)/mi', $info['stdout'], $m) === 1) {
+                $pages = $m[1];
             }
         }
 
-        return ToolResult::error(
-            "PDF text could not be extracted from {$filePath}. "
-            .'Read does not support model-visible document content blocks or base64 fallbacks.',
+        $text = $extracted['stdout'];
+        $limited = $extracted['outputLimited'];
+        if ($limited) {
+            $text .= "\n\n[PDF text truncated at ".self::MAX_PDF_OUTPUT_BYTES.' bytes]';
+        }
+        $rangeInfo = $pageRange !== null ? ", pages {$pageRange}" : '';
+
+        return ToolResult::success(
+            "[PDF: {$filePath}, {$pages} total pages{$rangeInfo}, text extracted]\n\n".$text,
+            ['outputLimited' => $limited],
         );
     }
 
@@ -275,17 +339,22 @@ DESC;
         }
 
         $output = "[Jupyter Notebook: {$filePath}]\n\n";
+        $outputLimited = false;
         $cellCount = count($notebook['cells']);
 
         foreach ($notebook['cells'] as $i => $cell) {
+            if (strlen($output) >= self::MAX_NOTEBOOK_OUTPUT_BYTES) {
+                $outputLimited = true;
+                break;
+            }
             $cellNum = $i + 1;
             $cellType = $cell['cell_type'] ?? 'unknown';
             $source = is_array($cell['source'] ?? null) ? implode('', $cell['source']) : ($cell['source'] ?? '');
 
-            $output .= "--- Cell {$cellNum}/{$cellCount} [{$cellType}] ---\n";
+            $cellText = "--- Cell {$cellNum}/{$cellCount} [{$cellType}] ---\n";
 
             if ($cellType === 'code') {
-                $output .= "```\n{$source}\n```\n";
+                $cellText .= "```\n{$source}\n```\n";
 
                 // Show outputs if present
                 $outputs = $cell['outputs'] ?? [];
@@ -293,33 +362,44 @@ DESC;
                     $outputType = $cellOutput['output_type'] ?? '';
                     if ($outputType === 'stream') {
                         $text = is_array($cellOutput['text'] ?? null) ? implode('', $cellOutput['text']) : ($cellOutput['text'] ?? '');
-                        $output .= "Output:\n{$text}\n";
+                        $cellText .= "Output:\n{$text}\n";
                     } elseif ($outputType === 'execute_result' || $outputType === 'display_data') {
                         $data = $cellOutput['data'] ?? [];
                         if (isset($data['text/plain'])) {
                             $text = is_array($data['text/plain']) ? implode('', $data['text/plain']) : $data['text/plain'];
-                            $output .= "Output:\n{$text}\n";
+                            $cellText .= "Output:\n{$text}\n";
                         }
                     } elseif ($outputType === 'error') {
                         $ename = $cellOutput['ename'] ?? 'Error';
                         $evalue = $cellOutput['evalue'] ?? '';
-                        $output .= "Error: {$ename}: {$evalue}\n";
+                        $cellText .= "Error: {$ename}: {$evalue}\n";
                     }
                 }
             } else {
-                $output .= "{$source}\n";
+                $cellText .= "{$source}\n";
             }
 
-            $output .= "\n";
+            $cellText .= "\n";
+            if (strlen($output) + strlen($cellText) > self::MAX_NOTEBOOK_OUTPUT_BYTES) {
+                $room = self::MAX_NOTEBOOK_OUTPUT_BYTES - strlen($output);
+                $output .= substr($cellText, 0, max(0, $room));
+                $outputLimited = true;
+                break;
+            }
+            $output .= $cellText;
         }
 
-        return ToolResult::success($output);
+        if ($outputLimited) {
+            $output .= "\n\n[Notebook output truncated at ".self::MAX_NOTEBOOK_OUTPUT_BYTES.' bytes]';
+        }
+
+        return ToolResult::success($output, ['outputLimited' => $outputLimited]);
     }
 
     /**
      * Stream a text file and retain only the requested line window.
      *
-     * @return array{selectedLines: string[], totalLines: int, revision: FileRevision}|null
+     * @return array{selectedLines?: string[], totalLines?: int, revision?: FileRevision, error?: string}|null
      */
     private function readTextLineWindow(string $filePath, int $offset, int $limit): ?array
     {
@@ -353,8 +433,21 @@ DESC;
                 hash_update($hash, $chunk);
                 $size += strlen($chunk);
                 $buffer .= $chunk;
+                if (strlen($buffer) > self::MAX_TEXT_LINE_BYTES
+                    && preg_match('/\r\n|\n|\r/', $buffer) !== 1) {
+                    return [
+                        'error' => 'Line exceeds '.self::MAX_TEXT_LINE_BYTES." bytes in {$filePath}. "
+                            .'Use a more specialized byte-range workflow for extremely long lines.',
+                    ];
+                }
                 while (preg_match('/\r\n|\n|\r/', $buffer, $match, PREG_OFFSET_CAPTURE) === 1) {
                     $line = substr($buffer, 0, (int) $match[0][1]);
+                    if (strlen($line) > self::MAX_TEXT_LINE_BYTES) {
+                        return [
+                            'error' => 'Line exceeds '.self::MAX_TEXT_LINE_BYTES." bytes in {$filePath}. "
+                                .'Use a more specialized byte-range workflow for extremely long lines.',
+                        ];
+                    }
                     $lineNumber++;
                     if ($lineNumber >= $offset && count($selected) < $limit) {
                         $selected[] = $line;
@@ -364,6 +457,12 @@ DESC;
             }
 
             if ($buffer !== '') {
+                if (strlen($buffer) > self::MAX_TEXT_LINE_BYTES) {
+                    return [
+                        'error' => 'Line exceeds '.self::MAX_TEXT_LINE_BYTES." bytes in {$filePath}. "
+                            .'Use a more specialized byte-range workflow for extremely long lines.',
+                    ];
+                }
                 $lineNumber++;
                 if ($lineNumber >= $offset && count($selected) < $limit) {
                     $selected[] = $buffer;
@@ -387,6 +486,133 @@ DESC;
                 observedAtMicros: (int) round(microtime(true) * 1_000_000),
                 local: true,
             ),
+        ];
+    }
+
+    private function findExecutable(string $name): ?string
+    {
+        $paths = explode(PATH_SEPARATOR, getenv('PATH') ?: '');
+        $extensions = PHP_OS_FAMILY === 'Windows'
+            ? array_filter(explode(';', getenv('PATHEXT') ?: '.EXE;.BAT;.CMD'))
+            : [''];
+        foreach ($paths as $dir) {
+            if ($dir === '') {
+                continue;
+            }
+            foreach ($extensions as $extension) {
+                $candidate = rtrim($dir, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR.$name.$extension;
+                if (is_file($candidate) && is_executable($candidate)) {
+                    return $candidate;
+                }
+            }
+        }
+
+        return null;
+    }
+
+    /**
+     * @param list<string> $command
+     * @return array{stdout: string, stderr: string, exitCode: int, timedOut: bool, outputLimited: bool}
+     */
+    private function runProcessWithOutputCap(array $command, float $timeoutSeconds, int $stdoutByteCap): array
+    {
+        $null = PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null';
+        $process = @proc_open($command, [
+            0 => ['file', $null, 'r'],
+            1 => ['pipe', 'w'],
+            2 => ['pipe', 'w'],
+        ], $pipes);
+        if (! is_resource($process)) {
+            return ['stdout' => '', 'stderr' => '', 'exitCode' => -1, 'timedOut' => false, 'outputLimited' => false];
+        }
+
+        foreach ([1, 2] as $index) {
+            if (isset($pipes[$index]) && is_resource($pipes[$index])) {
+                stream_set_blocking($pipes[$index], false);
+            }
+        }
+
+        $status = proc_get_status($process);
+        $pid = (int) ($status['pid'] ?? 0);
+        $deadline = microtime(true) + $timeoutSeconds;
+        $stdout = '';
+        $stderr = '';
+        $exitCode = -1;
+        $timedOut = false;
+        $outputLimited = false;
+
+        while (true) {
+            foreach ([1 => 'stdout', 2 => 'stderr'] as $index => $target) {
+                if (! isset($pipes[$index]) || ! is_resource($pipes[$index])) {
+                    continue;
+                }
+                $chunk = @stream_get_contents($pipes[$index]);
+                if (! is_string($chunk) || $chunk === '') {
+                    continue;
+                }
+                if ($target === 'stdout') {
+                    $room = $stdoutByteCap - strlen($stdout);
+                    if (strlen($chunk) > $room) {
+                        $stdout .= substr($chunk, 0, max(0, $room));
+                        $outputLimited = true;
+                        \HaoCode\Support\Runtime\ProcessSupervisor::terminateTree($pid, false);
+                        break 2;
+                    }
+                    $stdout .= $chunk;
+                } else {
+                    $stderr = substr($stderr.$chunk, -32_768);
+                }
+            }
+
+            $status = proc_get_status($process);
+            if (! ($status['running'] ?? false)) {
+                $exitCode = ($status['signaled'] ?? false)
+                    ? 128 + (int) ($status['termsig'] ?? 0)
+                    : (int) ($status['exitcode'] ?? -1);
+                break;
+            }
+
+            if (microtime(true) >= $deadline) {
+                $timedOut = true;
+                \HaoCode\Support\Runtime\ProcessSupervisor::terminateTree($pid, false);
+                break;
+            }
+
+            usleep(20_000);
+        }
+
+        foreach ([1, 2] as $index) {
+            if (! isset($pipes[$index]) || ! is_resource($pipes[$index])) {
+                continue;
+            }
+            $chunk = @stream_get_contents($pipes[$index]);
+            if (is_string($chunk) && $chunk !== '') {
+                if ($index === 1 && ! $outputLimited) {
+                    $room = $stdoutByteCap - strlen($stdout);
+                    if (strlen($chunk) > $room) {
+                        $stdout .= substr($chunk, 0, max(0, $room));
+                        $outputLimited = true;
+                    } else {
+                        $stdout .= $chunk;
+                    }
+                } elseif ($index === 2) {
+                    $stderr = substr($stderr.$chunk, -32_768);
+                }
+            }
+            fclose($pipes[$index]);
+        }
+
+        $closed = @proc_close($process);
+        if ($exitCode < 0 && ! $timedOut && ! $outputLimited) {
+            $exitCode = $closed;
+        }
+
+        return [
+            'stdout' => $stdout,
+            'stderr' => $stderr,
+            'exitCode' => $timedOut ? -1 : ($outputLimited ? 1 : $exitCode),
+            'timedOut' => $timedOut,
+            'outputLimited' => $outputLimited,
         ];
     }
 }

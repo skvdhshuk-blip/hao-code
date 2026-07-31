@@ -164,6 +164,18 @@ class FileReadToolTest extends TestCase
         unlink($file);
     }
 
+    public function test_it_rejects_extremely_long_single_line_without_recording_receipt(): void
+    {
+        $file = $this->makeTmpFile(str_repeat('x', 1_000_001));
+
+        $result = $this->tool->call(['file_path' => $file], $this->context);
+
+        $this->assertTrue($result->isError);
+        $this->assertStringContainsString('Line exceeds', $result->output);
+        $this->assertFalse($this->context->wasFileRead($file));
+        unlink($file);
+    }
+
     public function test_failed_read_does_not_record_a_write_receipt(): void
     {
         $file = $this->makeTmpFile("one\ntwo\n");
@@ -264,6 +276,56 @@ class FileReadToolTest extends TestCase
         $this->assertStringNotContainsString('%PDF-1.4', $result->output);
         $this->assertNull($this->context->getFileRevision($file));
         unlink($file);
+    }
+
+    public function test_validate_input_rejects_zero_pdf_page(): void
+    {
+        $error = $this->tool->validateInput(['file_path' => '/tmp/demo.pdf', 'pages' => '0'], $this->context);
+
+        $this->assertNotNull($error);
+        $this->assertStringContainsString('page 1', $error);
+    }
+
+    public function test_validate_input_rejects_reversed_pdf_page_range(): void
+    {
+        $error = $this->tool->validateInput(['file_path' => '/tmp/demo.pdf', 'pages' => '5-3'], $this->context);
+
+        $this->assertNotNull($error);
+        $this->assertStringContainsString('less than or equal', $error);
+    }
+
+    public function test_pdf_read_path_does_not_use_shell_exec(): void
+    {
+        $source = file_get_contents((new \ReflectionClass(FileReadTool::class))->getFileName());
+
+        $this->assertIsString($source);
+        $this->assertStringNotContainsString('shell_exec', $source);
+        $this->assertStringNotContainsString('which pdftotext', $source);
+    }
+
+    public function test_large_notebook_rendering_is_truncated_and_records_partial_receipt(): void
+    {
+        $notebook = [
+            'cells' => [[
+                'cell_type' => 'code',
+                'source' => ['print("hello")'],
+                'outputs' => [[
+                    'output_type' => 'stream',
+                    'text' => [str_repeat('x', 150_000)],
+                ]],
+            ]],
+        ];
+        $file = $this->makeTmpFile(json_encode($notebook));
+        $notebookPath = $file.'.ipynb';
+        rename($file, $notebookPath);
+
+        $result = $this->tool->call(['file_path' => $notebookPath], $this->context);
+
+        $this->assertFalse($result->isError, $result->output);
+        $this->assertTrue($result->metadata['outputLimited'] ?? false);
+        $this->assertStringContainsString('Notebook output truncated', $result->output);
+        $this->assertFalse($this->context->wasFileRead($notebookPath));
+        @unlink($notebookPath);
     }
 
     public function test_validate_input_rejects_bare_line_reference_without_path(): void
