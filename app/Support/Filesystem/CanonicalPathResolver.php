@@ -40,7 +40,9 @@ final class CanonicalPathResolver
             return self::resolveWindowsPath($path);
         }
 
-        if (PHP_OS_FAMILY === 'Windows' && self::isWindowsRootRelative($path)) {
+        if ((PHP_OS_FAMILY === 'Windows' || self::isWindowsAbsolute($workingDirectory))
+            && self::isWindowsRootRelative($path)
+        ) {
             return self::resolveWindowsPath(
                 self::windowsDrive($workingDirectory).ltrim($path, '/\\'),
             );
@@ -61,6 +63,40 @@ final class CanonicalPathResolver
         }
 
         return self::resolveNearestExistingUnixAncestor($path);
+    }
+
+    /** @internal */
+    public static function isWithin(string $path, string $root): bool
+    {
+        $pathIsWindows = self::isWindowsAbsolute($path);
+        $rootIsWindows = self::isWindowsAbsolute($root);
+        if ($pathIsWindows !== $rootIsWindows) {
+            return false;
+        }
+
+        if ($pathIsWindows) {
+            $path = self::normalizeWindowsPath($path);
+            $root = self::normalizeWindowsPath($root);
+            if (strcasecmp($path, $root) === 0) {
+                return true;
+            }
+
+            $prefix = rtrim($root, '\\').'\\';
+
+            return strncasecmp($path, $prefix, strlen($prefix)) === 0;
+        }
+
+        if (! self::isUnixAbsolute($path) || ! self::isUnixAbsolute($root)) {
+            return false;
+        }
+
+        $path = self::normalizeUnixPath($path);
+        $root = self::normalizeUnixPath($root);
+        if ($path === $root) {
+            return true;
+        }
+
+        return str_starts_with($path, rtrim($root, '/').'/');
     }
 
     private static function expandHome(string $path): string

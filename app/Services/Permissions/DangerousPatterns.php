@@ -37,16 +37,24 @@ class DangerousPatterns
     {
         $patterns = [
             '/\$\(/' => 'Command substitution $() detected.',
+            '/(?:<|>)\(/' => 'Process substitution detected.',
             '/\$\{/' => 'Parameter expansion ${} detected.',
             '/`/' => 'Backtick command substitution detected.',
-            '/\\\$IFS/' => 'IFS variable manipulation detected.',
+            '/\$IFS\b/' => 'IFS variable manipulation detected.',
+            '/\$(?:\{)?(?=[A-Za-z_][A-Za-z0-9_]*(?:\}|[^A-Za-z0-9_]|$))(?=[A-Za-z0-9_]*(?:API_KEY|TOKEN|SECRET|PASSWORD|PASSWD|PRIVATE_KEY|ACCESS_KEY|CREDENTIAL|DATABASE_URL|DSN))[A-Za-z_][A-Za-z0-9_]*(?:\})?/i'
+                => 'Sensitive environment variable expansion detected.',
             '/\/proc\/\*\/environ/' => 'Accessing /proc/*/environ exposes environment variables.',
             '/[\x00-\x08\x7F]/' => 'Non-printable control characters detected.',
         ];
 
-        foreach ($patterns as $pattern => $message) {
-            if (preg_match($pattern . 'u', $command)) {
-                return $message;
+        foreach (array_unique([
+            $command,
+            SensitivePathGuard::normalizeShellStaticText($command),
+        ]) as $candidate) {
+            foreach ($patterns as $pattern => $message) {
+                if (preg_match($pattern.'u', $candidate)) {
+                    return $message;
+                }
             }
         }
         return null;

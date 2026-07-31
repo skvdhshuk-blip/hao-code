@@ -5,6 +5,8 @@ declare(strict_types=1);
 namespace HaoCode\Services\Hitl;
 
 use HaoCode\Services\Permissions\SensitivePathGuard;
+use HaoCode\Support\Filesystem\CanonicalPathResolver;
+use HaoCode\Tools\Bash\ReadOnlyCommandSafety;
 
 /**
  * Deterministic risk classifier for the smart HITL mode.
@@ -34,9 +36,6 @@ final class HitlPolicy
         'Read', 'Glob', 'Grep', 'LSP', 'Write', 'Edit', 'apply_patch', 'Bash',
         'TodoWrite', 'MemoryRead', 'MemoryWrite', 'Skill', 'AskUserQuestion',
     ];
-
-    /** Input keys whose string values may reference paths or shell commands. */
-    private const PATH_LIKE_KEYS = SensitivePathGuard::PATH_LIKE_KEYS;
 
     /**
      * Shell obfuscation / arbitrary-execution markers.
@@ -100,6 +99,12 @@ final class HitlPolicy
         'telnet' => 'remote shell',
     ];
 
+    /** find actions that mutate files or execute arbitrary commands. */
+    private const FIND_MUTATING_ACTIONS = [
+        '-delete', '-exec', '-execdir', '-ok', '-okdir',
+        '-fprint', '-fprint0', '-fprintf', '-fls',
+    ];
+
     /**
      * Classify one interrupted action. Never throws.
      *
@@ -141,11 +146,9 @@ final class HitlPolicy
         }
 
         // R1: credential/secret material is a red line for every tool.
-        foreach (self::sensitiveStrings($input) as $candidate) {
-            $hit = SensitivePathGuard::matchSensitive($candidate);
-            if ($hit !== null) {
-                return self::verdict(self::RED_LINE, "Touches sensitive material ({$hit}).");
-            }
+        $sensitive = SensitivePathGuard::check($toolName, $input);
+        if ($sensitive !== null) {
+            return self::verdict(self::RED_LINE, "Touches sensitive material ({$sensitive}).");
         }
 
         return match ($toolName) {
@@ -161,19 +164,6 @@ final class HitlPolicy
             'Bash' => self::classifyBash($input, $root),
             default => self::verdict(self::ASK, "Tool '{$toolName}' requires manual review."),
         };
-    }
-
-    /** @return string[] */
-    private static function sensitiveStrings(array $input): array
-    {
-        $values = [];
-        foreach (self::PATH_LIKE_KEYS as $key) {
-            $value = $input[$key] ?? null;
-            if (is_string($value) && $value !== '') {
-                $values[] = $value;
-            }
-        }
-        return $values;
     }
 
     /** R3: Write/Edit must stay inside the workspace. @return array{level: string, reason: string} */
@@ -469,49 +459,7 @@ final class HitlPolicy
      */
     public static function splitSegments(string $command): array
     {
-        // Split on &&, ||, ;, |, and newlines — but only outside quotes, so a
-        // quoted "a|b" argument no longer shatters into bogus segments.
-        $segments = [];
-        $current = '';
-        $quote = null;
-        $len = strlen($command);
-        for ($i = 0; $i < $len; $i++) {
-            $ch = $command[$i];
-            if ($quote !== "'") {
-                if ($ch === '\\') {
-                    $current .= substr($command, $i, 2);
-                    $i++;
-                    continue;
-                }
-                if ($quote === null && ($ch === "'" || $ch === '"')) {
-                    $quote = $ch;
-                    $current .= $ch;
-                    continue;
-                }
-            }
-            if ($quote !== null) {
-                $current .= $ch;
-                if ($ch === $quote) {
-                    $quote = null;
-                }
-                continue;
-            }
-            if (($ch === '&' || $ch === '|') && ($command[$i + 1] ?? '') === $ch) {
-                $segments[] = $current;
-                $current = '';
-                $i++;
-                continue;
-            }
-            if ($ch === ';' || $ch === '|' || $ch === "\n" || $ch === "\r") {
-                $segments[] = $current;
-                $current = '';
-                continue;
-            }
-            $current .= $ch;
-        }
-        $segments[] = $current;
-
-        return array_values(array_filter(array_map('trim', $segments), static fn (string $s): bool => $s !== ''));
+        return SensitivePathGuard::splitShellSegments($command);
     }
 
     /** @return array{level: string, reason: string} */
@@ -522,7 +470,8 @@ final class HitlPolicy
             return $redirect;
         }
 
-        $tokens = preg_split('/\s+/', trim($segment)) ?: [];
+        $staticSegment = SensitivePathGuard::normalizeShellStaticText($segment);
+        $tokens = preg_split('/\s+/', trim($staticSegment)) ?: [];
         $tokens = array_values(array_filter(array_map(
             static fn (string $token): string => trim($token, "\"'"),
             $tokens,
@@ -540,6 +489,19 @@ final class HitlPolicy
 
         if (isset(self::HARD_RED_COMMANDS[$command])) {
             return self::verdict(self::RED_LINE, "Red-line command '{$command}': ".self::HARD_RED_COMMANDS[$command].'.');
+        }
+        if (SensitivePathGuard::requiresShellPathReview($segment)) {
+            return self::verdict(
+                self::ASK,
+                "Read command '{$command}' uses dynamic shell path expansion.",
+            );
+        }
+        $readOnlyMutation = ReadOnlyCommandSafety::mutationReason($segment);
+        if ($command !== 'git' && $readOnlyMutation !== null) {
+            return self::verdict(self::ASK, $readOnlyMutation);
+        }
+        if ($command === 'find' && array_intersect(self::FIND_MUTATING_ACTIONS, $args) !== []) {
+            return self::verdict(self::ASK, 'find action may mutate files or execute commands.');
         }
         if ($command === 'rm') {
             return self::classifyRm($args, $root);
@@ -568,6 +530,9 @@ final class HitlPolicy
             $red = self::classifyGitRedLine($args);
             if ($red !== null) {
                 return $red;
+            }
+            if ($readOnlyMutation !== null) {
+                return self::verdict(self::ASK, $readOnlyMutation);
             }
         }
         if ($command === 'sysctl') {
@@ -607,9 +572,19 @@ final class HitlPolicy
      */
     private static function checkRedirects(string $segment, string $root): ?array
     {
-        $cleaned = preg_replace('/\d?>&\d/', ' ', $segment) ?? $segment;
+        $cleaned = preg_replace(
+            '/(?:\d+|\{[A-Za-z_][A-Za-z0-9_]*\})?>&(?:\d+|-)\b/',
+            ' ',
+            $segment,
+        ) ?? $segment;
         $cleaned = preg_replace('/\d?>>?\s*\/dev\/null/', ' ', $cleaned) ?? $cleaned;
+        $cleaned = preg_replace(
+            '/(?:\d+|\{[A-Za-z_][A-Za-z0-9_]*\})?>&\s*(?=\S)/',
+            '>',
+            $cleaned,
+        ) ?? $cleaned;
         $cleaned = str_replace('&>', '>', $cleaned);
+        $cleaned = str_replace('>|', '>', $cleaned);
 
         $targets = [];
         if (preg_match_all('/>>?\s*([^\s|&;<>]+)/', $cleaned, $matches) > 0) {
@@ -619,6 +594,9 @@ final class HitlPolicy
             $targets = array_merge($targets, $teeMatches[1]);
         }
         foreach ($targets as $target) {
+            if (SensitivePathGuard::requiresShellPathReview("cat {$target}")) {
+                return self::verdict(self::ASK, 'Redirect target uses dynamic shell path expansion.');
+            }
             $target = trim($target, "\"'");
             if ($target === '') {
                 continue;
@@ -650,7 +628,7 @@ final class HitlPolicy
     private static function isWithinTempDir(string $resolved): bool
     {
         foreach (self::tempDirs() as $dir) {
-            if ($resolved === $dir || str_starts_with($resolved, $dir.'/')) {
+            if (CanonicalPathResolver::isWithin($resolved, $dir)) {
                 return true;
             }
         }
@@ -790,7 +768,7 @@ final class HitlPolicy
             return self::verdict(self::AUTO_ALLOW, "Read-only command '{$command}'.");
         }
         if ($command === 'find') {
-            foreach (['-exec', '-execdir', '-ok', '-okdir', '-delete'] as $flag) {
+            foreach (self::FIND_MUTATING_ACTIONS as $flag) {
                 if (in_array($flag, $args, true)) {
                     return null;
                 }
@@ -928,52 +906,31 @@ final class HitlPolicy
         if ($rawPath === '') {
             return null;
         }
-        if ($rawPath === '~' || str_starts_with($rawPath, '~/')) {
-            $home = getenv('HOME');
-            if (! is_string($home) || $home === '') {
-                return null;
-            }
-            $rawPath = $home.substr($rawPath, 1);
-        } elseif (str_starts_with($rawPath, '~')) {
+        if (str_starts_with($rawPath, '~')
+            && $rawPath !== '~'
+            && ! str_starts_with($rawPath, '~/')
+            && ! str_starts_with($rawPath, '~\\')
+        ) {
             return null; // ~user expansion is unsupported; fail closed.
         }
-        if (! str_starts_with($rawPath, '/')) {
-            $rawPath = $root.'/'.$rawPath;
-        }
 
-        $parts = [];
-        foreach (explode('/', $rawPath) as $part) {
-            if ($part === '' || $part === '.') {
-                continue;
-            }
-            if ($part === '..') {
-                array_pop($parts);
-                continue;
-            }
-            $parts[] = $part;
-        }
-        $normalized = '/'.implode('/', $parts);
-
-        // Collapse symlinks through the nearest existing ancestor so that a
-        // symlink inside the workspace pointing outside is treated as outside.
-        $candidate = $normalized;
-        $suffix = [];
-        while (! file_exists($candidate) && $candidate !== '/') {
-            $suffix[] = basename($candidate);
-            $candidate = dirname($candidate);
-        }
-        $resolved = realpath($candidate);
-        if ($resolved === false) {
+        try {
+            $resolved = CanonicalPathResolver::resolve($rawPath, $root);
+        } catch (\Throwable) {
             return null;
         }
-        while ($suffix !== []) {
-            $resolved = rtrim($resolved, '/').'/'.array_pop($suffix);
+
+        if (($rawPath === '~' || str_starts_with($rawPath, '~/') || str_starts_with($rawPath, '~\\'))
+            && preg_match('/(^|[\/\\\\])~([\/\\\\]|$)/', $resolved) === 1
+        ) {
+            return null;
         }
-        return $resolved;
+
+        return trim($resolved) === '' ? null : $resolved;
     }
 
     private static function isWithinWorkspace(string $resolved, string $root): bool
     {
-        return $resolved === $root || str_starts_with($resolved, $root.'/');
+        return CanonicalPathResolver::isWithin($resolved, $root);
     }
 }

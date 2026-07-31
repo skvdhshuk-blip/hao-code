@@ -8,6 +8,7 @@ use HaoCode\Services\Permissions\PermissionChecker;
 use HaoCode\Services\Permissions\PermissionMode;
 use HaoCode\Services\Settings\SettingsManager;
 use HaoCode\Tools\BaseTool;
+use HaoCode\Tools\Bash\BashTool;
 use HaoCode\Tools\ToolInputSchema;
 use HaoCode\Tools\ToolResult;
 use HaoCode\Tools\ToolUseContext;
@@ -276,6 +277,159 @@ class PermissionCheckerTest extends TestCase
         $decision = $checker->check($tool, ['command' => 'python3 exploit.py'], $this->context);
 
         $this->assertTrue($decision->needsPrompt);
+    }
+
+    public function test_dynamic_read_paths_cannot_use_bash_read_only_fast_path(): void
+    {
+        $checker = $this->makeChecker();
+        $tool = new BashTool;
+
+        foreach ([
+            'cat .e?v',
+            'cat .e[n]v',
+            'cat .e{n,xx}v',
+            'cat "$TARGET"',
+            'cat <(printf value)',
+            "cat \$'\\x2eenv' /dev/null",
+            "cat \$'\\056env' /dev/null",
+            'echo ok; cat .e?v',
+        ] as $command) {
+            $decision = $checker->check($tool, ['command' => $command], $this->context);
+
+            $this->assertFalse($decision->allowed, "Unexpected allow for {$command}");
+            $this->assertTrue($decision->needsPrompt, "Expected approval for {$command}");
+        }
+    }
+
+    public function test_process_substitution_always_requires_approval(): void
+    {
+        $checker = $this->makeChecker();
+        $tool = new BashTool;
+
+        foreach ([
+            'echo <(touch /tmp/pwn)',
+            "printf '%s' <(touch /tmp/pwn)",
+            'git status <(touch /tmp/pwn)',
+            'echo value >(cat)',
+        ] as $command) {
+            $decision = $checker->check($tool, ['command' => $command], $this->context);
+
+            $this->assertFalse($decision->allowed, "Unexpected allow for {$command}");
+            $this->assertTrue($decision->needsPrompt, "Expected approval for {$command}");
+        }
+    }
+
+    public function test_find_mutations_and_environment_dump_do_not_auto_approve(): void
+    {
+        $checker = $this->makeChecker();
+        $tool = new BashTool;
+
+        foreach ([
+            'find . -delete',
+            'find . -fprint /tmp/result',
+            'find . -fprint0 /tmp/result',
+            'find . -fprintf /tmp/result "%p\\n"',
+            'find . -fls /tmp/result',
+            'find . -exec touch /tmp/result {} ;',
+            'find . -"del"ete',
+            'echo ok; find . -delete',
+            'printenv',
+            'echo ok; printenv',
+        ] as $command) {
+            $decision = $checker->check($tool, ['command' => $command], $this->context);
+
+            $this->assertFalse($decision->allowed, "Unexpected allow for {$command}");
+            $this->assertTrue($decision->needsPrompt, "Expected approval for {$command}");
+        }
+    }
+
+    public function test_file_opening_redirects_cannot_use_read_only_fast_path(): void
+    {
+        $checker = $this->makeChecker();
+        $tool = new BashTool;
+
+        foreach ([
+            'echo ok <> /tmp/pwn',
+            'echo ok 3<>/tmp/pwn',
+            'cat <> /tmp/pwn',
+            'echo ok >& /tmp/pwn',
+            'echo ok >&/tmp/pwn',
+            'echo ok 2>&/tmp/pwn',
+            'echo ok {output}>/tmp/pwn',
+        ] as $command) {
+            $decision = $checker->check($tool, ['command' => $command], $this->context);
+
+            $this->assertFalse($decision->allowed, "Unexpected allow for {$command}");
+            $this->assertTrue($decision->needsPrompt, "Expected approval for {$command}");
+        }
+    }
+
+    public function test_mutating_read_command_options_require_approval(): void
+    {
+        $checker = $this->makeChecker();
+        $tool = new BashTool;
+
+        foreach ([
+            'echo payload | tee /tmp/output',
+            'echo payload | tee "$HOME/.profile"',
+            'sort -o /tmp/output README.md',
+            'sort -uo /tmp/output README.md',
+            'sort --output=/tmp/output README.md',
+            'uniq README.md /tmp/output',
+            'file -C -m ./magic',
+            'git diff --output=/tmp/output',
+            'git remote add example https://example.com/repo.git',
+            'git branch -D important',
+            'git tag v-next',
+            'date -s @0',
+            'hostname changed',
+        ] as $command) {
+            $decision = $checker->check($tool, ['command' => $command], $this->context);
+
+            $this->assertFalse($decision->allowed, "Unexpected allow for {$command}");
+            $this->assertTrue($decision->needsPrompt, "Expected approval for {$command}");
+        }
+    }
+
+    public function test_plan_mode_denies_mutating_read_command_options(): void
+    {
+        $checker = $this->makeChecker(PermissionMode::Plan);
+        $tool = new BashTool;
+
+        foreach ([
+            'echo payload | tee /tmp/output',
+            'sort -o /tmp/output README.md',
+            'sort -uo /tmp/output README.md',
+            'uniq README.md /tmp/output',
+            'git remote add example https://example.com/repo.git',
+        ] as $command) {
+            $decision = $checker->check($tool, ['command' => $command], $this->context);
+
+            $this->assertFalse($decision->allowed, "Unexpected plan allow for {$command}");
+            $this->assertFalse($decision->needsPrompt, "Expected plan deny for {$command}");
+        }
+    }
+
+    public function test_shell_obfuscation_and_sensitive_env_expansion_require_approval(): void
+    {
+        $checker = $this->makeChecker();
+        $tool = new BashTool;
+
+        foreach ([
+            'cat$IFS.env',
+            'cat$IFS.e"nv"',
+            'cat$IFS$TARGET',
+            'cat$IFS./.e?v',
+            "echo <\\\n(printf x)",
+            "echo \$\\\n(printf x)",
+            'echo "$OPENAI_API_KEY"',
+            "printf '%s' \"\$ANTHROPIC_API_KEY\"",
+        ] as $command) {
+            $decision = $checker->check($tool, ['command' => $command], $this->context);
+
+            $this->assertFalse($decision->allowed, "Unexpected allow for {$command}");
+            $this->assertTrue($decision->needsPrompt, "Expected approval for {$command}");
+        }
     }
 
     // ─── default branch: non-Bash/Read/Edit/Write/Glob/Grep tools ────────

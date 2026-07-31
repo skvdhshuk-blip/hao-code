@@ -33,7 +33,7 @@ class SensitivePathGuardTest extends TestCase
             'netrc'                   => ['file_path', '/home/u/.netrc', 'netrc file'],
             'npmrc'                   => ['file_path', '/home/u/.npmrc', 'npmrc file'],
             'pypirc'                  => ['file_path', '/home/u/.pypirc', 'pypirc file'],
-            'proc environ'            => ['command', 'cat /proc/self/environ', 'process environment harvesting'],
+            'proc environ'            => ['command', 'cat /proc/self/environ', 'process environment/argument harvesting'],
             'keychain extraction'     => ['command', 'security find-generic-password -s x', 'macOS keychain extraction'],
             'runtime state json'      => ['file_path', '/tmp/runtime-state.json', 'adapter runtime state holding secrets'],
             'windows ssh dir'         => ['file_path', 'C:\\Users\\user\\.ssh\\config', 'SSH directory'],
@@ -41,6 +41,20 @@ class SensitivePathGuardTest extends TestCase
             'windows dotenv file'     => ['file_path', 'C:\\project\\.env.local', 'dotenv file'],
             'windows dotenv ADS'      => ['file_path', 'C:\\project\\.env::$DATA', 'dotenv file'],
             'windows SSH key ADS'     => ['file_path', 'C:\\Users\\user\\id_ed25519::$DATA', 'SSH private key'],
+            'quoted dotenv command'   => ['command', 'cat ".env" /dev/null', 'dotenv file'],
+            'private key later arg'   => ['command', 'cat id_rsa /dev/null', 'SSH private key'],
+            'PEM later arg'           => ['command', 'cat secret.pem /dev/null', 'key/certificate material'],
+            'quoted npmrc command'    => ['command', "cat '.npmrc' package.json", 'npmrc file'],
+            'dotenv before separator' => ['command', 'cat .env; echo done', 'dotenv file'],
+            'split quoted dotenv'     => ['command', 'cat .e"nv" /dev/null', 'dotenv file'],
+            'empty quote dotenv'      => ['command', "cat .e''nv /dev/null", 'dotenv file'],
+            'split quoted private key'=> ['command', 'cat id_"rsa" /dev/null', 'SSH private key'],
+            'split quoted PEM'        => ['command', 'cat secret.pe"m" /dev/null', 'key/certificate material'],
+            'escaped dotenv'          => ['command', 'cat .e\\nv /dev/null', 'dotenv file'],
+            'escaped private key'     => ['command', 'cat id_\\rsa /dev/null', 'SSH private key'],
+            'escaped PEM'             => ['command', 'cat secret.pe\\m /dev/null', 'key/certificate material'],
+            'ANSI quoted dotenv'      => ['command', "cat \$'.env' /dev/null", 'dotenv file'],
+            'proc process arguments'  => ['command', 'cat /proc/self/cmdline', 'process environment/argument harvesting'],
         ];
     }
 
@@ -65,6 +79,9 @@ class SensitivePathGuardTest extends TestCase
             'log file'             => ['file_path', '/var/log/app.log'],
             'innocent bash'        => ['command', 'ls -la /app'],
             'grep command'         => ['command', 'rg "foo" /app/src'],
+            'environment filename' => ['command', 'cat .environment /dev/null'],
+            'pem-like extension'   => ['command', 'cat certificate.pemx /dev/null'],
+            'key-like filename'    => ['command', 'cat id_rsa2 /dev/null'],
         ];
     }
 

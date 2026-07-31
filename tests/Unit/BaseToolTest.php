@@ -2,6 +2,7 @@
 
 namespace Tests\Unit;
 
+use HaoCode\Support\Filesystem\CanonicalPathResolver;
 use HaoCode\Tools\BaseTool;
 use HaoCode\Tools\ToolInputSchema;
 use HaoCode\Tools\ToolResult;
@@ -228,6 +229,38 @@ class BaseToolTest extends TestCase
         $result = $this->resolvePath('\\\\server\\share\\one\\..\\two.txt', $this->testDir);
 
         $this->assertSame('\\\\server\\share\\two.txt', strtolower($result));
+    }
+
+    public function test_resolve_windows_root_relative_path_uses_working_drive(): void
+    {
+        $this->assertSame(
+            'D:\\rooted\\note.txt',
+            CanonicalPathResolver::resolve('\\rooted\\note.txt', 'D:\\workspace\\repo'),
+        );
+    }
+
+    public function test_windows_containment_is_case_insensitive_and_boundary_aware(): void
+    {
+        $this->assertTrue(CanonicalPathResolver::isWithin(
+            'c:\\WORKSPACE\\repo\\src\\File.php',
+            'C:\\workspace\\repo',
+        ));
+        $this->assertFalse(CanonicalPathResolver::isWithin(
+            'C:\\workspace\\repository\\File.php',
+            'C:\\workspace\\repo',
+        ));
+        $this->assertFalse(CanonicalPathResolver::isWithin(
+            'D:\\workspace\\repo\\File.php',
+            'C:\\workspace\\repo',
+        ));
+        $this->assertTrue(CanonicalPathResolver::isWithin(
+            '\\\\Server\\Share\\Repo\\src\\File.php',
+            '\\\\server\\share\\repo',
+        ));
+        $this->assertFalse(CanonicalPathResolver::isWithin(
+            '\\\\server\\share-two\\repo\\File.php',
+            '\\\\server\\share\\repo',
+        ));
     }
 
     private function homeDirectory(): string

@@ -286,6 +286,24 @@ class BashToolTest extends TestCase
         $this->assertFalse($this->tool->isReadOnlyCommand("printf 'hello' > note.txt"));
     }
 
+    public function test_read_write_and_file_descriptor_redirects_are_not_read_only(): void
+    {
+        foreach ([
+            'echo ok <> /tmp/result',
+            'echo ok 3<>/tmp/result',
+            'cat <> /tmp/result',
+            'echo ok >& /tmp/result',
+            'echo ok >&/tmp/result',
+            'echo ok 2>&/tmp/result',
+            'echo ok {output}>/tmp/result',
+        ] as $command) {
+            $this->assertFalse($this->tool->isReadOnlyCommand($command), $command);
+        }
+
+        $this->assertTrue($this->tool->isReadOnlyCommand('echo ok 2>&1'));
+        $this->assertTrue($this->tool->isReadOnlyCommand('echo ok 3>&-'));
+    }
+
     public function test_tee_with_file_target_is_not_read_only(): void
     {
         $this->assertFalse($this->tool->isReadOnlyCommand('tee -a note.txt'));
@@ -294,6 +312,82 @@ class BashToolTest extends TestCase
     public function test_printf_piped_to_read_command_stays_read_only(): void
     {
         $this->assertTrue($this->tool->isReadOnlyCommand("printf 'hello' | wc -c"));
+    }
+
+    public function test_find_mutating_actions_are_not_read_only(): void
+    {
+        foreach ([
+            'find . -delete',
+            'find . -exec touch /tmp/result {} ;',
+            'find . -execdir touch result {} ;',
+            'find . -ok rm {} ;',
+            'find . -okdir rm {} ;',
+            'find . -fprint /tmp/result',
+            'find . -fprint0 /tmp/result',
+            'find . -fprintf /tmp/result "%p\\n"',
+            'find . -fls /tmp/result',
+            'find . -"del"ete',
+            'echo ok; find . -delete',
+        ] as $command) {
+            $this->assertFalse($this->tool->isReadOnlyCommand($command), $command);
+        }
+    }
+
+    public function test_printenv_is_not_read_only(): void
+    {
+        $this->assertFalse($this->tool->isReadOnlyCommand('printenv'));
+        $this->assertFalse($this->tool->isReadOnlyCommand('echo ok; printenv'));
+    }
+
+    public function test_every_compound_segment_must_be_read_only(): void
+    {
+        $this->assertTrue($this->tool->isReadOnlyCommand('ls -la && git status'));
+        $this->assertTrue($this->tool->isReadOnlyCommand("printf 'hello' | wc -c"));
+        $this->assertFalse($this->tool->isReadOnlyCommand('echo ok; touch changed'));
+        $this->assertFalse($this->tool->isReadOnlyCommand('cat README.md & touch changed'));
+    }
+
+    public function test_mutating_options_on_read_commands_are_not_read_only(): void
+    {
+        foreach ([
+            'echo payload | tee /tmp/output',
+            'echo payload | tee -a /tmp/output',
+            'sort -o /tmp/output README.md',
+            'sort -uo /tmp/output README.md',
+            'sort --output=/tmp/output README.md',
+            'sort --compress-program=gzip README.md',
+            'uniq README.md /tmp/output',
+            'file -C -m ./magic',
+            'file --compile -m ./magic',
+            'git diff --output=/tmp/output',
+            'git remote add example https://example.com/repo.git',
+            'git branch -D important',
+            'git tag v-next',
+            'date -s @0',
+            'hostname changed',
+        ] as $command) {
+            $this->assertFalse($this->tool->isReadOnlyCommand($command), $command);
+        }
+    }
+
+    public function test_parameter_checked_read_commands_remain_read_only(): void
+    {
+        foreach ([
+            'sort README.md',
+            'uniq README.md',
+            'uniq README.md -',
+            'file README.md',
+            'git diff',
+            'git branch',
+            'git branch --show-current',
+            'git tag --list',
+            'date +%F',
+            'date -d yesterday +%F',
+            'hostname',
+            'hostname -f',
+        ] as $command) {
+            $this->assertTrue($this->tool->isReadOnlyCommand($command), $command);
+        }
     }
 
     public function test_rm_is_not_read_only(): void

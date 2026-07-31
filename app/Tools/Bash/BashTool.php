@@ -2,6 +2,8 @@
 
 namespace HaoCode\Tools\Bash;
 
+use HaoCode\Services\Permissions\PermissionDecision;
+use HaoCode\Services\Permissions\SensitivePathGuard;
 use HaoCode\Support\Runtime\ProcessSupervisor;
 use HaoCode\Support\Runtime\SpawnEnvironment;
 use HaoCode\Tools\BaseTool;
@@ -87,6 +89,28 @@ DESC;
             'timeout' => 'nullable|integer|min:1000|max:600000',
             'run_in_background' => 'nullable|boolean',
         ]);
+    }
+
+    public function checkPermissions(array $input, ToolUseContext $context): PermissionDecision
+    {
+        $command = $input['command'] ?? '';
+        if (! is_string($command)) {
+            return PermissionDecision::allow();
+        }
+
+        if (SensitivePathGuard::requiresShellPathReview($command)) {
+            return PermissionDecision::ask(
+                'Read command uses dynamic shell path expansion and requires approval.',
+            );
+        }
+        foreach (SensitivePathGuard::splitShellSegments($command) as $segment) {
+            $reason = ReadOnlyCommandSafety::mutationReason($segment);
+            if ($reason !== null) {
+                return PermissionDecision::ask($reason);
+            }
+        }
+
+        return PermissionDecision::allow();
     }
 
     public function call(array $input, ToolUseContext $context): ToolResult
@@ -900,7 +924,7 @@ DESC;
             '/^\s*(ls|find|locate|which|whereis|file|stat|du|df)\b/',
             '/^\s*(grep|rg|ag|ack|fgrep|egrep)\b/',
             '/^\s*(git\s+(status|log|diff|branch|tag|remote|show|blame|rev-parse|ls-files|ls-tree))\b/',
-            '/^\s*(echo|printenv|env|print|printf)\b/',
+            '/^\s*(echo|print|printf)\b/',
             '/^\s*(php\s+(-v|-m|-i|-r\s+echo|artisan\s+(--version|about|env|list|route:list)))\b/',
             '/^\s*(composer\s+(show|info|outdated|check))\b/',
             '/^\s*(node\s+(-v|--version))\b/',
@@ -910,13 +934,28 @@ DESC;
             '/^\s*(test\s)/',
         ];
 
-        foreach ($readOnlyPatterns as $pattern) {
-            if (preg_match($pattern . 'i', $command)) {
-                return true;
+        $segments = SensitivePathGuard::splitShellSegments($command);
+        if ($segments === []) {
+            return false;
+        }
+
+        foreach ($segments as $segment) {
+            if (ReadOnlyCommandSafety::mutationReason($segment) !== null) {
+                return false;
+            }
+            $readOnly = false;
+            foreach ($readOnlyPatterns as $pattern) {
+                if (preg_match($pattern.'i', $segment) === 1) {
+                    $readOnly = true;
+                    break;
+                }
+            }
+            if (! $readOnly) {
+                return false;
             }
         }
 
-        return false;
+        return true;
     }
 
     private function hasWriteSideEffects(string $command): bool
@@ -926,9 +965,32 @@ DESC;
             return false;
         }
 
+        $normalized = SensitivePathGuard::normalizeShellStaticText($trimmed);
+        if (preg_match(
+            '/(?:^|[;&|\r\n]\s*)find\b[^;&|\r\n]*(?:\s)-(?:delete|exec(?:dir)?|ok(?:dir)?|fprint(?:0)?|fprintf|fls)\b/i',
+            $normalized,
+        ) === 1) {
+            return true;
+        }
+
         // Treat output redirection as a write so commands like
         // `printf foo > file.txt` still require approval.
-        if (preg_match('/(?:^|[\s;&(])(?:\d+)?>>?(?![&(])\s*\S+/i', $trimmed) === 1) {
+        if (preg_match(
+            '/(?:^|[\s;&(])(?:\d+|\{[A-Za-z_][A-Za-z0-9_]*\})?>>?(?![&(])\s*\S+/i',
+            $trimmed,
+        ) === 1) {
+            return true;
+        }
+        if (preg_match(
+            '/(?:^|[\s;&(])(?:\d+|\{[A-Za-z_][A-Za-z0-9_]*\})?<>\s*\S+/i',
+            $trimmed,
+        ) === 1) {
+            return true;
+        }
+        if (preg_match(
+            '/(?:^|[\s;&(])(?:\d+|\{[A-Za-z_][A-Za-z0-9_]*\})?>&\s*(?!\d+(?:\s|$)|-(?:\s|$))\S+/i',
+            $trimmed,
+        ) === 1) {
             return true;
         }
 

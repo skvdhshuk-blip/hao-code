@@ -13,7 +13,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        php-version: ['8.1', '8.2', '8.4']
+        php-version: ['8.1', '8.2', '8.3', '8.4']
 
     steps:
       - uses: actions/checkout@v4
@@ -69,5 +69,14 @@ jobs:
           tests/Unit/BaseToolTest.php
           tests/Unit/GrepToolTest.php
           tests/Unit/GlobToolTest.php
+          tests/Unit/Hitl/HitlWindowsCompatibilityTest.php
+          tests/Unit/SensitivePathGuardTest.php
           tests/Unit/TestDiscoveryCheckTest.php
+          --no-progress
+
+      - name: Run focused hook working-directory tests
+        run: >-
+          php -d memory_limit=-1 vendor/bin/phpunit
+          tests/Unit/HookExecutorTest.php
+          --filter process_start_failure
           --no-progress

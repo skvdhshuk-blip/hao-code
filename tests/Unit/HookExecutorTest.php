@@ -241,7 +241,6 @@ class HookExecutorTest extends TestCase
 
         $pidFile = sys_get_temp_dir().'/haocode-hook-child-'.bin2hex(random_bytes(8));
         $childScript = <<<'PHP'
-file_put_contents($argv[1], (string) getmypid());
 if (function_exists('pcntl_async_signals') && function_exists('pcntl_signal')) {
     pcntl_async_signals(true);
     pcntl_signal(15, SIG_IGN);
@@ -252,8 +251,8 @@ while (true) {
 PHP;
         $command = escapeshellarg(PHP_BINARY)
             .' -r '.escapeshellarg($childScript)
-            .' '.escapeshellarg($pidFile)
-            .' & wait';
+            .' & child_pid=$!; printf %s "$child_pid" > '.escapeshellarg($pidFile)
+            .'; wait "$child_pid"';
         $runner = new HookProcessRunner(timeoutSeconds: 0.25);
         $executor = $this->makeExecutor(
             ['PreToolUse' => [$this->makeHook('PreToolUse', $command)]],

@@ -75,6 +75,32 @@ class DangerousPatternsTest extends TestCase
         $this->assertStringContainsString('Backtick', $result);
     }
 
+    public function test_process_substitution_is_flagged(): void
+    {
+        $this->assertStringContainsString(
+            'Process substitution',
+            DangerousPatterns::checkObfuscation('echo <(touch /tmp/pwn)') ?? '',
+        );
+        $this->assertStringContainsString(
+            'Process substitution',
+            DangerousPatterns::checkObfuscation('printf value >(cat)') ?? '',
+        );
+    }
+
+    public function test_line_continuation_cannot_hide_substitution(): void
+    {
+        $this->assertNotNull(DangerousPatterns::checkObfuscation("echo <\\\n(printf x)"));
+        $this->assertNotNull(DangerousPatterns::checkObfuscation("echo \$\\\n(printf x)"));
+    }
+
+    public function test_ifs_and_sensitive_environment_expansion_are_flagged(): void
+    {
+        $this->assertNotNull(DangerousPatterns::checkObfuscation('cat$IFS.env'));
+        $this->assertNotNull(DangerousPatterns::checkObfuscation('echo "$OPENAI_API_KEY"'));
+        $this->assertNotNull(DangerousPatterns::checkObfuscation("printf '%s' \"\$ANTHROPIC_API_KEY\""));
+        $this->assertNull(DangerousPatterns::checkObfuscation('echo "$HOME"'));
+    }
+
     public function test_parameter_expansion_is_flagged(): void
     {
         $result = DangerousPatterns::checkObfuscation('echo ${PATH}');

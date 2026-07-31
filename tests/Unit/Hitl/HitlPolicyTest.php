@@ -94,6 +94,33 @@ class HitlPolicyTest extends TestCase
         yield 'Bash cat ~/.ssh/config' => [$R, 'Bash', ['command' => 'cat ~/.ssh/config'], null];
         yield 'Bash cat relative .env' => [$R, 'Bash', ['command' => 'cat .env'], null];
         yield 'Bash cat nested .env.production' => [$R, 'Bash', ['command' => 'cat config/.env.production'], null];
+        yield 'Bash cat quoted .env with later arg' => [$R, 'Bash', ['command' => 'cat ".env" /dev/null'], null];
+        yield 'Bash cat private key with later arg' => [$R, 'Bash', ['command' => 'cat id_rsa /dev/null'], null];
+        yield 'Bash cat PEM with later arg' => [$R, 'Bash', ['command' => 'cat secret.pem /dev/null'], null];
+        yield 'Bash cat split quoted .env' => [$R, 'Bash', ['command' => 'cat .e"nv" /dev/null'], null];
+        yield 'Bash cat empty quote .env' => [$R, 'Bash', ['command' => "cat .e''nv /dev/null"], null];
+        yield 'Bash cat split quoted private key' => [$R, 'Bash', ['command' => 'cat id_"rsa" /dev/null'], null];
+        yield 'Bash cat split quoted PEM' => [$R, 'Bash', ['command' => 'cat secret.pe"m" /dev/null'], null];
+        yield 'Bash cat escaped .env' => [$R, 'Bash', ['command' => 'cat .e\\nv /dev/null'], null];
+        yield 'Bash cat escaped private key' => [$R, 'Bash', ['command' => 'cat id_\\rsa /dev/null'], null];
+        yield 'Bash cat escaped PEM' => [$R, 'Bash', ['command' => 'cat secret.pe\\m /dev/null'], null];
+        yield 'Bash cat glob path asks' => [$Q, 'Bash', ['command' => 'cat .e?v'], null];
+        yield 'Bash cat broad dotfile glob asks' => [$Q, 'Bash', ['command' => 'cat .???'], null];
+        yield 'Bash cat brace expansion asks' => [$Q, 'Bash', ['command' => 'cat .e{n,xx}v'], null];
+        yield 'Bash cat variable path asks' => [$Q, 'Bash', ['command' => 'cat "$TARGET"'], null];
+        yield 'Bash cat substitution path asks' => [$Q, 'Bash', ['command' => 'cat .e$(printf n)v'], null];
+        yield 'Bash redirect glob asks' => [$Q, 'Bash', ['command' => 'echo secret > .e?v'], null];
+        yield 'Bash read-write redirect outside workspace' => [$R, 'Bash', ['command' => 'echo ok <> /outside'], null];
+        yield 'Bash descriptor redirect outside workspace' => [$R, 'Bash', ['command' => 'echo ok >& /outside'], null];
+        yield 'Bash tee output in temp is gray' => [$G, 'Bash', ['command' => 'echo payload | tee /tmp/output'], null];
+        yield 'Bash sort output asks' => [$Q, 'Bash', ['command' => 'sort -o /tmp/output README.md'], null];
+        yield 'Bash bundled sort output asks' => [$Q, 'Bash', ['command' => 'sort -uo /tmp/output README.md'], null];
+        yield 'Bash uniq output asks' => [$Q, 'Bash', ['command' => 'uniq README.md /tmp/output'], null];
+        yield 'Bash file compile asks' => [$Q, 'Bash', ['command' => 'file -C -m ./magic'], null];
+        yield 'Bash git diff output asks' => [$Q, 'Bash', ['command' => 'git diff --output=/tmp/output'], null];
+        yield 'Bash git branch delete asks' => [$Q, 'Bash', ['command' => 'git branch -D important'], null];
+        yield 'Bash date set asks' => [$Q, 'Bash', ['command' => 'date -s @0'], null];
+        yield 'Bash hostname change asks' => [$Q, 'Bash', ['command' => 'hostname changed'], null];
         yield 'Read Windows SSH key' => [$R, 'Read', ['file_path' => 'C:\\Users\\user\\.ssh\\id_rsa'], null];
         yield 'Read Windows dotenv ADS' => [$R, 'Read', ['file_path' => 'C:\\project\\.env::$DATA'], null];
         yield 'Bash keychain extraction' => [$R, 'Bash', ['command' => 'security find-generic-password -s x'], null];
@@ -138,9 +165,13 @@ class HitlPolicyTest extends TestCase
         yield 'Bash rm -rf narrow inside workspace' => [$G, 'Bash', ['command' => "rm -rf {$workspace}/build"], null];
         yield 'Bash plain rm inside workspace' => [$G, 'Bash', ['command' => "rm {$workspace}/sub/existing.php"], null];
         yield 'Bash unknown interpreter command' => [$G, 'Bash', ['command' => 'python3 script.py'], null];
-        yield 'Bash git branch -d' => [$A, 'Bash', ['command' => 'git branch -d feature'], null];
+        yield 'Bash git branch -d' => [$Q, 'Bash', ['command' => 'git branch -d feature'], null];
         yield 'Bash find read-only' => [$A, 'Bash', ['command' => 'find . -name "*.php"'], null];
-        yield 'Bash find -delete' => [$G, 'Bash', ['command' => 'find . -name "*.log" -delete'], null];
+        yield 'Bash find -delete' => [$Q, 'Bash', ['command' => 'find . -name "*.log" -delete'], null];
+        yield 'Bash find split quoted -delete' => [$Q, 'Bash', ['command' => 'find . -"del"ete'], null];
+        yield 'Bash find -fprint' => [$Q, 'Bash', ['command' => 'find . -fprint /tmp/result'], null];
+        yield 'Bash find -fprintf' => [$Q, 'Bash', ['command' => 'find . -fprintf /tmp/result "%p\\n"'], null];
+        yield 'Bash find -fls' => [$Q, 'Bash', ['command' => 'find . -fls /tmp/result'], null];
         yield 'Bash echo redirect inside workspace' => [$A, 'Bash', ['command' => "echo hi > {$workspace}/note.txt"], null];
         yield 'Bash echo redirect outside workspace' => [$R, 'Bash', ['command' => 'echo hi > /etc/note'], null];
 
@@ -186,12 +217,12 @@ class HitlPolicyTest extends TestCase
         yield 'Bash git stash' => [$A, 'Bash', ['command' => 'git stash'], null];
         yield 'Bash git stash push' => [$A, 'Bash', ['command' => 'git stash push -m wip'], null];
         yield 'Bash git stash pop' => [$A, 'Bash', ['command' => 'git stash pop'], null];
-        yield 'Bash git tag create' => [$A, 'Bash', ['command' => 'git tag v1.0.0'], null];
+        yield 'Bash git tag create' => [$Q, 'Bash', ['command' => 'git tag v1.0.0'], null];
         yield 'Bash git tag list' => [$A, 'Bash', ['command' => 'git tag -l'], null];
-        yield 'Bash git tag -d' => [$G, 'Bash', ['command' => 'git tag -d v1.0.0'], null];
+        yield 'Bash git tag -d' => [$Q, 'Bash', ['command' => 'git tag -d v1.0.0'], null];
         yield 'Bash git branch list' => [$A, 'Bash', ['command' => 'git branch'], null];
-        yield 'Bash git branch create' => [$A, 'Bash', ['command' => 'git branch feature'], null];
-        yield 'Bash git branch -D' => [$A, 'Bash', ['command' => 'git branch -D feature'], null];
+        yield 'Bash git branch create' => [$Q, 'Bash', ['command' => 'git branch feature'], null];
+        yield 'Bash git branch -D' => [$Q, 'Bash', ['command' => 'git branch -D feature'], null];
 
         // --- Policy relaxation: git red lines that must stay red ------------------
         yield 'Bash git rebase' => [$R, 'Bash', ['command' => 'git rebase main'], null];
