@@ -38,6 +38,12 @@ class BashTool extends BaseTool
         return 'Bash';
     }
 
+    /** @internal */
+    public static function setSessionWorkingDirectory(string $sessionId, string $workingDirectory): void
+    {
+        self::$sessionWorkingDirectories[$sessionId] = $workingDirectory;
+    }
+
     public function description(): string
     {
         return <<<DESC

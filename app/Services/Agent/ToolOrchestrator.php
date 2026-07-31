@@ -269,6 +269,42 @@ class ToolOrchestrator
         ?callable $onToolStart = null,
         ?callable $onToolComplete = null,
     ): array {
+        $ownsBatch = ! $context->hasReadReceiptBatch();
+        if ($ownsBatch) {
+            $context->beginReadReceiptBatch();
+        }
+        try {
+            $results = $this->executeToolsInBatch(
+                $toolUseBlocks,
+                $context,
+                $onToolStart,
+                $onToolComplete,
+            );
+
+            if ($ownsBatch) {
+                $context->commitReadReceiptBatch();
+            }
+
+            return $results;
+        } catch (\Throwable $e) {
+            if ($ownsBatch) {
+                $context->discardReadReceiptBatch();
+            }
+
+            throw $e;
+        }
+    }
+
+    /**
+     * @param array<int, array<string, mixed>> $toolUseBlocks
+     * @return array<int, array<string, mixed>>
+     */
+    private function executeToolsInBatch(
+        array $toolUseBlocks,
+        ToolUseContext $context,
+        ?callable $onToolStart = null,
+        ?callable $onToolComplete = null,
+    ): array {
         if ($context->isAborted()) {
             return array_map(
                 static fn (array $block): array => ToolResult::aborted()->toApiFormat(

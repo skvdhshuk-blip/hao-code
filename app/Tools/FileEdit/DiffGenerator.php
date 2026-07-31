@@ -2,6 +2,8 @@
 
 namespace HaoCode\Tools\FileEdit;
 
+use HaoCode\Services\Git\HardenedGitRunner;
+
 /**
  * Generates unified diffs and structured patches for file edits,
  * matching claude-code's diff output format.
@@ -40,23 +42,7 @@ class DiffGenerator
      */
     public static function gitDiff(string $filePath): string
     {
-        $dir = dirname($filePath);
-        if (!is_dir($dir)) {
-            return '';
-        }
-
-        $escaped = escapeshellarg($filePath);
-        $escapedDir = escapeshellarg($dir);
-
-        // Check if we're in a git repo
-        $inGit = trim(shell_exec("cd {$escapedDir} && git rev-parse --is-inside-work-tree 2>/dev/null") ?? '');
-        if ($inGit !== 'true') {
-            return '';
-        }
-
-        $diff = shell_exec("cd {$escapedDir} && git diff -- {$escaped} 2>/dev/null");
-
-        return trim($diff ?? '');
+        return (new HardenedGitRunner())->diffForFile($filePath);
     }
 
     /**

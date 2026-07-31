@@ -141,4 +141,163 @@ class WorktreeToolsTest extends TestCase
         $this->assertTrue($result->isError);
         $this->assertStringContainsString('Not in a worktree', $result->output);
     }
+
+    public function test_enter_switches_context_and_exit_keep_restores_main_repo(): void
+    {
+        $repo = $this->makeGitRepo('haocode-enter-keep-');
+        $context = new ToolUseContext($repo, 'worktree-keep');
+
+        try {
+            $enter = (new EnterWorktreeTool)->call(['name' => 'demo'], $context);
+            $this->assertFalse($enter->isError, $enter->output);
+            $worktree = $context->workingDirectory;
+            $this->assertNotSame($repo, $worktree);
+            $this->assertDirectoryExists($worktree);
+
+            $exit = (new ExitWorktreeTool)->call(['action' => 'keep'], $context);
+            $this->assertFalse($exit->isError, $exit->output);
+            $this->assertSame($repo, $context->workingDirectory);
+            $this->assertDirectoryExists($worktree);
+        } finally {
+            if (isset($worktree) && is_dir($worktree)) {
+                $this->git($repo, 'worktree remove --force '.escapeshellarg($worktree));
+                $this->git($repo, 'branch -D worktree-demo', allowFailure: true);
+            }
+            $this->removeTree($repo);
+        }
+    }
+
+    public function test_exit_remove_uses_worktree_main_repo_not_php_process_cwd(): void
+    {
+        $repoA = $this->makeGitRepo('haocode-exit-a-');
+        $repoB = $this->makeGitRepo('haocode-exit-b-');
+        $context = new ToolUseContext($repoA, 'worktree-remove');
+        $originalCwd = getcwd();
+
+        try {
+            $enter = (new EnterWorktreeTool)->call(['name' => 'shared'], $context);
+            $this->assertFalse($enter->isError, $enter->output);
+            $worktree = $context->workingDirectory;
+            $this->git($repoB, 'branch worktree-shared');
+            chdir($repoB);
+
+            $exit = (new ExitWorktreeTool)->call(['action' => 'remove', 'discard_changes' => true], $context);
+
+            $this->assertFalse($exit->isError, $exit->output);
+            $this->assertSame($repoA, $context->workingDirectory);
+            $this->assertDirectoryDoesNotExist($worktree);
+            $branches = $this->git($repoB, 'branch --list worktree-shared');
+            $this->assertStringContainsString('worktree-shared', $branches);
+        } finally {
+            if (is_string($originalCwd)) {
+                chdir($originalCwd);
+            }
+            if (isset($worktree) && is_dir($worktree)) {
+                $this->git($repoA, 'worktree remove --force '.escapeshellarg($worktree), allowFailure: true);
+            }
+            $this->removeTree($repoA);
+            $this->removeTree($repoB);
+        }
+    }
+
+    public function test_enter_rejects_claude_and_gitignore_symlinks(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('POSIX symlink coverage.');
+        }
+
+        foreach (['.claude', '.gitignore'] as $target) {
+            $repo = $this->makeGitRepo('haocode-symlink-');
+            $outside = sys_get_temp_dir().'/haocode-symlink-target-'.bin2hex(random_bytes(4));
+            mkdir($outside, 0700, true);
+            if ($target === '.claude') {
+                symlink($outside, $repo.'/.claude');
+            } else {
+                symlink($outside.'/gitignore', $repo.'/.gitignore');
+            }
+
+            try {
+                $context = new ToolUseContext($repo, 'worktree-symlink');
+                $result = (new EnterWorktreeTool)->call(['name' => 'blocked'], $context);
+
+                $this->assertTrue($result->isError, $target);
+                $this->assertStringContainsString('symlink', $result->output, $target);
+                $this->assertDirectoryDoesNotExist($repo.'/.claude/worktrees/blocked');
+            } finally {
+                @unlink($repo.'/'.$target);
+                $this->removeTree($repo);
+                $this->removeTree($outside);
+            }
+        }
+    }
+
+    public function test_enter_does_not_run_post_checkout_hook(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('POSIX hook coverage.');
+        }
+
+        $repo = $this->makeGitRepo('haocode-hook-');
+        $marker = $repo.'/hook-ran';
+        $hook = $repo.'/.git/hooks/post-checkout';
+        file_put_contents($hook, "#!/bin/sh\nprintf ran > ".escapeshellarg($marker)."\n");
+        chmod($hook, 0700);
+        $context = new ToolUseContext($repo, 'worktree-hook');
+
+        try {
+            $result = (new EnterWorktreeTool)->call(['name' => 'nohook'], $context);
+
+            $this->assertFalse($result->isError, $result->output);
+            $this->assertFileDoesNotExist($marker);
+        } finally {
+            $worktree = $context->workingDirectory;
+            if ($worktree !== $repo && is_dir($worktree)) {
+                $this->git($repo, 'worktree remove --force '.escapeshellarg($worktree), allowFailure: true);
+            }
+            $this->removeTree($repo);
+        }
+    }
+
+    private function makeGitRepo(string $prefix): string
+    {
+        if (trim((string) shell_exec('command -v git 2>/dev/null')) === '') {
+            $this->markTestSkipped('git is required for worktree integration coverage.');
+        }
+
+        $repo = sys_get_temp_dir().'/'.$prefix.bin2hex(random_bytes(6));
+        mkdir($repo, 0700, true);
+        $this->git($repo, 'init');
+        $this->git($repo, 'config user.email test@example.com');
+        $this->git($repo, 'config user.name Test');
+        file_put_contents($repo.'/tracked.txt', "base\n");
+        $this->git($repo, 'add tracked.txt');
+        $this->git($repo, 'commit -m init');
+
+        return realpath($repo) ?: $repo;
+    }
+
+    private function git(string $cwd, string $command, bool $allowFailure = false): string
+    {
+        exec('git -C '.escapeshellarg($cwd).' '.$command.' 2>&1', $output, $exitCode);
+        if (! $allowFailure) {
+            $this->assertSame(0, $exitCode, implode("\n", $output));
+        }
+
+        return implode("\n", $output);
+    }
+
+    private function removeTree(string $root): void
+    {
+        if (! is_dir($root)) {
+            return;
+        }
+        $iterator = new \RecursiveIteratorIterator(
+            new \RecursiveDirectoryIterator($root, \FilesystemIterator::SKIP_DOTS),
+            \RecursiveIteratorIterator::CHILD_FIRST,
+        );
+        foreach ($iterator as $item) {
+            $item->isDir() ? @rmdir($item->getPathname()) : @unlink($item->getPathname());
+        }
+        @rmdir($root);
+    }
 }

@@ -286,16 +286,26 @@ class AgentLoop
             provider: $this->provider,
             toolRegistry: $this->toolRegistry,
         );
-        $resolution = (new HumanInterruptCoordinator($this->sessionManager, $this->toolOrchestrator))->resolve(
-            $interruptId,
-            $decisions,
-            $context,
-            $onToolStart,
-            $onToolComplete,
-        );
-        $this->interruptSourceAgentId = $resolution['interrupt']->sourceAgentId;
-        $this->interruptSourceTeam = $resolution['interrupt']->sourceTeam;
-        $this->messageHistory->addToolResultMessage($resolution['results']);
+        $context->beginReadReceiptBatch();
+        $readReceiptBatchCommitted = false;
+        try {
+            $resolution = (new HumanInterruptCoordinator($this->sessionManager, $this->toolOrchestrator))->resolve(
+                $interruptId,
+                $decisions,
+                $context,
+                $onToolStart,
+                $onToolComplete,
+            );
+            $this->interruptSourceAgentId = $resolution['interrupt']->sourceAgentId;
+            $this->interruptSourceTeam = $resolution['interrupt']->sourceTeam;
+            $this->messageHistory->addToolResultMessage($resolution['results']);
+            $context->commitReadReceiptBatch();
+            $readReceiptBatchCommitted = true;
+        } finally {
+            if (! $readReceiptBatchCommitted) {
+                $context->discardReadReceiptBatch();
+            }
+        }
 
         return $this->runInternal(null, $onTextDelta, $onToolStart, $onToolComplete, $onTurnStart, $onThinkingDelta);
     }
@@ -540,6 +550,8 @@ class AgentLoop
                 toolRegistry: $this->toolRegistry,
             );
             $streamingExecutor->setContext($context, $onToolStart, $onToolComplete);
+            $context->beginReadReceiptBatch();
+            $readReceiptBatchCommitted = false;
 
             try {
                 // 4. Call Anthropic API with streaming — tools execute as they arrive
@@ -812,6 +824,8 @@ class AgentLoop
 
                 // 8. Feed tool results back
                 $this->messageHistory->addToolResultMessage($toolResults);
+                $context->commitReadReceiptBatch();
+                $readReceiptBatchCommitted = true;
 
                 // 9. Record transcript
                 $this->persistAssistantTurn($assistantMessage, $toolResults);
@@ -840,6 +854,9 @@ class AgentLoop
                     }
                 }
             } finally {
+                if (! $readReceiptBatchCommitted) {
+                    $context->discardReadReceiptBatch();
+                }
                 // Generator abandonment aborts the loop before force-closing
                 // its SDK streaming Fiber. In that cancellation path, reap
                 // resources silently because completion callbacks suspend the

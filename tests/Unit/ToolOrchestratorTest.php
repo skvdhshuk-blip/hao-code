@@ -8,6 +8,8 @@ use HaoCode\Services\Hooks\HookResult;
 use HaoCode\Services\Permissions\PermissionChecker;
 use HaoCode\Services\Permissions\PermissionDecision;
 use HaoCode\Tools\BaseTool;
+use HaoCode\Tools\FileRead\FileReadTool;
+use HaoCode\Tools\FileWrite\FileWriteTool;
 use HaoCode\Tools\ToolInputSchema;
 use HaoCode\Tools\ToolOutcome;
 use HaoCode\Tools\ToolRegistry;
@@ -91,6 +93,18 @@ class ToolOrchestratorTest extends TestCase
     private function context(): ToolUseContext
     {
         return new ToolUseContext('/tmp', 'test');
+    }
+
+    /** @param array<int, array<string, mixed>> $results */
+    private function resultById(array $results, string $id): array
+    {
+        foreach ($results as $result) {
+            if (($result['tool_use_id'] ?? null) === $id) {
+                return $result;
+            }
+        }
+
+        $this->fail("Missing tool result {$id}.");
     }
 
     // ─── unknown tool ─────────────────────────────────────────────────────
@@ -788,6 +802,78 @@ class ToolOrchestratorTest extends TestCase
         $this->assertSame('safe:A',   $results[0]['content'], 'First result must be safe:A');
         $this->assertSame('unsafe:B', $results[1]['content'], 'Second result must be unsafe:B');
         $this->assertSame('safe:C',   $results[2]['content'], 'Third result must be safe:C');
+    }
+
+    public function test_same_batch_read_does_not_authorize_same_batch_write(): void
+    {
+        $root = sys_get_temp_dir().'/haocode-same-batch-read-write-'.bin2hex(random_bytes(6));
+        mkdir($root, 0700, true);
+        $file = $root.'/config.php';
+        file_put_contents($file, "old\n");
+
+        $registry = new ToolRegistry;
+        $registry->register(new FileReadTool);
+        $registry->register(new FileWriteTool);
+        $context = new ToolUseContext($root, 'same-batch-read-write');
+
+        try {
+            foreach ([
+                'read then write' => [
+                    ['id' => 'read-1', 'name' => 'Read', 'input' => ['file_path' => 'config.php']],
+                    ['id' => 'write-1', 'name' => 'Write', 'input' => ['file_path' => 'config.php', 'content' => "new\n"]],
+                ],
+                'write then read' => [
+                    ['id' => 'write-1', 'name' => 'Write', 'input' => ['file_path' => 'config.php', 'content' => "new\n"]],
+                    ['id' => 'read-1', 'name' => 'Read', 'input' => ['file_path' => 'config.php']],
+                ],
+            ] as $case => $blocks) {
+                file_put_contents($file, "old\n");
+                $context->resetReadState();
+
+                $results = $this->makeOrchestrator($registry)->executeTools($blocks, $context);
+                $writeResult = $this->resultById($results, 'write-1');
+
+                $this->assertTrue($writeResult['is_error'] ?? false, $case);
+                $this->assertStringContainsString('Read tool first', (string) ($writeResult['content'] ?? ''), $case);
+                $this->assertSame("old\n", file_get_contents($file), $case);
+                $this->assertTrue($context->wasFileRead($file), $case);
+            }
+        } finally {
+            @unlink($file);
+            @rmdir($root);
+        }
+    }
+
+    public function test_prior_batch_read_authorizes_later_batch_write(): void
+    {
+        $root = sys_get_temp_dir().'/haocode-prior-batch-read-write-'.bin2hex(random_bytes(6));
+        mkdir($root, 0700, true);
+        $file = $root.'/config.php';
+        file_put_contents($file, "old\n");
+
+        $registry = new ToolRegistry;
+        $registry->register(new FileReadTool);
+        $registry->register(new FileWriteTool);
+        $orchestrator = $this->makeOrchestrator($registry);
+        $context = new ToolUseContext($root, 'prior-batch-read-write');
+
+        try {
+            $readResults = $orchestrator->executeTools([
+                ['id' => 'read-1', 'name' => 'Read', 'input' => ['file_path' => 'config.php']],
+            ], $context);
+            $this->assertFalse($readResults[0]['is_error'] ?? false);
+            $this->assertTrue($context->wasFileRead($file));
+
+            $writeResults = $orchestrator->executeTools([
+                ['id' => 'write-1', 'name' => 'Write', 'input' => ['file_path' => 'config.php', 'content' => "new\n"]],
+            ], $context);
+
+            $this->assertFalse($writeResults[0]['is_error'] ?? false);
+            $this->assertSame("new\n", file_get_contents($file));
+        } finally {
+            @unlink($file);
+            @rmdir($root);
+        }
     }
 
     // ─── deny vs ask distinction ──────────────────────────────────────────

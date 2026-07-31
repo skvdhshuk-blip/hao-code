@@ -775,7 +775,7 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.18.17`. Notable changes since `v1.10.0`:
+is based on `v1.18.18`. Notable changes since `v1.10.0`:
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/
@@ -848,6 +848,10 @@ is based on `v1.18.17`. Notable changes since `v1.10.0`:
 - `v1.18.17` — Cross-platform release gates now cover native Windows path and
   glob behavior, PHP 8.1–8.3 stream abandonment, clean-checkout sandbox tests,
   fail-closed Hook working directories, and Windows-form sensitive paths.
+- `v1.18.18` — Same-response `Read` + `Write` batches no longer satisfy
+  read-before-write authorization; internal Git diffs and worktree commands use
+  isolated argv-based execution; worktree entry/exit preserves session cwd
+  without trusting hooks, symlinks, or the PHP process cwd.
 
 ## License
 

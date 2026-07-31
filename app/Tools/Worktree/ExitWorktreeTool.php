@@ -2,6 +2,8 @@
 
 namespace HaoCode\Tools\Worktree;
 
+use HaoCode\Services\Git\HardenedGitRunner;
+use HaoCode\Tools\Bash\BashTool;
 use HaoCode\Tools\BaseTool;
 use HaoCode\Tools\ToolInputSchema;
 use HaoCode\Tools\ToolResult;
@@ -45,44 +47,47 @@ class ExitWorktreeTool extends BaseTool
     {
         $action = $input['action'];
         $discardChanges = $input['discard_changes'] ?? false;
-        $cwd = $context->workingDirectory;
+        $cwd = realpath($context->workingDirectory) ?: $context->workingDirectory;
 
         // Check if we're actually in a worktree
-        $gitCommonDir = exec('cd ' . escapeshellarg($cwd) . ' && git rev-parse --git-common-dir 2>/dev/null');
-        $gitDir = exec('cd ' . escapeshellarg($cwd) . ' && git rev-parse --git-dir 2>/dev/null');
+        $gitCommonDir = trim($this->git($cwd, ['rev-parse', '--git-common-dir'])['stdout']);
+        $gitDir = trim($this->git($cwd, ['rev-parse', '--git-dir'])['stdout']);
 
-        if (!$gitCommonDir || trim($gitCommonDir) === trim($gitDir)) {
+        if ($gitCommonDir === '' || $gitCommonDir === $gitDir) {
             return ToolResult::error('Not in a worktree session. Nothing to exit.');
+        }
+        $commonDir = $this->resolveGitPath($cwd, $gitCommonDir);
+        $mainRoot = $commonDir === null ? null : dirname($commonDir);
+        if ($mainRoot === null || ! is_dir($mainRoot)) {
+            return ToolResult::error('Could not resolve the main repository for this worktree.');
         }
 
         if ($action === 'remove') {
             // Check for uncommitted changes
-            $status = exec('cd ' . escapeshellarg($cwd) . ' && git status --porcelain 2>/dev/null');
-            if (!empty(trim($status ?? '')) && !$discardChanges) {
-                $fileCount = count(array_filter(explode("\n", trim($status))));
+            $status = $this->git($cwd, ['status', '--porcelain']);
+            if (!empty(trim($status['stdout'])) && !$discardChanges) {
+                $fileCount = count(array_filter(explode("\n", trim($status['stdout']))));
                 return ToolResult::error(
                     "Worktree has {$fileCount} uncommitted file(s). Set discard_changes to true to remove anyway."
                 );
             }
 
             // Get branch name before removing
-            $branch = exec('cd ' . escapeshellarg($cwd) . ' && git branch --show-current 2>/dev/null');
+            $branch = trim($this->git($cwd, ['branch', '--show-current'])['stdout']);
 
             // Remove worktree
-            $command = sprintf(
-                'git worktree remove --force %s 2>&1',
-                escapeshellarg($cwd),
-            );
-            $output = shell_exec($command);
+            $removed = $this->git($mainRoot, ['worktree', 'remove', '--force', $cwd]);
 
             // Also delete the branch if it was a worktree-specific branch
             if ($branch && str_starts_with($branch, 'worktree-')) {
-                exec('git branch -D ' . escapeshellarg($branch) . ' 2>/dev/null');
+                $this->git($mainRoot, ['branch', '-D', $branch]);
             }
 
             if (is_dir($cwd)) {
-                return ToolResult::error("Failed to remove worktree: {$output}");
+                return ToolResult::error("Failed to remove worktree: {$removed['stderr']}{$removed['stdout']}");
             }
+            $context->setWorkingDirectory($mainRoot);
+            BashTool::setSessionWorkingDirectory($context->sessionId, $mainRoot);
 
             return ToolResult::success(
                 "Worktree removed: {$cwd}\n" .
@@ -91,7 +96,10 @@ class ExitWorktreeTool extends BaseTool
         }
 
         // action === 'keep'
-        $branch = exec('cd ' . escapeshellarg($cwd) . ' && git branch --show-current 2>/dev/null');
+        $branch = trim($this->git($cwd, ['branch', '--show-current'])['stdout']);
+        $context->setWorkingDirectory($mainRoot);
+        BashTool::setSessionWorkingDirectory($context->sessionId, $mainRoot);
+
         return ToolResult::success(
             "Worktree kept: {$cwd}\n" .
             "Branch: {$branch}\n" .
@@ -102,5 +110,29 @@ class ExitWorktreeTool extends BaseTool
     public function isReadOnly(array $input): bool
     {
         return ($input['action'] ?? '') !== 'remove';
+    }
+
+    private function resolveGitPath(string $cwd, string $path): ?string
+    {
+        if ($path === '') {
+            return null;
+        }
+        if (! str_starts_with($path, '/')) {
+            $path = rtrim($cwd, '/').'/'.$path;
+        }
+
+        return realpath($path) ?: $path;
+    }
+
+    /** @param list<string> $args @return array{stdout: string, stderr: string, exitCode: int} */
+    private function git(string $cwd, array $args): array
+    {
+        $result = (new HardenedGitRunner())->runGit($cwd, $args, 10.0);
+
+        return [
+            'stdout' => $result['stdout'],
+            'stderr' => $result['timedOut'] ? 'Git command timed out.' : ($result['truncated'] ? 'Git command output exceeded limit.' : $result['stderr']),
+            'exitCode' => $result['exitCode'],
+        ];
     }
 }

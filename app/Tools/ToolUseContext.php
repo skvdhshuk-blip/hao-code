@@ -19,10 +19,13 @@ class ToolUseContext
     /** @var array<string, array<string, mixed>> canonical path => revision receipt */
     private array $readFileState = [];
 
+    /** @var array<string, array<string, mixed>>|null receipts observed in the current tool-result batch */
+    private ?array $pendingReadFileState = null;
+
     private FileStateCache $fileStateCache;
 
     public function __construct(
-        public readonly string $workingDirectory,
+        public string $workingDirectory,
         public readonly string $sessionId,
         \Closure|null $onProgress = null,
         \Closure|null $shouldAbort = null,
@@ -41,6 +44,12 @@ class ToolUseContext
         return $this->shouldAbort ? (bool) ($this->shouldAbort)() : false;
     }
 
+    /** @internal */
+    public function setWorkingDirectory(string $workingDirectory): void
+    {
+        $this->workingDirectory = $workingDirectory;
+    }
+
     /**
      * Record that a file was read and cache its content.
      */
@@ -52,7 +61,7 @@ class ToolUseContext
         if ($revision === null) {
             return;
         }
-        $this->readFileState[$revision->canonicalPath] = $revision->toArray();
+        $this->storeReadRevision($revision->canonicalPath, $revision->toArray());
 
         if ($content !== null) {
             $this->fileStateCache->set($revision->canonicalPath, new FileState(
@@ -90,7 +99,7 @@ class ToolUseContext
             observedAtMicros: (int) round(microtime(true) * 1_000_000),
             local: false,
         );
-        $this->readFileState[$key] = $revision->toArray();
+        $this->storeReadRevision($key, $revision->toArray());
         $this->fileStateCache->set($key, new FileState(
             content: $content,
             timestamp: time(),
@@ -125,14 +134,18 @@ class ToolUseContext
         if ($key === null) {
             return;
         }
-        $value = $this->readFileState[$key] ?? null;
+        $value = $this->readFileState[$key] ?? ($this->pendingReadFileState[$key] ?? null);
         if (! is_array($value) || FileRevision::fromArray($value) === null) {
             return;
         }
 
         $value['complete'] = false;
         $value['observed_at_micros'] = (int) round(microtime(true) * 1_000_000);
-        $this->readFileState[$key] = $value;
+        if (isset($this->pendingReadFileState[$key])) {
+            $this->pendingReadFileState[$key] = $value;
+        } else {
+            $this->readFileState[$key] = $value;
+        }
     }
 
     /**
@@ -143,8 +156,9 @@ class ToolUseContext
     public function forgetFileRead(string $filePath): void
     {
         $virtualKey = $this->virtualRevisionKey($filePath);
-        if (isset($this->readFileState[$virtualKey])) {
+        if (isset($this->readFileState[$virtualKey]) || isset($this->pendingReadFileState[$virtualKey])) {
             unset($this->readFileState[$virtualKey]);
+            unset($this->pendingReadFileState[$virtualKey]);
             $this->fileStateCache->delete($virtualKey);
 
             return;
@@ -152,6 +166,7 @@ class ToolUseContext
 
         $canonicalKey = $this->revisionKey($filePath);
         unset($this->readFileState[$canonicalKey]);
+        unset($this->pendingReadFileState[$canonicalKey]);
         $this->fileStateCache->delete($canonicalKey);
     }
 
@@ -198,6 +213,47 @@ class ToolUseContext
     public function resetReadState(): void
     {
         $this->readFileState = [];
+        $this->pendingReadFileState = null;
+    }
+
+    /**
+     * Start collecting new read receipts for a tool-result batch whose results
+     * have not yet been made visible to the model.
+     *
+     * @internal
+     */
+    public function beginReadReceiptBatch(): void
+    {
+        $this->pendingReadFileState ??= [];
+    }
+
+    /** @internal */
+    public function hasReadReceiptBatch(): bool
+    {
+        return $this->pendingReadFileState !== null;
+    }
+
+    /**
+     * Promote receipts observed in the current batch after the corresponding
+     * tool_result messages have been committed to model-visible history.
+     *
+     * @internal
+     */
+    public function commitReadReceiptBatch(): void
+    {
+        if ($this->pendingReadFileState === null) {
+            return;
+        }
+
+        $pending = $this->pendingReadFileState;
+        $this->pendingReadFileState = null;
+        $this->mergeReadFileStateSnapshot($pending);
+    }
+
+    /** @internal */
+    public function discardReadReceiptBatch(): void
+    {
+        $this->pendingReadFileState = null;
     }
 
     /**
@@ -209,7 +265,9 @@ class ToolUseContext
      */
     public function getReadFileStateSnapshot(): array
     {
-        return $this->readFileState;
+        return $this->pendingReadFileState === null
+            ? $this->readFileState
+            : array_replace($this->readFileState, $this->pendingReadFileState);
     }
 
     /**
@@ -225,12 +283,29 @@ class ToolUseContext
                 continue;
             }
 
-            $existing = $this->readFileState[$path] ?? null;
+            $target =& $this->readFileState;
+            if ($this->pendingReadFileState !== null) {
+                $target =& $this->pendingReadFileState;
+            }
+
+            $existing = $target[$path] ?? null;
             if (! is_array($existing)
                 || ($value['observed_at_micros'] ?? 0) > ($existing['observed_at_micros'] ?? 0)) {
-                $this->readFileState[$path] = $value;
+                $target[$path] = $value;
             }
         }
+    }
+
+    /** @param array<string, mixed> $revision */
+    private function storeReadRevision(string $key, array $revision): void
+    {
+        if ($this->pendingReadFileState !== null) {
+            $this->pendingReadFileState[$key] = $revision;
+
+            return;
+        }
+
+        $this->readFileState[$key] = $revision;
     }
 
     private function revisionKey(string $filePath): string
@@ -241,13 +316,15 @@ class ToolUseContext
     private function existingRevisionKey(string $filePath): ?string
     {
         $virtualKey = $this->virtualRevisionKey($filePath);
-        if (isset($this->readFileState[$virtualKey])) {
+        if (isset($this->readFileState[$virtualKey]) || isset($this->pendingReadFileState[$virtualKey])) {
             return $virtualKey;
         }
 
         $canonicalKey = $this->revisionKey($filePath);
 
-        return isset($this->readFileState[$canonicalKey]) ? $canonicalKey : null;
+        return isset($this->readFileState[$canonicalKey]) || isset($this->pendingReadFileState[$canonicalKey])
+            ? $canonicalKey
+            : null;
     }
 
     /**
