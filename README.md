@@ -775,7 +775,7 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.18.34`. Notable changes since `v1.10.0`:
+is based on `v1.18.35`. Notable changes since `v1.10.0`:
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/
@@ -900,6 +900,9 @@ is based on `v1.18.34`. Notable changes since `v1.10.0`:
 - `v1.18.34` — Git prompt context, managed agent worktrees, file-history diffs,
   and local executable discovery now avoid shell wrappers, carry bounded argv
   execution, and keep worktree cleanup tied to the owning repository.
+- `v1.18.35` — Skill registry Git sync now reuses the shared hardened Git runner,
+  and LSP server startup uses argv-based, bounded non-blocking stdio with
+  process-tree cleanup.
 
 ## License
 

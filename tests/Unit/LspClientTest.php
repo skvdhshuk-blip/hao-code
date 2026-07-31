@@ -3,6 +3,7 @@
 namespace Tests\Unit;
 
 use HaoCode\Services\Lsp\LspClient;
+use HaoCode\Services\Lsp\LspServerProcess;
 use PHPUnit\Framework\TestCase;
 
 class LspClientTest extends TestCase
@@ -96,5 +97,28 @@ class LspClientTest extends TestCase
         $this->assertIsString($source);
         $this->assertStringNotContainsString('shell_exec', $source);
         $this->assertStringNotContainsString('which ', $source);
+    }
+
+    public function test_lsp_server_starts_from_argv_not_shell_command_string(): void
+    {
+        $clientSource = file_get_contents((new \ReflectionClass(LspClient::class))->getFileName());
+        $serverSource = file_get_contents((new \ReflectionClass(LspServerProcess::class))->getFileName());
+
+        $this->assertIsString($clientSource);
+        $this->assertIsString($serverSource);
+        $this->assertStringContainsString('new LspServerProcess($command)', $clientSource);
+        $this->assertStringContainsString('private readonly array $command', $serverSource);
+        $this->assertStringNotContainsString('private readonly string $command', $serverSource);
+    }
+
+    public function test_lsp_server_process_uses_bounded_non_blocking_stdio(): void
+    {
+        $serverSource = file_get_contents((new \ReflectionClass(LspServerProcess::class))->getFileName());
+
+        $this->assertIsString($serverSource);
+        $this->assertStringContainsString('stream_select', $serverSource);
+        $this->assertStringContainsString('MAX_BUFFER_BYTES', $serverSource);
+        $this->assertStringContainsString('ProcessSupervisor::terminateTree', $serverSource);
+        $this->assertStringNotContainsString('fgets(', $serverSource);
     }
 }

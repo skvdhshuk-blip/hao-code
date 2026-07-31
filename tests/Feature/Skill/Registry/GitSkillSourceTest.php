@@ -4,6 +4,7 @@ namespace Tests\Feature\Skill\Registry;
 
 use HaoCode\Skill\Registry\GitRunner;
 use HaoCode\Skill\Registry\GitSkillSource;
+use HaoCode\Skill\Registry\ProcOpenGitRunner;
 use HaoCode\Tools\Skill\SkillDefinition;
 use PHPUnit\Framework\TestCase;
 
@@ -69,6 +70,15 @@ class GitSkillSourceTest extends TestCase
     }
 
     // --- tests ---
+
+    public function test_proc_open_git_runner_delegates_to_hardened_git_runner(): void
+    {
+        $source = file_get_contents((new \ReflectionClass(ProcOpenGitRunner::class))->getFileName());
+
+        $this->assertIsString($source);
+        $this->assertStringContainsString('HardenedGitRunner', $source);
+        $this->assertStringNotContainsString('proc_open', $source);
+    }
 
     public function test_alias_returns_configured_value(): void
     {

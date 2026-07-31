@@ -35,24 +35,33 @@ class LspClient
 
     /**
      * Map language to LSP server command.
+     *
+     * @return list<string>|null
      */
-    private static function getServerCommand(string $language): ?string
+    private static function getServerCommand(string $language): ?array
     {
         return match ($language) {
-            'typescript', 'javascript', 'ts', 'js' => self::findCommand(['typescript-language-server --stdio', 'npx typescript-language-server --stdio']),
-            'php' => self::findCommand(['phpactor', 'phan']),
-            'python', 'py' => self::findCommand(['pylsp', 'pyright-langserver --stdio', 'pyright']),
-            'go' => self::findCommand(['gopls']),
-            'rust' => self::findCommand(['rust-analyzer']),
-            'java' => self::findCommand(['jdtls']),
+            'typescript', 'javascript', 'ts', 'js' => self::findCommand([
+                ['typescript-language-server', '--stdio'],
+                ['npx', 'typescript-language-server', '--stdio'],
+            ]),
+            'php' => self::findCommand([['phpactor'], ['phan']]),
+            'python', 'py' => self::findCommand([['pylsp'], ['pyright-langserver', '--stdio'], ['pyright']]),
+            'go' => self::findCommand([['gopls']]),
+            'rust' => self::findCommand([['rust-analyzer']]),
+            'java' => self::findCommand([['jdtls']]),
             default => null,
         };
     }
 
-    private static function findCommand(array $commands): ?string
+    /**
+     * @param list<list<string>> $commands
+     * @return list<string>|null
+     */
+    private static function findCommand(array $commands): ?array
     {
         foreach ($commands as $cmd) {
-            $binary = explode(' ', $cmd)[0];
+            $binary = $cmd[0] ?? '';
             if (self::isExecutableOnPath($binary)) {
                 return $cmd;
             }
