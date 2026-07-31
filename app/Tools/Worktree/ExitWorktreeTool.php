@@ -109,7 +109,7 @@ class ExitWorktreeTool extends BaseTool
 
     public function isReadOnly(array $input): bool
     {
-        return ($input['action'] ?? '') !== 'remove';
+        return false;
     }
 
     private function resolveGitPath(string $cwd, string $path): ?string

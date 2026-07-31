@@ -775,7 +775,7 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.18.18`. Notable changes since `v1.10.0`:
+is based on `v1.18.19`. Notable changes since `v1.10.0`:
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/
@@ -852,6 +852,8 @@ is based on `v1.18.18`. Notable changes since `v1.10.0`:
   read-before-write authorization; internal Git diffs and worktree commands use
   isolated argv-based execution; worktree entry/exit preserves session cwd
   without trusting hooks, symlinks, or the PHP process cwd.
+- `v1.18.19` — `ExitWorktree` is now classified as non-read-only because both
+  keep and remove actions change session working-directory state.
 
 ## License
 

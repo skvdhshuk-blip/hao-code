@@ -106,9 +106,9 @@ class WorktreeToolsTest extends TestCase
         $this->assertStringContainsString('worktree', strtolower((new ExitWorktreeTool)->description()));
     }
 
-    public function test_exit_keep_is_read_only(): void
+    public function test_exit_keep_is_not_read_only(): void
     {
-        $this->assertTrue((new ExitWorktreeTool)->isReadOnly(['action' => 'keep']));
+        $this->assertFalse((new ExitWorktreeTool)->isReadOnly(['action' => 'keep']));
     }
 
     public function test_exit_remove_is_not_read_only(): void
@@ -116,10 +116,9 @@ class WorktreeToolsTest extends TestCase
         $this->assertFalse((new ExitWorktreeTool)->isReadOnly(['action' => 'remove']));
     }
 
-    public function test_exit_no_action_is_read_only(): void
+    public function test_exit_no_action_is_not_read_only(): void
     {
-        // Default with no action key → 'keep' evaluates to false for 'remove' check
-        $this->assertTrue((new ExitWorktreeTool)->isReadOnly([]));
+        $this->assertFalse((new ExitWorktreeTool)->isReadOnly([]));
     }
 
     public function test_exit_schema_requires_action(): void
