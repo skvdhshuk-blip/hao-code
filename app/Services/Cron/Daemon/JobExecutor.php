@@ -77,6 +77,7 @@ class JobExecutor
                 getcwd() ?: sys_get_temp_dir(),
                 $env,
                 $descriptors,
+                loginShell: false,
             );
         } catch (\RuntimeException $e) {
             $endedAt = time();

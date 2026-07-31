@@ -132,4 +132,36 @@ class JobExecutorTest extends TestCase
             @unlink($marker);
         }
     }
+
+    public function test_cron_jobs_do_not_load_login_shell_profile(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('POSIX shell profile test.');
+        }
+
+        $home = sys_get_temp_dir().'/haocode-cron-home-'.bin2hex(random_bytes(4));
+        $marker = $home.'/profile-loaded';
+        mkdir($home, 0700, true);
+        file_put_contents($home.'/.bash_profile', 'printf loaded > '.escapeshellarg($marker)."\n");
+
+        $previousHome = getenv('HOME');
+        putenv('HOME='.$home);
+
+        try {
+            $executor = new JobExecutor($this->tracer, new SecretScanner, timeoutSeconds: 2);
+            $result = $executor->execute($this->makeJob('j1', 'printf ok'));
+
+            $this->assertSame(0, $result['exit_code']);
+            $this->assertFileDoesNotExist($marker);
+        } finally {
+            if ($previousHome === false) {
+                putenv('HOME');
+            } else {
+                putenv('HOME='.$previousHome);
+            }
+            @unlink($home.'/.bash_profile');
+            @unlink($marker);
+            @rmdir($home);
+        }
+    }
 }

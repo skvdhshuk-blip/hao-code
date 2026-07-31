@@ -20,6 +20,7 @@ final class ProcessSupervisor
         string $cwd,
         array $env,
         array $descriptors,
+        bool $loginShell = true,
     ): array {
         $path = $env['PATH'] ?? (getenv('PATH') ?: '');
         $bash = self::findExecutable('bash', $path);
@@ -31,13 +32,14 @@ final class ProcessSupervisor
         // signalled as a whole tree via kill(-pid, sig). Without setsid,
         // enable job control and an EXIT trap that kills the shell's group.
         $setsid = self::findExecutable('setsid', $path);
+        $shellFlag = $loginShell ? '-lc' : '-c';
         if ($setsid !== null) {
-            $cmd = [$setsid, $bash, '-lc', $commandScript];
+            $cmd = [$setsid, $bash, $shellFlag, $commandScript];
         } else {
             $guarded = 'set -m; '
                 .'trap \'status=$?; kill -TERM -$$ 2>/dev/null; kill -KILL -$$ 2>/dev/null; exit $status\' EXIT INT TERM HUP; '
                 .$commandScript;
-            $cmd = [$bash, '-lc', $guarded];
+            $cmd = [$bash, $shellFlag, $guarded];
         }
 
         $process = @proc_open($cmd, $descriptors, $pipes, $cwd, $env);
