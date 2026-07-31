@@ -6,9 +6,12 @@ use HaoCode\Sdk\AgentRunContextFactory;
 use HaoCode\Sdk\HaoCodeConfig;
 use HaoCode\Sdk\Sandbox\SandboxConfig;
 use HaoCode\Sdk\Sandbox\SandboxManager;
+use HaoCode\Sdk\Sandbox\Tools\SandboxGlobTool;
+use HaoCode\Sdk\Sandbox\Tools\SandboxGrepTool;
 use HaoCode\Sdk\Sandbox\Tools\SandboxReadTool;
 use HaoCode\Sdk\Sandbox\Tools\SandboxBashTool;
 use HaoCode\Sdk\Sandbox\Tools\SandboxWriteTool;
+use HaoCode\Tools\ToolOutcome;
 use HaoCode\Tools\ToolUseContext;
 use PHPUnit\Framework\TestCase;
 
@@ -182,6 +185,76 @@ class SandboxTest extends TestCase
         $exec = $runtime->backend->exec('pwd && ls src', '/workspace', 5000);
         $this->assertSame(0, $exec['exitCode']);
         $this->assertStringContainsString('App.php', $exec['stdout']);
+    }
+
+    public function test_local_sandbox_search_prunes_ignored_directories_before_recursing(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('POSIX permission coverage.');
+        }
+
+        $runtime = SandboxManager::create(SandboxConfig::local());
+        $runtime->backend->writeFile('/workspace/src/keep.php', "<?php\nneedle\n");
+        $locked = $runtime->backend->rootLabel().'/workspace/vendor/locked';
+        mkdir($runtime->backend->rootLabel().'/workspace/vendor', 0755, true);
+        mkdir($locked, 0000);
+
+        try {
+            $this->assertSame(['/workspace/src/keep.php'], $runtime->backend->glob('**/*.php', '/workspace'));
+
+            $matches = $runtime->backend->grep('needle', '/workspace', '**/*.php');
+            $this->assertCount(1, $matches);
+            $this->assertSame('/workspace/src/keep.php', $matches[0]['file']);
+        } finally {
+            @chmod($locked, 0700);
+            $runtime->close();
+        }
+    }
+
+    public function test_local_sandbox_glob_retains_only_bounded_top_results(): void
+    {
+        $runtime = SandboxManager::create(SandboxConfig::local());
+        try {
+            for ($i = 0; $i < 150; $i++) {
+                $runtime->backend->writeFile('/workspace/files/file-'.$i.'.txt', 'x');
+            }
+
+            $matches = $runtime->backend->glob('**/*.txt', '/workspace');
+
+            $this->assertCount(100, $matches);
+        } finally {
+            $runtime->close();
+        }
+    }
+
+    public function test_sandbox_search_tools_report_limits_and_abort_cleanly(): void
+    {
+        $runtime = SandboxManager::create(SandboxConfig::local());
+        $context = new ToolUseContext('/workspace', 'sandbox-search-tools');
+        $aborted = new ToolUseContext(
+            '/workspace',
+            'sandbox-search-tools-aborted',
+            shouldAbort: static fn (): bool => true,
+        );
+
+        try {
+            $runtime->backend->writeFile('/workspace/a.txt', "needle\n");
+
+            $grep = new SandboxGrepTool($runtime);
+            $zero = $grep->call(['pattern' => 'needle', 'head_limit' => 0], $context);
+            $this->assertFalse($zero->isError, $zero->output);
+            $this->assertSame('No matches found for pattern: needle', $zero->output);
+
+            $glob = new SandboxGlobTool($runtime);
+            $tooBroad = $glob->call(['pattern' => str_repeat('{a,b}', 9).'*.txt'], $context);
+            $this->assertTrue($tooBroad->isError);
+            $this->assertStringContainsString('brace expansion', $tooBroad->output);
+
+            $this->assertSame(ToolOutcome::Aborted, $glob->call(['pattern' => '**/*.txt'], $aborted)->outcome());
+            $this->assertSame(ToolOutcome::Aborted, $grep->call(['pattern' => 'needle'], $aborted)->outcome());
+        } finally {
+            $runtime->close();
+        }
     }
 
     public function test_sandbox_bash_strips_custom_policy_env_deny(): void

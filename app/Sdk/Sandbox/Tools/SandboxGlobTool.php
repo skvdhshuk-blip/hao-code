@@ -34,7 +34,16 @@ final class SandboxGlobTool extends SandboxTool
     {
         $pattern = trim((string) $input['pattern']);
         $path = isset($input['path']) ? (string) $input['path'] : $context->workingDirectory;
-        $matches = $this->runtime->backend->glob($pattern, $path);
+        if ($context->isAborted()) {
+            return ToolResult::aborted('Sandbox Glob search aborted.');
+        }
+
+        try {
+            $matches = $this->runtime->backend->glob($pattern, $path);
+        } catch (\Throwable $e) {
+            return ToolResult::error($e->getMessage());
+        }
+
         if ($matches === []) {
             return ToolResult::success("No files matched pattern: {$pattern}");
         }

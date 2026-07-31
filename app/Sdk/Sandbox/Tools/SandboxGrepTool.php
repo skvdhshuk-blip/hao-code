@@ -44,7 +44,10 @@ final class SandboxGrepTool extends SandboxTool
         $path = $input['path'] ?? $context->workingDirectory;
         $mode = $input['output_mode'] ?? 'files_with_matches';
         $limit = (int) ($input['head_limit'] ?? 250);
-        $limit = $limit <= 0 ? 250 : min($limit, 1000);
+        $limit = max(0, min($limit, 1000));
+        if ($context->isAborted()) {
+            return ToolResult::aborted('Sandbox Grep search aborted.');
+        }
 
         try {
             $matches = $this->runtime->backend->grep(

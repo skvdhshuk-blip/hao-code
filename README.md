@@ -775,7 +775,7 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.18.36`. Notable changes since `v1.10.0`:
+is based on `v1.18.37`. Notable changes since `v1.10.0`:
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/
@@ -906,6 +906,9 @@ is based on `v1.18.36`. Notable changes since `v1.10.0`:
 - `v1.18.36` — Glob and Grep now prune default ignored directories before
   descending into them, and search paths honor abort signals across ripgrep and
   PHP fallback execution.
+- `v1.18.37` — Local sandbox Glob and Grep now prune default ignored
+  directories before descending, cap retained glob results, stream grep line
+  reads, and preserve sandbox search abort and zero-limit semantics.
 
 ## License
 

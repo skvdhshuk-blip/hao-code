@@ -12,6 +12,20 @@ use HaoCode\Sdk\Sandbox\SandboxConfig;
 /** @api */
 final class LocalSandboxBackend implements SandboxBackendInterface, RevisionAwareSandboxBackendInterface
 {
+    private const MAX_GLOB_RESULTS = 100;
+    private const MAX_VISITED_FILES = 20_000;
+    private const MAX_PATTERN_LENGTH = 512;
+    private const MAX_BRACE_EXPANSIONS = 256;
+    private const MAX_TEXT_LINE_BYTES = 1_000_000;
+    private const IGNORED_DIRECTORIES = [
+        '.git',
+        '.hg',
+        '.svn',
+        '.claude/worktrees',
+        'node_modules',
+        'vendor',
+    ];
+
     private string $root;
     private bool $ownsRoot;
     private bool $preserveOnClose = false;
@@ -149,6 +163,11 @@ final class LocalSandboxBackend implements SandboxBackendInterface, RevisionAwar
 
     public function glob(string $pattern, ?string $path = null): array
     {
+        $pattern = $this->normalizePattern($pattern);
+        if (strlen($pattern) > self::MAX_PATTERN_LENGTH) {
+            throw new \InvalidArgumentException('Sandbox glob pattern is too long; narrow the search pattern.');
+        }
+
         $baseRemote = $path ?? $this->config->remoteCwd;
         $baseLocal = $this->resolve($baseRemote);
         if (! is_dir($baseLocal)) {
@@ -156,40 +175,39 @@ final class LocalSandboxBackend implements SandboxBackendInterface, RevisionAwar
         }
 
         $matches = [];
-        $regexPatterns = array_map(fn (string $p): string => $this->globToRegex($p), $this->expandBracePatterns($this->normalizePattern($pattern)));
-        $iterator = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator($baseLocal, \FilesystemIterator::SKIP_DOTS),
-            \RecursiveIteratorIterator::LEAVES_ONLY,
-        );
+        $regexPatterns = array_map(fn (string $p): string => $this->globToRegex($p), $this->expandBracePatterns($pattern));
+        $visitedFiles = 0;
 
-        foreach ($iterator as $file) {
-            if (! $file instanceof \SplFileInfo || $file->isLink() || ! $file->isFile()) {
-                continue;
-            }
-            $relative = ltrim(str_replace($baseLocal, '', $file->getPathname()), DIRECTORY_SEPARATOR);
-            $relative = str_replace(DIRECTORY_SEPARATOR, '/', $relative);
+        foreach ($this->iterFiles($baseLocal, $visitedFiles) as $file) {
+            $localPath = $file->getPathname();
+            $relative = $this->relativeLocalPath($localPath, $baseLocal);
             foreach ($regexPatterns as $regex) {
                 if (preg_match($regex, $relative) === 1) {
-                    $matches[] = $this->toRemotePath($file->getPathname());
+                    $this->addTopGlobMatch($matches, $localPath);
                     break;
                 }
             }
         }
 
-        usort($matches, fn (string $a, string $b): int => ($this->stat($b)['mtime'] ?? 0) <=> ($this->stat($a)['mtime'] ?? 0));
-
-        return $matches;
+        return array_map(
+            fn (array $match): string => $match['path'],
+            $matches,
+        );
     }
 
     public function grep(string $pattern, ?string $path = null, ?string $glob = null, bool $caseInsensitive = false, int $limit = 250): array
     {
+        if ($limit <= 0) {
+            return [];
+        }
+        $limit = min($limit, 1000);
+
         $baseRemote = $path ?? $this->config->remoteCwd;
         $baseLocal = $this->resolve($baseRemote);
         if (! file_exists($baseLocal)) {
             return [];
         }
 
-        $files = is_file($baseLocal) ? [$baseLocal] : $this->allFiles($baseLocal);
         $globRegex = $glob !== null && $glob !== '' ? $this->globToRegex($this->normalizePattern($glob)) : null;
         $flags = $caseInsensitive ? 'i' : '';
         $safePattern = str_replace('/', '\/', $pattern);
@@ -202,24 +220,48 @@ final class LocalSandboxBackend implements SandboxBackendInterface, RevisionAwar
         }
 
         $matches = [];
-        foreach ($files as $file) {
-            $relative = ltrim(str_replace(is_dir($baseLocal) ? $baseLocal : dirname($baseLocal), '', $file), DIRECTORY_SEPARATOR);
-            $relative = str_replace(DIRECTORY_SEPARATOR, '/', $relative);
+        $visitedFiles = 0;
+        $baseForRelative = is_dir($baseLocal) ? $baseLocal : dirname($baseLocal);
+        $files = is_file($baseLocal)
+            ? (is_link($baseLocal) ? [] : [new \SplFileInfo($baseLocal)])
+            : $this->iterFiles($baseLocal, $visitedFiles);
+
+        foreach ($files as $fileInfo) {
+            if (! $fileInfo instanceof \SplFileInfo) {
+                continue;
+            }
+            $file = $fileInfo->getPathname();
+            $relative = $this->relativeLocalPath($file, $baseForRelative);
             if ($globRegex !== null && preg_match($globRegex, $relative) !== 1) {
                 continue;
             }
-            $lines = file($file, FILE_IGNORE_NEW_LINES);
-            if ($lines === false) {
+            if (! $this->isTextFile($file)) {
                 continue;
             }
-            foreach ($lines as $idx => $line) {
+            $handle = @fopen($file, 'rb');
+            if (! is_resource($handle)) {
+                continue;
+            }
+
+            $lineNumber = 0;
+            while (($line = fgets($handle, self::MAX_TEXT_LINE_BYTES + 1)) !== false) {
+                $lineNumber++;
+                if (strlen($line) > self::MAX_TEXT_LINE_BYTES && ! str_ends_with($line, "\n")) {
+                    $this->skipRestOfLine($handle);
+                    continue;
+                }
+
+                $line = rtrim($line, "\r\n");
                 if (preg_match($regex, $line) === 1) {
-                    $matches[] = ['file' => $this->toRemotePath($file), 'line' => $idx + 1, 'text' => $line];
+                    $matches[] = ['file' => $this->toRemotePath($file), 'line' => $lineNumber, 'text' => $line];
                     if (count($matches) >= $limit) {
+                        fclose($handle);
+
                         return $matches;
                     }
                 }
             }
+            fclose($handle);
         }
 
         return $matches;
@@ -439,20 +481,92 @@ final class LocalSandboxBackend implements SandboxBackendInterface, RevisionAwar
         @rmdir($dir);
     }
 
-    /** @return string[] */
-    private function allFiles(string $dir): array
+    /** @return \Generator<int, \SplFileInfo> */
+    private function iterFiles(string $dir, int &$visitedFiles): \Generator
     {
-        $files = [];
+        $directory = new \RecursiveDirectoryIterator($dir, \FilesystemIterator::SKIP_DOTS);
+        $filter = new \RecursiveCallbackFilterIterator(
+            $directory,
+            function (\SplFileInfo $current) use ($dir): bool {
+                $relative = $this->relativeLocalPath($current->getPathname(), $dir);
+                if ($this->isIgnoredPath($relative)) {
+                    return false;
+                }
+
+                return ! $current->isDir() || ! $current->isLink();
+            },
+        );
         $iterator = new \RecursiveIteratorIterator(
-            new \RecursiveDirectoryIterator($dir, \FilesystemIterator::SKIP_DOTS),
+            $filter,
             \RecursiveIteratorIterator::LEAVES_ONLY,
+            \RecursiveIteratorIterator::CATCH_GET_CHILD,
         );
         foreach ($iterator as $file) {
             if ($file instanceof \SplFileInfo && ! $file->isLink() && $file->isFile()) {
-                $files[] = $file->getPathname();
+                $visitedFiles++;
+                if ($visitedFiles > self::MAX_VISITED_FILES) {
+                    break;
+                }
+
+                yield $file;
             }
         }
-        return $files;
+    }
+
+    /**
+     * @param list<array{path: string, mtime: int}> $matches
+     */
+    private function addTopGlobMatch(array &$matches, string $localPath): void
+    {
+        $matches[] = [
+            'path' => $this->toRemotePath($localPath),
+            'mtime' => filemtime($localPath) ?: 0,
+        ];
+        usort($matches, static fn (array $a, array $b): int => $b['mtime'] <=> $a['mtime']);
+        if (count($matches) > self::MAX_GLOB_RESULTS) {
+            array_pop($matches);
+        }
+    }
+
+    private function relativeLocalPath(string $localPath, string $baseLocal): string
+    {
+        $prefix = rtrim($baseLocal, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR;
+        $relative = str_starts_with($localPath, $prefix)
+            ? substr($localPath, strlen($prefix))
+            : $localPath;
+
+        return str_replace(DIRECTORY_SEPARATOR, '/', ltrim($relative, DIRECTORY_SEPARATOR));
+    }
+
+    private function isIgnoredPath(string $relativePath): bool
+    {
+        $relativePath = str_replace('\\', '/', ltrim($relativePath, '/'));
+        foreach (self::IGNORED_DIRECTORIES as $ignored) {
+            if ($relativePath === $ignored || str_starts_with($relativePath, $ignored.'/')) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    private function isTextFile(string $localPath): bool
+    {
+        $sample = @file_get_contents($localPath, false, null, 0, 1024);
+        if (! is_string($sample)) {
+            return false;
+        }
+
+        return ! str_contains($sample, "\0");
+    }
+
+    private function skipRestOfLine($handle): void
+    {
+        while (($chunk = fgets($handle, 8192)) !== false) {
+            if (str_ends_with($chunk, "\n")) {
+                return;
+            }
+        }
     }
 
     private function normalizePattern(string $pattern): string
@@ -476,6 +590,17 @@ final class LocalSandboxBackend implements SandboxBackendInterface, RevisionAwar
     /** @return string[] */
     private function expandBracePatterns(string $pattern): array
     {
+        $expanded = $this->expandBracePatternsBounded($pattern, self::MAX_BRACE_EXPANSIONS);
+        if (count($expanded) > self::MAX_BRACE_EXPANSIONS) {
+            throw new \LengthException('Sandbox glob brace expansion is too broad; narrow the pattern to fewer alternatives.');
+        }
+
+        return array_values(array_unique($expanded));
+    }
+
+    /** @return list<string> */
+    private function expandBracePatternsBounded(string $pattern, int $limit): array
+    {
         if (! preg_match('/\{([^{}]+)\}/', $pattern, $matches, PREG_OFFSET_CAPTURE)) {
             return [$pattern];
         }
@@ -486,8 +611,11 @@ final class LocalSandboxBackend implements SandboxBackendInterface, RevisionAwar
         $suffix = substr($pattern, $offset + strlen($brace));
         $expanded = [];
         foreach ($options as $option) {
-            foreach ($this->expandBracePatterns($prefix.$option.$suffix) as $variant) {
+            foreach ($this->expandBracePatternsBounded($prefix.$option.$suffix, $limit) as $variant) {
                 $expanded[] = $variant;
+                if (count($expanded) > $limit) {
+                    return $expanded;
+                }
             }
         }
         return array_values(array_unique($expanded));
