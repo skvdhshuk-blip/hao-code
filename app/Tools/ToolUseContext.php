@@ -346,6 +346,35 @@ class ToolUseContext
     }
 
     /**
+     * Snapshot only the receipts observed in the current, not-yet-visible
+     * tool-result batch. Durable HITL checkpoints persist these receipts so
+     * they can be promoted after the interrupted batch is resolved and its
+     * tool_result messages are finally visible to the model.
+     *
+     * @return array<string, array<string, mixed>>
+     * @internal
+     */
+    public function getPendingReadFileStateSnapshot(): array
+    {
+        return $this->pendingReadFileState ?? [];
+    }
+
+    /**
+     * Re-attach pending receipts restored from a durable checkpoint. Callers
+     * must only do this after interrupted side-effecting actions have resolved,
+     * while a new batch is open and before committing model-visible tool
+     * results.
+     *
+     * @param array<string, array<string, mixed>> $snapshot
+     * @internal
+     */
+    public function queueReadReceiptSnapshotForCurrentBatch(array $snapshot): void
+    {
+        $this->pendingReadFileState ??= [];
+        $this->mergeReadFileStateSnapshot($snapshot);
+    }
+
+    /**
      * Get a snapshot of the current readFileState for IPC serialization.
      * Used by parallel tool execution: the child process captures its state
      * and the parent merges it back after the child exits.

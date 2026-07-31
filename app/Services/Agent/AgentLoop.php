@@ -298,6 +298,7 @@ class AgentLoop
             );
             $this->interruptSourceAgentId = $resolution['interrupt']->sourceAgentId;
             $this->interruptSourceTeam = $resolution['interrupt']->sourceTeam;
+            $this->queueCheckpointReadReceiptsForVisibleResults($resolution['checkpoint'], $context);
             $this->messageHistory->addToolResultMessage($resolution['results']);
             $context->commitReadReceiptBatch();
             $readReceiptBatchCommitted = true;
@@ -734,6 +735,7 @@ class AgentLoop
                                 'blocks' => [$index => $block],
                                 'results' => $toolResults,
                                 'run_snapshot' => $this->buildRunSnapshot($turnCount),
+                                'pending_read_file_state' => $context->getPendingReadFileStateSnapshot(),
                                 'allowed_tools' => $this->effectiveAllowedTools(),
                                 'interrupt_on' => $this->toolOrchestrator->getInterruptOn(),
                                 'enable_ask_user' => $this->toolOrchestrator->isAskUserEnabled(),
@@ -766,6 +768,7 @@ class AgentLoop
                             'blocks' => $review['prepared'],
                             'results' => $toolResults,
                             'run_snapshot' => $this->buildRunSnapshot($turnCount),
+                            'pending_read_file_state' => $context->getPendingReadFileStateSnapshot(),
                             'allowed_tools' => $this->effectiveAllowedTools(),
                             'interrupt_on' => $this->toolOrchestrator->getInterruptOn(),
                             'enable_ask_user' => $this->toolOrchestrator->isAskUserEnabled(),
@@ -909,6 +912,15 @@ class AgentLoop
             'last_turn_input_tokens' => $this->lastTurnInputTokens,
             'sandbox_lease' => $this->sandboxRuntime?->exportLease(),
         ];
+    }
+
+    /** @param array<string, mixed> $checkpoint */
+    private function queueCheckpointReadReceiptsForVisibleResults(array $checkpoint, ToolUseContext $context): void
+    {
+        $snapshot = $checkpoint['pending_read_file_state'] ?? null;
+        if (is_array($snapshot) && $snapshot !== []) {
+            $context->queueReadReceiptSnapshotForCurrentBatch($snapshot);
+        }
     }
 
     /** @return string[] */

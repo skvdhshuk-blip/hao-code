@@ -2476,6 +2476,90 @@ JSON),
         $this->assertSame('Batch resumed.', $result->text);
     }
 
+    public function test_hitl_resume_promotes_prior_read_receipts_only_after_interrupted_batch_results_are_visible(): void
+    {
+        file_put_contents($this->projectDir.'/target.txt', 'old-content');
+        $makeRevisionWriteTool = static fn (string $name): SdkTool => new class($name) extends SdkTool {
+            public function __construct(private readonly string $toolName) {}
+            public function name(): string { return $this->toolName; }
+            public function description(): string { return 'Write a file after checking its read receipt.'; }
+            public function parameters(): array
+            {
+                return [
+                    'file_path' => ['type' => 'string', 'required' => true],
+                    'content' => ['type' => 'string', 'required' => true],
+                ];
+            }
+            public function handle(array $input): string { return 'unused'; }
+            public function isReadOnly(array $input): bool { return $this->toolName === 'ReceiptWrite'; }
+            public function call(array $input, \HaoCode\Tools\ToolUseContext $context): \HaoCode\Tools\ToolResult
+            {
+                $path = (string) $input['file_path'];
+                if ($path === '' || $path[0] !== DIRECTORY_SEPARATOR) {
+                    $path = rtrim($context->workingDirectory, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR.$path;
+                }
+                $content = (string) $input['content'];
+                if (file_exists($path) && ($error = $context->fileRevisionError($path)) !== null) {
+                    return \HaoCode\Tools\ToolResult::error($error);
+                }
+                file_put_contents($path, $content);
+                $context->recordFileRead($path, $content);
+
+                return \HaoCode\Tools\ToolResult::success($this->toolName.' wrote '.$path);
+            }
+        };
+        $sensitiveWrite = $makeRevisionWriteTool('SensitiveWrite');
+        $receiptWrite = $makeRevisionWriteTool('ReceiptWrite');
+        $this->bootWithMock([
+            MockAnthropicSse::multiToolUseResponse([
+                ['id' => 'read-before-hitl', 'name' => 'Read', 'input' => ['file_path' => 'target.txt']],
+                ['id' => 'sensitive-write', 'name' => 'SensitiveWrite', 'input' => ['file_path' => 'target.txt', 'content' => 'new-content']],
+            ]),
+            function (array $payload): MockResponse {
+                $results = (string) MockAnthropicSse::lastToolResultText($payload);
+                $this->assertStringContainsString('old-content', $results);
+                $this->assertStringContainsString('Read tool first', $results);
+
+                return MockAnthropicSse::toolUseResponse('write-after-visible-read', 'ReceiptWrite', [
+                    'file_path' => 'target.txt',
+                    'content' => 'new-content',
+                ], 'msg_write_after_visible_read');
+            },
+            function (array $payload): MockResponse {
+                $results = (string) MockAnthropicSse::lastToolResultText($payload);
+                $this->assertStringContainsString('ReceiptWrite wrote', $results);
+
+                return MockAnthropicSse::textResponse('Visible read retry completed.');
+            },
+        ]);
+        chdir($this->projectDir);
+        $config = new HaoCodeConfig(
+            allowedTools: ['Read', 'SensitiveWrite', 'ReceiptWrite'],
+            tools: [$sensitiveWrite, $receiptWrite],
+            ephemeral: false,
+            interruptOn: ['SensitiveWrite' => true],
+            hitlMode: 'ask',
+        );
+
+        try {
+            HaoCode::query('Read then request a sensitive write', $config);
+            $this->fail('Expected interrupt.');
+        } catch (HumanInterruptException $e) {
+            $interrupt = $e->interrupt;
+        }
+
+        $this->assertSame('old-content', file_get_contents($this->projectDir.'/target.txt'));
+        $result = HaoCode::resumeInterrupt(
+            $interrupt->sessionId,
+            $interrupt->id,
+            [HumanDecision::approve('sensitive-write')],
+            $config,
+        );
+
+        $this->assertSame('Visible read retry completed.', $result->text);
+        $this->assertSame('new-content', file_get_contents($this->projectDir.'/target.txt'));
+    }
+
     public function test_ask_user_validates_answers_before_claiming_checkpoint(): void
     {
         $requests = [];

@@ -134,6 +134,7 @@ final class HumanInterruptCoordinator
                     );
                     $checkpoint['blocks'] = [$index => $block];
                     $checkpoint['results'] = $results;
+                    $checkpoint['pending_read_file_state'] = $context->getPendingReadFileStateSnapshot();
                     $this->sessions->recordChildWaitInterrupt($waitingInterrupt->toArray(), $checkpoint);
                     $this->sessions->recordInterruptParentLink(
                         $childInterrupt->interrupt->sessionId,

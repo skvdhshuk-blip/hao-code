@@ -775,7 +775,7 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.18.44`. Notable changes since `v1.10.0`:
+is based on `v1.18.45`. Notable changes since `v1.10.0`:
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/
@@ -931,6 +931,10 @@ is based on `v1.18.44`. Notable changes since `v1.10.0`:
 - `v1.18.44` — Worktree creation now rejects `.claude/worktrees` symlinks,
   verifies the worktree base remains inside `.claude`, and updates `.gitignore`
   through the atomic writer instead of a direct append.
+- `v1.18.45` — Durable HITL checkpoints now preserve pending Read receipts and
+  promote them only after the resumed batch's tool results become model-visible,
+  so approved same-batch writes cannot borrow unread content while the next turn
+  can safely retry after seeing the Read output.
 
 ## License
 
