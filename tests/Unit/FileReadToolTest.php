@@ -303,6 +303,53 @@ class FileReadToolTest extends TestCase
         $this->assertStringNotContainsString('which pdftotext', $source);
     }
 
+    public function test_pdf_extraction_honors_abort_and_kills_delayed_side_effects(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('POSIX shell script is used to simulate pdftotext abort behavior.');
+        }
+
+        $binDir = sys_get_temp_dir().'/haocode-pdftotext-bin-'.bin2hex(random_bytes(4));
+        mkdir($binDir, 0700, true);
+        $marker = $binDir.'/marker';
+        $pdftotext = $binDir.'/pdftotext';
+        file_put_contents($pdftotext, "#!/bin/sh\nsleep 1\nprintf leaked > ".escapeshellarg($marker)."\nprintf extracted\n");
+        chmod($pdftotext, 0700);
+
+        $file = $this->makeTmpFile("%PDF-1.4\nabort test\n");
+        $oldPath = getenv('PATH');
+        $start = microtime(true);
+        $context = new ToolUseContext(
+            workingDirectory: sys_get_temp_dir(),
+            sessionId: 'pdf-abort-session',
+            shouldAbort: static fn (): bool => microtime(true) >= $start + 0.05,
+        );
+
+        try {
+            putenv('PATH='.$binDir.PATH_SEPARATOR.(is_string($oldPath) ? $oldPath : ''));
+
+            $result = $this->tool->call(['file_path' => $file], $context);
+
+            $this->assertTrue($result->isError);
+            $this->assertTrue($result->metadata['aborted'] ?? false);
+            $this->assertSame(130, $result->metadata['exitCode'] ?? null);
+            $this->assertStringContainsString('interrupted', $result->output);
+
+            usleep(1_100_000);
+            $this->assertFileDoesNotExist($marker, 'Aborted PDF extraction must terminate delayed subprocess side effects');
+        } finally {
+            if (is_string($oldPath)) {
+                putenv('PATH='.$oldPath);
+            } else {
+                putenv('PATH');
+            }
+            @unlink($file);
+            @unlink($pdftotext);
+            @unlink($marker);
+            @rmdir($binDir);
+        }
+    }
+
     public function test_large_notebook_rendering_is_truncated_and_records_partial_receipt(): void
     {
         $notebook = [

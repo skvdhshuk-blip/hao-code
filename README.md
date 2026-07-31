@@ -775,7 +775,7 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.18.30`. Notable changes since `v1.10.0`:
+is based on `v1.18.31`. Notable changes since `v1.10.0`:
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/
@@ -888,6 +888,9 @@ is based on `v1.18.30`. Notable changes since `v1.10.0`:
 - `v1.18.30` — Hardened Git subprocesses preserve exit codes captured by
   `proc_get_status()` so PHP 8.1/8.2 CI does not drop successful internal diff
   output after `proc_close()` returns `-1`.
+- `v1.18.31` — PDF text extraction now honors the active tool abort signal,
+  terminates the extraction process tree, and reports interrupted reads without
+  recording a file-read receipt.
 
 ## License
 

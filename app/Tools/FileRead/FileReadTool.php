@@ -107,7 +107,7 @@ DESC;
 
         // Handle PDF files
         if ($contentType === 'pdf') {
-            $result = $this->readPdf($filePath, $input['pages'] ?? null);
+            $result = $this->readPdf($filePath, $input['pages'] ?? null, $context->isAborted(...));
             if (! $result->isError) {
                 $context->recordFileRead(
                     $filePath,
@@ -245,7 +245,8 @@ DESC;
         return ['isSearch' => false, 'isRead' => true, 'isList' => false];
     }
 
-    private function readPdf(string $filePath, ?string $pageRange = null): ToolResult
+    /** @param callable(): bool|null $shouldAbort */
+    private function readPdf(string $filePath, ?string $pageRange = null, ?callable $shouldAbort = null): ToolResult
     {
         $size = filesize($filePath);
         if ($size > 32 * 1024 * 1024) {
@@ -297,7 +298,13 @@ DESC;
         $args[] = $filePath;
         $args[] = '-';
 
-        $extracted = $this->runProcessWithOutputCap($args, self::PDF_TIMEOUT_SECONDS, self::MAX_PDF_OUTPUT_BYTES);
+        $extracted = $this->runProcessWithOutputCap($args, self::PDF_TIMEOUT_SECONDS, self::MAX_PDF_OUTPUT_BYTES, $shouldAbort);
+        if ($extracted['aborted']) {
+            return ToolResult::error('PDF text extraction interrupted by user.', [
+                'exitCode' => 130,
+                'aborted' => true,
+            ]);
+        }
         if ($extracted['timedOut']) {
             return ToolResult::error('PDF text extraction timed out after '.self::PDF_TIMEOUT_SECONDS.' seconds.');
         }
@@ -311,7 +318,7 @@ DESC;
         $pages = 'unknown';
         $pdfinfo = $this->findExecutable('pdfinfo');
         if ($pdfinfo !== null) {
-            $info = $this->runProcessWithOutputCap([$pdfinfo, $filePath], 5.0, 32_768);
+            $info = $this->runProcessWithOutputCap([$pdfinfo, $filePath], 5.0, 32_768, $shouldAbort);
             if ($info['exitCode'] === 0 && preg_match('/^Pages:\s*(\d+)/mi', $info['stdout'], $m) === 1) {
                 $pages = $m[1];
             }
@@ -512,9 +519,15 @@ DESC;
 
     /**
      * @param list<string> $command
-     * @return array{stdout: string, stderr: string, exitCode: int, timedOut: bool, outputLimited: bool}
+     * @param callable(): bool|null $shouldAbort
+     * @return array{stdout: string, stderr: string, exitCode: int, timedOut: bool, aborted: bool, outputLimited: bool}
      */
-    private function runProcessWithOutputCap(array $command, float $timeoutSeconds, int $stdoutByteCap): array
+    private function runProcessWithOutputCap(
+        array $command,
+        float $timeoutSeconds,
+        int $stdoutByteCap,
+        ?callable $shouldAbort = null,
+    ): array
     {
         $null = PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null';
         $process = @proc_open($command, [
@@ -523,7 +536,7 @@ DESC;
             2 => ['pipe', 'w'],
         ], $pipes);
         if (! is_resource($process)) {
-            return ['stdout' => '', 'stderr' => '', 'exitCode' => -1, 'timedOut' => false, 'outputLimited' => false];
+            return ['stdout' => '', 'stderr' => '', 'exitCode' => -1, 'timedOut' => false, 'aborted' => false, 'outputLimited' => false];
         }
 
         foreach ([1, 2] as $index) {
@@ -539,9 +552,16 @@ DESC;
         $stderr = '';
         $exitCode = -1;
         $timedOut = false;
+        $aborted = false;
         $outputLimited = false;
 
         while (true) {
+            if ($shouldAbort !== null && $shouldAbort()) {
+                $aborted = true;
+                \HaoCode\Support\Runtime\ProcessSupervisor::terminateTree($pid, false);
+                break;
+            }
+
             foreach ([1 => 'stdout', 2 => 'stderr'] as $index => $target) {
                 if (! isset($pipes[$index]) || ! is_resource($pipes[$index])) {
                     continue;
@@ -610,8 +630,9 @@ DESC;
         return [
             'stdout' => $stdout,
             'stderr' => $stderr,
-            'exitCode' => $timedOut ? -1 : ($outputLimited ? 1 : $exitCode),
+            'exitCode' => $aborted ? 130 : ($timedOut ? -1 : ($outputLimited ? 1 : $exitCode)),
             'timedOut' => $timedOut,
+            'aborted' => $aborted,
             'outputLimited' => $outputLimited,
         ];
     }
