@@ -261,6 +261,55 @@ class SandboxTest extends TestCase
         $this->assertStringContainsString('App.php', $exec['stdout']);
     }
 
+    public function test_local_sandbox_exec_caps_output_and_terminates_promptly(): void
+    {
+        $runtime = SandboxManager::create(SandboxConfig::local(mode: 'full'));
+        $marker = tempnam(sys_get_temp_dir(), 'haocode_sandbox_exec_limit_');
+        $this->assertNotFalse($marker);
+        @unlink($marker);
+
+        try {
+            $command = escapeshellarg(PHP_BINARY).' -r '.escapeshellarg(
+                'echo str_repeat("x", 200000); flush(); usleep(1000000); file_put_contents('.var_export($marker, true).', "leaked");',
+            );
+
+            $result = $runtime->backend->exec($command, '/workspace', 5000);
+
+            $this->assertSame(1, $result['exitCode']);
+            $this->assertTrue($result['outputLimited'] ?? false);
+            $this->assertFalse($result['timedOut']);
+            $this->assertLessThanOrEqual(101_000, strlen($result['stdout']));
+            $this->assertStringContainsString('stdout truncated', $result['stdout']);
+
+            usleep(1_100_000);
+            $this->assertFileDoesNotExist($marker, 'Output limit must terminate before delayed side effects run');
+        } finally {
+            @unlink($marker);
+            $runtime->close();
+        }
+    }
+
+    public function test_sandbox_bash_reports_output_limit_metadata(): void
+    {
+        $runtime = SandboxManager::create(SandboxConfig::local(mode: 'full'));
+        $context = new ToolUseContext('/workspace', 'sandbox-bash-output-limit');
+        $bash = new SandboxBashTool($runtime);
+
+        try {
+            $result = $bash->call([
+                'command' => escapeshellarg(PHP_BINARY).' -r '.escapeshellarg('echo str_repeat("x", 200000);'),
+                'timeout' => 5000,
+            ], $context);
+
+            $this->assertTrue($result->isError, $result->output);
+            $this->assertSame(1, $result->metadata['exitCode'] ?? null);
+            $this->assertTrue($result->metadata['outputLimited'] ?? false);
+            $this->assertStringContainsString('capture limit', $result->output);
+        } finally {
+            $runtime->close();
+        }
+    }
+
     public function test_local_sandbox_search_prunes_ignored_directories_before_recursing(): void
     {
         if (PHP_OS_FAMILY === 'Windows') {

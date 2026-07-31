@@ -74,10 +74,17 @@ final class SandboxBashTool extends SandboxTool
         if ($result['stderr'] !== '') $output .= ($output !== '' ? "\n" : '')."STDERR:\n".$result['stderr'];
         if ($output === '') $output = '(no output)';
         if ($result['timedOut']) $output .= "\n\nCommand timed out.";
+        if (($result['outputLimited'] ?? false) === true) $output .= "\n\nCommand output exceeded sandbox capture limit and was terminated.";
 
-        return $result['exitCode'] === 0 && ! $result['timedOut']
+        $metadata = [
+            'exitCode' => $result['exitCode'],
+            'timedOut' => $result['timedOut'],
+            'outputLimited' => (bool) ($result['outputLimited'] ?? false),
+        ];
+
+        return $result['exitCode'] === 0 && ! $result['timedOut'] && ! ($metadata['outputLimited'])
             ? ToolResult::success($output, ['exitCode' => $result['exitCode']])
-            : ToolResult::error($output, ['exitCode' => $result['exitCode'], 'timedOut' => $result['timedOut']]);
+            : ToolResult::error($output, $metadata);
     }
 
     public function isReadOnly(array $input): bool { return false; }

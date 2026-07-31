@@ -2,7 +2,7 @@
 
 Use hao-code as a framework-free PHP library to embed an AI coding agent in your application.
 
-This document describes the `v1.18.38` source line. Published package versions
+This document describes the `v1.18.39` source line. Published package versions
 are identified by Git tags and Packagist.
 
 ```bash

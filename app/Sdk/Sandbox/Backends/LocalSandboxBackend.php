@@ -17,6 +17,7 @@ final class LocalSandboxBackend implements SandboxBackendInterface, RevisionAwar
     private const MAX_PATTERN_LENGTH = 512;
     private const MAX_BRACE_EXPANSIONS = 256;
     private const MAX_TEXT_LINE_BYTES = 1_000_000;
+    private const MAX_EXEC_OUTPUT_BYTES = 100_000;
     private const IGNORED_DIRECTORIES = [
         '.git',
         '.hg',
@@ -271,16 +272,11 @@ final class LocalSandboxBackend implements SandboxBackendInterface, RevisionAwar
     {
         $cwdLocal = $this->resolve($cwd ?? $this->config->remoteCwd);
         $this->ensureDirectory($cwdLocal);
-        $stdoutFile = tempnam(sys_get_temp_dir(), 'haocode_sandbox_stdout_');
-        $stderrFile = tempnam(sys_get_temp_dir(), 'haocode_sandbox_stderr_');
-        if ($stdoutFile === false || $stderrFile === false) {
-            throw new \RuntimeException('Failed to allocate command output files.');
-        }
 
         $descriptors = [
             0 => ['pipe', 'r'],
-            1 => ['file', $stdoutFile, 'w'],
-            2 => ['file', $stderrFile, 'w'],
+            1 => ['pipe', 'w'],
+            2 => ['pipe', 'w'],
         ];
         $env = \HaoCode\Support\Runtime\SpawnEnvironment::build();
 
@@ -292,26 +288,76 @@ final class LocalSandboxBackend implements SandboxBackendInterface, RevisionAwar
                 $descriptors,
             );
         } catch (\Throwable $e) {
-            @unlink($stdoutFile);
-            @unlink($stderrFile);
             throw new \RuntimeException("Failed to execute sandbox command: {$command}\n".$e->getMessage(), 0, $e);
         }
 
-        $wait = \HaoCode\Support\Runtime\ProcessSupervisor::wait(
-            $opened['process'],
-            $opened['pid'],
-            max(0.001, $timeoutMs / 1000),
-            $shouldAbort,
-        );
+        foreach ([1, 2] as $index) {
+            if (isset($opened['pipes'][$index]) && is_resource($opened['pipes'][$index])) {
+                stream_set_blocking($opened['pipes'][$index], false);
+            }
+        }
 
-        $stdout = file_get_contents($stdoutFile) ?: '';
-        $stderr = file_get_contents($stderrFile) ?: '';
-        @unlink($stdoutFile);
-        @unlink($stderrFile);
+        $stdout = '';
+        $stderr = '';
+        $capturedBytes = 0;
+        $outputLimited = false;
+        $aborted = false;
+        $timedOut = false;
+        $exitCode = -1;
+        $status = ['running' => true, 'exitcode' => -1];
+        $deadline = microtime(true) + max(0.001, $timeoutMs / 1000);
+        $process = $opened['process'];
+        $pid = $opened['pid'];
 
-        $aborted = $wait['aborted'];
-        $timedOut = $wait['timedOut'];
-        $exitCode = $aborted ? 130 : ($timedOut ? 124 : $wait['exitCode']);
+        while (true) {
+            if ($shouldAbort !== null && $shouldAbort()) {
+                $aborted = true;
+                \HaoCode\Support\Runtime\ProcessSupervisor::terminateTree($pid, false);
+                break;
+            }
+
+            if ($this->drainExecPipes($opened['pipes'], $stdout, $stderr, $capturedBytes)) {
+                $outputLimited = true;
+                \HaoCode\Support\Runtime\ProcessSupervisor::terminateTree($pid, false);
+                break;
+            }
+
+            $status = proc_get_status($process);
+            if (! ($status['running'] ?? false)) {
+                $exitCode = ($status['signaled'] ?? false)
+                    ? 128 + (int) ($status['termsig'] ?? 0)
+                    : (int) ($status['exitcode'] ?? -1);
+                break;
+            }
+
+            if (microtime(true) >= $deadline) {
+                $timedOut = true;
+                \HaoCode\Support\Runtime\ProcessSupervisor::terminateTree($pid, false);
+                break;
+            }
+
+            usleep(20_000);
+        }
+
+        if (! $outputLimited && $this->drainExecPipes($opened['pipes'], $stdout, $stderr, $capturedBytes)) {
+            $outputLimited = true;
+            \HaoCode\Support\Runtime\ProcessSupervisor::terminateTree($pid, false);
+        }
+
+        foreach ([1, 2] as $index) {
+            if (isset($opened['pipes'][$index]) && is_resource($opened['pipes'][$index])) {
+                fclose($opened['pipes'][$index]);
+            }
+        }
+
+        $closed = @proc_close($process);
+        if ($outputLimited) {
+            $exitCode = 1;
+        } elseif ($exitCode < 0 && ! $timedOut && ! $aborted) {
+            $exitCode = $closed;
+        }
+
+        $exitCode = $aborted ? 130 : ($timedOut ? 124 : $exitCode);
 
         return [
             'stdout' => $stdout,
@@ -319,6 +365,7 @@ final class LocalSandboxBackend implements SandboxBackendInterface, RevisionAwar
             'exitCode' => $exitCode,
             'timedOut' => $timedOut,
             'aborted' => $aborted,
+            'outputLimited' => $outputLimited,
         ];
     }
 
@@ -567,6 +614,54 @@ final class LocalSandboxBackend implements SandboxBackendInterface, RevisionAwar
                 return;
             }
         }
+    }
+
+    /**
+     * @param array<int, resource> $pipes
+     */
+    private function drainExecPipes(array $pipes, string &$stdout, string &$stderr, int &$capturedBytes): bool
+    {
+        foreach ([1 => 'stdout', 2 => 'stderr'] as $index => $target) {
+            if (! isset($pipes[$index]) || ! is_resource($pipes[$index])) {
+                continue;
+            }
+
+            $chunk = @stream_get_contents($pipes[$index]);
+            if (! is_string($chunk) || $chunk === '') {
+                continue;
+            }
+
+            if ($target === 'stdout') {
+                if ($this->appendExecOutputChunk($stdout, $chunk, $capturedBytes, $target)) {
+                    return true;
+                }
+            } else {
+                if ($this->appendExecOutputChunk($stderr, $chunk, $capturedBytes, $target)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
+    }
+
+    private function appendExecOutputChunk(string &$output, string $chunk, int &$capturedBytes, string $streamName): bool
+    {
+        $remaining = self::MAX_EXEC_OUTPUT_BYTES - $capturedBytes;
+        if (strlen($chunk) <= $remaining) {
+            $output .= $chunk;
+            $capturedBytes += strlen($chunk);
+
+            return false;
+        }
+
+        if ($remaining > 0) {
+            $output .= substr($chunk, 0, $remaining);
+            $capturedBytes += $remaining;
+        }
+        $output .= "\n\n[{$streamName} truncated at ".self::MAX_EXEC_OUTPUT_BYTES.' bytes; command terminated]';
+
+        return true;
     }
 
     private function normalizePattern(string $pattern): string
