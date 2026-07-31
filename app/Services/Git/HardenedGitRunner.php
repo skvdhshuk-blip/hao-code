@@ -17,14 +17,15 @@ final class HardenedGitRunner
     private const TIMEOUT_SECONDS = 2.0;
     private const MAX_OUTPUT_BYTES = 60_000;
 
-    public function diffForFile(string $filePath): string
+    /** @param callable(): bool|null $shouldAbort */
+    public function diffForFile(string $filePath, ?callable $shouldAbort = null): string
     {
         $dir = dirname($filePath);
         if (! is_dir($dir)) {
             return '';
         }
 
-        $root = $this->gitRoot($dir);
+        $root = $this->gitRoot($dir, $shouldAbort);
         try {
             $resolvedFile = CanonicalPathResolver::resolve($filePath, $dir);
         } catch (\Throwable) {
@@ -47,9 +48,9 @@ final class HardenedGitRunner
             '--no-renames',
             '--',
             $relative,
-        ]);
+        ], shouldAbort: $shouldAbort);
 
-        if ($result['timedOut'] || $result['truncated']) {
+        if ($result['timedOut'] || $result['truncated'] || $result['aborted']) {
             return '';
         }
 
@@ -57,14 +58,15 @@ final class HardenedGitRunner
         return $result['exitCode'] === 0 ? trim($result['stdout']) : '';
     }
 
-    private function gitRoot(string $directory): ?string
+    /** @param callable(): bool|null $shouldAbort */
+    private function gitRoot(string $directory, ?callable $shouldAbort = null): ?string
     {
         $result = $this->runGit($directory, [
             '--no-pager',
             'rev-parse',
             '--show-toplevel',
-        ]);
-        if ($result['exitCode'] !== 0 || $result['timedOut'] || $result['truncated']) {
+        ], shouldAbort: $shouldAbort);
+        if ($result['exitCode'] !== 0 || $result['timedOut'] || $result['truncated'] || $result['aborted']) {
             return null;
         }
 
@@ -82,24 +84,31 @@ final class HardenedGitRunner
 
     /**
      * @param list<string> $argv
-     * @return array{exitCode: int, stdout: string, stderr: string, timedOut: bool, truncated: bool}
+     * @param callable(): bool|null $shouldAbort
+     * @return array{exitCode: int, stdout: string, stderr: string, timedOut: bool, aborted: bool, truncated: bool}
      */
-    public function runGit(string $cwd, array $argv, ?float $timeoutSeconds = null): array
+    public function runGit(
+        string $cwd,
+        array $argv,
+        ?float $timeoutSeconds = null,
+        ?callable $shouldAbort = null,
+    ): array
     {
         foreach ($argv as $arg) {
             if (! is_string($arg) || str_contains($arg, "\0")) {
-                return ['exitCode' => -1, 'stdout' => '', 'stderr' => 'Invalid git argument.', 'timedOut' => false, 'truncated' => false];
+                return ['exitCode' => -1, 'stdout' => '', 'stderr' => 'Invalid git argument.', 'timedOut' => false, 'aborted' => false, 'truncated' => false];
             }
         }
 
-        return $this->run(array_merge(['git'], $argv), $cwd, $timeoutSeconds ?? self::TIMEOUT_SECONDS);
+        return $this->run(array_merge(['git'], $argv), $cwd, $timeoutSeconds ?? self::TIMEOUT_SECONDS, $shouldAbort);
     }
 
     /**
      * @param list<string> $argv
-     * @return array{exitCode: int, stdout: string, stderr: string, timedOut: bool, truncated: bool}
+     * @param callable(): bool|null $shouldAbort
+     * @return array{exitCode: int, stdout: string, stderr: string, timedOut: bool, aborted: bool, truncated: bool}
      */
-    private function run(array $argv, string $cwd, float $timeoutSeconds): array
+    private function run(array $argv, string $cwd, float $timeoutSeconds, ?callable $shouldAbort): array
     {
         $env = $this->cleanEnvironment();
         $descriptors = [
@@ -107,9 +116,12 @@ final class HardenedGitRunner
             1 => ['pipe', 'w'],
             2 => ['pipe', 'w'],
         ];
+        if ($shouldAbort !== null && $shouldAbort()) {
+            return ['exitCode' => 130, 'stdout' => '', 'stderr' => '', 'timedOut' => false, 'aborted' => true, 'truncated' => false];
+        }
         $process = @proc_open($argv, $descriptors, $pipes, $cwd, $env);
         if (! is_resource($process)) {
-            return ['exitCode' => -1, 'stdout' => '', 'stderr' => '', 'timedOut' => false, 'truncated' => false];
+            return ['exitCode' => -1, 'stdout' => '', 'stderr' => '', 'timedOut' => false, 'aborted' => false, 'truncated' => false];
         }
 
         foreach ([1, 2] as $index) {
@@ -125,9 +137,16 @@ final class HardenedGitRunner
         $stderr = '';
         $exitCode = -1;
         $timedOut = false;
+        $aborted = false;
         $truncated = false;
 
         while (true) {
+            if ($shouldAbort !== null && $shouldAbort()) {
+                $aborted = true;
+                ProcessSupervisor::terminateTree($pid);
+                break;
+            }
+
             foreach ([1 => 'stdout', 2 => 'stderr'] as $index => $name) {
                 if (! isset($pipes[$index]) || ! is_resource($pipes[$index])) {
                     continue;
@@ -184,10 +203,11 @@ final class HardenedGitRunner
         }
 
         return [
-            'exitCode' => $timedOut || $truncated ? -1 : $exitCode,
+            'exitCode' => $aborted ? 130 : ($timedOut || $truncated ? -1 : $exitCode),
             'stdout' => substr($stdout, 0, self::MAX_OUTPUT_BYTES),
             'stderr' => substr($stderr, 0, self::MAX_OUTPUT_BYTES),
             'timedOut' => $timedOut,
+            'aborted' => $aborted,
             'truncated' => $truncated,
         ];
     }

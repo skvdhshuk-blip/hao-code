@@ -183,7 +183,7 @@ DESC;
         }
 
         // Try git diff
-        $gitDiff = DiffGenerator::gitDiff($filePath);
+        $gitDiff = DiffGenerator::gitDiff($filePath, $context->isAborted(...));
         if ($gitDiff !== '') {
             $output .= "\n\nGit diff:\n" . $gitDiff;
         }

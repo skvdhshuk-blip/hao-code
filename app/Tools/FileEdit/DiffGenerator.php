@@ -80,9 +80,10 @@ class DiffGenerator
      * Generate a git diff if the file is in a git repository.
      * Returns empty string if not in a git repo or git is unavailable.
      */
-    public static function gitDiff(string $filePath): string
+    /** @param callable(): bool|null $shouldAbort */
+    public static function gitDiff(string $filePath, ?callable $shouldAbort = null): string
     {
-        return (new HardenedGitRunner())->diffForFile($filePath);
+        return (new HardenedGitRunner())->diffForFile($filePath, $shouldAbort);
     }
 
     /**

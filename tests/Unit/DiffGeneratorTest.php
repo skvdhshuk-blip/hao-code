@@ -3,6 +3,7 @@
 namespace Tests\Unit;
 
 use HaoCode\Tools\FileEdit\DiffGenerator;
+use HaoCode\Services\Git\HardenedGitRunner;
 use PHPUnit\Framework\TestCase;
 
 class DiffGeneratorTest extends TestCase
@@ -188,6 +189,58 @@ class DiffGeneratorTest extends TestCase
         } finally {
             $this->removeTree($root);
         }
+    }
+
+    public function test_hardened_git_runner_honors_abort_and_kills_delayed_side_effects(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('POSIX shell script is used to simulate git abort behavior.');
+        }
+
+        $root = sys_get_temp_dir().'/haocode-git-abort-'.bin2hex(random_bytes(6));
+        $binDir = $root.'/bin';
+        mkdir($binDir, 0700, true);
+        $marker = $root.'/marker';
+        $fakeGit = $binDir.'/git';
+        file_put_contents($fakeGit, "#!/bin/sh\nsleep 1\nprintf leaked > ".escapeshellarg($marker)."\nprintf done\n");
+        chmod($fakeGit, 0700);
+
+        $oldPath = getenv('PATH');
+        $start = microtime(true);
+        try {
+            putenv('PATH='.$binDir.PATH_SEPARATOR.(is_string($oldPath) ? $oldPath : ''));
+
+            $result = (new HardenedGitRunner())->runGit(
+                $root,
+                ['--no-pager', 'diff'],
+                5.0,
+                static fn (): bool => microtime(true) >= $start + 0.05,
+            );
+
+            $this->assertTrue($result['aborted']);
+            $this->assertSame(130, $result['exitCode']);
+
+            usleep(1_100_000);
+            $this->assertFileDoesNotExist($marker, 'Aborted internal git diff must terminate delayed subprocess side effects');
+        } finally {
+            if (is_string($oldPath)) {
+                putenv('PATH='.$oldPath);
+            } else {
+                putenv('PATH');
+            }
+            $this->removeTree($root);
+        }
+    }
+
+    public function test_file_mutation_tools_pass_abort_signal_to_git_diff(): void
+    {
+        $editSource = file_get_contents(dirname(__DIR__, 2).'/app/Tools/FileEdit/FileEditTool.php');
+        $writeSource = file_get_contents(dirname(__DIR__, 2).'/app/Tools/FileWrite/FileWriteTool.php');
+
+        $this->assertIsString($editSource);
+        $this->assertIsString($writeSource);
+        $this->assertStringContainsString('DiffGenerator::gitDiff($filePath, $context->isAborted(...))', $editSource);
+        $this->assertStringContainsString('DiffGenerator::gitDiff($filePath, $context->isAborted(...))', $writeSource);
     }
 
     private function runGit(string $cwd, string $command): void

@@ -775,7 +775,7 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.18.31`. Notable changes since `v1.10.0`:
+is based on `v1.18.32`. Notable changes since `v1.10.0`:
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/
@@ -891,6 +891,9 @@ is based on `v1.18.31`. Notable changes since `v1.10.0`:
 - `v1.18.31` — PDF text extraction now honors the active tool abort signal,
   terminates the extraction process tree, and reports interrupted reads without
   recording a file-read receipt.
+- `v1.18.32` — Automatic Git diff generation after Edit/Write now carries the
+  active tool abort signal into HardenedGitRunner so interrupted runs stop the
+  internal Git process tree promptly.
 
 ## License
 

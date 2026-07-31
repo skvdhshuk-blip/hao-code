@@ -125,7 +125,7 @@ DESC;
             $output .= " [{$changeSummary}]";
 
             // Try git diff for update
-            $gitDiff = DiffGenerator::gitDiff($filePath);
+            $gitDiff = DiffGenerator::gitDiff($filePath, $context->isAborted(...));
             if ($gitDiff !== '') {
                 // Truncate large diffs
                 if (mb_strlen($gitDiff) > 3000) {
