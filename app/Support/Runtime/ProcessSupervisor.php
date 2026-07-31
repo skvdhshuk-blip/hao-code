@@ -87,15 +87,15 @@ final class ProcessSupervisor
 
         // Best-effort without posix.
         if (PHP_OS_FAMILY === 'Windows') {
-            @exec('taskkill /F /T /PID '.(int) $pid.' 2>NUL');
+            self::runCommand(['taskkill', '/F', '/T', '/PID', (string) $pid]);
         } else {
-            @exec('kill -'.(int) $sig.' -'.(int) $pid.' 2>/dev/null');
-            @exec('kill -'.(int) $sig.' '.(int) $pid.' 2>/dev/null');
+            self::runCommand(['kill', '-'.(int) $sig, '-'.(int) $pid]);
+            self::runCommand(['kill', '-'.(int) $sig, (string) $pid]);
             self::killDescendants($pid, $sig);
             if (! $force) {
                 usleep(150_000);
-                @exec('kill -9 -'.(int) $pid.' 2>/dev/null');
-                @exec('kill -9 '.(int) $pid.' 2>/dev/null');
+                self::runCommand(['kill', '-9', '-'.(int) $pid]);
+                self::runCommand(['kill', '-9', (string) $pid]);
                 self::killDescendants($pid, $killSig);
             }
         }
@@ -107,7 +107,8 @@ final class ProcessSupervisor
             return;
         }
 
-        $raw = @shell_exec('pgrep -P '.(int) $pid.' 2>/dev/null');
+        $result = self::runCommand(['pgrep', '-P', (string) $pid]);
+        $raw = $result['stdout'];
         if (! is_string($raw) || trim($raw) === '') {
             return;
         }
@@ -121,9 +122,94 @@ final class ProcessSupervisor
             if (function_exists('posix_kill')) {
                 @posix_kill($childPid, $sig);
             } else {
-                @exec('kill -'.(int) $sig.' '.(int) $childPid.' 2>/dev/null');
+                self::runCommand(['kill', '-'.(int) $sig, (string) $childPid]);
             }
         }
+    }
+
+    /**
+     * @param list<string> $argv
+     * @return array{exitCode: int, stdout: string}
+     */
+    private static function runCommand(array $argv): array
+    {
+        $descriptors = [
+            0 => ['file', PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null', 'r'],
+            1 => ['pipe', 'w'],
+            2 => ['pipe', 'w'],
+        ];
+        $process = @proc_open(
+            $argv,
+            $descriptors,
+            $pipes,
+            getcwd() ?: null,
+            [
+                'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
+                'LANG' => 'C',
+                'LC_ALL' => 'C',
+            ],
+        );
+        if (! is_resource($process)) {
+            return ['exitCode' => -1, 'stdout' => ''];
+        }
+
+        foreach ([1, 2] as $index) {
+            if (isset($pipes[$index]) && is_resource($pipes[$index])) {
+                stream_set_blocking($pipes[$index], false);
+            }
+        }
+
+        $deadline = microtime(true) + 0.5;
+        $stdout = '';
+        $exitCode = -1;
+        while (true) {
+            foreach ([1, 2] as $index) {
+                if (! isset($pipes[$index]) || ! is_resource($pipes[$index])) {
+                    continue;
+                }
+                $chunk = stream_get_contents($pipes[$index]);
+                if ($index === 1 && is_string($chunk) && $chunk !== '') {
+                    $stdout .= $chunk;
+                    if (strlen($stdout) > 8192) {
+                        $stdout = substr($stdout, 0, 8192);
+                    }
+                }
+            }
+
+            $status = proc_get_status($process);
+            if (! ($status['running'] ?? false)) {
+                $exitCode = ($status['signaled'] ?? false)
+                    ? 128 + (int) ($status['termsig'] ?? 0)
+                    : (int) ($status['exitcode'] ?? -1);
+                break;
+            }
+            if (microtime(true) >= $deadline) {
+                proc_terminate($process);
+                break;
+            }
+            usleep(10_000);
+        }
+
+        foreach ([1, 2] as $index) {
+            if (isset($pipes[$index]) && is_resource($pipes[$index])) {
+                if ($index === 1) {
+                    $chunk = stream_get_contents($pipes[$index]);
+                    if (is_string($chunk) && $chunk !== '') {
+                        $stdout .= $chunk;
+                        if (strlen($stdout) > 8192) {
+                            $stdout = substr($stdout, 0, 8192);
+                        }
+                    }
+                }
+                fclose($pipes[$index]);
+            }
+        }
+        $closed = proc_close($process);
+        if ($exitCode < 0) {
+            $exitCode = $closed;
+        }
+
+        return ['exitCode' => $exitCode, 'stdout' => $stdout];
     }
 
     /**

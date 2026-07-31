@@ -294,6 +294,69 @@ MD);
         ]));
     }
 
+    public function test_agent_tool_worktree_creation_does_not_shell_out(): void
+    {
+        $source = file_get_contents((new \ReflectionClass(AgentTool::class))->getFileName());
+
+        $this->assertIsString($source);
+        $this->assertStringNotContainsString('shell_exec', $source);
+        $this->assertStringNotContainsString('git worktree add -b', $source);
+    }
+
+    public function test_agent_worktree_creation_does_not_run_post_checkout_hook(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('POSIX hook coverage.');
+        }
+
+        $root = $this->makeGitRepository();
+        $marker = $root.'/hook-ran';
+        $hook = $root.'/.git/hooks/post-checkout';
+        file_put_contents($hook, "#!/bin/sh\nprintf ran > ".escapeshellarg($marker)."\n");
+        chmod($hook, 0700);
+
+        try {
+            $tool = new AgentTool($this->makeFactory($this->makeLoop('done')));
+            $result = $tool->call([
+                'prompt' => 'Inspect the repository',
+                'isolation' => 'worktree',
+            ], new ToolUseContext($root, 'session-1'));
+
+            $this->assertFalse($result->isError, $result->output);
+            $this->assertFileDoesNotExist($marker);
+        } finally {
+            $this->removeDirectory($root);
+        }
+    }
+
+    public function test_agent_worktree_creation_rejects_claude_symlink(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('POSIX symlink coverage.');
+        }
+
+        $root = $this->makeGitRepository();
+        $outside = sys_get_temp_dir().'/haocode-agent-symlink-target-'.bin2hex(random_bytes(4));
+        mkdir($outside, 0755, true);
+        symlink($outside, $root.'/.claude');
+
+        try {
+            $tool = new AgentTool($this->makeFactory($this->makeLoop('done')));
+            $result = $tool->call([
+                'prompt' => 'Inspect the repository',
+                'isolation' => 'worktree',
+            ], new ToolUseContext($root, 'session-1'));
+
+            $this->assertTrue($result->isError);
+            $this->assertStringContainsString('symlink', $result->output);
+            $this->assertDirectoryDoesNotExist($outside.'/worktrees');
+        } finally {
+            @unlink($root.'/.claude');
+            $this->removeDirectory($root);
+            $this->removeDirectory($outside);
+        }
+    }
+
     public function test_clean_worktree_is_removed_with_its_temporary_branch(): void
     {
         $root = $this->makeGitRepository();

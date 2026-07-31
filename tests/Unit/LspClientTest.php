@@ -88,4 +88,13 @@ class LspClientTest extends TestCase
     {
         $this->assertSame('unknown', LspClient::detectLanguage('/Makefile'));
     }
+
+    public function test_lsp_command_discovery_does_not_shell_out_to_which(): void
+    {
+        $source = file_get_contents((new \ReflectionClass(LspClient::class))->getFileName());
+
+        $this->assertIsString($source);
+        $this->assertStringNotContainsString('shell_exec', $source);
+        $this->assertStringNotContainsString('which ', $source);
+    }
 }

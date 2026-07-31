@@ -22,6 +22,15 @@ class BashToolTest extends TestCase
         );
     }
 
+    public function test_process_identity_probe_does_not_shell_out(): void
+    {
+        $source = file_get_contents((new \ReflectionClass(BashTool::class))->getFileName());
+
+        $this->assertIsString($source);
+        $this->assertStringNotContainsString('shell_exec', $source);
+        $this->assertStringNotContainsString('ps -p', $source);
+    }
+
     // ─── validateInput ────────────────────────────────────────────────────
 
     public function test_validate_input_blocks_force_push_to_main(): void

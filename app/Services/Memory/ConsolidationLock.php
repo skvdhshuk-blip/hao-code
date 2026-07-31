@@ -139,11 +139,90 @@ class ConsolidationLock
 
         // Fallback: check /proc on Linux, or assume stale on macOS
         if (PHP_OS_FAMILY === 'Darwin') {
-            $output = @shell_exec("ps -p {$pid} -o pid= 2>/dev/null");
-
-            return trim($output ?? '') !== '';
+            return $this->processExistsWithPs($pid);
         }
 
         return file_exists("/proc/{$pid}");
+    }
+
+    private function processExistsWithPs(int $pid): bool
+    {
+        $descriptors = [
+            0 => ['file', '/dev/null', 'r'],
+            1 => ['pipe', 'w'],
+            2 => ['pipe', 'w'],
+        ];
+        $process = @proc_open(
+            ['ps', '-p', (string) $pid, '-o', 'pid='],
+            $descriptors,
+            $pipes,
+            null,
+            [
+                'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
+                'LANG' => 'C',
+                'LC_ALL' => 'C',
+            ],
+        );
+        if (! is_resource($process)) {
+            return false;
+        }
+
+        foreach ([1, 2] as $index) {
+            if (isset($pipes[$index]) && is_resource($pipes[$index])) {
+                stream_set_blocking($pipes[$index], false);
+            }
+        }
+
+        $deadline = microtime(true) + 0.5;
+        $output = '';
+        $exitCode = -1;
+        while (true) {
+            foreach ([1, 2] as $index) {
+                if (! isset($pipes[$index]) || ! is_resource($pipes[$index])) {
+                    continue;
+                }
+                $chunk = stream_get_contents($pipes[$index]);
+                if ($index === 1 && is_string($chunk) && $chunk !== '') {
+                    $output .= $chunk;
+                    if (strlen($output) > 1024) {
+                        $output = substr($output, 0, 1024);
+                    }
+                }
+            }
+
+            $status = proc_get_status($process);
+            if (! ($status['running'] ?? false)) {
+                $exitCode = ($status['signaled'] ?? false)
+                    ? 128 + (int) ($status['termsig'] ?? 0)
+                    : (int) ($status['exitcode'] ?? -1);
+                break;
+            }
+            if (microtime(true) >= $deadline) {
+                proc_terminate($process);
+                break;
+            }
+            usleep(10_000);
+        }
+
+        foreach ([1, 2] as $index) {
+            if (isset($pipes[$index]) && is_resource($pipes[$index])) {
+                if ($index === 1) {
+                    $chunk = stream_get_contents($pipes[$index]);
+                    if (is_string($chunk) && $chunk !== '') {
+                        $output .= $chunk;
+                        if (strlen($output) > 1024) {
+                            $output = substr($output, 0, 1024);
+                        }
+                    }
+                }
+                fclose($pipes[$index]);
+            }
+        }
+        $closed = proc_close($process);
+        if ($exitCode < 0) {
+            $exitCode = $closed;
+        }
+
+        return $exitCode === 0 && trim($output) !== '';
     }
 }

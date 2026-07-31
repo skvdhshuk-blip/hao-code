@@ -131,6 +131,16 @@ class GrepToolTest extends TestCase
         return $method->invoke($this->tool);
     }
 
+    public function test_ripgrep_discovery_does_not_shell_out(): void
+    {
+        $source = file_get_contents((new \ReflectionClass(GrepTool::class))->getFileName());
+
+        $this->assertIsString($source);
+        $this->assertStringNotContainsString('shell_exec', $source);
+        $this->assertStringNotContainsString('command -v rg', $source);
+        $this->assertStringNotContainsString('where rg', $source);
+    }
+
     // ─── Basic matching ───────────────────────────────────────────────────
 
     public function test_it_finds_matching_lines_in_content_mode(): void

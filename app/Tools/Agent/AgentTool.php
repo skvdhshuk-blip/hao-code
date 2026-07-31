@@ -4,6 +4,7 @@ namespace HaoCode\Tools\Agent;
 
 use HaoCode\Services\Agent\BackgroundAgentManager;
 use HaoCode\Services\Agent\AgentLoopFactory;
+use HaoCode\Services\Git\HardenedGitRunner;
 use HaoCode\Services\Task\TaskManager;
 use HaoCode\Tools\BaseTool;
 use HaoCode\Tools\ToolInputSchema;
@@ -543,23 +544,37 @@ DESC;
      */
     private function createWorktree(string $projectDir): array|ToolResult
     {
-        $inGit = trim(shell_exec("cd " . escapeshellarg($projectDir) . " && git rev-parse --is-inside-work-tree 2>/dev/null") ?? '');
+        $projectDir = realpath($projectDir) ?: $projectDir;
+        $inGit = trim($this->git($projectDir, ['rev-parse', '--is-inside-work-tree'])['stdout']);
         if ($inGit !== 'true') {
             return ToolResult::error("Cannot create worktree: not a git repository.");
         }
 
         $branch = 'agent-' . bin2hex(random_bytes(4));
         $worktreeDir = $projectDir . '/.claude/worktrees/' . $branch;
+        $claudeDir = $projectDir . '/.claude';
+        if (is_link($claudeDir)) {
+            return ToolResult::error('Cannot create worktree: .claude is a symlink.');
+        }
 
-        $cmd = "cd " . escapeshellarg($projectDir)
-            . " && mkdir -p " . escapeshellarg(dirname($worktreeDir))
-            . " && git worktree add -b " . escapeshellarg($branch)
-            . " " . escapeshellarg($worktreeDir) . " HEAD 2>&1";
+        $worktreeBase = dirname($worktreeDir);
+        if (! is_dir($worktreeBase) && ! mkdir($worktreeBase, 0755, true) && ! is_dir($worktreeBase)) {
+            return ToolResult::error("Failed to create worktree directory: {$worktreeBase}");
+        }
 
-        $output = shell_exec($cmd);
+        $created = $this->git($projectDir, [
+            '-c',
+            'core.hooksPath='.$this->nullDevice(),
+            'worktree',
+            'add',
+            '-b',
+            $branch,
+            $worktreeDir,
+            'HEAD',
+        ], 10.0);
 
         if (!is_dir($worktreeDir)) {
-            return ToolResult::error("Failed to create worktree: " . ($output ?? 'unknown error'));
+            return ToolResult::error("Failed to create worktree: {$created['stderr']}{$created['stdout']}");
         }
 
         return ['path' => $worktreeDir, 'branch' => $branch];
@@ -602,5 +617,25 @@ DESC;
     private function tasks(): TaskManager
     {
         return $this->taskManager ?? \HaoCode\Support\Runtime\SdkRuntime::app(TaskManager::class);
+    }
+
+    /**
+     * @param list<string> $args
+     * @return array{stdout: string, stderr: string, exitCode: int}
+     */
+    private function git(string $cwd, array $args, float $timeoutSeconds = 2.0): array
+    {
+        $result = (new HardenedGitRunner())->runGit($cwd, $args, $timeoutSeconds);
+
+        return [
+            'stdout' => $result['stdout'],
+            'stderr' => $result['timedOut'] ? 'Git command timed out.' : ($result['truncated'] ? 'Git command output exceeded limit.' : $result['stderr']),
+            'exitCode' => $result['exitCode'],
+        ];
+    }
+
+    private function nullDevice(): string
+    {
+        return PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null';
     }
 }

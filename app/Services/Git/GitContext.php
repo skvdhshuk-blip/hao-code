@@ -18,6 +18,7 @@ class GitContext
 
     public function __construct(
         private readonly ?string $workingDirectory = null,
+        private readonly ?HardenedGitRunner $gitRunner = null,
     ) {}
 
     /**
@@ -65,9 +66,9 @@ class GitContext
     public function isGitRepo(): bool
     {
         return $this->snapshotValue('is_git_repo', function (): bool {
-            exec($this->gitCommand('rev-parse --is-inside-work-tree'), $output, $exitCode);
+            $result = $this->git(['rev-parse', '--is-inside-work-tree']);
 
-            return $exitCode === 0;
+            return $result['exitCode'] === 0 && trim($result['stdout']) === 'true';
         });
     }
 
@@ -77,9 +78,10 @@ class GitContext
     public function getCurrentBranch(): string
     {
         return $this->snapshotValue('current_branch', function (): string {
-            exec($this->gitCommand('rev-parse --abbrev-ref HEAD'), $output);
+            $result = $this->git(['rev-parse', '--abbrev-ref', 'HEAD']);
+            $branch = trim($result['stdout']);
 
-            return trim($output[0] ?? 'unknown');
+            return $result['exitCode'] === 0 && $branch !== '' ? $branch : 'unknown';
         });
     }
 
@@ -88,9 +90,9 @@ class GitContext
      */
     public function hasUncommittedChanges(): bool
     {
-        exec($this->gitCommand('status --porcelain'), $output, $exitCode);
+        $result = $this->git(['status', '--porcelain']);
 
-        return $exitCode === 0 && trim(implode("\n", $output)) !== '';
+        return $result['exitCode'] === 0 && trim($result['stdout']) !== '';
     }
 
     /**
@@ -99,9 +101,9 @@ class GitContext
     public function getRemoteUrl(): string
     {
         return $this->snapshotValue('remote_url', function (): string {
-            exec($this->gitCommand('config --get remote.origin.url'), $output);
+            $result = $this->git(['config', '--get', 'remote.origin.url']);
 
-            return trim($output[0] ?? '');
+            return $result['exitCode'] === 0 ? trim($result['stdout']) : '';
         });
     }
 
@@ -112,9 +114,10 @@ class GitContext
     {
         return $this->snapshotValue('default_branch', function (): string {
             // Try to detect from remote HEAD
-            exec($this->gitCommand('symbolic-ref refs/remotes/origin/HEAD'), $output);
-            if (! empty($output[0])) {
-                return str_replace('refs/remotes/origin/', '', $output[0]);
+            $result = $this->git(['symbolic-ref', 'refs/remotes/origin/HEAD']);
+            $ref = trim($result['stdout']);
+            if ($result['exitCode'] === 0 && $ref !== '') {
+                return str_replace('refs/remotes/origin/', '', $ref);
             }
 
             return '';
@@ -150,8 +153,18 @@ class GitContext
     public function getWorkingTreeDiff(): string
     {
         // Get diff stat summary
-        exec($this->gitCommand('diff --stat HEAD'), $statOutput, $exitCode);
-        if ($exitCode !== 0 || empty($statOutput)) {
+        $statResult = $this->git([
+            '--no-pager',
+            'diff',
+            '--no-ext-diff',
+            '--no-textconv',
+            '--no-renames',
+            '--stat',
+            'HEAD',
+            '--',
+        ]);
+        $statOutput = $this->lines($statResult['stdout']);
+        if ($statResult['exitCode'] !== 0 || $statOutput === []) {
             return '';
         }
 
@@ -164,10 +177,19 @@ class GitContext
         }
 
         // Get actual diff hunks (limited)
-        exec($this->gitCommand('diff HEAD --no-color').' | head -200', $diffOutput);
-        $diff = implode("\n", $diffOutput);
+        $diffResult = $this->git([
+            '--no-pager',
+            'diff',
+            '--no-color',
+            '--no-ext-diff',
+            '--no-textconv',
+            '--no-renames',
+            'HEAD',
+            '--',
+        ]);
+        $diff = implode("\n", array_slice($this->lines($diffResult['stdout']), 0, 200));
 
-        if (mb_strlen($diff) > 5000) {
+        if ($diffResult['exitCode'] !== 0 || mb_strlen($diff) > 5000) {
             return $stat . "\n\n(diff too large to include, showing stat only)";
         }
 
@@ -184,8 +206,9 @@ class GitContext
      */
     private function getWorkingTreeState(): array
     {
-        exec($this->gitCommand('status --short'), $output, $exitCode);
-        if ($exitCode !== 0 || $output === []) {
+        $result = $this->git(['status', '--short']);
+        $output = $this->lines($result['stdout']);
+        if ($result['exitCode'] !== 0 || $output === []) {
             return ['status' => '', 'has_tracked_changes' => false];
         }
 
@@ -211,9 +234,10 @@ class GitContext
      */
     public function getRecentCommits(int $count = 5): string
     {
-        exec($this->gitCommand('log --oneline -n '.max(1, $count)), $output, $exitCode);
+        $result = $this->git(['--no-pager', 'log', '--oneline', '-n', (string) max(1, $count)]);
+        $output = $this->lines($result['stdout']);
 
-        if ($exitCode !== 0 || empty($output)) {
+        if ($result['exitCode'] !== 0 || empty($output)) {
             return '';
         }
 
@@ -225,8 +249,9 @@ class GitContext
      */
     public function isGitIgnored(string $path): bool
     {
-        exec($this->gitCommand('check-ignore -q '.escapeshellarg($path)), $output, $exitCode);
-        return $exitCode === 0;
+        $result = $this->git(['check-ignore', '-q', '--', $path]);
+
+        return $result['exitCode'] === 0;
     }
 
     /**
@@ -234,18 +259,32 @@ class GitContext
      */
     public function getGitRoot(): string
     {
-        exec($this->gitCommand('rev-parse --show-toplevel'), $output);
-        return trim($output[0] ?? ($this->workingDirectory ?? getcwd()));
+        $result = $this->git(['--no-pager', 'rev-parse', '--show-toplevel']);
+        $root = trim($result['stdout']);
+
+        return $result['exitCode'] === 0 && $root !== '' ? $root : ($this->workingDirectory ?? getcwd());
     }
 
     /**
-     * 为当前运行目录构造安全的 Git 命令。
+     * @param list<string> $args
+     * @return array{exitCode: int, stdout: string, stderr: string, timedOut: bool, aborted: bool, truncated: bool}
      */
-    private function gitCommand(string $arguments): string
+    private function git(array $args): array
     {
         $workingDirectory = $this->workingDirectory ?? getcwd();
 
-        return 'git -C '.escapeshellarg($workingDirectory).' '.$arguments.' 2>/dev/null';
+        return ($this->gitRunner ?? new HardenedGitRunner())->runGit($workingDirectory, $args);
+    }
+
+    /** @return list<string> */
+    private function lines(string $output): array
+    {
+        $output = trim($output, "\r\n");
+        if ($output === '') {
+            return [];
+        }
+
+        return preg_split('/\r\n|\r|\n/', $output) ?: [];
     }
 
     private function snapshotValue(string $key, callable $resolver): mixed

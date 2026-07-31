@@ -62,6 +62,15 @@ class ConsolidationLockTest extends TestCase
         $this->assertSame((string)getmypid(), $content);
     }
 
+    public function test_process_probe_does_not_shell_out(): void
+    {
+        $source = file_get_contents((new \ReflectionClass(ConsolidationLock::class))->getFileName());
+
+        $this->assertIsString($source);
+        $this->assertStringNotContainsString('shell_exec', $source);
+        $this->assertStringNotContainsString('ps -p', $source);
+    }
+
     public function test_read_last_consolidated_at_returns_mtime_after_stamp(): void
     {
         $beforeMs = (int)(microtime(true) * 1000);

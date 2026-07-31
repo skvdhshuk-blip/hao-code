@@ -39,6 +39,7 @@ use HaoCode\Sdk\SdkSkill;
 use HaoCode\Sdk\SdkTool;
 use HaoCode\Sdk\StructuredResult;
 use HaoCode\Sdk\StructuredResultValidationException;
+use HaoCode\Tools\FileEdit\DiffGenerator;
 
 use HaoCode\Sdk\ImageContentBlock;
 
@@ -315,16 +316,15 @@ if ($existingDecoded === $currentDecoded) {
     exit(0);
 }
 
-// Produce a human-readable diff
+// Produce a human-readable diff without relying on a host diff binary.
 $existingLines = explode("\n", json_encode($existingDecoded, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
 $currentLines = explode("\n", json_encode($currentDecoded, JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE));
 
-$existingFile = sys_get_temp_dir().'/sdk-bc-existing.json';
-$currentFile = sys_get_temp_dir().'/sdk-bc-current.json';
-file_put_contents($existingFile, implode("\n", $existingLines));
-file_put_contents($currentFile, implode("\n", $currentLines));
-
 fwrite(STDERR, "FAIL: public API has changed from snapshot.\n");
-$diff = shell_exec("diff -u $existingFile $currentFile");
-fwrite(STDERR, $diff ?? '(diff unavailable)');
+$diff = DiffGenerator::unifiedDiff(
+    implode("\n", $existingLines)."\n",
+    implode("\n", $currentLines)."\n",
+    'public-api.snapshot.json',
+);
+fwrite(STDERR, $diff !== '' ? $diff : '(diff unavailable)');
 exit(1);

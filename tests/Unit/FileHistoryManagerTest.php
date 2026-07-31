@@ -175,6 +175,15 @@ class FileHistoryManagerTest extends TestCase
         $this->assertStringContainsString('No file changes tracked', $summary);
     }
 
+    public function test_get_diff_uses_php_diff_without_shell_exec(): void
+    {
+        $source = file_get_contents((new \ReflectionClass(FileHistoryManager::class))->getFileName());
+
+        $this->assertIsString($source);
+        $this->assertStringNotContainsString('shell_exec', $source);
+        $this->assertStringNotContainsString('diff -u', $source);
+    }
+
     public function test_missing_blob_is_reported_as_corrupt_history(): void
     {
         $file = $this->makeTmpFile("original\n");

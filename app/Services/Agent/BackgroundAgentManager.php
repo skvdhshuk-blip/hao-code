@@ -2,6 +2,7 @@
 
 namespace HaoCode\Services\Agent;
 
+use HaoCode\Services\Git\HardenedGitRunner;
 use HaoCode\Services\Task\TaskManager;
 use HaoCode\Support\StateIdentifier;
 
@@ -461,36 +462,19 @@ class BackgroundAgentManager
         }
 
         $parent = dirname($path, 3);
-        $removeOutput = [];
-        $removeCode = 0;
-        exec(
-            'cd '.escapeshellarg($parent)
-            .' && git worktree remove '.escapeshellarg($path).' --force 2>&1',
-            $removeOutput,
-            $removeCode,
-        );
+        $removed = $this->git($parent, ['worktree', 'remove', '--force', $path], 10.0);
+        $removeCode = $removed['exitCode'];
         if ($removeCode !== 0 && ! is_dir($path)) {
-            exec('cd '.escapeshellarg($parent).' && git worktree prune 2>/dev/null');
+            $this->git($parent, ['worktree', 'prune'], 10.0);
             $removeCode = 0;
         }
 
-        $branchOutput = [];
         $branchCode = 0;
         if ($removeCode === 0) {
-            $branchExistsCode = 0;
-            exec(
-                'cd '.escapeshellarg($parent)
-                .' && git show-ref --verify --quiet '.escapeshellarg('refs/heads/'.$branch),
-                $branchOutput,
-                $branchExistsCode,
-            );
-            if ($branchExistsCode === 0) {
-                exec(
-                    'cd '.escapeshellarg($parent)
-                    .' && git branch -D '.escapeshellarg($branch).' 2>&1',
-                    $branchOutput,
-                    $branchCode,
-                );
+            $branchExists = $this->git($parent, ['show-ref', '--verify', '--quiet', 'refs/heads/'.$branch]);
+            if ($branchExists['exitCode'] === 0) {
+                $deleted = $this->git($parent, ['branch', '-D', $branch], 10.0);
+                $branchCode = $deleted['exitCode'];
             }
         }
 
@@ -673,12 +657,88 @@ class BackgroundAgentManager
 
     private function processStartTime(int $pid): ?string
     {
-        if ($pid <= 0 || ! function_exists('shell_exec')) {
+        if ($pid <= 0 || PHP_OS_FAMILY === 'Windows') {
             return null;
         }
 
-        $value = shell_exec('ps -o lstart= -p '.(int) $pid.' 2>/dev/null');
-        $value = is_string($value) ? trim($value) : '';
+        $descriptors = [
+            0 => ['file', '/dev/null', 'r'],
+            1 => ['pipe', 'w'],
+            2 => ['pipe', 'w'],
+        ];
+        $process = @proc_open(
+            ['ps', '-o', 'lstart=', '-p', (string) $pid],
+            $descriptors,
+            $pipes,
+            $this->storageRoot(),
+            [
+                'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
+                'LANG' => 'C',
+                'LC_ALL' => 'C',
+            ],
+        );
+        if (! is_resource($process)) {
+            return null;
+        }
+
+        foreach ([1, 2] as $index) {
+            if (isset($pipes[$index]) && is_resource($pipes[$index])) {
+                stream_set_blocking($pipes[$index], false);
+            }
+        }
+
+        $deadline = microtime(true) + 0.5;
+        $output = '';
+        $exitCode = -1;
+        while (true) {
+            if (isset($pipes[1]) && is_resource($pipes[1])) {
+                $chunk = stream_get_contents($pipes[1]);
+                if (is_string($chunk) && $chunk !== '') {
+                    $output .= $chunk;
+                    if (strlen($output) > 4096) {
+                        $output = substr($output, 0, 4096);
+                        break;
+                    }
+                }
+            }
+
+            $status = proc_get_status($process);
+            if (! ($status['running'] ?? false)) {
+                $exitCode = ($status['signaled'] ?? false)
+                    ? 128 + (int) ($status['termsig'] ?? 0)
+                    : (int) ($status['exitcode'] ?? -1);
+                break;
+            }
+            if (microtime(true) >= $deadline) {
+                proc_terminate($process);
+                break;
+            }
+            usleep(10_000);
+        }
+
+        foreach ([1, 2] as $index) {
+            if (isset($pipes[$index]) && is_resource($pipes[$index])) {
+                if ($index === 1) {
+                    $chunk = stream_get_contents($pipes[$index]);
+                    if (is_string($chunk) && $chunk !== '') {
+                        $output .= $chunk;
+                        if (strlen($output) > 4096) {
+                            $output = substr($output, 0, 4096);
+                        }
+                    }
+                }
+                fclose($pipes[$index]);
+            }
+        }
+        $closed = proc_close($process);
+        if ($exitCode < 0) {
+            $exitCode = $closed;
+        }
+        if ($exitCode !== 0) {
+            return null;
+        }
+
+        $value = trim($output);
 
         return $value !== '' ? $value : null;
     }
@@ -693,53 +753,55 @@ class BackgroundAgentManager
 
     private function worktreeHasChanges(string $path): bool
     {
-        $status = trim((string) shell_exec(
-            'cd '.escapeshellarg($path).' && git status --porcelain 2>/dev/null',
-        ));
-        if ($status !== '') {
+        $status = $this->git($path, ['status', '--porcelain']);
+        if ($status['exitCode'] !== 0 || trim($status['stdout']) !== '') {
             return true;
         }
 
         $parent = dirname($path, 3);
-        $worktreeHead = trim((string) shell_exec(
-            'cd '.escapeshellarg($path).' && git rev-parse HEAD 2>/dev/null',
-        ));
-        $parentHead = trim((string) shell_exec(
-            'cd '.escapeshellarg($parent).' && git rev-parse HEAD 2>/dev/null',
-        ));
+        $worktreeHeadResult = $this->git($path, ['rev-parse', 'HEAD']);
+        $parentHeadResult = $this->git($parent, ['rev-parse', 'HEAD']);
+        $worktreeHead = trim($worktreeHeadResult['stdout']);
+        $parentHead = trim($parentHeadResult['stdout']);
 
         // Preserve on uncertainty. A clean worktree can still contain committed
         // agent work, which must not be deleted with the temporary branch.
-        return $worktreeHead === '' || $parentHead === '' || $worktreeHead !== $parentHead;
+        return $worktreeHeadResult['exitCode'] !== 0
+            || $parentHeadResult['exitCode'] !== 0
+            || $worktreeHead === ''
+            || $parentHead === ''
+            || $worktreeHead !== $parentHead;
     }
 
     private function branchHasUniqueCommits(string $parent, string $branch): ?bool
     {
-        $output = [];
-        $code = 0;
-        exec(
-            'cd '.escapeshellarg($parent)
-            .' && git show-ref --verify --quiet '.escapeshellarg('refs/heads/'.$branch),
-            $output,
-            $code,
-        );
-        if ($code !== 0) {
+        $exists = $this->git($parent, ['show-ref', '--verify', '--quiet', 'refs/heads/'.$branch]);
+        if ($exists['exitCode'] !== 0) {
             return false;
         }
 
-        $output = [];
-        exec(
-            'cd '.escapeshellarg($parent)
-            .' && git rev-list --count HEAD..'.escapeshellarg('refs/heads/'.$branch).' 2>&1',
-            $output,
-            $code,
-        );
-        $count = trim(implode("\n", $output));
-        if ($code !== 0 || ! ctype_digit($count)) {
+        $countResult = $this->git($parent, ['rev-list', '--count', 'HEAD..refs/heads/'.$branch]);
+        $count = trim($countResult['stdout']);
+        if ($countResult['exitCode'] !== 0 || ! ctype_digit($count)) {
             return null;
         }
 
         return (int) $count > 0;
+    }
+
+    /**
+     * @param list<string> $args
+     * @return array{stdout: string, stderr: string, exitCode: int}
+     */
+    private function git(string $cwd, array $args, float $timeoutSeconds = 2.0): array
+    {
+        $result = (new HardenedGitRunner())->runGit($cwd, $args, $timeoutSeconds);
+
+        return [
+            'stdout' => $result['stdout'],
+            'stderr' => $result['timedOut'] ? 'Git command timed out.' : ($result['truncated'] ? 'Git command output exceeded limit.' : $result['stderr']),
+            'exitCode' => $result['exitCode'],
+        ];
     }
 
     /** @internal */

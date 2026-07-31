@@ -59,6 +59,15 @@ class BackgroundAgentManagerTest extends TestCase
         $this->assertTrue($agent['worktree_retained']);
     }
 
+    public function test_background_agent_manager_does_not_use_shell_exec(): void
+    {
+        $source = file_get_contents((new \ReflectionClass(BackgroundAgentManager::class))->getFileName());
+
+        $this->assertIsString($source);
+        $this->assertStringNotContainsString('shell_exec', $source);
+        $this->assertStringNotContainsString('cd ', $source);
+    }
+
     public function test_rejects_path_traversal_ids_before_writing_files(): void
     {
         $outsidePath = dirname($this->tempDir).'/escape.state.json';

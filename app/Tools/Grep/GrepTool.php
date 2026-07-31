@@ -148,12 +148,40 @@ DESC;
 
     private function hasRipgrep(): bool
     {
-        $command = PHP_OS_FAMILY === 'Windows'
-            ? 'where rg 2>NUL'
-            : 'command -v rg 2>/dev/null';
-        $result = exec($command);
+        return $this->isExecutableOnPath('rg');
+    }
 
-        return ! empty($result);
+    private function isExecutableOnPath(string $binary): bool
+    {
+        if ($binary === '' || str_contains($binary, "\0")) {
+            return false;
+        }
+
+        $path = getenv('PATH');
+        if (! is_string($path) || $path === '') {
+            return false;
+        }
+
+        $extensions = [''];
+        if (PHP_OS_FAMILY === 'Windows') {
+            $pathext = getenv('PATHEXT');
+            $extensions = array_filter(explode(';', is_string($pathext) && $pathext !== '' ? $pathext : '.COM;.EXE;.BAT;.CMD'));
+            array_unshift($extensions, '');
+        }
+
+        foreach (explode(PATH_SEPARATOR, $path) as $directory) {
+            if ($directory === '') {
+                continue;
+            }
+            foreach ($extensions as $extension) {
+                $candidate = rtrim($directory, DIRECTORY_SEPARATOR).DIRECTORY_SEPARATOR.$binary.$extension;
+                if (is_file($candidate) && is_executable($candidate)) {
+                    return true;
+                }
+            }
+        }
+
+        return false;
     }
 
     private function grepWithRipgrep(

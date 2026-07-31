@@ -7,6 +7,15 @@ use PHPUnit\Framework\TestCase;
 
 class ProcessSupervisorTest extends TestCase
 {
+    public function test_tree_termination_helpers_do_not_shell_out(): void
+    {
+        $source = file_get_contents((new \ReflectionClass(ProcessSupervisor::class))->getFileName());
+
+        $this->assertIsString($source);
+        $this->assertStringNotContainsString('shell_exec', $source);
+        $this->assertStringNotContainsString('@exec', $source);
+    }
+
     public function test_open_reports_missing_bash_before_starting_command(): void
     {
         $emptyPath = sys_get_temp_dir().'/haocode-empty-path-'.bin2hex(random_bytes(4));

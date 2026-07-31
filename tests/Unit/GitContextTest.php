@@ -96,6 +96,16 @@ class GitContextTest extends TestCase
         }
     }
 
+    public function test_git_context_uses_hardened_runner_without_shell_exec(): void
+    {
+        $source = file_get_contents((new \ReflectionClass(GitContext::class))->getFileName());
+
+        $this->assertIsString($source);
+        $this->assertStringNotContainsString('shell_exec', $source);
+        $this->assertStringNotContainsString('exec(', $source);
+        $this->assertStringNotContainsString('| head', $source);
+    }
+
     public function test_get_diff_context_empty_outside_git_repo(): void
     {
         // Create a mock that pretends isGitRepo() returns false
@@ -229,6 +239,36 @@ class GitContextTest extends TestCase
 
             $this->assertStringContainsString('UU conflict.txt', $result);
             $this->assertStringContainsString('conflict diff sentinel', $result);
+        } finally {
+            $this->removeDirectory($directory);
+        }
+    }
+
+    public function test_get_diff_context_does_not_run_external_diff_driver(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows' || trim((string) shell_exec('command -v git 2>/dev/null')) === '') {
+            $this->markTestSkipped('git and POSIX shell are required for external diff coverage.');
+        }
+
+        $directory = $this->createGitRepository('context_external_diff');
+        $marker = $directory.'/external-diff-ran';
+        $script = $directory.'/external-diff.sh';
+
+        try {
+            file_put_contents($directory.'/tracked.txt', "old\n");
+            file_put_contents($script, "#!/bin/sh\nprintf ran > ".escapeshellarg($marker)."\nexit 0\n");
+            chmod($script, 0700);
+            $this->git($directory, 'add tracked.txt');
+            $this->git($directory, 'commit -qm tracked');
+            $this->git($directory, 'config diff.external '.escapeshellarg($script));
+            file_put_contents($directory.'/tracked.txt', "new\n");
+
+            $context = (new GitContext($directory))->getDiffContext();
+
+            $this->assertStringContainsString('tracked.txt', $context);
+            $this->assertStringContainsString('-old', $context);
+            $this->assertStringContainsString('+new', $context);
+            $this->assertFileDoesNotExist($marker);
         } finally {
             $this->removeDirectory($directory);
         }
@@ -380,6 +420,13 @@ class GitContextTest extends TestCase
         exec('git -C '.escapeshellarg($directory).' commit --allow-empty -qm initial');
 
         return $directory;
+    }
+
+    private function git(string $directory, string $arguments): void
+    {
+        exec('git -C '.escapeshellarg($directory).' '.$arguments.' 2>&1', $output, $exitCode);
+
+        $this->assertSame(0, $exitCode, implode("\n", $output));
     }
 
     private function removeDirectory(string $directory): void

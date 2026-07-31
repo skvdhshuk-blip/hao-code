@@ -5,6 +5,7 @@ namespace HaoCode\Services\FileHistory;
 use HaoCode\Services\FileEdit\AtomicFileWriter;
 use HaoCode\Services\FileEdit\FileRevision;
 use HaoCode\Support\Filesystem\CanonicalPathResolver;
+use HaoCode\Tools\FileEdit\DiffGenerator;
 
 /**
  * Tracks file changes across a session with durable snapshots.
@@ -173,27 +174,14 @@ class FileHistoryManager
             return null;
         }
 
-        $toFile = tempnam(sys_get_temp_dir(), 'haocode_diff_');
-        if ($toFile === false) {
-            throw new \RuntimeException('Unable to create temporary diff file.');
+        $fromContent = file_get_contents($fromFile);
+        if ($fromContent === false) {
+            return null;
         }
 
-        try {
-            if (file_put_contents($toFile, $to->content) !== strlen($to->content)) {
-                throw new \RuntimeException('Unable to write temporary diff file.');
-            }
-            @chmod($toFile, 0600);
+        $diff = DiffGenerator::unifiedDiff($fromContent, $to->content, basename($to->filePath));
 
-            $output = shell_exec(sprintf(
-                'diff -u %s %s 2>/dev/null',
-                escapeshellarg($fromFile),
-                escapeshellarg($toFile),
-            ));
-
-            return $output ?: 'No differences found.';
-        } finally {
-            @unlink($toFile);
-        }
+        return $diff !== '' ? $diff : 'No differences found.';
     }
 
     /**
