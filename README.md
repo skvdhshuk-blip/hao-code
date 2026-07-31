@@ -775,7 +775,7 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.18.24`. Notable changes since `v1.10.0`:
+is based on `v1.18.25`. Notable changes since `v1.10.0`:
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/
@@ -870,6 +870,10 @@ is based on `v1.18.24`. Notable changes since `v1.10.0`:
 - `v1.18.24` — Foreground Bash captures stdout/stderr through bounded endpoints,
   terminates runaway output at the byte cap, and still returns promptly when a
   command leaves its own background child running.
+- `v1.18.25` — Text Read streams line windows while computing file revisions,
+  segmented reads merge line coverage into complete receipts only after
+  model-visible batch commit, and Edit/Write size checks now bound replacement
+  payloads rather than rejecting large files outright.
 
 ## License
 

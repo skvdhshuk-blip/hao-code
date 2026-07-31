@@ -187,6 +187,56 @@ class FileReadToolTest extends TestCase
         unlink($file);
     }
 
+    public function test_segmented_reads_authorize_after_all_lines_are_observed(): void
+    {
+        $file = $this->makeTmpFile("one\ntwo\nthree\nfour\n");
+
+        $first = $this->tool->call(['file_path' => $file, 'offset' => 1, 'limit' => 2], $this->context);
+        $this->assertFalse($first->isError);
+        $this->assertFalse($this->context->wasFileRead($file));
+
+        $second = $this->tool->call(['file_path' => $file, 'offset' => 3, 'limit' => 2], $this->context);
+        $this->assertFalse($second->isError);
+
+        $this->assertTrue($this->context->wasFileRead($file));
+        $this->assertNull($this->context->fileRevisionError($file));
+        unlink($file);
+    }
+
+    public function test_segmented_read_coverage_resets_when_file_changes(): void
+    {
+        $file = $this->makeTmpFile("one\ntwo\nthree\nfour\n");
+
+        $first = $this->tool->call(['file_path' => $file, 'offset' => 1, 'limit' => 2], $this->context);
+        $this->assertFalse($first->isError);
+
+        file_put_contents($file, "one\ntwo\nchanged\nfour\n");
+
+        $second = $this->tool->call(['file_path' => $file, 'offset' => 3, 'limit' => 2], $this->context);
+        $this->assertFalse($second->isError);
+
+        $this->assertFalse($this->context->wasFileRead($file));
+        $this->assertStringContainsString('partially read', $this->context->fileRevisionError($file) ?? '');
+        unlink($file);
+    }
+
+    public function test_segmented_read_coverage_promotes_only_after_pending_batch_commit(): void
+    {
+        $file = $this->makeTmpFile("one\ntwo\nthree\nfour\n");
+
+        $first = $this->tool->call(['file_path' => $file, 'offset' => 1, 'limit' => 2], $this->context);
+        $this->assertFalse($first->isError);
+
+        $this->context->beginReadReceiptBatch();
+        $second = $this->tool->call(['file_path' => $file, 'offset' => 3, 'limit' => 2], $this->context);
+        $this->assertFalse($second->isError);
+        $this->assertFalse($this->context->wasFileRead($file));
+
+        $this->context->commitReadReceiptBatch();
+        $this->assertTrue($this->context->wasFileRead($file));
+        unlink($file);
+    }
+
     public function test_image_returns_explicit_unsupported_error_without_base64_text(): void
     {
         $file = $this->makeTmpFile(base64_decode(

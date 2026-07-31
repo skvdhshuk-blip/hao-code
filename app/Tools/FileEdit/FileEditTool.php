@@ -11,6 +11,8 @@ use HaoCode\Tools\ToolUseContext;
 
 class FileEditTool extends BaseTool
 {
+    private const MAX_EDIT_STRING_BYTES = 512_000;
+
     public function name(): string
     {
         return 'Edit';
@@ -246,12 +248,11 @@ DESC;
             }
         }
 
-        // Warn about very large file edits
-        if (file_exists($filePath)) {
-            $size = filesize($filePath);
-            if ($size > 1_000_000) { // 1MB
-                return "File is very large (" . round($size / 1024 / 1024, 1) . " MB). Consider using more targeted edits.";
-            }
+        $oldString = (string) ($input['old_string'] ?? '');
+        $newString = (string) ($input['new_string'] ?? '');
+        if (strlen($oldString) > self::MAX_EDIT_STRING_BYTES || strlen($newString) > self::MAX_EDIT_STRING_BYTES) {
+            return 'old_string and new_string must each be at most '.self::MAX_EDIT_STRING_BYTES.' bytes. '
+                .'Use a smaller targeted replacement.';
         }
 
         return null;

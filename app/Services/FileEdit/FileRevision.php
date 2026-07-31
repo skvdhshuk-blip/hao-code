@@ -77,18 +77,31 @@ final class FileRevision
 
         try {
             $stat = @fstat($handle);
-            $content = stream_get_contents($handle);
-            if (! is_array($stat) || $content === false) {
+            if (! is_array($stat)) {
                 return null;
+            }
+
+            $hash = hash_init('sha256');
+            $size = 0;
+            while (! feof($handle)) {
+                $chunk = fread($handle, 1024 * 1024);
+                if ($chunk === false) {
+                    return null;
+                }
+                if ($chunk === '') {
+                    continue;
+                }
+                hash_update($hash, $chunk);
+                $size += strlen($chunk);
             }
 
             return new self(
                 canonicalPath: realpath($filePath) ?: $filePath,
                 device: (int) ($stat['dev'] ?? 0),
                 inode: (int) ($stat['ino'] ?? 0),
-                size: strlen($content),
+                size: $size,
                 mtime: (int) ($stat['mtime'] ?? 0),
-                sha256: hash('sha256', $content),
+                sha256: hash_final($hash),
                 complete: $complete,
                 observedAtMicros: (int) round(microtime(true) * 1_000_000),
                 local: true,

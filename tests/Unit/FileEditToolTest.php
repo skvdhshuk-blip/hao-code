@@ -211,6 +211,36 @@ class FileEditToolTest extends TestCase
         $this->assertNull($error);
     }
 
+    public function test_validate_input_allows_large_file_when_replacement_is_targeted(): void
+    {
+        $file = tempnam(sys_get_temp_dir(), 'edit_large_');
+        file_put_contents($file, str_repeat('padding line'."\n", 100_000).'needle'."\n");
+
+        try {
+            $error = $this->tool->validateInput([
+                'file_path' => $file,
+                'old_string' => 'needle',
+                'new_string' => 'replacement',
+            ], $this->context);
+
+            $this->assertNull($error);
+        } finally {
+            @unlink($file);
+        }
+    }
+
+    public function test_validate_input_rejects_huge_replacement_payloads(): void
+    {
+        $error = $this->tool->validateInput([
+            'file_path' => '/tmp/regular.txt',
+            'old_string' => 'needle',
+            'new_string' => str_repeat('x', 512_001),
+        ], $this->context);
+
+        $this->assertNotNull($error);
+        $this->assertStringContainsString('smaller targeted replacement', $error);
+    }
+
     public function test_it_reports_recovery_hint_when_edit_requires_read(): void
     {
         $path = tempnam(sys_get_temp_dir(), 'edit_guardrail_');

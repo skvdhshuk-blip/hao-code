@@ -13,6 +13,8 @@ use HaoCode\Tools\ToolUseContext;
 
 class FileWriteTool extends BaseTool
 {
+    private const MAX_WRITE_CONTENT_BYTES = 1_000_000;
+
     public function name(): string
     {
         return 'Write';
@@ -175,11 +177,9 @@ DESC;
         }
 
         $content = (string) ($input['content'] ?? '');
-        if ($content !== '') {
-            $newlineCount = substr_count($content, "\n");
-            if ($newlineCount > 40 || strlen($content) > 2500) {
-                return 'content is too large for a single Write call. Create a tiny scaffold first, then use Edit in small chunks (about 8 lines or 400 characters each).';
-            }
+        if (strlen($content) > self::MAX_WRITE_CONTENT_BYTES) {
+            return 'content is too large for a single Write call (max '.self::MAX_WRITE_CONTENT_BYTES.' bytes). '
+                .'Write a smaller scaffold or split the change into targeted edits.';
         }
 
         return null;

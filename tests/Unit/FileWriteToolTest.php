@@ -235,16 +235,26 @@ class FileWriteToolTest extends TestCase
         $this->assertFalse($this->tool->isReadOnly([]));
     }
 
-    public function test_validate_input_rejects_large_multiline_content(): void
+    public function test_validate_input_allows_moderate_multiline_content(): void
     {
         $error = $this->tool->validateInput([
             'file_path' => '/tmp/demo.js',
             'content' => implode("\n", array_fill(0, 50, 'const x = 1;')),
         ], $this->context);
 
+        $this->assertNull($error);
+    }
+
+    public function test_validate_input_rejects_huge_content(): void
+    {
+        $error = $this->tool->validateInput([
+            'file_path' => '/tmp/demo.js',
+            'content' => str_repeat('x', 1_000_001),
+        ], $this->context);
+
         $this->assertNotNull($error);
         $this->assertStringContainsString('too large for a single Write call', $error);
-        $this->assertStringContainsString('Edit in small chunks', $error);
+        $this->assertStringContainsString('1000000 bytes', $error);
     }
 
 }

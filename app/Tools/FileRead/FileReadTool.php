@@ -2,6 +2,7 @@
 
 namespace HaoCode\Tools\FileRead;
 
+use HaoCode\Services\FileEdit\FileRevision;
 use HaoCode\Support\Filesystem\FileContentTypeDetector;
 use HaoCode\Tools\BaseTool;
 use HaoCode\Tools\ToolInputSchema;
@@ -129,13 +130,12 @@ DESC;
             return $result;
         }
 
-        $rawContent = file_get_contents($filePath);
-        if ($rawContent === false) {
+        $scan = $this->readTextLineWindow($filePath, $offset, $limit);
+        if ($scan === null) {
             return ToolResult::error("Failed to read file: {$filePath}");
         }
-        $lines = $this->splitLines($rawContent);
 
-        $totalLines = count($lines);
+        $totalLines = $scan['totalLines'];
 
         if ($offset > $totalLines && $totalLines > 0) {
             return ToolResult::error(
@@ -144,7 +144,7 @@ DESC;
             );
         }
 
-        $selectedLines = array_slice($lines, $offset - 1, $limit);
+        $selectedLines = $scan['selectedLines'];
 
         $output = '';
         foreach ($selectedLines as $i => $line) {
@@ -152,9 +152,8 @@ DESC;
             $output .= sprintf("%6d\t%s\n", $lineNum, $line);
         }
 
-        // Cache file content in FileStateCache for Edit/Write read-before-write
         $isPartial = ($offset > 1 || $limit < $totalLines);
-        $context->recordFileRead($filePath, $rawContent, $offset, $limit, $isPartial);
+        $context->recordObservedFileRevision($scan['revision'], null, $offset, $limit, $isPartial, $totalLines);
 
         $header = "File: {$filePath} ({$totalLines} lines total)\n";
         if ($isPartial) {
@@ -318,25 +317,76 @@ DESC;
     }
 
     /**
-     * Match file(..., FILE_IGNORE_NEW_LINES) without discarding the exact raw
-     * bytes used for the revision receipt.
+     * Stream a text file and retain only the requested line window.
      *
-     * @return string[]
+     * @return array{selectedLines: string[], totalLines: int, revision: FileRevision}|null
      */
-    private function splitLines(string $content): array
+    private function readTextLineWindow(string $filePath, int $offset, int $limit): ?array
     {
-        if ($content === '') {
-            return [];
+        $handle = @fopen($filePath, 'rb');
+        if (! is_resource($handle)) {
+            return null;
         }
 
-        $lines = preg_split('/\r\n|\n|\r/', $content);
-        if ($lines === false) {
-            return [];
-        }
-        if (preg_match('/(?:\r\n|\n|\r)$/', $content) === 1) {
-            array_pop($lines);
+        $selected = [];
+        $lineNumber = 0;
+        $buffer = '';
+        $hash = hash_init('sha256');
+        $size = 0;
+        $stat = @fstat($handle);
+        if (! is_array($stat)) {
+            fclose($handle);
+
+            return null;
         }
 
-        return $lines;
+        try {
+            while (! feof($handle)) {
+                $chunk = fread($handle, 64 * 1024);
+                if ($chunk === false) {
+                    return null;
+                }
+                if ($chunk === '') {
+                    continue;
+                }
+
+                hash_update($hash, $chunk);
+                $size += strlen($chunk);
+                $buffer .= $chunk;
+                while (preg_match('/\r\n|\n|\r/', $buffer, $match, PREG_OFFSET_CAPTURE) === 1) {
+                    $line = substr($buffer, 0, (int) $match[0][1]);
+                    $lineNumber++;
+                    if ($lineNumber >= $offset && count($selected) < $limit) {
+                        $selected[] = $line;
+                    }
+                    $buffer = substr($buffer, (int) $match[0][1] + strlen($match[0][0]));
+                }
+            }
+
+            if ($buffer !== '') {
+                $lineNumber++;
+                if ($lineNumber >= $offset && count($selected) < $limit) {
+                    $selected[] = $buffer;
+                }
+            }
+        } finally {
+            fclose($handle);
+        }
+
+        return [
+            'selectedLines' => $selected,
+            'totalLines' => $lineNumber,
+            'revision' => new FileRevision(
+                canonicalPath: realpath($filePath) ?: $filePath,
+                device: (int) ($stat['dev'] ?? 0),
+                inode: (int) ($stat['ino'] ?? 0),
+                size: $size,
+                mtime: (int) ($stat['mtime'] ?? 0),
+                sha256: hash_final($hash),
+                complete: true,
+                observedAtMicros: (int) round(microtime(true) * 1_000_000),
+                local: true,
+            ),
+        ];
     }
 }
