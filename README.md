@@ -775,7 +775,7 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.18.19`. Notable changes since `v1.10.0`:
+is based on `v1.18.20`. Notable changes since `v1.10.0`:
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/
@@ -854,6 +854,9 @@ is based on `v1.18.19`. Notable changes since `v1.10.0`:
   without trusting hooks, symlinks, or the PHP process cwd.
 - `v1.18.19` — `ExitWorktree` is now classified as non-read-only because both
   keep and remove actions change session working-directory state.
+- `v1.18.20` — Background Bash launches return promptly, supervise timeout from
+  a detached PHP worker, terminate the command tree before writing exit 124, and
+  keep captured background output under a physical byte cap.
 
 ## License
 

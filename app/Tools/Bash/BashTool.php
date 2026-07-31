@@ -19,12 +19,17 @@ class BashTool extends BaseTool
     /** Hard cap so a runaway table cannot grow without bound. */
     private const BACKGROUND_TASK_MAX = 64;
 
+    private const MAX_CAPTURED_OUTPUT_BYTES = 100_000;
+
     /**
      * @var array<string, array{
      *   pid: int,
+     *   process?: resource,
      *   outFile: string,
      *   statusFile: string,
+     *   payloadFile?: string,
      *   startTime: float,
+     *   deadline?: float,
      *   startToken: ?string,
      *   command: string
      * }>
@@ -222,7 +227,7 @@ DESC;
         $aborted = false;
         $drainFailed = false;
         $outputTruncated = false;
-        $maxOutputChars = 100_000;
+        $maxOutputChars = self::MAX_CAPTURED_OUTPUT_BYTES;
         $status = ['running' => true, 'exitcode' => -1];
 
         while (true) {
@@ -345,8 +350,8 @@ DESC;
         }
 
         // Truncate very long output (also covered during drain; keep final guard).
-        if ($outputTruncated || mb_strlen($output) > 100000) {
-            $output = mb_substr($output, 0, 100000) . "\n\n[Output truncated at 100,000 characters]";
+        if ($outputTruncated || mb_strlen($output) > self::MAX_CAPTURED_OUTPUT_BYTES) {
+            $output = mb_substr($output, 0, self::MAX_CAPTURED_OUTPUT_BYTES) . "\n\n[Output truncated at 100,000 characters]";
         }
 
         // Prepend warnings
@@ -442,72 +447,65 @@ DESC;
         // can distinguish "still running" from "exit 0".
         @unlink($statusFile);
 
-        // Explicit if/else (NOT `A && B || C`) so a failing user command does
-        // not fall through and re-run under plain bash.
-        // Exit status is written to $statusFile so checkTask() can report it.
-        // An in-shell watchdog terminates the process group without requiring
-        // the caller to poll checkTask() (true timeout, not poll-time only).
-        $timeoutSec = max(1, (int) ceil($timeoutSeconds));
-        $statusEsc = escapeshellarg($statusFile);
-        $userCmd = 'bash -c '.escapeshellarg($command);
-        $watched = 'bash -c '.escapeshellarg(
-            $userCmd.' & __haocode_pid=$!; '
-            .'( sleep '.$timeoutSec.'; kill -TERM -$__haocode_pid 2>/dev/null; '
-            .'sleep 0.2; kill -KILL -$__haocode_pid 2>/dev/null; '
-            .'printf 124 > '.$statusEsc.' ) & __haocode_wd=$!; '
-            .'wait $__haocode_pid; __haocode_status=$?; '
-            .'kill $__haocode_wd 2>/dev/null; wait $__haocode_wd 2>/dev/null; '
-            .'if [ ! -s '.$statusEsc.' ]; then printf \'%s\' "$__haocode_status" > '.$statusEsc.'; fi; '
-            .'exit "$__haocode_status"'
-        );
-        $job = 'cd '.escapeshellarg($cwd).' && {'
-            .' if command -v setsid >/dev/null 2>&1; then'
-            .'   setsid '.$watched
-            .' ; else'
-            .'   set -m; '.$watched
-            .' ; fi'
-            .' } >'.escapeshellarg($outFile).' 2>&1 & echo $!';
+        $payloadFile = tempnam(sys_get_temp_dir(), 'haocode_bgp_');
+        if ($payloadFile === false) {
+            @unlink($outFile);
+            @unlink($statusFile);
+
+            return ToolResult::error("Failed to allocate supervisor payload for background command: {$command}");
+        }
+        $payload = [
+            'command' => $command,
+            'cwd' => $cwd,
+            'env' => $env,
+            'outFile' => $outFile,
+            'statusFile' => $statusFile,
+            'timeoutSeconds' => $timeoutSeconds,
+            'maxOutputBytes' => self::MAX_CAPTURED_OUTPUT_BYTES,
+        ];
+        if (@file_put_contents($payloadFile, json_encode($payload, JSON_THROW_ON_ERROR), LOCK_EX) === false) {
+            @unlink($payloadFile);
+            @unlink($outFile);
+            @unlink($statusFile);
+
+            return ToolResult::error("Failed to write supervisor payload for background command: {$command}");
+        }
+        @chmod($payloadFile, 0600);
+
+        $autoload = dirname(__DIR__, 3).'/vendor/autoload.php';
+        $supervisorCode = 'require '.var_export($autoload, true).'; '
+            .'exit(\\HaoCode\\Tools\\Bash\\BackgroundBashSupervisor::runFromPayloadFile($argv[1] ?? ""));';
 
         $descriptors = [
-            0 => ['file', '/dev/null', 'r'],
-            1 => ['pipe', 'w'],
-            2 => ['pipe', 'w'],
+            0 => ['file', PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null', 'r'],
+            1 => ['file', PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null', 'w'],
+            2 => ['file', PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null', 'w'],
         ];
 
-        $process = @proc_open(['bash', '-c', $job], $descriptors, $pipes, $cwd, $env);
+        $process = @proc_open([PHP_BINARY, '-r', $supervisorCode, $payloadFile], $descriptors, $pipes, $cwd, $env);
         if (! is_resource($process)) {
+            @unlink($payloadFile);
             @unlink($outFile);
             @unlink($statusFile);
 
             return ToolResult::error("Failed to start background command: {$command}");
         }
 
-        stream_set_blocking($pipes[1], true);
-        stream_set_blocking($pipes[2], true);
-        $output = stream_get_contents($pipes[1]);
-        $launcherErr = stream_get_contents($pipes[2]);
-        if ($output === false) {
-            $output = '';
+        foreach ($pipes as $pipe) {
+            if (is_resource($pipe)) {
+                fclose($pipe);
+            }
         }
-        if (is_resource($pipes[1])) {
-            fclose($pipes[1]);
-        }
-        if (is_resource($pipes[2])) {
-            fclose($pipes[2]);
-        }
-        // Launcher is only the `echo $!` shell; the job itself is backgrounded.
-        proc_close($process);
-
-        $pid = (int) trim((string) $output);
+        $status = proc_get_status($process);
+        $pid = (int) ($status['pid'] ?? 0);
 
         if ($pid <= 0) {
+            @proc_close($process);
+            @unlink($payloadFile);
             @unlink($outFile);
             @unlink($statusFile);
-            $hint = is_string($launcherErr) && trim($launcherErr) !== ''
-                ? "\nLauncher stderr: ".trim($launcherErr)
-                : '';
 
-            return ToolResult::error("Failed to start background command: {$command}{$hint}");
+            return ToolResult::error("Failed to start background command: {$command}");
         }
 
         // Capture a process start token immediately so PID reuse can be detected later.
@@ -515,8 +513,10 @@ DESC;
 
         self::$backgroundTasks[$taskId] = [
             'pid' => $pid,
+            'process' => $process,
             'outFile' => $outFile,
             'statusFile' => $statusFile,
+            'payloadFile' => $payloadFile,
             'startTime' => microtime(true),
             'deadline' => microtime(true) + $timeoutSeconds,
             'startToken' => $startToken,
@@ -555,9 +555,13 @@ DESC;
         $exitCode = self::readBackgroundExitCode($statusPath);
         $running = self::isBackgroundProcessAlive($task);
         $deadline = (float) ($task['deadline'] ?? 0.0);
-        $timedOut = $deadline > 0.0 && microtime(true) >= $deadline;
+        $now = microtime(true);
+        $timedOut = $deadline > 0.0 && $now >= $deadline;
 
-        if ($exitCode === null && $running === true && $timedOut) {
+        // The supervisor owns the exact timeout and writes 124 after it has
+        // terminated the command tree. Give it a short grace window before the
+        // poller treats the supervisor itself as stuck.
+        if ($exitCode === null && $running === true && $timedOut && $now >= $deadline + 1.0) {
             ProcessSupervisor::terminateTree((int) $task['pid'], false);
             $running = self::isBackgroundProcessAlive($task);
             if ($running !== true) {
@@ -589,7 +593,7 @@ DESC;
         $output = '(no output)';
         if (is_string($task['outFile']) && file_exists($task['outFile'])) {
             $size = @filesize($task['outFile']);
-            $maxBytes = 100_000;
+            $maxBytes = self::MAX_CAPTURED_OUTPUT_BYTES;
             if ($size !== false && $size > $maxBytes) {
                 $fh = @fopen($task['outFile'], 'rb');
                 $raw = $fh !== false ? (string) fread($fh, $maxBytes) : false;
@@ -611,6 +615,12 @@ DESC;
         }
         if ($statusPath !== '' && file_exists($statusPath)) {
             @unlink($statusPath);
+        }
+        if (is_string($task['payloadFile'] ?? null) && file_exists($task['payloadFile'])) {
+            @unlink($task['payloadFile']);
+        }
+        if (isset($task['process']) && is_resource($task['process'])) {
+            @proc_close($task['process']);
         }
         unset(self::$backgroundTasks[$taskId]);
 
@@ -683,7 +693,17 @@ DESC;
     {
         self::pruneBackgroundTasks();
 
-        return self::$backgroundTasks;
+        return array_map(
+            static fn (array $task): array => [
+                'pid' => (int) ($task['pid'] ?? 0),
+                'outFile' => (string) ($task['outFile'] ?? ''),
+                'statusFile' => (string) ($task['statusFile'] ?? ''),
+                'startTime' => (float) ($task['startTime'] ?? 0.0),
+                'startToken' => is_string($task['startToken'] ?? null) ? $task['startToken'] : null,
+                'command' => (string) ($task['command'] ?? ''),
+            ],
+            self::$backgroundTasks,
+        );
     }
 
     /**
@@ -711,6 +731,12 @@ DESC;
             if (is_string($task['statusFile'] ?? null) && file_exists($task['statusFile'])) {
                 @unlink($task['statusFile']);
             }
+            if (is_string($task['payloadFile'] ?? null) && file_exists($task['payloadFile'])) {
+                @unlink($task['payloadFile']);
+            }
+            if (isset($task['process']) && is_resource($task['process'])) {
+                @proc_close($task['process']);
+            }
             unset(self::$backgroundTasks[$taskId]);
         }
     }
@@ -733,7 +759,7 @@ DESC;
     }
 
     /**
-     * @param  array{pid: int, startToken?: ?string, startTime?: float}  $task
+     * @param  array{pid: int, process?: resource, startToken?: ?string, startTime?: float}  $task
      * @return bool|null true=alive, false=dead, null=unknown (no posix probe)
      */
     private static function isBackgroundProcessAlive(array $task): ?bool
@@ -742,6 +768,14 @@ DESC;
         if ($pid <= 0) {
             return false;
         }
+
+        if (isset($task['process']) && is_resource($task['process'])) {
+            $status = @proc_get_status($task['process']);
+            if (is_array($status) && ! ($status['running'] ?? false)) {
+                return false;
+            }
+        }
+
         if (! function_exists('posix_kill')) {
             return null;
         }

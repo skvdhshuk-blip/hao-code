@@ -764,6 +764,79 @@ YAML);
         $this->assertStringContainsString('Unknown background task', $missing->output);
     }
 
+    public function test_run_in_background_returns_promptly_without_waiting_for_command_output(): void
+    {
+        $start = microtime(true);
+
+        $result = $this->tool->call([
+            'command' => 'sleep 2; printf done',
+            'run_in_background' => true,
+            'timeout' => 5000,
+        ], $this->context);
+
+        $elapsed = microtime(true) - $start;
+        $taskId = $result->metadata['taskId'] ?? null;
+
+        try {
+            $this->assertFalse($result->isError, $result->output);
+            $this->assertIsString($taskId);
+            $this->assertLessThan(0.75, $elapsed, 'Background launch must return without waiting for the user command');
+        } finally {
+            if (is_string($taskId)) {
+                $this->awaitBackgroundTask($taskId);
+            }
+        }
+    }
+
+    public function test_background_timeout_kills_command_before_later_side_effects(): void
+    {
+        $marker = tempnam(sys_get_temp_dir(), 'bash_bg_timeout_marker_');
+        $this->assertNotFalse($marker);
+        @unlink($marker);
+
+        $result = $this->tool->call([
+            'command' => 'sleep 1; printf leaked > '.escapeshellarg($marker),
+            'run_in_background' => true,
+            'timeout' => 250,
+        ], $this->context);
+        $taskId = $result->metadata['taskId'] ?? null;
+
+        $this->assertFalse($result->isError, $result->output);
+        $this->assertIsString($taskId);
+
+        $final = $this->awaitBackgroundTask($taskId);
+
+        $this->assertTrue($final->isError, $final->output);
+        $this->assertSame(124, $final->metadata['exitCode'] ?? null);
+        $this->assertTrue($final->metadata['timedOut'] ?? false);
+
+        usleep(1_100_000);
+        $this->assertFileDoesNotExist($marker, 'Background timeout must terminate the command before delayed side effects run');
+    }
+
+    public function test_background_output_file_has_physical_size_limit(): void
+    {
+        $result = $this->tool->call([
+            'command' => 'python3 -c "print(\'x\' * 200000)"',
+            'run_in_background' => true,
+            'timeout' => 5000,
+        ], $this->context);
+        $taskId = $result->metadata['taskId'] ?? null;
+
+        $this->assertFalse($result->isError, $result->output);
+        $this->assertIsString($taskId);
+
+        $task = $this->awaitBackgroundStatusFile($taskId);
+        $outFile = $task['outFile'];
+        $this->assertFileExists($outFile);
+        $this->assertLessThanOrEqual(100_000, (int) filesize($outFile));
+
+        $final = BashTool::checkTask($taskId);
+        $this->assertTrue($final->isError, $final->output);
+        $this->assertSame(1, $final->metadata['exitCode'] ?? null);
+        $this->assertStringContainsString('Output truncated', $final->output);
+    }
+
     public function test_background_nonzero_exit_is_error_and_runs_once(): void
     {
         $marker = tempnam(sys_get_temp_dir(), 'bash_bg_once_');
@@ -791,6 +864,26 @@ YAML);
         $this->assertFileExists($marker);
         $this->assertSame('x', file_get_contents($marker), 'Command must run exactly once despite non-zero exit');
         @unlink($marker);
+    }
+
+    /** @return array{outFile: string, statusFile: string} */
+    private function awaitBackgroundStatusFile(string $taskId): array
+    {
+        $deadline = microtime(true) + 5.0;
+        do {
+            $tasks = BashTool::listTasks();
+            $task = $tasks[$taskId] ?? null;
+            $this->assertIsArray($task);
+            if (is_file((string) ($task['statusFile'] ?? ''))) {
+                return [
+                    'outFile' => (string) $task['outFile'],
+                    'statusFile' => (string) $task['statusFile'],
+                ];
+            }
+            usleep(50_000);
+        } while (microtime(true) < $deadline);
+
+        $this->fail('Background task did not write a status file before the test deadline');
     }
 
     private function awaitBackgroundTask(string $taskId): \HaoCode\Tools\ToolResult
