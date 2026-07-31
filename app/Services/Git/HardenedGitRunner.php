@@ -123,6 +123,7 @@ final class HardenedGitRunner
         $deadline = microtime(true) + max(0.001, $timeoutSeconds);
         $stdout = '';
         $stderr = '';
+        $exitCode = -1;
         $timedOut = false;
         $truncated = false;
 
@@ -149,6 +150,9 @@ final class HardenedGitRunner
 
             $status = proc_get_status($process);
             if (! ($status['running'] ?? false)) {
+                $exitCode = ($status['signaled'] ?? false)
+                    ? 128 + (int) ($status['termsig'] ?? 0)
+                    : (int) ($status['exitcode'] ?? -1);
                 break;
             }
             if (microtime(true) >= $deadline) {
@@ -174,7 +178,10 @@ final class HardenedGitRunner
             }
         }
 
-        $exitCode = proc_close($process);
+        $closed = proc_close($process);
+        if ($exitCode < 0 && ! $timedOut && ! $truncated) {
+            $exitCode = $closed;
+        }
 
         return [
             'exitCode' => $timedOut || $truncated ? -1 : $exitCode,

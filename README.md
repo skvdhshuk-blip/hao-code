@@ -775,7 +775,7 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.18.29`. Notable changes since `v1.10.0`:
+is based on `v1.18.30`. Notable changes since `v1.10.0`:
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/
@@ -885,6 +885,9 @@ is based on `v1.18.29`. Notable changes since `v1.10.0`:
   missing-`bash` diagnostic before attempting command execution.
 - `v1.18.29` — The Windows release gate now runs the internal diff and local
   process startup contract tests in addition to path compatibility checks.
+- `v1.18.30` — Hardened Git subprocesses preserve exit codes captured by
+  `proc_get_status()` so PHP 8.1/8.2 CI does not drop successful internal diff
+  output after `proc_close()` returns `-1`.
 
 ## License
 
