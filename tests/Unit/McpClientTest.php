@@ -78,6 +78,46 @@ class McpClientTest extends TestCase
         $transport->connect();
     }
 
+    public function test_stdio_request_drains_large_stderr_while_waiting_for_stdout(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('stdio pipe pressure test is POSIX-focused.');
+        }
+
+        $server = tempnam(sys_get_temp_dir(), 'mcp-stderr-server-');
+        $this->assertNotFalse($server);
+        file_put_contents($server, <<<'PHP'
+<?php
+fwrite(STDERR, str_repeat('e', 2 * 1024 * 1024));
+$line = fgets(STDIN);
+$request = json_decode($line ?: '', true);
+fwrite(STDOUT, json_encode([
+    'jsonrpc' => '2.0',
+    'id' => $request['id'] ?? null,
+    'result' => ['ok' => true],
+])."\n");
+PHP);
+
+        $transport = McpTransport::fromConfig([
+            'transport' => 'stdio',
+            'command' => PHP_BINARY,
+            'args' => [$server],
+            'url' => null,
+            'env' => [],
+            'headers' => [],
+        ]);
+
+        try {
+            $transport->connect();
+            $result = $transport->request('ping', [], 3);
+
+            $this->assertSame(['ok' => true], $result);
+        } finally {
+            $transport->close();
+            @unlink($server);
+        }
+    }
+
     public function test_unsupported_transport_throws(): void
     {
         $transport = McpTransport::fromConfig([

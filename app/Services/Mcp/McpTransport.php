@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace HaoCode\Services\Mcp;
 
+use HaoCode\Support\Runtime\ProcessSupervisor;
 use Symfony\Component\HttpClient\HttpClient;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use Symfony\Contracts\HttpClient\ResponseInterface;
@@ -34,6 +35,8 @@ final class McpTransport
     /** 4 MB read-buffer ceiling to prevent OOM from malicious servers */
     private const READ_BUFFER_MAX = 4 * 1024 * 1024;
 
+    private const STDERR_BUFFER_MAX = 32 * 1024;
+
     private const SERVER_STREAM_TIMEOUT_SECONDS = 30;
 
     private const SERVER_STREAM_MAX_DURATION_SECONDS = 86400;
@@ -58,6 +61,8 @@ final class McpTransport
     private ?McpSseDecoder $serverEventDecoder = null;
 
     private ?string $serverLastEventId = null;
+
+    private string $stderrBuffer = '';
 
     private int $serverRetryMilliseconds = 1000;
 
@@ -196,7 +201,7 @@ final class McpTransport
         ];
 
         match ($this->transport) {
-            'stdio' => $this->writeStdio($message),
+            'stdio' => $this->writeStdio($message, $timeoutSeconds),
             'http', 'sse' => $this->sendHttpNotification($message, $timeoutSeconds),
             default => null,
         };
@@ -211,18 +216,17 @@ final class McpTransport
     public function drainStderr(): array
     {
         if ($this->stderr === null) {
-            return [];
+            $buffer = $this->stderrBuffer;
+            $this->stderrBuffer = '';
+
+            return $this->stderrLines($buffer);
         }
 
-        $lines = [];
-        while (($line = fgets($this->stderr)) !== false) {
-            $trimmed = rtrim($line);
-            if ($trimmed !== '') {
-                $lines[] = $this->redactMessage($trimmed);
-            }
-        }
+        $this->drainStderrPipe();
+        $buffer = $this->stderrBuffer;
+        $this->stderrBuffer = '';
 
-        return $lines;
+        return $this->stderrLines($buffer);
     }
 
     /**
@@ -250,18 +254,15 @@ final class McpTransport
         if ($this->process !== null) {
             // Send SIGTERM, then SIGKILL after a short wait
             $status = proc_get_status($this->process);
-            if ($status['running']) {
-                proc_terminate($this->process, 15); // SIGTERM
-                usleep(200_000);
-                $status = proc_get_status($this->process);
-                if ($status['running']) {
-                    proc_terminate($this->process, 9); // SIGKILL
-                }
+            $pid = (int) ($status['pid'] ?? 0);
+            if ($status['running'] ?? false) {
+                ProcessSupervisor::terminateTree($pid, false);
             }
             proc_close($this->process);
             $this->process = null;
         }
         $this->readBuffer = '';
+        $this->stderrBuffer = '';
         $this->httpSessionId = null;
         $this->protocolVersion = null;
         $this->httpSessionExpired = false;
@@ -354,100 +355,259 @@ final class McpTransport
         $this->stderr = $pipes[2];
 
         // Set stdout/stderr to non-blocking for timeout support
+        stream_set_blocking($this->stdin, false);
         stream_set_blocking($this->stdout, false);
         stream_set_blocking($this->stderr, false);
     }
 
-    private function writeStdio(array $message): void
+    private function writeStdio(array $message, float $timeoutSeconds = 5): void
     {
         if ($this->stdin === null) {
             throw new McpConnectionException('Stdio transport not connected');
         }
 
         $json = json_encode($message, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
-        $written = @fwrite($this->stdin, $json."\n");
-
-        if ($written === false) {
-            throw new McpConnectionException('Failed to write to MCP server stdin');
+        if (! is_string($json)) {
+            throw new McpConnectionException('Failed to encode MCP stdio message');
         }
 
-        @fflush($this->stdin);
+        $this->writeStdioPayload($json."\n", microtime(true) + max(0.001, $timeoutSeconds));
     }
 
     private function sendStdio(array $message, float $timeoutSeconds): mixed
     {
-        $this->writeStdio($message);
+        if ($this->stdin === null || $this->stdout === null) {
+            throw new McpConnectionException('Stdio transport not connected');
+        }
 
         $deadline = microtime(true) + $timeoutSeconds;
         $expectedId = $message['id'];
+        $json = json_encode($message, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+        if (! is_string($json)) {
+            throw new McpConnectionException('Failed to encode MCP stdio message');
+        }
+        $payload = $json."\n";
+        $writeOffset = 0;
 
         while (microtime(true) < $deadline) {
-            // Try to read a complete JSON-RPC message (newline-delimited)
-            $chunk = @fread($this->stdout, 65536);
-            if ($chunk !== false && $chunk !== '') {
-                $this->readBuffer .= $chunk;
+            $read = [];
+            if (is_resource($this->stdout)) {
+                $read[] = $this->stdout;
+            }
+            if (is_resource($this->stderr)) {
+                $read[] = $this->stderr;
+            }
+            $write = [];
+            if ($writeOffset < strlen($payload) && is_resource($this->stdin)) {
+                $write[] = $this->stdin;
+            }
+            $except = null;
+            $remaining = max(0.0, $deadline - microtime(true));
+            $seconds = (int) floor($remaining);
+            $microseconds = (int) max(1, min(999_999, ($remaining - $seconds) * 1_000_000));
+
+            if ($read === [] && $write === []) {
+                usleep(10_000);
+            } else {
+                $changed = @stream_select($read, $write, $except, $seconds, $microseconds);
+                if ($changed === false) {
+                    usleep(10_000);
+                    $read = [];
+                    $write = [];
+                }
             }
 
-            // Guard against OOM: drop buffer and abort if no newline within 4 MB
-            if (strlen($this->readBuffer) > self::READ_BUFFER_MAX) {
-                $this->readBuffer = '';
+            if ($write !== [] && $writeOffset < strlen($payload)) {
+                $written = @fwrite($this->stdin, substr($payload, $writeOffset));
+                if ($written === false) {
+                    throw new McpConnectionException('Failed to write to MCP server stdin');
+                }
+                if ($written > 0) {
+                    $writeOffset += $written;
+                    @fflush($this->stdin);
+                }
+            }
+
+            foreach ($read as $stream) {
+                if ($stream === $this->stderr) {
+                    $this->drainStderrPipe();
+                    continue;
+                }
+                if ($stream === $this->stdout) {
+                    $this->drainStdoutPipe();
+                }
+            }
+
+            $result = $this->consumeStdioReadBuffer($expectedId);
+            if ($result['matched']) {
+                return $result['result'];
+            }
+
+            $this->throwIfReadBufferOversized();
+
+            if ($writeOffset >= strlen($payload) && $this->stdioProcessRunning() === false) {
+                $this->drainStdoutPipe();
+                $this->drainStderrPipe();
+                $result = $this->consumeStdioReadBuffer($expectedId);
+                if ($result['matched']) {
+                    return $result['result'];
+                }
+
                 throw McpConnectionException::transport(
-                    "MCP server sent oversized payload (>{$this->formatBytes(self::READ_BUFFER_MAX)}) without newline delimiter"
+                    'MCP server process exited before response. Stderr: '.$this->stderrPreview()
                 );
             }
-
-            // Try to extract complete lines
-            while (($newlinePos = strpos($this->readBuffer, "\n")) !== false) {
-                $line = substr($this->readBuffer, 0, $newlinePos);
-                $this->readBuffer = substr($this->readBuffer, $newlinePos + 1);
-
-                $line = trim($line);
-                if ($line === '') {
-                    continue;
-                }
-
-                $response = json_decode($line, true);
-                if (! is_array($response)) {
-                    continue;
-                }
-
-                // Inbound notification (no id): dispatch to handlers
-                if (! isset($response['id']) && isset($response['method'])) {
-                    $this->dispatchNotification($response);
-
-                    continue;
-                }
-
-                // Inbound request from server (has both id and method): handle and respond
-                if (isset($response['id'], $response['method'])) {
-                    $this->handleInboundRequest($response);
-                    // This is not our awaited response — keep reading
-                    if ($response['id'] !== $expectedId) {
-                        continue;
-                    }
-                }
-
-                if (! isset($response['id'])) {
-                    continue;
-                }
-
-                if ($response['id'] === $expectedId) {
-                    if (isset($response['error'])) {
-                        throw new McpConnectionException(
-                            'MCP error: '.($response['error']['message'] ?? 'Unknown error'),
-                            (int) ($response['error']['code'] ?? 0),
-                        );
-                    }
-
-                    return $response['result'] ?? null;
-                }
-            }
-
-            // Small sleep to avoid busy-waiting
-            usleep(10_000);
         }
 
         throw new McpConnectionException("MCP request timed out after {$timeoutSeconds}s: {$message['method']}");
+    }
+
+    private function writeStdioPayload(string $payload, float $deadline): void
+    {
+        $offset = 0;
+        while ($offset < strlen($payload) && microtime(true) < $deadline) {
+            $read = [];
+            if (is_resource($this->stderr)) {
+                $read[] = $this->stderr;
+            }
+            $write = is_resource($this->stdin) ? [$this->stdin] : [];
+            $except = null;
+            $remaining = max(0.0, $deadline - microtime(true));
+            $seconds = (int) floor($remaining);
+            $microseconds = (int) max(1, min(999_999, ($remaining - $seconds) * 1_000_000));
+            $changed = @stream_select($read, $write, $except, $seconds, $microseconds);
+            if ($changed === false) {
+                usleep(10_000);
+                continue;
+            }
+
+            foreach ($read as $stream) {
+                if ($stream === $this->stderr) {
+                    $this->drainStderrPipe();
+                }
+            }
+            if ($write !== []) {
+                $written = @fwrite($this->stdin, substr($payload, $offset));
+                if ($written === false) {
+                    throw new McpConnectionException('Failed to write to MCP server stdin');
+                }
+                if ($written > 0) {
+                    $offset += $written;
+                    @fflush($this->stdin);
+                }
+            }
+
+            if ($this->stdioProcessRunning() === false) {
+                throw McpConnectionException::transport(
+                    'MCP server process exited while writing request. Stderr: '.$this->stderrPreview()
+                );
+            }
+        }
+
+        if ($offset < strlen($payload)) {
+            throw McpConnectionException::transport('MCP stdio write timed out');
+        }
+    }
+
+    private function drainStdoutPipe(): void
+    {
+        if ($this->stdout === null) {
+            return;
+        }
+        while (($chunk = @fread($this->stdout, 65536)) !== false && $chunk !== '') {
+            $this->readBuffer .= $chunk;
+            if (strlen($this->readBuffer) > self::READ_BUFFER_MAX) {
+                break;
+            }
+        }
+    }
+
+    private function drainStderrPipe(): void
+    {
+        if ($this->stderr === null) {
+            return;
+        }
+        while (($chunk = @fread($this->stderr, 65536)) !== false && $chunk !== '') {
+            $this->stderrBuffer .= $chunk;
+            if (strlen($this->stderrBuffer) > self::STDERR_BUFFER_MAX) {
+                $this->stderrBuffer = substr($this->stderrBuffer, -self::STDERR_BUFFER_MAX);
+            }
+        }
+    }
+
+    /**
+     * @return array{matched: bool, result: mixed}
+     */
+    private function consumeStdioReadBuffer(mixed $expectedId): array
+    {
+        while (($newlinePos = strpos($this->readBuffer, "\n")) !== false) {
+            $line = substr($this->readBuffer, 0, $newlinePos);
+            $this->readBuffer = substr($this->readBuffer, $newlinePos + 1);
+
+            $line = trim($line);
+            if ($line === '') {
+                continue;
+            }
+
+            $response = json_decode($line, true);
+            if (! is_array($response)) {
+                continue;
+            }
+
+            if (! isset($response['id']) && isset($response['method'])) {
+                $this->dispatchNotification($response);
+
+                continue;
+            }
+
+            if (isset($response['id'], $response['method'])) {
+                $this->handleInboundRequest($response);
+                if ($response['id'] !== $expectedId) {
+                    continue;
+                }
+            }
+
+            if (! isset($response['id']) || $response['id'] !== $expectedId) {
+                continue;
+            }
+
+            if (isset($response['error'])) {
+                throw new McpConnectionException(
+                    'MCP error: '.($response['error']['message'] ?? 'Unknown error'),
+                    (int) ($response['error']['code'] ?? 0),
+                );
+            }
+
+            return ['matched' => true, 'result' => $response['result'] ?? null];
+        }
+
+        return ['matched' => false, 'result' => null];
+    }
+
+    private function throwIfReadBufferOversized(): void
+    {
+        if (strlen($this->readBuffer) <= self::READ_BUFFER_MAX) {
+            return;
+        }
+
+        $this->readBuffer = '';
+        throw McpConnectionException::transport(
+            "MCP server sent oversized payload (>{$this->formatBytes(self::READ_BUFFER_MAX)}) without newline delimiter"
+        );
+    }
+
+    private function stdioProcessRunning(): ?bool
+    {
+        if ($this->process === null) {
+            return false;
+        }
+
+        $status = @proc_get_status($this->process);
+        if (! is_array($status)) {
+            return null;
+        }
+
+        return (bool) ($status['running'] ?? false);
     }
 
     /**
@@ -1059,6 +1219,30 @@ final class McpTransport
         }, $line) ?? $line;
 
         return $line;
+    }
+
+    /**
+     * @return string[]
+     */
+    private function stderrLines(string $buffer): array
+    {
+        $lines = [];
+        foreach (preg_split('/\R/', $buffer) ?: [] as $line) {
+            $trimmed = rtrim($line);
+            if ($trimmed !== '') {
+                $lines[] = $this->redactMessage($trimmed);
+            }
+        }
+
+        return $lines;
+    }
+
+    private function stderrPreview(): string
+    {
+        $this->drainStderrPipe();
+        $lines = $this->stderrLines($this->stderrBuffer);
+
+        return $lines === [] ? '(no stderr)' : substr(implode("\n", $lines), -1000);
     }
 
     private function formatBytes(int $bytes): string

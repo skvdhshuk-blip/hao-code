@@ -775,7 +775,7 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.18.20`. Notable changes since `v1.10.0`:
+is based on `v1.18.21`. Notable changes since `v1.10.0`:
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/
@@ -857,6 +857,9 @@ is based on `v1.18.20`. Notable changes since `v1.10.0`:
 - `v1.18.20` — Background Bash launches return promptly, supervise timeout from
   a detached PHP worker, terminate the command tree before writing exit 124, and
   keep captured background output under a physical byte cap.
+- `v1.18.21` — MCP stdio requests now write stdin, read stdout, and drain stderr
+  under one deadline, preventing stderr pipe pressure from deadlocking normal
+  JSON-RPC responses and closing stdio process trees on shutdown.
 
 ## License
 
