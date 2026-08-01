@@ -287,6 +287,17 @@ class GrepToolTest extends TestCase
         $this->assertStringContainsString('line larger than', $result->output);
     }
 
+    public function test_php_fallback_bounds_large_context_windows(): void
+    {
+        $line = str_repeat('x', 20_000);
+        $this->writeFile('large-context.txt', implode("\n", array_fill(0, 60, $line))."\nneedle\n");
+
+        $result = $this->grepPhp('needle', beforeLines: 60);
+
+        $this->assertTrue($result->isError);
+        $this->assertStringContainsString('retaining more than', $result->output);
+    }
+
     public function test_php_fallback_applies_global_offset_and_head_limit_across_files(): void
     {
         $this->writeFile('a.txt', "match-a\nmatch-b\n");

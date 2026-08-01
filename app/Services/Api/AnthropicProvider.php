@@ -2,6 +2,8 @@
 
 namespace HaoCode\Services\Api;
 
+use HaoCode\Support\Streaming\BoundedSseLineBuffer;
+use HaoCode\Support\Http\BoundedResponseBodyReader;
 use HaoCode\Services\Settings\ModelCatalog;
 use JsonException;
 use Symfony\Component\HttpClient\HttpClient;
@@ -19,6 +21,9 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
  */
 class AnthropicProvider implements ApiKeyAwareProvider, SettingsAwareProvider
 {
+    private const MAX_SSE_LINE_BYTES = 4 * 1024 * 1024;
+    private const MAX_ERROR_BODY_BYTES = 64 * 1024;
+
     private HttpClientInterface $httpClient;
     private int $maxRetries = 3;
     private array $lastRateLimitHeaders = [];
@@ -287,7 +292,8 @@ class AnthropicProvider implements ApiKeyAwareProvider, SettingsAwareProvider
 
         $currentEvent = null;
         $currentDataLines = [];
-        $lineBuffer = '';
+        $currentDataBytes = 0;
+        $lineReader = new BoundedSseLineBuffer(self::MAX_SSE_LINE_BYTES);
         $lastActivityAt = ($this->timeProvider)();
 
         try {
@@ -311,19 +317,14 @@ class AnthropicProvider implements ApiKeyAwareProvider, SettingsAwareProvider
                     continue;
                 }
 
-                $content = $chunk->getContent();
                 $lastActivityAt = ($this->timeProvider)();
 
-                $lineBuffer .= $content;
-
-                while (($newlinePos = strpos($lineBuffer, "\n")) !== false) {
-                    $line = substr($lineBuffer, 0, $newlinePos);
-                    $lineBuffer = substr($lineBuffer, $newlinePos + 1);
-
+                foreach ($lineReader->push($chunk->getContent()) as $line) {
                     $events = $this->processSseLine(
                         rtrim($line, "\r"),
                         $currentEvent,
                         $currentDataLines,
+                        $currentDataBytes,
                         $onRawEvent,
                     );
 
@@ -338,6 +339,14 @@ class AnthropicProvider implements ApiKeyAwareProvider, SettingsAwareProvider
                     }
                 }
             }
+        } catch (\LengthException $e) {
+            $this->cancelResponse($response);
+
+            throw new ApiErrorException(
+                'Streaming SSE line exceeded the configured size limit.',
+                'protocol_error',
+                previous: $e,
+            );
         } catch (\Throwable $e) {
             if ($shouldAbort && $shouldAbort()) {
                 $this->cancelResponse($response);
@@ -354,11 +363,12 @@ class AnthropicProvider implements ApiKeyAwareProvider, SettingsAwareProvider
             return;
         }
 
-        if ($lineBuffer !== '') {
+        foreach ($lineReader->push('', true) as $line) {
             $events = $this->processSseLine(
-                rtrim($lineBuffer, "\r"),
+                rtrim($line, "\r"),
                 $currentEvent,
                 $currentDataLines,
+                $currentDataBytes,
                 $onRawEvent,
             );
 
@@ -373,7 +383,7 @@ class AnthropicProvider implements ApiKeyAwareProvider, SettingsAwareProvider
             }
         }
 
-        $event = $this->emitCurrentEvent($currentEvent, $currentDataLines, $onRawEvent);
+        $event = $this->emitCurrentEvent($currentEvent, $currentDataLines, $currentDataBytes, $onRawEvent);
         if ($event !== null) {
             if ($shouldAbort && $shouldAbort()) {
                 $this->cancelResponse($response);
@@ -392,12 +402,13 @@ class AnthropicProvider implements ApiKeyAwareProvider, SettingsAwareProvider
         string $line,
         ?string &$currentEvent,
         array &$currentDataLines,
+        int &$currentDataBytes,
         ?callable $onRawEvent,
     ): array {
         $events = [];
 
         if (str_starts_with($line, 'event:')) {
-            $pendingEvent = $this->emitCurrentEvent($currentEvent, $currentDataLines, $onRawEvent);
+            $pendingEvent = $this->emitCurrentEvent($currentEvent, $currentDataLines, $currentDataBytes, $onRawEvent);
             if ($pendingEvent !== null) {
                 $events[] = $pendingEvent;
             }
@@ -411,13 +422,20 @@ class AnthropicProvider implements ApiKeyAwareProvider, SettingsAwareProvider
             if (str_starts_with($dataLine, ' ')) {
                 $dataLine = substr($dataLine, 1);
             }
+            $nextBytes = $currentDataBytes + strlen($dataLine) + ($currentDataLines === [] ? 0 : 1);
+            if ($nextBytes > self::MAX_SSE_LINE_BYTES) {
+                throw new \LengthException(
+                    "SSE event exceeded ".self::MAX_SSE_LINE_BYTES.' bytes',
+                );
+            }
             $currentDataLines[] = $dataLine;
+            $currentDataBytes = $nextBytes;
 
             return $events;
         }
 
         if ($line === '') {
-            $event = $this->emitCurrentEvent($currentEvent, $currentDataLines, $onRawEvent);
+            $event = $this->emitCurrentEvent($currentEvent, $currentDataLines, $currentDataBytes, $onRawEvent);
             if ($event !== null) {
                 $events[] = $event;
             }
@@ -434,11 +452,13 @@ class AnthropicProvider implements ApiKeyAwareProvider, SettingsAwareProvider
     private function emitCurrentEvent(
         ?string &$currentEvent,
         array &$currentDataLines,
+        int &$currentDataBytes,
         ?callable $onRawEvent,
     ): ?StreamEvent {
         if ($currentEvent === null || $currentDataLines === []) {
             $currentEvent = null;
             $currentDataLines = [];
+            $currentDataBytes = 0;
 
             return null;
         }
@@ -457,6 +477,7 @@ class AnthropicProvider implements ApiKeyAwareProvider, SettingsAwareProvider
 
         $currentEvent = null;
         $currentDataLines = [];
+        $currentDataBytes = 0;
 
         return $event;
     }
@@ -490,7 +511,7 @@ class AnthropicProvider implements ApiKeyAwareProvider, SettingsAwareProvider
     {
         $retryAfter = $this->lastRateLimitHeaders['retry-after'] ?? null;
         if ($retryAfter !== null && $retryAfter !== '' && is_numeric($retryAfter)) {
-            return min((float) $retryAfter, 120);
+            return max(0.0, min((float) $retryAfter, 120));
         }
 
         if ($e instanceof ApiErrorException
@@ -551,7 +572,11 @@ class AnthropicProvider implements ApiKeyAwareProvider, SettingsAwareProvider
             return;
         }
 
-        $body = trim($response->getContent(false));
+        $body = trim(BoundedResponseBodyReader::read(
+            $this->httpClient,
+            $response,
+            self::MAX_ERROR_BODY_BYTES,
+        ));
         $url = (string) $response->getInfo('url');
         $message = $body !== '' ? $body : "HTTP {$statusCode} returned for \"{$url}\".";
         $errorType = 'http_error';

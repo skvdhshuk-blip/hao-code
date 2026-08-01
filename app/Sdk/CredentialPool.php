@@ -25,7 +25,7 @@ class CredentialPool
     /** @var array<string, int> round-robin cursor per provider */
     private array $cursor = [];
 
-    /** @var array<string, array{exhausted_at: float, error_count: int}> keyed by credential id */
+    /** @var array<string, array{exhausted_at: float, ttl: float, error_count: int}> keyed by credential id */
     private array $exhausted = [];
 
     /** @var array<string, int> error count per credential id */
@@ -41,7 +41,7 @@ class CredentialPool
 
     public function __construct(float $exhaustedTtlSeconds = 60.0, ?PhoenixTracer $tracer = null, ?callable $clock = null)
     {
-        $this->exhaustedTtlSeconds = $exhaustedTtlSeconds;
+        $this->exhaustedTtlSeconds = $this->validateTtl($exhaustedTtlSeconds);
         $this->tracer = $tracer;
         $this->clock = $clock ?? static fn (): float => microtime(true);
     }
@@ -143,7 +143,7 @@ class CredentialPool
      */
     public function markExhausted(Credential $credential, ?float $retryAfterSeconds = null): void
     {
-        $ttl = $retryAfterSeconds ?? $this->exhaustedTtlSeconds;
+        $ttl = $this->validateTtl($retryAfterSeconds ?? $this->exhaustedTtlSeconds);
         $key = $credential->idHash();
         $this->exhausted[$key] = [
             'exhausted_at' => ($this->clock)(),
@@ -248,5 +248,14 @@ class CredentialPool
                 return false;
             }
         ));
+    }
+
+    private function validateTtl(float $ttl): float
+    {
+        if (! is_finite($ttl) || $ttl < 0) {
+            throw new \InvalidArgumentException('Credential exhaustion TTL must be a finite non-negative number.');
+        }
+
+        return $ttl;
     }
 }

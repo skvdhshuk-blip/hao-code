@@ -71,4 +71,23 @@ class AgentRunSandboxBackendTest extends TestCase
         $this->assertLessThanOrEqual(101000, strlen($exec['stdout']));
         $this->assertStringContainsString('stdout truncated', $exec['stdout']);
     }
+
+    public function test_client_bounds_error_response_body(): void
+    {
+        $http = new MockHttpClient([
+            new MockResponse(str_repeat('x', 128 * 1024), ['http_code' => 502]),
+        ]);
+        $client = new AgentRunClient(
+            accountId: '1234567890',
+            sandboxId: 'sbx-1',
+            httpClient: $http,
+        );
+
+        try {
+            $client->health();
+            $this->fail('Expected AgentRun HTTP error.');
+        } catch (\RuntimeException $exception) {
+            $this->assertLessThanOrEqual(64 * 1024 + strlen('AgentRun HTTP 502: '), strlen($exception->getMessage()));
+        }
+    }
 }

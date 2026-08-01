@@ -596,6 +596,13 @@ final class McpTransport
     private function consumeStdioReadBuffer(mixed $expectedId): array
     {
         while (($newlinePos = strpos($this->readBuffer, "\n")) !== false) {
+            if ($newlinePos > self::READ_BUFFER_MAX) {
+                $this->readBuffer = '';
+                throw McpConnectionException::transport(
+                    "MCP server sent oversized payload (>{$this->formatBytes(self::READ_BUFFER_MAX)})"
+                );
+            }
+
             $line = substr($this->readBuffer, 0, $newlinePos);
             $this->readBuffer = substr($this->readBuffer, $newlinePos + 1);
 

@@ -2,12 +2,15 @@
 
 namespace HaoCode\Sdk\Sandbox;
 
+use HaoCode\Support\Http\BoundedResponseBodyReader;
 use Symfony\Component\HttpClient\HttpClient;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
 /** @internal */
 final class SandboxBinaryInstaller
 {
+    private const MAX_CHECKSUM_BYTES = 4096;
+
     private const RELEASE_BASE = 'https://github.com/skvdhshuk-blip/hao-code/releases/download';
 
     /** @return string[] */
@@ -150,7 +153,13 @@ final class SandboxBinaryInstaller
     ): string {
         $path = $directory.'/'.$name;
         $checksumPath = $path.'.sha256';
-        $checksum = trim($client->request('GET', $baseUrl.'/'.$name.'.sha256')->getContent());
+        $checksumResponse = $client->request('GET', $baseUrl.'/'.$name.'.sha256');
+        $checksumResponse->getStatusCode();
+        $checksum = trim(BoundedResponseBodyReader::read(
+            $client,
+            $checksumResponse,
+            self::MAX_CHECKSUM_BYTES,
+        ));
         if (preg_match('/^([a-f0-9]{64})  '.preg_quote($name, '/').'$/', $checksum, $matches) !== 1) {
             throw new \RuntimeException("Invalid release checksum for {$name}.");
         }

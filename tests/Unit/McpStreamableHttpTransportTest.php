@@ -53,6 +53,14 @@ final class McpStreamableHttpTransportTest extends TestCase
         $decoder->push("id: ".str_repeat('x', 65)."\n");
     }
 
+    public function test_sse_decoder_counts_multiline_data_toward_buffer_limit(): void
+    {
+        $decoder = new McpSseDecoder(64);
+
+        $this->expectException(McpConnectionException::class);
+        $decoder->push("data: ".str_repeat('x', 40)."\ndata: ".str_repeat('y', 40)."\n");
+    }
+
     public function test_post_sse_dispatches_notification_and_answers_reverse_request(): void
     {
         $requests = [];

@@ -345,6 +345,34 @@ PHP);
         }
     }
 
+    public function test_stdio_server_rejects_an_oversized_newline_terminated_frame(): void
+    {
+        $server = tempnam(sys_get_temp_dir(), 'mcp-oversized-frame-');
+        $this->assertNotFalse($server);
+        file_put_contents(
+            $server,
+            "<?php\nfgets(STDIN);\necho str_repeat('x', 4 * 1024 * 1024 + 1), \"\\n\";\n",
+        );
+
+        $transport = McpTransport::fromConfig([
+            'transport' => 'stdio',
+            'command' => PHP_BINARY,
+            'args' => [$server],
+            'url' => null,
+            'env' => [],
+            'headers' => [],
+        ]);
+
+        try {
+            $this->expectExceptionMessage('oversized payload');
+            $transport->connect(3);
+            $transport->request('initialize', [], 3);
+        } finally {
+            $transport->close();
+            @unlink($server);
+        }
+    }
+
     public function test_stdio_request_reports_server_exit_before_write_timeout(): void
     {
         $server = tempnam(sys_get_temp_dir(), 'mcp-exit-server-');

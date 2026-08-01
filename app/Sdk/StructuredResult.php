@@ -54,7 +54,10 @@ class StructuredResult implements \ArrayAccess, \Stringable
     /** @api */
     public function toJson(int $flags = 0): string
     {
-        return json_encode($this->data, $flags | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        return json_encode(
+            $this->data,
+            $flags | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR,
+        );
     }
 
     /** @api */

@@ -227,7 +227,7 @@ class PooledProvider implements ForkSafeProvider, SettingsAwareProvider
     {
         $value = $headers['retry-after'] ?? null;
         if ($value !== null && $value !== '' && is_numeric($value)) {
-            return min((float) $value, 300.0);
+            return max(0.0, min((float) $value, 300.0));
         }
 
         return null;

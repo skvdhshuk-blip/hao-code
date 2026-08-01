@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace HaoCode\Services\Mcp;
 
+use HaoCode\Support\Streaming\BoundedSseLineBuffer;
+
 /**
  * Incremental Server-Sent Events decoder used by Streamable HTTP transports.
  *
@@ -11,10 +13,12 @@ namespace HaoCode\Services\Mcp;
  */
 final class McpSseDecoder
 {
-    private string $lineBuffer = '';
+    private BoundedSseLineBuffer $lineReader;
 
     /** @var list<string> */
     private array $dataLines = [];
+
+    private int $dataBytes = 0;
 
     private ?string $lastEventId = null;
 
@@ -28,27 +32,23 @@ final class McpSseDecoder
 
     public function __construct(
         private readonly int $maxBufferBytes,
-    ) {}
+    ) {
+        $this->lineReader = new BoundedSseLineBuffer($maxBufferBytes);
+    }
 
     /**
      * @return list<array{data: string, id: ?string, retry: ?int, event: ?string}>
      */
     public function push(string $chunk, bool $endOfStream = false): array
     {
-        // A gateway can keep an event unterminated indefinitely. Reject a
-        // delimiter-free chunk before concatenating it so the guard itself does
-        // not require allocating an unbounded line buffer first.
-        if ($chunk !== ''
-            && strpbrk($chunk, "\r\n") === false
-            && $this->bufferedBytes() + strlen($chunk) > $this->maxBufferBytes
-        ) {
+        try {
+            $lines = $this->lineReader->push($chunk, $endOfStream);
+        } catch (\LengthException) {
             $this->resetAfterOverflow();
         }
-
-        $this->lineBuffer .= $chunk;
         $events = [];
 
-        while (($line = $this->extractLine($endOfStream)) !== null) {
+        foreach ($lines as $line) {
             if ($line === '') {
                 $event = $this->dispatchEvent();
                 if ($event !== null) {
@@ -72,40 +72,6 @@ final class McpSseDecoder
         $this->guardBufferSize();
 
         return $events;
-    }
-
-    private function extractLine(bool $endOfStream): ?string
-    {
-        $length = strlen($this->lineBuffer);
-        for ($offset = 0; $offset < $length; $offset++) {
-            $character = $this->lineBuffer[$offset];
-            if ($character !== "\n" && $character !== "\r") {
-                continue;
-            }
-
-            if ($character === "\r" && $offset + 1 === $length && ! $endOfStream) {
-                return null;
-            }
-
-            $delimiterLength = $character === "\r"
-                && isset($this->lineBuffer[$offset + 1])
-                && $this->lineBuffer[$offset + 1] === "\n"
-                ? 2
-                : 1;
-            $line = substr($this->lineBuffer, 0, $offset);
-            $this->lineBuffer = substr($this->lineBuffer, $offset + $delimiterLength);
-
-            return $line;
-        }
-
-        if ($endOfStream && $this->lineBuffer !== '') {
-            $line = $this->lineBuffer;
-            $this->lineBuffer = '';
-
-            return $line;
-        }
-
-        return null;
     }
 
     private function consumeLine(string $line): void
@@ -135,6 +101,10 @@ final class McpSseDecoder
             'retry' => ctype_digit($value) ? $this->retry = (int) $value : null,
             default => null,
         };
+
+        if ($field === 'data') {
+            $this->dataBytes += strlen($value);
+        }
     }
 
     /**
@@ -158,6 +128,7 @@ final class McpSseDecoder
         ];
 
         $this->dataLines = [];
+        $this->dataBytes = 0;
         $this->pendingEventId = null;
         $this->retry = null;
         $this->eventType = null;
@@ -177,18 +148,17 @@ final class McpSseDecoder
 
     private function bufferedBytes(): int
     {
-        $dataBytes = array_sum(array_map('strlen', $this->dataLines));
-
-        return strlen($this->lineBuffer)
-            + $dataBytes
+        return $this->lineReader->bufferedBytes()
+            + $this->dataBytes
             + strlen($this->pendingEventId ?? '')
             + strlen($this->eventType ?? '');
     }
 
     private function resetAfterOverflow(): never
     {
-        $this->lineBuffer = '';
+        $this->lineReader = new BoundedSseLineBuffer($this->maxBufferBytes);
         $this->dataLines = [];
+        $this->dataBytes = 0;
         $this->lastEventId = null;
         $this->pendingEventId = null;
         $this->retry = null;

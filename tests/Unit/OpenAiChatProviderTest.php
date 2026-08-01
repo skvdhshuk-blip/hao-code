@@ -404,6 +404,26 @@ class OpenAiChatProviderTest extends TestCase
         }
     }
 
+    public function test_stream_rejects_an_oversized_unterminated_sse_line(): void
+    {
+        $httpClient = new MockHttpClient([
+            new MockResponse([str_repeat('x', 4 * 1024 * 1024 + 1)], ['http_code' => 200]),
+        ]);
+        $provider = new OpenAiChatProvider(
+            apiKey: 'test',
+            model: 'gpt-4o-mini',
+            httpClient: $httpClient,
+        );
+
+        $this->expectException(ApiErrorException::class);
+        $this->expectExceptionMessage('SSE line exceeded');
+        iterator_to_array($provider->streamMessages(
+            systemPrompt: [],
+            messages: [['role' => 'user', 'content' => 'hi']],
+            tools: [],
+        ));
+    }
+
     // ─── custom request headers ─────────────────────────────────────────
 
     public function test_http_client_transport_merges_custom_headers_and_protects_authorization(): void

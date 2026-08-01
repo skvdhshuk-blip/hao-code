@@ -4,6 +4,7 @@ declare(strict_types=1);
 
 namespace HaoCode\Services\Mcp;
 
+use HaoCode\Support\Http\BoundedResponseBodyReader;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
 /**
@@ -14,6 +15,8 @@ use Symfony\Contracts\HttpClient\HttpClientInterface;
  */
 final class McpOAuthTokenProvider
 {
+    private const MAX_RESPONSE_BODY_BYTES = 64 * 1024;
+
     private ?string $accessToken = null;
 
     private ?string $refreshToken = null;
@@ -102,7 +105,11 @@ final class McpOAuthTokenProvider
                 'max_duration' => 30,
             ]);
             $status = $response->getStatusCode();
-            $payload = json_decode($response->getContent(false), true);
+            $payload = json_decode(BoundedResponseBodyReader::read(
+                $this->httpClient,
+                $response,
+                self::MAX_RESPONSE_BODY_BYTES,
+            ), true);
         } catch (\Throwable $exception) {
             throw McpConnectionException::transport(
                 'MCP OAuth token request failed: '.$exception->getMessage()

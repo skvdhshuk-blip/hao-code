@@ -310,17 +310,38 @@ DESC;
 
     private function globToRegex(string $pattern): string
     {
-        // Use '#' as delimiter so '/' can appear unescaped inside character classes
-        $regex = preg_quote($pattern, '#');
+        // Translate wildcards one character at a time so literal text cannot
+        // collide with an internal replacement token.
+        $regex = '#^';
+        $length = strlen($pattern);
+        for ($offset = 0; $offset < $length; $offset++) {
+            $character = $pattern[$offset];
+            if ($character === '*') {
+                if ($offset + 1 < $length && $pattern[$offset + 1] === '*') {
+                    $offset++;
+                    if ($offset + 1 < $length && $pattern[$offset + 1] === '/') {
+                        $offset++;
+                        $regex .= '(?:.*/)?';
+                    } else {
+                        $regex .= '.*';
+                    }
+                } else {
+                    $regex .= '[^/]*';
+                }
 
-        $regex = str_replace('\*\*/', '__DOUBLE_STAR_SLASH__', $regex);
-        $regex = str_replace('\*\*', '__DOUBLE_STAR__', $regex);
-        $regex = str_replace('\*', '[^/]*', $regex);
-        $regex = str_replace('\?', '[^/]', $regex);
-        $regex = str_replace('__DOUBLE_STAR_SLASH__', '(?:.*/)?', $regex);
-        $regex = str_replace('__DOUBLE_STAR__', '.*', $regex);
+                continue;
+            }
 
-        return '#^' . $regex . '$#';
+            if ($character === '?') {
+                $regex .= '[^/]';
+
+                continue;
+            }
+
+            $regex .= preg_quote($character, '#');
+        }
+
+        return $regex . '$#';
     }
 
     /**

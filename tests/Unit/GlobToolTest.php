@@ -432,6 +432,14 @@ class GlobToolTest extends TestCase
         $this->assertMatchesRegularExpression($regex, 'foo.php');
     }
 
+    public function test_glob_to_regex_keeps_internal_token_text_literal(): void
+    {
+        $regex = $this->globToRegex('__DOUBLE_STAR__');
+
+        $this->assertMatchesRegularExpression($regex, '__DOUBLE_STAR__');
+        $this->assertDoesNotMatchRegularExpression($regex, 'anything');
+    }
+
     public function test_glob_to_regex_converts_question_mark(): void
     {
         $regex = $this->globToRegex('foo?.txt');

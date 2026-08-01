@@ -3,6 +3,8 @@
 namespace HaoCode\Services\Api;
 
 use JsonException;
+use HaoCode\Support\Streaming\BoundedSseLineBuffer;
+use HaoCode\Support\Http\BoundedResponseBodyReader;
 use Symfony\Component\HttpClient\HttpClient;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use Symfony\Contracts\HttpClient\ResponseInterface;
@@ -33,6 +35,9 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
  */
 class OpenAiProvider implements ApiKeyAwareProvider, SettingsAwareProvider
 {
+    private const MAX_SSE_LINE_BYTES = 4 * 1024 * 1024;
+    private const MAX_ERROR_BODY_BYTES = 64 * 1024;
+
     private HttpClientInterface $httpClient;
     private int $maxRetries = 3;
     private array $lastRateLimitHeaders = [];
@@ -168,7 +173,8 @@ class OpenAiProvider implements ApiKeyAwareProvider, SettingsAwareProvider
         $state = new OpenAiTranslatorState();
         $currentEvent = null;
         $currentDataLines = [];
-        $lineBuffer = '';
+        $currentDataBytes = 0;
+        $lineReader = new BoundedSseLineBuffer(self::MAX_SSE_LINE_BYTES);
         $lastActivityAt = ($this->timeProvider)();
 
         try {
@@ -192,14 +198,18 @@ class OpenAiProvider implements ApiKeyAwareProvider, SettingsAwareProvider
                     continue;
                 }
 
-                $lineBuffer .= $chunk->getContent();
+                $content = $chunk->getContent();
                 $lastActivityAt = ($this->timeProvider)();
 
-                while (($newlinePos = strpos($lineBuffer, "\n")) !== false) {
-                    $line = substr($lineBuffer, 0, $newlinePos);
-                    $lineBuffer = substr($lineBuffer, $newlinePos + 1);
-
-                    foreach ($this->processSseLine(rtrim($line, "\r"), $currentEvent, $currentDataLines, $state, $onRawEvent) as $emitted) {
+                foreach ($lineReader->push($content) as $line) {
+                    foreach ($this->processSseLine(
+                        rtrim($line, "\r"),
+                        $currentEvent,
+                        $currentDataLines,
+                        $currentDataBytes,
+                        $state,
+                        $onRawEvent,
+                    ) as $emitted) {
                         if ($shouldAbort && $shouldAbort()) {
                             $response->cancel();
 
@@ -210,6 +220,14 @@ class OpenAiProvider implements ApiKeyAwareProvider, SettingsAwareProvider
                     }
                 }
             }
+        } catch (\LengthException $e) {
+            $response->cancel();
+
+            throw new ApiErrorException(
+                'Streaming SSE line exceeded the configured size limit.',
+                'protocol_error',
+                previous: $e,
+            );
         } catch (\Throwable $e) {
             if ($shouldAbort && $shouldAbort()) {
                 $response->cancel();
@@ -220,13 +238,20 @@ class OpenAiProvider implements ApiKeyAwareProvider, SettingsAwareProvider
             throw $e;
         }
 
-        if ($lineBuffer !== '') {
-            foreach ($this->processSseLine(rtrim($lineBuffer, "\r"), $currentEvent, $currentDataLines, $state, $onRawEvent) as $emitted) {
+        foreach ($lineReader->push('', true) as $line) {
+            foreach ($this->processSseLine(
+                rtrim($line, "\r"),
+                $currentEvent,
+                $currentDataLines,
+                $currentDataBytes,
+                $state,
+                $onRawEvent,
+            ) as $emitted) {
                 yield $emitted;
             }
         }
 
-        foreach ($this->flushPendingSseEvent($currentEvent, $currentDataLines, $state, $onRawEvent) as $emitted) {
+        foreach ($this->flushPendingSseEvent($currentEvent, $currentDataLines, $currentDataBytes, $state, $onRawEvent) as $emitted) {
             yield $emitted;
         }
     }
@@ -274,13 +299,14 @@ class OpenAiProvider implements ApiKeyAwareProvider, SettingsAwareProvider
         string $line,
         ?string &$currentEvent,
         array &$currentDataLines,
+        int &$currentDataBytes,
         OpenAiTranslatorState $state,
         ?callable $onRawEvent,
     ): array {
         $events = [];
 
         if (str_starts_with($line, 'event:')) {
-            foreach ($this->flushPendingSseEvent($currentEvent, $currentDataLines, $state, $onRawEvent) as $emitted) {
+            foreach ($this->flushPendingSseEvent($currentEvent, $currentDataLines, $currentDataBytes, $state, $onRawEvent) as $emitted) {
                 $events[] = $emitted;
             }
             $currentEvent = trim(substr($line, 6));
@@ -293,13 +319,20 @@ class OpenAiProvider implements ApiKeyAwareProvider, SettingsAwareProvider
             if (str_starts_with($dataLine, ' ')) {
                 $dataLine = substr($dataLine, 1);
             }
+            $nextBytes = $currentDataBytes + strlen($dataLine) + ($currentDataLines === [] ? 0 : 1);
+            if ($nextBytes > self::MAX_SSE_LINE_BYTES) {
+                throw new \LengthException(
+                    "SSE event exceeded ".self::MAX_SSE_LINE_BYTES.' bytes',
+                );
+            }
             $currentDataLines[] = $dataLine;
+            $currentDataBytes = $nextBytes;
 
             return $events;
         }
 
         if ($line === '') {
-            foreach ($this->flushPendingSseEvent($currentEvent, $currentDataLines, $state, $onRawEvent) as $emitted) {
+            foreach ($this->flushPendingSseEvent($currentEvent, $currentDataLines, $currentDataBytes, $state, $onRawEvent) as $emitted) {
                 $events[] = $emitted;
             }
 
@@ -316,12 +349,14 @@ class OpenAiProvider implements ApiKeyAwareProvider, SettingsAwareProvider
     private function flushPendingSseEvent(
         ?string &$currentEvent,
         array &$currentDataLines,
+        int &$currentDataBytes,
         OpenAiTranslatorState $state,
         ?callable $onRawEvent,
     ): array {
         if ($currentEvent === null || $currentDataLines === []) {
             $currentEvent = null;
             $currentDataLines = [];
+            $currentDataBytes = 0;
 
             return [];
         }
@@ -331,6 +366,7 @@ class OpenAiProvider implements ApiKeyAwareProvider, SettingsAwareProvider
 
         $currentEvent = null;
         $currentDataLines = [];
+        $currentDataBytes = 0;
 
         if ($rawData === '[DONE]') {
             return [];
@@ -890,7 +926,11 @@ class OpenAiProvider implements ApiKeyAwareProvider, SettingsAwareProvider
             return;
         }
 
-        $body = trim($response->getContent(false));
+        $body = trim(BoundedResponseBodyReader::read(
+            $this->httpClient,
+            $response,
+            self::MAX_ERROR_BODY_BYTES,
+        ));
         $url = (string) $response->getInfo('url');
         $message = $body !== '' ? $body : "HTTP {$statusCode} returned for \"{$url}\".";
         $errorType = 'http_error';
@@ -940,7 +980,7 @@ class OpenAiProvider implements ApiKeyAwareProvider, SettingsAwareProvider
     {
         $retryAfter = $this->lastRateLimitHeaders['retry-after'] ?? null;
         if ($retryAfter !== null && $retryAfter !== '' && is_numeric($retryAfter)) {
-            return min((float) $retryAfter, 120);
+            return max(0.0, min((float) $retryAfter, 120));
         }
 
         return min(2 ** $attempt, 10);

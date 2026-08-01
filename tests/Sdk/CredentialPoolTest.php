@@ -40,6 +40,26 @@ class CredentialPoolTest extends TestCase
         $this->assertSame(5, $c->priority);
     }
 
+    public function test_rejects_negative_exhaustion_ttl(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        new CredentialPool(exhaustedTtlSeconds: -1.0);
+    }
+
+    public function test_rejects_non_finite_exhaustion_ttl(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        new CredentialPool(exhaustedTtlSeconds: NAN);
+    }
+
+    public function test_rejects_negative_retry_after(): void
+    {
+        $pool = new CredentialPool;
+
+        $this->expectException(\InvalidArgumentException::class);
+        $pool->markExhausted(Credential::make('key'), -1.0);
+    }
+
     // --- CredentialPool round-robin ---
 
     public function test_single_credential_always_returns_same(): void
@@ -371,7 +391,7 @@ class CredentialPoolTest extends TestCase
 
             public function getLastRateLimitHeaders(): array
             {
-                return [];
+                return ['retry-after' => '-1'];
             }
         };
 

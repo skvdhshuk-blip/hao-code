@@ -19,6 +19,7 @@ class GrepTool extends BaseTool
     private const MAX_CONTEXT_LINES = 1_000;
     private const MAX_HEAD_LIMIT = 1_000;
     private const MAX_OFFSET = 100_000;
+    private const PHP_FALLBACK_OUTPUT_MAX = 1_000_000;
     private const RIPGREP_TIMEOUT_SECONDS = 10.0;
     private const RIPGREP_STDERR_MAX = 32_000;
     private const RIPGREP_OUTPUT_MAX = 1_000_000;
@@ -646,6 +647,7 @@ DESC;
         $results = [];
         $fileMatches = [];
         $seenEntries = 0;
+        $capturedOutputBytes = 0;
 
         foreach ($files as $file) {
             $stopReason = $this->searchStopReason($shouldAbort, $deadline);
@@ -684,8 +686,21 @@ DESC;
                     }
                 }
                 fclose($handle);
-                if ($matched && $this->addLimitedEntry($relativePath, $fileMatches, $seenEntries, $offset, $headLimit)) {
-                    break;
+                if ($matched) {
+                    $limitReached = $this->addLimitedEntry(
+                        $relativePath,
+                        $fileMatches,
+                        $seenEntries,
+                        $offset,
+                        $headLimit,
+                        $capturedOutputBytes,
+                    );
+                    if ($limitReached === null) {
+                        return $this->fallbackOutputLimitError($path);
+                    }
+                    if ($limitReached) {
+                        break;
+                    }
                 }
                 continue;
             }
@@ -713,13 +728,27 @@ DESC;
                     }
                 }
                 fclose($handle);
-                if ($count > 0 && $this->addLimitedEntry("{$relativePath}:{$count}", $fileMatches, $seenEntries, $offset, $headLimit)) {
-                    break;
+                if ($count > 0) {
+                    $limitReached = $this->addLimitedEntry(
+                        "{$relativePath}:{$count}",
+                        $fileMatches,
+                        $seenEntries,
+                        $offset,
+                        $headLimit,
+                        $capturedOutputBytes,
+                    );
+                    if ($limitReached === null) {
+                        return $this->fallbackOutputLimitError($path);
+                    }
+                    if ($limitReached) {
+                        break;
+                    }
                 }
                 continue;
             }
 
             $beforeBuffer = [];
+            $beforeBufferBytes = 0;
             $emitted = [];
             $afterRemaining = 0;
             $lineNumber = 0;
@@ -748,7 +777,20 @@ DESC;
                             continue;
                         }
                         $emitted[$ctxNumber] = true;
-                        if ($this->addLimitedEntry($relativePath.'-'.$ctxNumber.'-'.rtrim($ctxLine), $results, $seenEntries, $offset, $headLimit)) {
+                        $limitReached = $this->addLimitedEntry(
+                            $relativePath.'-'.$ctxNumber.'-'.rtrim($ctxLine),
+                            $results,
+                            $seenEntries,
+                            $offset,
+                            $headLimit,
+                            $capturedOutputBytes,
+                        );
+                        if ($limitReached === null) {
+                            fclose($handle);
+
+                            return $this->fallbackOutputLimitError($path);
+                        }
+                        if ($limitReached) {
                             fclose($handle);
                             $handle = null;
                             break 3;
@@ -756,7 +798,20 @@ DESC;
                     }
                     if (! isset($emitted[$lineNumber])) {
                         $emitted[$lineNumber] = true;
-                        if ($this->addLimitedEntry($relativePath.':'.$lineNumber.':'.rtrim($line), $results, $seenEntries, $offset, $headLimit)) {
+                        $limitReached = $this->addLimitedEntry(
+                            $relativePath.':'.$lineNumber.':'.rtrim($line),
+                            $results,
+                            $seenEntries,
+                            $offset,
+                            $headLimit,
+                            $capturedOutputBytes,
+                        );
+                        if ($limitReached === null) {
+                            fclose($handle);
+
+                            return $this->fallbackOutputLimitError($path);
+                        }
+                        if ($limitReached) {
                             fclose($handle);
                             $handle = null;
                             break 2;
@@ -765,7 +820,20 @@ DESC;
                     $afterRemaining = max($afterRemaining, $afterLines);
                 } elseif ($afterRemaining > 0 && ! isset($emitted[$lineNumber])) {
                     $emitted[$lineNumber] = true;
-                    if ($this->addLimitedEntry($relativePath.'-'.$lineNumber.'-'.rtrim($line), $results, $seenEntries, $offset, $headLimit)) {
+                    $limitReached = $this->addLimitedEntry(
+                        $relativePath.'-'.$lineNumber.'-'.rtrim($line),
+                        $results,
+                        $seenEntries,
+                        $offset,
+                        $headLimit,
+                        $capturedOutputBytes,
+                    );
+                    if ($limitReached === null) {
+                        fclose($handle);
+
+                        return $this->fallbackOutputLimitError($path);
+                    }
+                    if ($limitReached) {
                         fclose($handle);
                         $handle = null;
                         break 2;
@@ -774,8 +842,15 @@ DESC;
                 }
 
                 $beforeBuffer[] = [$lineNumber, $line];
+                $beforeBufferBytes += strlen($line);
                 if (count($beforeBuffer) > $beforeLines) {
-                    array_shift($beforeBuffer);
+                    [, $discardedLine] = array_shift($beforeBuffer);
+                    $beforeBufferBytes -= strlen($discardedLine);
+                }
+                if ($beforeBufferBytes > self::PHP_FALLBACK_OUTPUT_MAX) {
+                    fclose($handle);
+
+                    return $this->fallbackOutputLimitError($path);
                 }
             }
             if (is_resource($handle)) {
@@ -890,12 +965,32 @@ DESC;
         );
     }
 
+    private function fallbackOutputLimitError(string $path): ToolResult
+    {
+        return ToolResult::error(
+            'Grep fallback stopped after retaining more than '.self::PHP_FALLBACK_OUTPUT_MAX
+            .' bytes of context or output in '.$path.'. Narrow head/context or install ripgrep.',
+        );
+    }
+
     /** @param list<string> $entries */
-    private function addLimitedEntry(string $entry, array &$entries, int &$seenEntries, int $offset, int $headLimit): bool
+    private function addLimitedEntry(
+        string $entry,
+        array &$entries,
+        int &$seenEntries,
+        int $offset,
+        int $headLimit,
+        int &$capturedOutputBytes,
+    ): ?bool
     {
         $seenEntries++;
         if ($seenEntries > $offset && count($entries) < $headLimit) {
+            $entryBytes = strlen($entry) + 1;
+            if ($capturedOutputBytes > self::PHP_FALLBACK_OUTPUT_MAX - $entryBytes) {
+                return null;
+            }
             $entries[] = $entry;
+            $capturedOutputBytes += $entryBytes;
         }
 
         return $seenEntries >= $offset + $headLimit;

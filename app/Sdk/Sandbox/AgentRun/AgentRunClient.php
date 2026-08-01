@@ -2,12 +2,15 @@
 
 namespace HaoCode\Sdk\Sandbox\AgentRun;
 
+use HaoCode\Support\Http\BoundedResponseBodyReader;
 use Symfony\Component\HttpClient\HttpClient;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
 /** @internal */
 final class AgentRunClient
 {
+    private const MAX_ERROR_BODY_BYTES = 64 * 1024;
+
     private HttpClientInterface $http;
     private ?string $resolvedSandboxId = null;
 
@@ -142,6 +145,25 @@ final class AgentRunClient
 
         $response = $this->http->request($method, $url, $options);
         $status = $response->getStatusCode();
+
+        if ($status < 200 || $status >= 300) {
+            $body = BoundedResponseBodyReader::read(
+                $this->http,
+                $response,
+                self::MAX_ERROR_BODY_BYTES,
+            );
+            $decoded = [];
+            if ($body !== '') {
+                $json = json_decode($body, true);
+                if (is_array($json)) {
+                    $decoded = $json;
+                }
+            }
+
+            $message = $decoded['error']['message'] ?? $decoded['message'] ?? $body ?: 'AgentRun request failed.';
+            throw new \RuntimeException("AgentRun HTTP {$status}: {$message}");
+        }
+
         $body = $response->getContent(false);
         $decoded = [];
         if ($body !== '') {
@@ -149,11 +171,6 @@ final class AgentRunClient
             if (is_array($json)) {
                 $decoded = $json;
             }
-        }
-
-        if ($status < 200 || $status >= 300) {
-            $message = $decoded['error']['message'] ?? $decoded['message'] ?? $body ?: 'AgentRun request failed.';
-            throw new \RuntimeException("AgentRun HTTP {$status}: {$message}");
         }
 
         return $decoded;

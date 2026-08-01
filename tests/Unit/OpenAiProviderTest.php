@@ -2,6 +2,7 @@
 
 namespace Tests\Unit;
 
+use HaoCode\Services\Api\ApiErrorException;
 use HaoCode\Services\Api\OpenAiProvider;
 use HaoCode\Services\Api\StreamEvent;
 use PHPUnit\Framework\TestCase;
@@ -224,6 +225,51 @@ class OpenAiProviderTest extends TestCase
         $this->assertSame('"ls"}', $events[3]->data['delta']['partial_json']);
 
         $this->assertSame('tool_use', $events[5]->data['delta']['stop_reason']);
+    }
+
+    public function test_stream_rejects_an_oversized_unterminated_sse_line(): void
+    {
+        $httpClient = new MockHttpClient([
+            new MockResponse([str_repeat('x', 4 * 1024 * 1024 + 1)], ['http_code' => 200]),
+        ]);
+        $provider = new OpenAiProvider(
+            apiKey: 'test',
+            model: 'gpt-5',
+            httpClient: $httpClient,
+        );
+
+        $this->expectException(ApiErrorException::class);
+        $this->expectExceptionMessage('SSE line exceeded');
+        iterator_to_array($provider->streamMessages(
+            systemPrompt: [],
+            messages: [['role' => 'user', 'content' => 'hi']],
+            tools: [],
+        ));
+    }
+
+    public function test_stream_rejects_an_oversized_multiline_sse_event(): void
+    {
+        $body = "event: response.created\n";
+        for ($index = 0; $index < 5; $index++) {
+            $body .= 'data: '.str_repeat('x', 900_000)."\n";
+        }
+        $body .= "\n";
+
+        $provider = new OpenAiProvider(
+            apiKey: 'test',
+            model: 'gpt-5',
+            httpClient: new MockHttpClient([
+                new MockResponse([$body], ['http_code' => 200]),
+            ]),
+        );
+
+        $this->expectException(ApiErrorException::class);
+        $this->expectExceptionMessage('Streaming SSE line exceeded');
+        iterator_to_array($provider->streamMessages(
+            systemPrompt: [],
+            messages: [['role' => 'user', 'content' => 'hi']],
+            tools: [],
+        ));
     }
 
     public function test_stream_translates_reasoning_summary_into_thinking_delta(): void

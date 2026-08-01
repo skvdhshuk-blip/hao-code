@@ -3,6 +3,8 @@
 namespace HaoCode\Services\Api;
 
 use JsonException;
+use HaoCode\Support\Http\BoundedResponseBodyReader;
+use HaoCode\Support\Streaming\BoundedSseLineBuffer;
 use Symfony\Component\HttpClient\HttpClient;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 use Symfony\Contracts\HttpClient\ResponseInterface;
@@ -29,6 +31,9 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
  */
 class OpenAiChatProvider implements ApiKeyAwareProvider, SettingsAwareProvider
 {
+    private const MAX_SSE_LINE_BYTES = 4 * 1024 * 1024;
+    private const MAX_ERROR_BODY_BYTES = 64 * 1024;
+
     private HttpClientInterface $httpClient;
     private bool $useNativeStream;
     private int $maxRetries = 3;
@@ -298,8 +303,11 @@ class OpenAiChatProvider implements ApiKeyAwareProvider, SettingsAwareProvider
         if ($debug) fwrite(STDERR, "[stream] opened, status={$statusCode}\n");
 
         if ($statusCode >= 400) {
-            // 读出全部 body 用作错误信息
-            $errBody = stream_get_contents($fp) ?: '';
+            // Only retain a bounded prefix of provider-controlled error data.
+            $errBody = stream_get_contents($fp, self::MAX_ERROR_BODY_BYTES + 1) ?: '';
+            if (strlen($errBody) > self::MAX_ERROR_BODY_BYTES) {
+                $errBody = substr($errBody, 0, self::MAX_ERROR_BODY_BYTES);
+            }
             fclose($fp);
             $msg = $errBody !== '' ? $errBody : "HTTP {$statusCode}";
             $errorType = 'http_error';
@@ -312,7 +320,7 @@ class OpenAiChatProvider implements ApiKeyAwareProvider, SettingsAwareProvider
         }
 
         $state = new OpenAiChatTranslatorState();
-        $lineBuffer = '';
+        $lineReader = new BoundedSseLineBuffer(self::MAX_SSE_LINE_BYTES);
         $loopStart = ($this->timeProvider)();
         $lastActivityAt = $loopStart;
         $chunkCount = 0;
@@ -348,17 +356,13 @@ class OpenAiChatProvider implements ApiKeyAwareProvider, SettingsAwareProvider
 
                 $chunkCount++;
                 $totalBytes += strlen($data);
-                $lineBuffer .= $data;
                 $lastActivityAt = ($this->timeProvider)();
                 if ($debug && ($chunkCount <= 5 || $chunkCount % 50 === 0)) {
                     $elapsed = round($lastActivityAt - $loopStart, 2);
                     fwrite(STDERR, "[stream] chunk#{$chunkCount} +" . strlen($data) . "B total={$totalBytes} t={$elapsed}s\n");
                 }
 
-                while (($newlinePos = strpos($lineBuffer, "\n")) !== false) {
-                    $line = rtrim(substr($lineBuffer, 0, $newlinePos), "\r");
-                    $lineBuffer = substr($lineBuffer, $newlinePos + 1);
-
+                foreach ($lineReader->push($data) as $line) {
                     foreach ($this->processSseLine($line, $state, $onRawEvent) as $emitted) {
                         if ($shouldAbort && $shouldAbort()) {
                             fclose($fp);
@@ -374,6 +378,16 @@ class OpenAiChatProvider implements ApiKeyAwareProvider, SettingsAwareProvider
                 $elapsed = round(($this->timeProvider)() - $loopStart, 2);
                 fwrite(STDERR, "[stream] EOF chunks={$chunkCount} bytes={$totalBytes} t={$elapsed}s\n");
             }
+        } catch (\LengthException $e) {
+            if (is_resource($fp)) {
+                fclose($fp);
+            }
+
+            throw new ApiErrorException(
+                'Streaming SSE line exceeded the configured size limit.',
+                'protocol_error',
+                previous: $e,
+            );
         } catch (\Throwable $e) {
             if ($debug) fwrite(STDERR, "[stream] EXCEPTION: " . get_class($e) . ": " . $e->getMessage() . "\n");
             if (is_resource($fp)) fclose($fp);
@@ -385,9 +399,8 @@ class OpenAiChatProvider implements ApiKeyAwareProvider, SettingsAwareProvider
 
         if (is_resource($fp)) fclose($fp);
 
-        if ($lineBuffer !== '') {
-            if ($debug) fwrite(STDERR, "[stream] flushing tail lineBuffer=" . strlen($lineBuffer) . "B\n");
-            foreach ($this->processSseLine(rtrim($lineBuffer, "\r"), $state, $onRawEvent) as $emitted) {
+        foreach ($lineReader->push('', true) as $line) {
+            foreach ($this->processSseLine($line, $state, $onRawEvent) as $emitted) {
                 yield $emitted;
             }
         }
@@ -429,7 +442,7 @@ class OpenAiChatProvider implements ApiKeyAwareProvider, SettingsAwareProvider
         $this->extractRateLimitHeaders($response);
 
         $state = new OpenAiChatTranslatorState();
-        $lineBuffer = '';
+        $lineReader = new BoundedSseLineBuffer(self::MAX_SSE_LINE_BYTES);
         $lastActivityAt = ($this->timeProvider)();
 
         try {
@@ -453,13 +466,10 @@ class OpenAiChatProvider implements ApiKeyAwareProvider, SettingsAwareProvider
                     continue;
                 }
 
-                $lineBuffer .= $chunk->getContent();
+                $content = $chunk->getContent();
                 $lastActivityAt = ($this->timeProvider)();
 
-                while (($newlinePos = strpos($lineBuffer, "\n")) !== false) {
-                    $line = rtrim(substr($lineBuffer, 0, $newlinePos), "\r");
-                    $lineBuffer = substr($lineBuffer, $newlinePos + 1);
-
+                foreach ($lineReader->push($content) as $line) {
                     foreach ($this->processSseLine($line, $state, $onRawEvent) as $emitted) {
                         if ($shouldAbort && $shouldAbort()) {
                             $response->cancel();
@@ -471,6 +481,14 @@ class OpenAiChatProvider implements ApiKeyAwareProvider, SettingsAwareProvider
                     }
                 }
             }
+        } catch (\LengthException $e) {
+            $response->cancel();
+
+            throw new ApiErrorException(
+                'Streaming SSE line exceeded the configured size limit.',
+                'protocol_error',
+                previous: $e,
+            );
         } catch (\Throwable $e) {
             if ($shouldAbort && $shouldAbort()) {
                 $response->cancel();
@@ -481,8 +499,8 @@ class OpenAiChatProvider implements ApiKeyAwareProvider, SettingsAwareProvider
             throw $e;
         }
 
-        if ($lineBuffer !== '') {
-            foreach ($this->processSseLine(rtrim($lineBuffer, "\r"), $state, $onRawEvent) as $emitted) {
+        foreach ($lineReader->push('', true) as $line) {
+            foreach ($this->processSseLine($line, $state, $onRawEvent) as $emitted) {
                 yield $emitted;
             }
         }
@@ -1107,7 +1125,11 @@ class OpenAiChatProvider implements ApiKeyAwareProvider, SettingsAwareProvider
             return;
         }
 
-        $body = trim($response->getContent(false));
+        $body = trim(BoundedResponseBodyReader::read(
+            $this->httpClient,
+            $response,
+            self::MAX_ERROR_BODY_BYTES,
+        ));
         $url = (string) $response->getInfo('url');
         $message = $body !== '' ? $body : "HTTP {$statusCode} returned for \"{$url}\".";
         $errorType = 'http_error';
@@ -1157,7 +1179,7 @@ class OpenAiChatProvider implements ApiKeyAwareProvider, SettingsAwareProvider
     {
         $retryAfter = $this->lastRateLimitHeaders['retry-after'] ?? null;
         if ($retryAfter !== null && $retryAfter !== '' && is_numeric($retryAfter)) {
-            return min((float) $retryAfter, 120);
+            return max(0.0, min((float) $retryAfter, 120));
         }
 
         return min(2 ** $attempt, 10);
