@@ -2,7 +2,7 @@
 
 Use hao-code as a framework-free PHP library to embed an AI coding agent in your application.
 
-This document describes the `v1.18.57` source line. Published package versions
+This document describes the `v1.18.58` source line. Published package versions
 are identified by Git tags and Packagist.
 
 ```bash
@@ -895,6 +895,12 @@ normal text shape and adds machine-visible metadata such as `searchLimited`,
 `resultLimited`, `resultLimit`, `visitedLimited`, and `residualDifferences`.
 `residualDifferences` also records that AgentRun Glob uses remote traversal order
 and AgentRun Grep uses the remote grep regex/text-file semantics.
+
+Sandbox `Glob` and `Grep` keep the host tools' no-match and result-heading
+wording; sandbox paths remain in the remote namespace so a returned path can be
+passed directly to sandbox `Read`. A bounded Glob result includes an explicit
+notice in its text and retains the machine-visible search metadata. Search
+failures begin with `Glob search failed:` or `Grep search failed:`.
 
 ### Callbacks
 

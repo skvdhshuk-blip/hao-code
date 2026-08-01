@@ -411,6 +411,10 @@ AgentRun `Glob` and `Grep` prune default heavy directories, bound visited files
 and returned results, and apply `glob` filters to relative paths. A bounded
 remote search keeps the normal text result shape and adds metadata such as
 `searchLimited`, `resultLimited`, `visitedLimited`, and `residualDifferences`.
+Sandbox `Glob` keeps the host heading and emits an explicit bounded-result
+notice; sandbox paths stay in the remote namespace so they can be passed to
+sandbox `Read`. Search failures use `Glob search failed:` and `Grep search
+failed:` prefixes.
 
 ## Streaming
 
@@ -830,7 +834,7 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.18.57`. Notable changes since `v1.10.0`:
+is based on `v1.18.58`. Notable changes since `v1.10.0`:
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/
@@ -1018,6 +1022,10 @@ is based on `v1.18.57`. Notable changes since `v1.10.0`:
   documented. Retry, snapshot, parallel IPC, Skill scope, JSONL, and
   background Bash bookkeeping were split into internal helpers without
   changing the public SDK surface.
+- `v1.18.58` — Read-receipt batch promotion is isolated behind an internal
+  lifecycle helper. Sandbox Glob keeps the host result heading and explicit
+  bounded-result notice, while sandbox search failures use tool-specific
+  prefixes.
 - `v1.18.56` — AgentRun Glob/Grep now prune and bound remote searches, preserve
   path-level glob semantics, and expose residual-difference metadata; Tokimo
   and AgentRun abort waits mid-run, and all sandbox exec backends use the

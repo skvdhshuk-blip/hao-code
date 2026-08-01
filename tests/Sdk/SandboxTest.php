@@ -393,6 +393,54 @@ class SandboxTest extends TestCase
         }
     }
 
+    public function test_sandbox_glob_uses_host_heading_and_marks_bounded_results(): void
+    {
+        $runtime = SandboxManager::create(SandboxConfig::local());
+        $context = new ToolUseContext('/workspace', 'sandbox-glob-shape');
+
+        try {
+            for ($i = 0; $i < 101; $i++) {
+                $runtime->backend->writeFile('/workspace/files/file-'.$i.'.txt', 'x');
+            }
+
+            $result = (new SandboxGlobTool($runtime))->call(
+                ['pattern' => '**/*.txt', 'path' => '/workspace'],
+                $context,
+            );
+
+            $this->assertFalse($result->isError, $result->output);
+            $this->assertStringContainsString("Found 100 file(s) matching '**/*.txt' (showing first 100):", $result->output);
+            $this->assertStringContainsString('More files not shown. Narrow your pattern to see more.', $result->output);
+            $this->assertStringNotContainsString(' in sandbox:', $result->output);
+        } finally {
+            $runtime->close();
+        }
+    }
+
+    public function test_sandbox_search_failures_have_tool_specific_prefixes(): void
+    {
+        $runtime = SandboxManager::create(SandboxConfig::local());
+        $context = new ToolUseContext('/workspace', 'sandbox-search-errors');
+
+        try {
+            $grep = (new SandboxGrepTool($runtime))->call(
+                ['pattern' => '['],
+                $context,
+            );
+            $this->assertTrue($grep->isError);
+            $this->assertStringStartsWith('Grep search failed: ', $grep->output);
+
+            $glob = (new SandboxGlobTool($runtime))->call(
+                ['pattern' => str_repeat('a', 513)],
+                $context,
+            );
+            $this->assertTrue($glob->isError);
+            $this->assertStringStartsWith('Glob search failed: ', $glob->output);
+        } finally {
+            $runtime->close();
+        }
+    }
+
     public function test_sandbox_search_tools_report_limits_and_abort_cleanly(): void
     {
         $runtime = SandboxManager::create(SandboxConfig::local());

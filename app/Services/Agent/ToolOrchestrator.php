@@ -272,30 +272,15 @@ class ToolOrchestrator
         ?callable $onToolStart = null,
         ?callable $onToolComplete = null,
     ): array {
-        $ownsBatch = ! $context->hasReadReceiptBatch();
-        if ($ownsBatch) {
-            $context->beginReadReceiptBatch();
-        }
-        try {
-            $results = $this->executeToolsInBatch(
+        return ReadReceiptBatch::execute(
+            $context,
+            fn (): array => $this->executeToolsInBatch(
                 $toolUseBlocks,
                 $context,
                 $onToolStart,
                 $onToolComplete,
-            );
-
-            if ($ownsBatch) {
-                $context->commitReadReceiptBatch();
-            }
-
-            return $results;
-        } catch (\Throwable $e) {
-            if ($ownsBatch) {
-                $context->discardReadReceiptBatch();
-            }
-
-            throw $e;
-        }
+            ),
+        );
     }
 
     /**

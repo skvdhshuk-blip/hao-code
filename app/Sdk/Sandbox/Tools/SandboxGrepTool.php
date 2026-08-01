@@ -60,7 +60,7 @@ final class SandboxGrepTool extends SandboxTool
             );
         } catch (\Throwable $e) {
             $this->consumeSearchMetadata();
-            return ToolResult::error($e->getMessage());
+            return ToolResult::error('Grep search failed: '.$e->getMessage());
         }
         $metadata = $this->consumeSearchMetadata();
 

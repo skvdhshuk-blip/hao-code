@@ -43,22 +43,37 @@ final class SandboxGlobTool extends SandboxTool
             $matches = $this->runtime->backend->glob($pattern, $path);
         } catch (\Throwable $e) {
             $this->consumeSearchMetadata();
-            return ToolResult::error($e->getMessage());
+            return ToolResult::error('Glob search failed: '.$e->getMessage());
         }
         $metadata = $this->consumeSearchMetadata();
 
         if ($matches === []) {
+            if (($metadata['searchLimited'] ?? false) === true) {
+                return ToolResult::success(
+                    "Search was limited before a match could be confirmed for pattern: {$pattern}",
+                    $metadata,
+                );
+            }
+
             return ToolResult::success("No files matched pattern: {$pattern}", $metadata);
         }
 
         $total = count($matches);
         $shown = array_slice($matches, 0, 100);
-        $output = "Found {$total} file(s) matching '{$pattern}' in sandbox:\n\n";
+        // Backends may cap the returned window before the tool sees it. Keep
+        // the host Glob heading and make that boundary visible without
+        // inventing a total count that the backend cannot know.
+        $limited = ($metadata['searchLimited'] ?? false) === true || $total >= 100;
+        $output = "Found {$total} file(s) matching '{$pattern}'";
+        if ($limited) {
+            $output .= ' (showing first '.count($shown).')';
+        }
+        $output .= ":\n\n";
         foreach ($shown as $match) {
             $output .= "  {$match}\n";
         }
-        if ($total > 100) {
-            $output .= "\n[".($total - 100)." more files not shown.]";
+        if ($limited) {
+            $output .= "\n[More files not shown. Narrow your pattern to see more.]";
         }
 
         return ToolResult::success($output, $metadata);
