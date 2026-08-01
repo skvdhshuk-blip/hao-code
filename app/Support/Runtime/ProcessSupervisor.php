@@ -74,13 +74,13 @@ final class ProcessSupervisor
 
         if (function_exists('posix_kill')) {
             // Negative PID = process group (setsid / job-control leader).
-            // Snapshot descendants before signalling the root. The fallback
-            // launcher may not have its own process group; once the root exits
-            // its children can be re-parented and no longer discoverable via
-            // pgrep -P.
-            $hasOwnProcessGroup = function_exists('posix_getpgid')
-                && @posix_getpgid($pid) === $pid;
-            $descendants = $hasOwnProcessGroup ? [] : self::collectDescendantPids($pid);
+            // Snapshot descendants before signalling the root. A process may
+            // deliberately call setsid() and leave the root's process group;
+            // signalling only the group would otherwise leave that child
+            // running. The snapshot also has to happen before the root exits,
+            // because its children can then be re-parented and no longer be
+            // discoverable via pgrep -P.
+            $descendants = self::collectDescendantPids($pid);
             self::signalPids($descendants, $sig);
             @posix_kill(-$pid, $sig);
             @posix_kill($pid, $sig);

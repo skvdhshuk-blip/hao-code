@@ -2,6 +2,8 @@
 
 namespace HaoCode\Services\Hooks;
 
+use HaoCode\Support\Runtime\ProcessSupervisor;
+
 /**
  * @internal
  */
@@ -249,6 +251,17 @@ final class HookProcessRunner
     {
         if (PHP_OS_FAMILY === 'Windows' && $processId !== null && function_exists('exec')) {
             @exec('taskkill /PID '.$processId.' /T /F >NUL 2>&1');
+        }
+
+        // A hook command can deliberately leave the wrapper's process group
+        // (for example by calling setsid()).  Group signalling alone would
+        // then report a timeout while the detached descendant keeps running.
+        // ProcessSupervisor snapshots the parent/child tree before signalling
+        // and covers both the process group and detached descendants.
+        if ($processId !== null && $processGroupId !== null && PHP_OS_FAMILY !== 'Windows') {
+            ProcessSupervisor::terminateTree($processId, false);
+
+            return;
         }
 
         $status = proc_get_status($process);

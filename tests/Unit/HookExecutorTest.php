@@ -253,7 +253,11 @@ PHP;
             .' -r '.escapeshellarg($childScript)
             .' & child_pid=$!; printf %s "$child_pid" > '.escapeshellarg($pidFile)
             .'; wait "$child_pid"';
-        $runner = new HookProcessRunner(timeoutSeconds: 0.25);
+        // Allow the PHP child to start and publish its PID before the
+        // timeout path is exercised.  The assertion still covers prompt
+        // process-tree cleanup; a sub-second deadline is not the contract
+        // under test here.
+        $runner = new HookProcessRunner(timeoutSeconds: 1.0);
         $executor = $this->makeExecutor(
             ['PreToolUse' => [$this->makeHook('PreToolUse', $command)]],
             $runner,
@@ -278,6 +282,66 @@ PHP;
             $this->assertFalse($alive, 'Timed-out Hook descendants must not outlive the runner.');
         } finally {
             @unlink($pidFile);
+        }
+    }
+
+    public function test_hook_timeout_terminates_a_descendant_in_a_separate_session(): void
+    {
+        if (DIRECTORY_SEPARATOR !== '/'
+            || ! function_exists('pcntl_fork')
+            || ! function_exists('posix_setsid')
+            || ! function_exists('posix_kill')) {
+            $this->markTestSkipped('POSIX detached process coverage is unavailable.');
+        }
+
+        $pidFile = sys_get_temp_dir().'/haocode-hook-detached-child-'.bin2hex(random_bytes(8));
+        $marker = sys_get_temp_dir().'/haocode-hook-detached-marker-'.bin2hex(random_bytes(8));
+        $childScript = <<<'PHP'
+$childPid = pcntl_fork();
+if ($childPid === 0) {
+    if (posix_setsid() === -1) {
+        exit(71);
+    }
+    usleep(2_000_000);
+    file_put_contents($argv[2], 'leaked');
+    exit(0);
+}
+if ($childPid === -1) {
+    exit(72);
+}
+file_put_contents($argv[1], (string) $childPid);
+while (true) {
+    usleep(10_000);
+}
+PHP;
+        $command = escapeshellarg(PHP_BINARY)
+            .' -r '.escapeshellarg($childScript)
+            .' '.escapeshellarg($pidFile)
+            .' '.escapeshellarg($marker);
+        $runner = new HookProcessRunner(timeoutSeconds: 1.5);
+        $executor = $this->makeExecutor(
+            ['PreToolUse' => [$this->makeHook('PreToolUse', $command)]],
+            $runner,
+        );
+
+        try {
+            $result = $executor->execute('PreToolUse');
+            $this->assertFalse($result->allowed);
+            $this->assertStringContainsString('timed out', $result->output);
+            $this->assertFileExists($pidFile);
+
+            usleep(2_300_000);
+            $this->assertFileDoesNotExist(
+                $marker,
+                'Timed-out Hook descendants that call setsid() must not outlive the runner.',
+            );
+        } finally {
+            $childPid = (int) trim((string) @file_get_contents($pidFile));
+            if ($childPid > 0 && @posix_kill($childPid, 0)) {
+                @posix_kill($childPid, defined('SIGKILL') ? SIGKILL : 9);
+            }
+            @unlink($pidFile);
+            @unlink($marker);
         }
     }
 
@@ -330,7 +394,9 @@ PHP;
     public function test_pre_tool_use_output_limit_fails_closed(): void
     {
         $runner = new HookProcessRunner(
-            timeoutSeconds: 1.0,
+            // Keep process startup out of this output-bound test's deadline;
+            // the production default is already bounded independently.
+            timeoutSeconds: 5.0,
             stdoutLimitBytes: 32768,
             stderrLimitBytes: 32768,
         );
