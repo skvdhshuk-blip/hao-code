@@ -49,6 +49,7 @@ final class SandboxGrepTool extends SandboxTool
             return ToolResult::aborted('Sandbox Grep search aborted.');
         }
 
+        $this->beginSearchMetadata();
         try {
             $matches = $this->runtime->backend->grep(
                 $pattern,
@@ -58,11 +59,13 @@ final class SandboxGrepTool extends SandboxTool
                 $limit,
             );
         } catch (\Throwable $e) {
+            $this->consumeSearchMetadata();
             return ToolResult::error($e->getMessage());
         }
+        $metadata = $this->consumeSearchMetadata();
 
         if ($matches === []) {
-            return ToolResult::success("No matches found for pattern: {$pattern}");
+            return ToolResult::success("No matches found for pattern: {$pattern}", $metadata);
         }
 
         if ($mode === 'count') {
@@ -74,11 +77,14 @@ final class SandboxGrepTool extends SandboxTool
             foreach ($counts as $file => $count) {
                 $output .= "{$file}:{$count}\n";
             }
-            return ToolResult::success(rtrim($output));
+            return ToolResult::success(rtrim($output), $metadata);
         }
 
         if ($mode === 'files_with_matches') {
-            return ToolResult::success(implode("\n", array_values(array_unique(array_map(fn (array $m): string => $m['file'], $matches)))));
+            return ToolResult::success(
+                implode("\n", array_values(array_unique(array_map(fn (array $m): string => $m['file'], $matches)))),
+                $metadata,
+            );
         }
 
         $output = '';
@@ -86,7 +92,7 @@ final class SandboxGrepTool extends SandboxTool
             $output .= "{$match['file']}:{$match['line']}:{$match['text']}\n";
         }
 
-        return ToolResult::success(rtrim($output));
+        return ToolResult::success(rtrim($output), $metadata);
     }
 
     public function backfillObservableInput(array $input, ToolUseContext $context): array

@@ -13,7 +13,7 @@ use HaoCode\Sdk\Sandbox\SandboxConfig;
  */
 final class NativeSandboxBackend implements SandboxBackendInterface, RevisionAwareSandboxBackendInterface
 {
-    private const MAX_OUTPUT_BYTES = 4 * 1024 * 1024;
+    private const MAX_OUTPUT_BYTES = 100_000;
 
     private readonly LocalSandboxBackend $filesystem;
 

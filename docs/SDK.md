@@ -2,7 +2,7 @@
 
 Use hao-code as a framework-free PHP library to embed an AI coding agent in your application.
 
-This document describes the `v1.18.54` source line. Published package versions
+This document describes the `v1.18.56` source line. Published package versions
 are identified by Git tags and Packagist.
 
 ```bash
@@ -679,6 +679,14 @@ Sandbox modes:
 | `filesystem` | `Read`, `Write`, `Glob`, `Grep` | Default; `Bash` is disabled |
 | `full` | `Read`, `Write`, `Glob`, `Grep`, `Bash` | Shell commands run inside the sandbox backend |
 
+All sandbox backends bound SDK-captured command output to 100,000 bytes. Native,
+Tokimo, and AgentRun apply that bound independently to stdout and stderr; Local
+uses one shared 100,000-byte budget across both streams. When a command is
+terminated for that limit, the result sets `outputLimited: true` and uses exit
+code `1`; timeout and user abort use `124` and `130` respectively. `timedOut`,
+`aborted`, and `outputLimited` are included in normal sandbox Bash execution
+metadata.
+
 While sandbox mode is active, the SDK disables `Edit`, `apply_patch`,
 `NotebookEdit`, `EnterWorktree`, `ExitWorktree`, `Agent`, and `SendMessage`.
 Other host-only tools, including `LSP` and task/team tools, are not sandbox
@@ -742,6 +750,11 @@ be set to `seatbelt` or `bubblewrap` to require a specific engine; the default
 `auto` selects the native engine for the current platform. This backend does not
 yet provide Tokimo's Linux micro-VM boundary, PTY transport, or packaged rootfs;
 use the Tokimo or AgentRun backend when a stronger boundary is required.
+
+Native, Tokimo, and AgentRun all apply the same 100,000-byte SDK capture
+contract. Native and Tokimo can terminate their local runner/process directly;
+AgentRun cancels the in-flight HTTP response and reports an interrupted result
+when the caller's abort signal fires while a remote command is still running.
 
 ### Tokimo cross-platform backend
 
@@ -859,6 +872,15 @@ under `/tmp`, such as `/tmp/workspace`, for generated files. Creating `/workspac
 at the filesystem root can fail with permission denied. The complete demo in
 `examples/agentrun-ml-clustering-agent.php` lets an agent generate data, write a
 pure-Python k-means script, run it in AgentRun, and read back the JSON summary.
+
+AgentRun `Glob` and `Grep` prune default heavy directories (`.git`, `vendor`,
+`node_modules`, and similar paths), bound visited files and returned results, and
+match `glob` filters against the relative path rather than only the basename.
+When a remote search reaches one of those bounds, the tool result keeps the
+normal text shape and adds machine-visible metadata such as `searchLimited`,
+`resultLimited`, `resultLimit`, `visitedLimited`, and `residualDifferences`.
+`residualDifferences` also records that AgentRun Glob uses remote traversal order
+and AgentRun Grep uses the remote grep regex/text-file semantics.
 
 ### Callbacks
 

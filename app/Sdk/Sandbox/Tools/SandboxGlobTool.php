@@ -38,14 +38,17 @@ final class SandboxGlobTool extends SandboxTool
             return ToolResult::aborted('Sandbox Glob search aborted.');
         }
 
+        $this->beginSearchMetadata();
         try {
             $matches = $this->runtime->backend->glob($pattern, $path);
         } catch (\Throwable $e) {
+            $this->consumeSearchMetadata();
             return ToolResult::error($e->getMessage());
         }
+        $metadata = $this->consumeSearchMetadata();
 
         if ($matches === []) {
-            return ToolResult::success("No files matched pattern: {$pattern}");
+            return ToolResult::success("No files matched pattern: {$pattern}", $metadata);
         }
 
         $total = count($matches);
@@ -58,7 +61,7 @@ final class SandboxGlobTool extends SandboxTool
             $output .= "\n[".($total - 100)." more files not shown.]";
         }
 
-        return ToolResult::success($output);
+        return ToolResult::success($output, $metadata);
     }
 
     public function backfillObservableInput(array $input, ToolUseContext $context): array

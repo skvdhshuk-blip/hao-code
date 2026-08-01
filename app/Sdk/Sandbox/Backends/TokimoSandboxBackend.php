@@ -106,7 +106,10 @@ final class TokimoSandboxBackend implements SandboxBackendInterface, RevisionAwa
             'cwd' => $cwd ?? $this->config->remoteCwd,
             'timeout_ms' => max(1, $timeoutMs),
         ]);
-        $response = $this->readResponse(max(1000, $timeoutMs + 5000));
+        $response = $this->readResponse(max(1000, $timeoutMs + 5000), $shouldAbort);
+        if ($response === null) {
+            return ['stdout' => '', 'stderr' => '', 'exitCode' => 130, 'timedOut' => false, 'aborted' => true, 'outputLimited' => false];
+        }
         $this->assertSuccessfulResponse($response, 'Tokimo command failed');
 
         $stdout = base64_decode((string) ($response['stdout_base64'] ?? ''), true);
@@ -119,13 +122,15 @@ final class TokimoSandboxBackend implements SandboxBackendInterface, RevisionAwa
         $stdoutLimited = $this->capExecOutput($stdout, 'stdout');
         $stderrLimited = $this->capExecOutput($stderr, 'stderr');
         $outputLimited = $outputLimited || $stdoutLimited || $stderrLimited;
+        $timedOut = (bool) ($response['timed_out'] ?? $response['timedOut'] ?? false);
+        $aborted = (bool) ($response['aborted'] ?? false);
 
         return [
             'stdout' => $stdout,
             'stderr' => $stderr,
-            'exitCode' => $outputLimited ? 1 : (int) ($response['exit_code'] ?? -1),
-            'timedOut' => (bool) ($response['timed_out'] ?? false),
-            'aborted' => false,
+            'exitCode' => $aborted ? 130 : ($timedOut ? 124 : ($outputLimited ? 1 : (int) ($response['exit_code'] ?? -1))),
+            'timedOut' => $timedOut,
+            'aborted' => $aborted,
             'outputLimited' => $outputLimited,
         ];
     }
@@ -313,10 +318,16 @@ final class TokimoSandboxBackend implements SandboxBackendInterface, RevisionAwa
         fflush($this->pipes[0]);
     }
 
-    private function readResponse(int $timeoutMs): array
+    private function readResponse(int $timeoutMs, ?callable $shouldAbort = null): ?array
     {
         $deadline = microtime(true) + ($timeoutMs / 1000);
         while (microtime(true) < $deadline) {
+            if ($shouldAbort !== null && $shouldAbort()) {
+                $this->closeRunnerProcess(false);
+
+                return null;
+            }
+
             $newline = strpos($this->responseBuffer, "\n");
             if ($newline !== false) {
                 $line = substr($this->responseBuffer, 0, $newline);
@@ -340,6 +351,9 @@ final class TokimoSandboxBackend implements SandboxBackendInterface, RevisionAwa
             }
 
             $remaining = max(0.001, $deadline - microtime(true));
+            if ($shouldAbort !== null) {
+                $remaining = min($remaining, 0.05);
+            }
             $seconds = (int) $remaining;
             $microseconds = (int) (($remaining - $seconds) * 1_000_000);
             $write = null;

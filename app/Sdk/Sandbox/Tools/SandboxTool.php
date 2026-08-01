@@ -2,6 +2,7 @@
 
 namespace HaoCode\Sdk\Sandbox\Tools;
 
+use HaoCode\Sdk\Sandbox\SandboxSearchMetadata;
 use HaoCode\Sdk\Sandbox\SandboxRuntime;
 use HaoCode\Tools\BaseTool;
 use HaoCode\Tools\ToolUseContext;
@@ -38,5 +39,16 @@ abstract class SandboxTool extends BaseTool
         }
 
         return '/'.implode('/', $parts);
+    }
+
+    protected function beginSearchMetadata(): void
+    {
+        SandboxSearchMetadata::begin($this->runtime->backend);
+    }
+
+    /** @return array<string, mixed>|null */
+    protected function consumeSearchMetadata(): ?array
+    {
+        return SandboxSearchMetadata::consume($this->runtime->backend);
     }
 }

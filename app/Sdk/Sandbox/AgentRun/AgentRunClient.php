@@ -5,6 +5,7 @@ namespace HaoCode\Sdk\Sandbox\AgentRun;
 use HaoCode\Support\Http\BoundedResponseBodyReader;
 use Symfony\Component\HttpClient\HttpClient;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
+use Symfony\Contracts\HttpClient\ResponseInterface;
 
 /** @internal */
 final class AgentRunClient
@@ -101,13 +102,13 @@ final class AgentRunClient
         return $this->request('GET', '/filesystem', query: ['path' => $path, 'depth' => $depth]);
     }
 
-    public function cmd(string $command, string $cwd, int $timeoutSeconds): array
+    public function cmd(string $command, string $cwd, int $timeoutSeconds, ?callable $shouldAbort = null): array
     {
         return $this->request('POST', '/processes/cmd', [
             'command' => $command,
             'cwd' => $cwd,
             'timeout' => $timeoutSeconds,
-        ]);
+        ], shouldAbort: $shouldAbort);
     }
 
     public function executeCode(string $code, int $timeoutSeconds = 30, string $language = 'python'): array
@@ -124,7 +125,14 @@ final class AgentRunClient
         return $this->request('GET', '/health');
     }
 
-    public function request(string $method, string $path, ?array $data = null, array $query = [], bool $sandboxScoped = true): array
+    public function request(
+        string $method,
+        string $path,
+        ?array $data = null,
+        array $query = [],
+        bool $sandboxScoped = true,
+        ?callable $shouldAbort = null,
+    ): array
     {
         $url = $this->url($path, $query, $sandboxScoped);
         $headers = ['User-Agent' => 'HaoCode-AgentRun-Spike/1.0'];
@@ -164,7 +172,13 @@ final class AgentRunClient
             throw new \RuntimeException("AgentRun HTTP {$status}: {$message}");
         }
 
-        $body = $response->getContent(false);
+        $body = $shouldAbort === null
+            ? $response->getContent(false)
+            : $this->readBodyWithAbort($response, $shouldAbort);
+        if ($body === null) {
+            return ['__haocode_aborted' => true];
+        }
+
         $decoded = [];
         if ($body !== '') {
             $json = json_decode($body, true);
@@ -174,6 +188,30 @@ final class AgentRunClient
         }
 
         return $decoded;
+    }
+
+    private function readBodyWithAbort(ResponseInterface $response, callable $shouldAbort): ?string
+    {
+        $body = '';
+        foreach ($this->http->stream($response, 0.25) as $chunk) {
+            if ($shouldAbort()) {
+                $response->cancel();
+
+                return null;
+            }
+
+            if ($chunk->isTimeout()) {
+                continue;
+            }
+
+            if ($chunk->getError() !== null) {
+                throw new \RuntimeException('AgentRun response stream failed: '.$chunk->getError());
+            }
+
+            $body .= $chunk->getContent();
+        }
+
+        return $body;
     }
 
     private function url(string $path, array $query, bool $sandboxScoped): string

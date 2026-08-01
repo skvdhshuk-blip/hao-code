@@ -22,6 +22,10 @@ while (($line = fgets(STDIN)) !== false) {
         continue;
     }
 
+    if (($request['command'] ?? '') === 'long-running') {
+        usleep(5_000_000);
+    }
+
     $output = ($request['command'] ?? '') === 'large-output'
         ? str_repeat('x', 150000)
         : (($request['command'] ?? '').'|'.($request['cwd'] ?? ''));

@@ -71,6 +71,8 @@ final class SandboxBashTool extends SandboxTool
             return ToolResult::error('Command interrupted by user.', [
                 'exitCode' => 130,
                 'aborted' => true,
+                'timedOut' => false,
+                'outputLimited' => false,
             ]);
         }
 

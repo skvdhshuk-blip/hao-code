@@ -5,11 +5,18 @@ namespace HaoCode\Sdk\Sandbox\Backends;
 use HaoCode\Sdk\Sandbox\AgentRun\AgentRunClient;
 use HaoCode\Sdk\Sandbox\SandboxBackendInterface;
 use HaoCode\Sdk\Sandbox\SandboxConfig;
+use HaoCode\Sdk\Sandbox\SandboxSearchMetadata;
 
 /** @api */
 final class AgentRunSandboxBackend implements SandboxBackendInterface
 {
     private const MAX_EXEC_OUTPUT_BYTES = 100_000;
+    private const MAX_SEARCH_RESULTS = 100;
+    private const MAX_SEARCH_VISITED_FILES = 20_000;
+    private const SEARCH_RESULT_LIMIT_MARKER = '__HAOCODE_SEARCH_RESULT_LIMIT__';
+    private const SEARCH_VISITED_LIMIT_MARKER = '__HAOCODE_SEARCH_VISITED_LIMIT__';
+    private const IGNORED_DIRECTORY_NAMES = ['.git', '.hg', '.svn', 'node_modules', 'vendor'];
+    private const IGNORED_DIRECTORY_PATHS = ['.claude/worktrees'];
 
     private AgentRunClient $client;
 
@@ -87,34 +94,77 @@ final class AgentRunSandboxBackend implements SandboxBackendInterface
 
     public function glob(string $pattern, ?string $path = null): array
     {
+        SandboxSearchMetadata::begin($this);
         $cwd = $path ?? $this->config->remoteCwd;
-        $cmd = 'find '.escapeshellarg($cwd).' -type f -path '.escapeshellarg($this->findPattern($cwd, $pattern)).' | head -1000';
+        $cmd = $this->buildBoundedGlobCommand($cwd, $pattern);
         $result = $this->exec($cmd, $cwd, 30000);
-        if ($result['exitCode'] !== 0) {
+        [$lines, $resultLimited, $visitedLimited] = $this->parseSearchOutput($result['stdout']);
+        $matches = [];
+        foreach ($lines as $line) {
+            if ($this->matchesSearchPath($line, $cwd, $pattern)) {
+                $matches[] = $line;
+            }
+        }
+
+        $outputLimited = (bool) ($result['outputLimited'] ?? false);
+        $resultLimited = $resultLimited || count($matches) > self::MAX_SEARCH_RESULTS;
+        $matches = array_values(array_unique(array_slice($matches, 0, self::MAX_SEARCH_RESULTS)));
+        $this->recordSearchMetadata('glob', $resultLimited, $visitedLimited, $outputLimited, self::MAX_SEARCH_RESULTS);
+
+        if ($result['exitCode'] !== 0 && $matches === [] && ! $resultLimited && ! $visitedLimited && ! $outputLimited) {
+            if (trim($result['stderr']) !== '') {
+                throw new \RuntimeException('AgentRun glob failed: '.trim($result['stderr']));
+            }
             return [];
         }
-        return array_values(array_filter(array_map('trim', explode("\n", $result['stdout']))));
+
+        return $matches;
     }
 
     public function grep(string $pattern, ?string $path = null, ?string $glob = null, bool $caseInsensitive = false, int $limit = 250): array
     {
+        SandboxSearchMetadata::begin($this);
         $cwd = $path ?? $this->config->remoteCwd;
-        $cmd = 'grep -RIn'.($caseInsensitive ? 'i' : '').' -- '.escapeshellarg($pattern).' '.escapeshellarg($cwd).' | head -'.max(1, $limit);
-        $result = $this->exec($cmd, $cwd, 30000);
-        if ($result['exitCode'] !== 0 && trim($result['stdout']) === '') {
+        $limit = max(0, min($limit, 1000));
+        if ($limit === 0) {
+            $this->recordSearchMetadata('grep', true, false, false, 0);
+
             return [];
         }
+
+        $globPattern = ($glob === null || trim($glob) === '') ? '*' : $glob;
+        $find = $this->buildPrunedFindCommand(
+            $cwd,
+            $this->findPattern($cwd, $globPattern),
+            true,
+        );
+        $grep = 'xargs -0 grep -I -nH'.($caseInsensitive ? ' -i' : '').' -- '.escapeshellarg($pattern);
+        $cmd = $find.' | '.$grep.' | head -n '.($limit + 1);
+        $result = $this->exec($cmd, $cwd, 30000);
+        [$lines, $resultLimited, $visitedLimited] = $this->parseSearchOutput($result['stdout']);
+        $outputLimited = (bool) ($result['outputLimited'] ?? false);
+        $resultLimited = $resultLimited || count($lines) > $limit;
+        $lines = array_slice($lines, 0, $limit);
         $matches = [];
-        foreach (explode("\n", trim($result['stdout'])) as $line) {
+        foreach ($lines as $line) {
             if ($line === '') {
                 continue;
             }
             [$file, $lineNo, $text] = array_pad(explode(':', $line, 3), 3, '');
-            if ($glob !== null && $glob !== '' && ! fnmatch($glob, basename($file))) {
+            if ($glob !== null && $glob !== '' && ! $this->matchesSearchPath($file, $cwd, $glob)) {
                 continue;
             }
             $matches[] = ['file' => $file, 'line' => (int) $lineNo, 'text' => $text];
         }
+        $this->recordSearchMetadata('grep', $resultLimited, $visitedLimited, $outputLimited, $limit);
+
+        if ($result['exitCode'] !== 0 && $matches === [] && ! $resultLimited && ! $visitedLimited && ! $outputLimited) {
+            if (trim($result['stderr']) !== '') {
+                throw new \RuntimeException('AgentRun grep failed: '.trim($result['stderr']));
+            }
+            return [];
+        }
+
         return $matches;
     }
 
@@ -124,7 +174,15 @@ final class AgentRunSandboxBackend implements SandboxBackendInterface
             return ['stdout' => '', 'stderr' => '', 'exitCode' => 130, 'timedOut' => false, 'aborted' => true, 'outputLimited' => false];
         }
 
-        $result = $this->client->cmd($command, $cwd ?? $this->config->remoteCwd, max(1, (int) ceil($timeoutMs / 1000)));
+        $result = $this->client->cmd(
+            $command,
+            $cwd ?? $this->config->remoteCwd,
+            max(1, (int) ceil($timeoutMs / 1000)),
+            $shouldAbort,
+        );
+        if (($result['__haocode_aborted'] ?? false) === true) {
+            return ['stdout' => '', 'stderr' => '', 'exitCode' => 130, 'timedOut' => false, 'aborted' => true, 'outputLimited' => false];
+        }
         $exitCode = $result['exitCode']
             ?? $result['code']
             ?? $result['data']['exitCode']
@@ -140,13 +198,15 @@ final class AgentRunSandboxBackend implements SandboxBackendInterface
         $stdoutLimited = $this->capExecOutput($stdout, 'stdout');
         $stderrLimited = $this->capExecOutput($stderr, 'stderr');
         $outputLimited = $outputLimited || $stdoutLimited || $stderrLimited;
+        $timedOut = (bool) ($result['timedOut'] ?? $result['timed_out'] ?? $result['data']['timedOut'] ?? $result['result']['timedOut'] ?? false);
+        $aborted = (bool) ($result['aborted'] ?? $result['data']['aborted'] ?? $result['result']['aborted'] ?? false);
 
         return [
             'stdout' => $stdout,
             'stderr' => $stderr,
-            'exitCode' => $outputLimited ? 1 : (int) $exitCode,
-            'timedOut' => (bool) ($result['timedOut'] ?? $result['data']['timedOut'] ?? false),
-            'aborted' => false,
+            'exitCode' => $aborted ? 130 : ($timedOut ? 124 : ($outputLimited ? 1 : (int) $exitCode)),
+            'timedOut' => $timedOut,
+            'aborted' => $aborted,
             'outputLimited' => $outputLimited,
         ];
     }
@@ -223,8 +283,188 @@ final class AgentRunSandboxBackend implements SandboxBackendInterface
 
     private function findPattern(string $cwd, string $pattern): string
     {
-        $pattern = ltrim($pattern, './');
+        $pattern = $this->normalizeSearchPattern($pattern);
+
+        if (str_starts_with($pattern, '/')) {
+            return $pattern;
+        }
+
         return rtrim($cwd, '/').'/'.$pattern;
+    }
+
+    private function buildBoundedGlobCommand(string $cwd, string $pattern): string
+    {
+        $find = $this->buildPrunedFindCommand($cwd, null, false);
+        $awk = <<<'AWK'
+{
+    visited++;
+    if (visited > maxVisited) {
+        print "__HAOCODE_SEARCH_VISITED_LIMIT__";
+        exit 2;
+    }
+    if ($0 ~ ENVIRON["HAOCODE_SEARCH_PATTERN"]) {
+        print $0;
+        matches++;
+        if (matches >= maxResults) {
+            print "__HAOCODE_SEARCH_RESULT_LIMIT__";
+            exit 3;
+        }
+    }
+}
+AWK;
+
+        return $find
+            .' | HAOCODE_SEARCH_PATTERN='.escapeshellarg($this->globToPosixEre($this->findPattern($cwd, $pattern)))
+            .' awk -v maxVisited='.self::MAX_SEARCH_VISITED_FILES
+            .' -v maxResults='.(self::MAX_SEARCH_RESULTS + 1)
+            .' '.escapeshellarg($awk);
+    }
+
+    private function buildPrunedFindCommand(string $cwd, ?string $pathPattern, bool $nullDelimited): string
+    {
+        $pruneTerms = [];
+        foreach (self::IGNORED_DIRECTORY_NAMES as $name) {
+            $pruneTerms[] = '-name '.escapeshellarg($name);
+        }
+        foreach (self::IGNORED_DIRECTORY_PATHS as $path) {
+            $pruneTerms[] = '-path '.escapeshellarg(rtrim($cwd, '/').'/'.$path);
+        }
+
+        $prune = '\\( -type d \\( '.implode(' -o ', $pruneTerms).' \\) -prune \\) -o';
+        $command = 'find '.escapeshellarg($cwd).' '.$prune.' -type f';
+        if ($pathPattern !== null) {
+            $command .= ' -path '.escapeshellarg($pathPattern);
+        }
+
+        return $command.' '.($nullDelimited ? '-print0' : '-print');
+    }
+
+    /** @return array{0: list<string>, 1: bool, 2: bool} */
+    private function parseSearchOutput(string $output): array
+    {
+        $lines = [];
+        $resultLimited = false;
+        $visitedLimited = false;
+        foreach (preg_split('/\r?\n/', $output) ?: [] as $line) {
+            $line = rtrim($line, "\r");
+            if ($line === self::SEARCH_RESULT_LIMIT_MARKER) {
+                $resultLimited = true;
+            } elseif ($line === self::SEARCH_VISITED_LIMIT_MARKER) {
+                $visitedLimited = true;
+            } elseif ($line !== '') {
+                $lines[] = $line;
+            }
+        }
+
+        return [$lines, $resultLimited, $visitedLimited];
+    }
+
+    private function recordSearchMetadata(
+        string $operation,
+        bool $resultLimited,
+        bool $visitedLimited,
+        bool $outputLimited,
+        int $resultLimit,
+    ): void {
+        SandboxSearchMetadata::record($this, [
+            'provider' => 'agentrun',
+            'operation' => $operation,
+            'searchLimited' => $resultLimited || $visitedLimited || $outputLimited,
+            'resultLimit' => $resultLimit,
+            'resultLimited' => $resultLimited,
+            'visitedLimit' => self::MAX_SEARCH_VISITED_FILES,
+            'visitedLimited' => $visitedLimited,
+            'outputLimited' => $outputLimited,
+            'residualDifferences' => [
+                'AgentRun search prunes default heavy directories but does not expose a remote filesystem visit count.',
+                'AgentRun search returns only the bounded result window; it does not provide the full candidate set after truncation.',
+                ...($operation === 'glob'
+                    ? ['AgentRun Glob follows remote traversal order rather than Local Glob newest-file ranking.']
+                    : ['AgentRun Grep uses the remote grep regular-expression and text-file semantics.']),
+            ],
+        ]);
+    }
+
+    private function normalizeSearchPattern(string $pattern): string
+    {
+        $pattern = trim($pattern);
+
+        if (str_starts_with($pattern, './')) {
+            $pattern = substr($pattern, 2);
+        }
+
+        return $pattern === '' ? '*' : $pattern;
+    }
+
+    private function matchesSearchPath(string $file, string $cwd, string $pattern): bool
+    {
+        $pattern = $this->normalizeSearchPattern($pattern);
+        if (str_starts_with($pattern, '/')) {
+            $candidate = $file;
+        } else {
+            $prefix = rtrim($cwd, '/').'/';
+            $candidate = str_starts_with($file, $prefix) ? substr($file, strlen($prefix)) : $file;
+        }
+
+        return preg_match($this->globToPhpRegex($pattern), $candidate) === 1;
+    }
+
+    private function globToPhpRegex(string $pattern): string
+    {
+        $regex = '#^';
+        $length = strlen($pattern);
+        for ($offset = 0; $offset < $length; $offset++) {
+            $character = $pattern[$offset];
+            if ($character === '*') {
+                if ($offset + 1 < $length && $pattern[$offset + 1] === '*') {
+                    $offset++;
+                    if ($offset + 1 < $length && $pattern[$offset + 1] === '/') {
+                        $offset++;
+                        $regex .= '(?:.*/)?';
+                    } else {
+                        $regex .= '.*';
+                    }
+                } else {
+                    $regex .= '[^/]*';
+                }
+            } elseif ($character === '?') {
+                $regex .= '[^/]';
+            } else {
+                $regex .= preg_quote($character, '#');
+            }
+        }
+
+        return $regex.'$#';
+    }
+
+    private function globToPosixEre(string $pattern): string
+    {
+        $regex = '^';
+        $length = strlen($pattern);
+        for ($offset = 0; $offset < $length; $offset++) {
+            $character = $pattern[$offset];
+            if ($character === '*') {
+                if ($offset + 1 < $length && $pattern[$offset + 1] === '*') {
+                    $offset++;
+                    if ($offset + 1 < $length && $pattern[$offset + 1] === '/') {
+                        $offset++;
+                        $regex .= '(.*/)?';
+                    } else {
+                        $regex .= '.*';
+                    }
+                } else {
+                    $regex .= '[^/]*';
+                }
+            } elseif ($character === '?') {
+                $regex .= '[^/]';
+            } elseif (str_contains('.\\+()|^$[]{}', $character)) {
+                $regex .= '\\'.$character;
+            } else {
+                $regex .= $character;
+            }
+        }
+
+        return $regex.'$';
     }
 
     private function capExecOutput(string &$output, string $streamName): bool

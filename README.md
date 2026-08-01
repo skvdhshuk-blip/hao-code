@@ -257,6 +257,12 @@ Choose the backend by the isolation boundary you need:
 | `tokimo()` | macOS arm64, Linux amd64/arm64, Windows amd64 | Recommended cross-platform boundary for agent-generated or untrusted shell commands; installed separately on demand |
 | `agentRun()` | Any host with AgentRun access | Remote cloud isolation when commands and files must stay off the PHP host |
 
+Sandbox `Bash` captures at most 100,000 bytes. Native, Tokimo, and AgentRun
+apply that bound independently to stdout and stderr; Local uses one shared budget
+across both streams. `outputLimited` uses exit code `1`, timeout uses `124`, and
+abort uses `130`; normal sandbox Bash execution metadata includes all three
+flags.
+
 For a portable full sandbox, prefer `tokimo()`. It is intentionally not part of
 the default Composer install; run
 `vendor/bin/hao-code-sandbox install --with-runtime` before first use or at any
@@ -383,6 +389,11 @@ For the current AgentRun code-interpreter template, write demo files under
 `/tmp/workspace`; creating `/workspace` at the filesystem root can be denied by
 the container. See `examples/agentrun-ml-clustering-agent.php` for a complete
 agent-generated data + Python k-means demo.
+
+AgentRun `Glob` and `Grep` prune default heavy directories, bound visited files
+and returned results, and apply `glob` filters to relative paths. A bounded
+remote search keeps the normal text result shape and adds metadata such as
+`searchLimited`, `resultLimited`, `visitedLimited`, and `residualDifferences`.
 
 ## Streaming
 
@@ -790,7 +801,7 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.18.54`. Notable changes since `v1.10.0`:
+is based on `v1.18.56`. Notable changes since `v1.10.0`:
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/
@@ -972,6 +983,13 @@ is based on `v1.18.54`. Notable changes since `v1.10.0`:
   `CredentialPool` rejects non-finite or negative exhaustion TTLs, and
   `StructuredResult::toJson()` now fails with `JsonException` instead of
   returning an invalid JSON value.
+- `v1.18.56` — AgentRun Glob/Grep now prune and bound remote searches, preserve
+  path-level glob semantics, and expose residual-difference metadata; Tokimo
+  and AgentRun abort waits mid-run, and all sandbox exec backends use the
+  aligned 100,000-byte output-limit contract.
+- `v1.18.55` — Stream text/thinking accumulation, Bash result metadata, and
+  context-compaction thresholds now share tighter fail-closed contracts;
+  sandbox and MCP documentation were refreshed for the current implementation.
 - `v1.18.53` — Preserve quoted Bash command arguments on Windows, validate and
   normalize inputs before parallel/early execution, and bound unterminated MCP
   SSE metadata before buffering it.

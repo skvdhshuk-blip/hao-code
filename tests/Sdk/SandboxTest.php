@@ -578,8 +578,8 @@ YAML);
 
         $this->assertSame(1, $result['exitCode'], $result['stderr']);
         $this->assertTrue($result['outputLimited'] ?? false);
-        $this->assertLessThan(4_200_000, strlen($result['stdout']));
-        $this->assertStringContainsString('[stdout truncated at 4194304 bytes]', $result['stdout']);
+        $this->assertLessThan(101_000, strlen($result['stdout']));
+        $this->assertStringContainsString('[stdout truncated at 100000 bytes]', $result['stdout']);
         $runtime->close();
     }
 
