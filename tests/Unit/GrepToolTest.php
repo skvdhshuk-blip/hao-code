@@ -261,6 +261,16 @@ class GrepToolTest extends TestCase
         $this->assertLessThanOrEqual(3, $matchCount);
     }
 
+    public function test_php_fallback_rejects_pathological_single_line_files(): void
+    {
+        $this->writeFile('huge-line.txt', str_repeat('x', 1_000_001)."\n");
+
+        $result = $this->grepPhp('needle');
+
+        $this->assertTrue($result->isError);
+        $this->assertStringContainsString('line larger than', $result->output);
+    }
+
     public function test_php_fallback_applies_global_offset_and_head_limit_across_files(): void
     {
         $this->writeFile('a.txt', "match-a\nmatch-b\n");

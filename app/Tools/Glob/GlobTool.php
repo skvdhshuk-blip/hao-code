@@ -85,7 +85,7 @@ DESC;
 
         $matches = [];
         $totalCount = 0;
-        $visitedFiles = 0;
+        $visitedEntries = 0;
         $truncatedByVisitLimit = false;
         $aborted = false;
         $gitignorePatterns = $this->loadGitignorePatterns($path);
@@ -95,7 +95,7 @@ DESC;
             $gitignorePatterns,
             $matches,
             $totalCount,
-            $visitedFiles,
+            $visitedEntries,
             $truncatedByVisitLimit,
             $context->isAborted(...),
             $aborted,
@@ -127,7 +127,7 @@ DESC;
         }
 
         if ($truncatedByVisitLimit) {
-            $output .= "\n[Search stopped after visiting ".self::MAX_VISITED_FILES." files. Narrow your path or pattern to continue.]";
+            $output .= "\n[Search stopped after visiting ".self::MAX_VISITED_FILES." filesystem entries. Narrow your path or pattern to continue.]";
         } elseif ($truncated) {
             $output .= "\n[" . ($totalCount - self::MAX_RESULTS) . " more files not shown. Narrow your pattern to see more.]";
         }
@@ -156,7 +156,7 @@ DESC;
         array $gitignorePatterns,
         array &$matches,
         int &$totalCount,
-        int &$visitedFiles,
+        int &$visitedEntries,
         bool &$truncatedByVisitLimit,
         ?callable $shouldAbort = null,
         bool &$aborted = false,
@@ -182,7 +182,7 @@ DESC;
         );
         $iterator = new \RecursiveIteratorIterator(
             $filter,
-            \RecursiveIteratorIterator::LEAVES_ONLY,
+            \RecursiveIteratorIterator::SELF_FIRST,
             \RecursiveIteratorIterator::CATCH_GET_CHILD,
         );
 
@@ -192,15 +192,20 @@ DESC;
                 break;
             }
 
+            $visitedEntries++;
+            if ($visitedEntries > self::MAX_VISITED_FILES) {
+                $truncatedByVisitLimit = true;
+                break;
+            }
+
+            if ($file->isDir()) {
+                continue;
+            }
+
             $pathname = $file->getPathname();
             $relativePath = $this->relativePath($pathname, $dir);
             if (! $file->isFile() || $file->isLink()) {
                 continue;
-            }
-            $visitedFiles++;
-            if ($visitedFiles > self::MAX_VISITED_FILES) {
-                $truncatedByVisitLimit = true;
-                break;
             }
             foreach ($regexPatterns as $regexPattern) {
                 if (preg_match($regexPattern, $relativePath)) {

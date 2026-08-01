@@ -251,7 +251,7 @@ final class McpTransport
             @fclose($this->stderr);
             $this->stderr = null;
         }
-        if ($this->process !== null) {
+        if (is_resource($this->process)) {
             // Send SIGTERM, then SIGKILL after a short wait
             $status = proc_get_status($this->process);
             $pid = (int) ($status['pid'] ?? 0);
@@ -259,8 +259,8 @@ final class McpTransport
                 ProcessSupervisor::terminateTree($pid, false);
             }
             proc_close($this->process);
-            $this->process = null;
         }
+        $this->process = null;
         $this->readBuffer = '';
         $this->stderrBuffer = '';
         $this->httpSessionId = null;
@@ -271,7 +271,7 @@ final class McpTransport
     public function isConnected(): bool
     {
         if ($this->transport === 'stdio') {
-            return $this->process !== null && proc_get_status($this->process)['running'];
+            return $this->stdioProcessRunning() === true;
         }
 
         return $this->url !== null && ! $this->httpSessionExpired;
@@ -333,6 +333,14 @@ final class McpTransport
             throw new McpConnectionException('Stdio transport requires a command');
         }
 
+        // A public transport can be connected more than once.  Close the
+        // previous process before replacing its handles; otherwise the old
+        // child keeps running after $this->process is overwritten and cannot
+        // be terminated by a later close().
+        if ($this->process !== null || $this->stdin !== null || $this->stdout !== null || $this->stderr !== null) {
+            $this->close();
+        }
+
         // Array form bypasses shell interpolation and keeps command/arguments distinct.
         $cmd = array_merge([$this->command], $this->args);
         $env = $this->buildStdioEnvironment();
@@ -343,13 +351,14 @@ final class McpTransport
             2 => ['pipe', 'w'], // stderr (captured)
         ];
 
-        $this->process = proc_open($cmd, $descriptorSpec, $pipes, $this->workingDirectory, $env);
+        $process = @proc_open($cmd, $descriptorSpec, $pipes, $this->workingDirectory, $env);
 
-        if (! is_resource($this->process)) {
+        if (! is_resource($process)) {
             // Omit $cmd to avoid leaking local filesystem paths in exception messages
             throw new McpConnectionException('Failed to start MCP server process');
         }
 
+        $this->process = $process;
         $this->stdin = $pipes[0];
         $this->stdout = $pipes[1];
         $this->stderr = $pipes[2];

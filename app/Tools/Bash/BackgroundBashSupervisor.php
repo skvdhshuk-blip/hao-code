@@ -201,8 +201,12 @@ final class BackgroundBashSupervisor
 
         if ($notice !== '' && strlen($chunk) > $room) {
             $notice = strlen($notice) > $maxOutputBytes ? substr($notice, 0, $maxOutputBytes) : $notice;
+            // The remaining room may be smaller than the notice itself.  Keep
+            // the physical output cap authoritative even in that final slice.
+            $notice = substr($notice, 0, $room);
             $roomForChunk = max(0, $room - strlen($notice));
             $data = substr($chunk, 0, $roomForChunk).$notice;
+            $data = substr($data, 0, $room);
         } else {
             $data = strlen($chunk) > $room ? substr($chunk, 0, $room) : $chunk;
         }

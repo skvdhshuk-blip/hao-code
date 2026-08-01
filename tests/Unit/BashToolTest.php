@@ -5,6 +5,7 @@ namespace Tests\Unit;
 use HaoCode\Sdk\AgentRunContextFactory;
 use HaoCode\Sdk\HaoCodeConfig;
 use HaoCode\Tools\Bash\BashTool;
+use HaoCode\Tools\Bash\BackgroundBashSupervisor;
 use HaoCode\Tools\ToolUseContext;
 use PHPUnit\Framework\TestCase;
 
@@ -878,6 +879,27 @@ YAML);
         $this->assertTrue($final->isError, $final->output);
         $this->assertSame(1, $final->metadata['exitCode'] ?? null);
         $this->assertStringContainsString('Output truncated', $final->output);
+    }
+
+    public function test_background_output_limit_never_writes_truncation_notice_past_cap(): void
+    {
+        $method = (new \ReflectionClass(BackgroundBashSupervisor::class))->getMethod('appendWithLimit');
+        $method->setAccessible(true);
+        $stream = fopen('php://temp', 'w+b');
+        $bytesWritten = 95;
+        $arguments = [
+            $stream,
+            &$bytesWritten,
+            100,
+            '0123456789',
+            "\n\n[Output truncated at 100 bytes; command terminated]",
+        ];
+
+        $method->invokeArgs(null, $arguments);
+        fflush($stream);
+        $this->assertLessThanOrEqual(100, $bytesWritten);
+        $this->assertLessThanOrEqual(100, fstat($stream)['size'] ?? PHP_INT_MAX);
+        fclose($stream);
     }
 
     public function test_background_nonzero_exit_is_error_and_runs_once(): void

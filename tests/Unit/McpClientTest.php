@@ -78,6 +78,50 @@ class McpClientTest extends TestCase
         $transport->connect();
     }
 
+    public function test_reconnecting_stdio_closes_the_previous_process(): void
+    {
+        if (! function_exists('posix_kill')) {
+            $this->markTestSkipped('POSIX process probe is unavailable.');
+        }
+
+        $transport = McpTransport::fromConfig([
+            'transport' => 'stdio',
+            'command' => PHP_BINARY,
+            'args' => [dirname(__DIR__).'/fixtures/mcp-jsonl-probe-server.php'],
+            'url' => null,
+            'env' => [],
+            'headers' => [],
+        ]);
+        $processProperty = new \ReflectionProperty($transport, 'process');
+        $firstPid = null;
+
+        try {
+            $transport->connect();
+            $firstStatus = proc_get_status($processProperty->getValue($transport));
+            $firstPid = (int) ($firstStatus['pid'] ?? 0);
+
+            $transport->connect();
+            $secondStatus = proc_get_status($processProperty->getValue($transport));
+            $secondPid = (int) ($secondStatus['pid'] ?? 0);
+
+            $this->assertGreaterThan(0, $firstPid);
+            $this->assertGreaterThan(0, $secondPid);
+            $this->assertNotSame($firstPid, $secondPid);
+
+            $exited = false;
+            for ($attempt = 0; $attempt < 20; $attempt++) {
+                if (! @posix_kill($firstPid, 0)) {
+                    $exited = true;
+                    break;
+                }
+                usleep(25_000);
+            }
+            $this->assertTrue($exited, 'The previous MCP stdio process is still running.');
+        } finally {
+            $transport->close();
+        }
+    }
+
     public function test_stdio_request_drains_large_stderr_while_waiting_for_stdout(): void
     {
         if (PHP_OS_FAMILY === 'Windows') {

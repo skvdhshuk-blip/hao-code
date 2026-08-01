@@ -11,6 +11,7 @@ use HaoCode\Tools\ToolUseContext;
 class GrepTool extends BaseTool
 {
     private const MAX_VISITED_FILES = 20_000;
+    private const MAX_LINE_BYTES = 1_000_000;
     private const RIPGREP_TIMEOUT_SECONDS = 10.0;
     private const RIPGREP_STDERR_MAX = 32_000;
     private const IGNORED_DIRECTORIES = [
@@ -440,6 +441,8 @@ DESC;
             $files = [$path];
         } elseif (is_dir($path)) {
             $files = [];
+            $visitedEntries = 0;
+            $truncatedByVisitLimit = false;
             $gitignorePatterns = $this->loadGitignorePatterns($path);
             try {
                 $directory = new \RecursiveDirectoryIterator($path, \RecursiveDirectoryIterator::SKIP_DOTS);
@@ -462,12 +465,22 @@ DESC;
                 );
                 $iterator = new \RecursiveIteratorIterator(
                     $filter,
-                    \RecursiveIteratorIterator::LEAVES_ONLY,
+                    \RecursiveIteratorIterator::SELF_FIRST,
                     \RecursiveIteratorIterator::CATCH_GET_CHILD,
                 );
                 foreach ($iterator as $file) {
                     if ($shouldAbort !== null && $shouldAbort()) {
                         return ToolResult::aborted('Grep search aborted.');
+                    }
+
+                    $visitedEntries++;
+                    if ($visitedEntries > self::MAX_VISITED_FILES) {
+                        $truncatedByVisitLimit = true;
+                        break;
+                    }
+
+                    if ($file->isDir()) {
+                        continue;
                     }
 
                     $relPath = str_replace(
@@ -486,14 +499,17 @@ DESC;
                             }
                         }
                         $files[] = $file->getPathname();
-                        if (count($files) >= self::MAX_VISITED_FILES) {
-                            break;
-                        }
                     }
                 }
                 sort($files, SORT_STRING);
             } catch (\UnexpectedValueException $e) {
                 return ToolResult::error("Unable to search path {$path}: {$e->getMessage()}");
+            }
+            if ($truncatedByVisitLimit) {
+                return ToolResult::error(
+                    'Grep search stopped after visiting '.self::MAX_VISITED_FILES
+                    .' filesystem entries. Narrow the path or pattern to continue.',
+                );
             }
         } else {
             return ToolResult::error("Search path does not exist: {$path}");
@@ -516,7 +532,16 @@ DESC;
             $relativePath = $this->relativePath($file, $path);
             if ($outputMode === 'files_with_matches') {
                 $matched = false;
-                while (($line = fgets($handle)) !== false) {
+                while (true) {
+                    [$line, $oversized] = $this->readBoundedLine($handle);
+                    if ($oversized) {
+                        fclose($handle);
+
+                        return $this->oversizedLineError($file);
+                    }
+                    if ($line === null) {
+                        break;
+                    }
                     if ($shouldAbort !== null && $shouldAbort()) {
                         fclose($handle);
 
@@ -536,7 +561,16 @@ DESC;
             }
             if ($outputMode === 'count') {
                 $count = 0;
-                while (($line = fgets($handle)) !== false) {
+                while (true) {
+                    [$line, $oversized] = $this->readBoundedLine($handle);
+                    if ($oversized) {
+                        fclose($handle);
+
+                        return $this->oversizedLineError($file);
+                    }
+                    if ($line === null) {
+                        break;
+                    }
                     if ($shouldAbort !== null && $shouldAbort()) {
                         fclose($handle);
 
@@ -558,7 +592,16 @@ DESC;
             $emitted = [];
             $afterRemaining = 0;
             $lineNumber = 0;
-            while (($line = fgets($handle)) !== false) {
+            while (true) {
+                [$line, $oversized] = $this->readBoundedLine($handle);
+                if ($oversized) {
+                    fclose($handle);
+
+                    return $this->oversizedLineError($file);
+                }
+                if ($line === null) {
+                    break;
+                }
                 if ($shouldAbort !== null && $shouldAbort()) {
                     fclose($handle);
 
@@ -618,6 +661,46 @@ DESC;
 
         return ToolResult::success(
             $entries === [] ? $this->noMatchesMessage($pattern) : implode("\n", $entries),
+        );
+    }
+
+    /**
+     * Read one logical line without allowing a pathological line to consume
+     * unbounded memory in the PHP fallback.  Oversized lines are drained to
+     * the next newline so callers can fail closed without leaving the handle
+     * positioned in the middle of the same line.
+     *
+     * @param resource $handle
+     * @return array{0:?string,1:bool} [line, oversized]
+     */
+    private function readBoundedLine($handle): array
+    {
+        // fgets() reads at most length - 1 bytes, so request one extra byte
+        // beyond the cap to distinguish an exact-cap line from a longer one.
+        $readLength = self::MAX_LINE_BYTES + 2;
+        $line = @fgets($handle, $readLength);
+        if ($line === false) {
+            return [null, false];
+        }
+
+        if (strlen($line) <= self::MAX_LINE_BYTES || str_ends_with($line, "\n")) {
+            return [$line, false];
+        }
+
+        while (($discard = @fgets($handle, $readLength)) !== false) {
+            if (str_ends_with($discard, "\n")) {
+                break;
+            }
+        }
+
+        return [null, true];
+    }
+
+    private function oversizedLineError(string $file): ToolResult
+    {
+        return ToolResult::error(
+            'Grep refused to scan a line larger than '.self::MAX_LINE_BYTES
+            .' bytes in '.$file.'. Narrow the search or use ripgrep.',
         );
     }
 

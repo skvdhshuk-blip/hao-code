@@ -4,6 +4,7 @@ namespace HaoCode\Services\Mcp\Server;
 
 use HaoCode\Contracts\ToolInterface;
 use HaoCode\Sdk\SdkTool;
+use HaoCode\Support\Filesystem\CanonicalPathResolver;
 use HaoCode\Tools\Skill\SkillDefinition;
 use HaoCode\Tools\Skill\SkillLoader;
 use HaoCode\Tools\ToolUseContext;
@@ -41,7 +42,13 @@ class ToolAdapter
 
     public function setRoot(string $root): void
     {
-        $this->root = rtrim($root, '/');
+        $trimmed = rtrim($root, '/\\');
+        // Keep filesystem roots intact: rtrim('/') would otherwise turn the
+        // configured root into an empty working directory.
+        if ($trimmed === '' || preg_match('/^[A-Za-z]:$/', $trimmed) === 1) {
+            $trimmed = $root;
+        }
+        $this->root = $trimmed;
     }
 
     /** Register a built-in tool (Read/Bash/Write/Grep/Glob). */
@@ -106,36 +113,47 @@ class ToolAdapter
             return $this->denied('access denied');
         }
 
+        // Keep the MCP server-side path and validation contract in step with
+        // ToolOrchestrator.  ToolAdapter invokes tools directly, so without
+        // this normalization a relative Read/Write/Grep/Glob path is checked
+        // against the configured root but then executed relative to the PHP
+        // process cwd.
+        $ctx = new ToolUseContext(workingDirectory: $this->root, sessionId: 'mcp');
+        try {
+            $args = $tool->inputSchema()->validate($args);
+        } catch (\InvalidArgumentException) {
+            return $this->denied('invalid tool input');
+        }
+
+        $validationError = $tool->validateInput($args, $ctx);
+        if ($validationError !== null) {
+            return $this->denied('invalid tool input');
+        }
+
+        $args = $tool->backfillObservableInput($args, $ctx);
+
         // Path validation for built-ins that accept file paths (red lines #3 & #4)
         $pathArg = $args['file_path'] ?? $args['path'] ?? $args['pattern'] ?? null;
         if ($pathArg !== null && is_string($pathArg)) {
-            // Normalize the path for checking; resolve relative to root
-            $absPath = str_starts_with($pathArg, '/') ? $pathArg : ($this->root.'/'.$pathArg);
+            // Normalize the path for checking; resolve relative to root on
+            // both Unix and Windows (including drive-letter and UNC paths).
+            $normalizedRoot = realpath($this->root)
+                ?: CanonicalPathResolver::resolve($this->root, getcwd() ?: '/');
+            $absPath = CanonicalPathResolver::resolve($pathArg, $normalizedRoot);
 
             // Sensitive filename check (before realpath to catch .env etc.)
             if ($this->isSensitivePath(basename($pathArg)) || $this->isSensitivePath($pathArg)) {
                 return $this->denied('access denied');
             }
 
-            $normalizedRoot = realpath($this->root) ?: $this->root;
-
             // For existing paths, use realpath (resolves symlinks - red line #4)
-            $real = realpath($absPath);
-            if ($real !== false) {
-                if (! str_starts_with($real.'/', $normalizedRoot.'/') && $real !== $normalizedRoot) {
-                    return $this->denied('access denied');
-                }
-            } else {
-                // Non-existent path (e.g., Write target): normalize manually
-                $normalized = $this->normalizePath($absPath);
-                if (! str_starts_with($normalized.'/', $normalizedRoot.'/') && $normalized !== $normalizedRoot) {
-                    return $this->denied('access denied');
-                }
+            $candidate = realpath($absPath) ?: $absPath;
+            if (! CanonicalPathResolver::isWithin($candidate, $normalizedRoot)) {
+                return $this->denied('access denied');
             }
         }
 
         // Check permissions via tool's own checkPermissions
-        $ctx = new ToolUseContext(workingDirectory: $this->root, sessionId: 'mcp');
         $decision = $tool->checkPermissions($args, $ctx);
 
         if (! $decision->allowed) {
@@ -251,9 +269,10 @@ class ToolAdapter
 
     private function isSensitivePath(string $path): bool
     {
-        $base = basename($path);
+        $normalized = str_replace('\\', '/', $path);
+        $base = basename($normalized);
         foreach (self::SENSITIVE_PATTERNS as $pattern) {
-            if (preg_match($pattern, $base) || preg_match($pattern, $path)) {
+            if (preg_match($pattern, $base) || preg_match($pattern, $normalized)) {
                 return true;
             }
         }
@@ -286,24 +305,6 @@ class ToolAdapter
         $text = preg_replace('/\{\{\s*(env|config)\s*\(.*?\)\s*\}\}/', '{{ /* masked */ }}', $text) ?? $text;
 
         return $text;
-    }
-
-    private function normalizePath(string $path): string
-    {
-        $parts = explode('/', $path);
-        $out = [];
-        foreach ($parts as $part) {
-            if ($part === '' || $part === '.') {
-                continue;
-            }
-            if ($part === '..') {
-                array_pop($out);
-            } else {
-                $out[] = $part;
-            }
-        }
-
-        return '/'.implode('/', $out);
     }
 
     private function denied(string $msg): array
