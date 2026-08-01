@@ -117,11 +117,22 @@ class ExitWorktreeTool extends BaseTool
         if ($path === '') {
             return null;
         }
-        if (! str_starts_with($path, '/')) {
+
+        // `git rev-parse` returns an absolute path on native Windows using
+        // either drive-letter or UNC syntax. Treat those paths as absolute
+        // instead of accidentally prefixing the current worktree directory.
+        if (! $this->isAbsolutePath($path)) {
             $path = rtrim($cwd, '/').'/'.$path;
         }
 
         return realpath($path) ?: $path;
+    }
+
+    private function isAbsolutePath(string $path): bool
+    {
+        return str_starts_with($path, '/')
+            || str_starts_with($path, '\\')
+            || preg_match('/^[A-Za-z]:[\\\\\/]/', $path) === 1;
     }
 
     /** @param list<string> $args @return array{stdout: string, stderr: string, exitCode: int} */

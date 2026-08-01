@@ -212,6 +212,7 @@ DESC;
 
             [$stdoutChunk, $stdoutFailed] = $this->drainPipe($capture['stdoutHandle']);
             [$stderrChunk, $stderrFailed] = $this->drainPipe($capture['stderrHandle']);
+            $receivedOutput = $stdoutChunk !== '' || $stderrChunk !== '';
             $limitNotice = "\n\n[Output truncated at ".self::MAX_CAPTURED_OUTPUT_BYTES.' bytes; command terminated]';
             if ($this->appendCapturedChunk($stdout, $stdoutChunk, $capturedOutputBytes, self::MAX_CAPTURED_OUTPUT_BYTES, $limitNotice)
                 || $this->appendCapturedChunk($stderr, $stderrChunk, $capturedOutputBytes, self::MAX_CAPTURED_OUTPUT_BYTES, $limitNotice)) {
@@ -233,8 +234,14 @@ DESC;
                 break;
             }
 
-            // Poll up to 200 ms so we stay responsive without busy waiting.
-            usleep((int) min($remaining * 1_000_000, 200_000));
+            // When output is flowing, drain again immediately so a FIFO's
+            // small reads cannot turn a hard byte cap into seconds of delay.
+            // With no data, retain a bounded poll interval to avoid spinning.
+            if ($receivedOutput) {
+                usleep(1_000);
+            } else {
+                usleep((int) min($remaining * 1_000_000, 200_000));
+            }
         }
 
         if (! $outputTruncated) {
@@ -613,11 +620,18 @@ DESC;
         }
 
         $statusPath = is_string($task['statusFile'] ?? null) ? $task['statusFile'] : '';
-        $exitCode = self::readBackgroundExitCode($statusPath);
+        $statusInfo = self::readBackgroundStatus($statusPath);
+        $exitCode = $statusInfo['exitCode'] ?? null;
         $running = self::isBackgroundProcessAlive($task);
         $deadline = (float) ($task['deadline'] ?? 0.0);
         $now = microtime(true);
-        $timedOut = $deadline > 0.0 && $now >= $deadline;
+        // A late poll must not turn an already completed non-zero command into
+        // a timeout. The supervisor records the authoritative outcome; the
+        // wall-clock deadline is only a fallback while it is still running.
+        $timedOut = (bool) ($statusInfo['timedOut'] ?? false);
+        if ($exitCode === null) {
+            $timedOut = $deadline > 0.0 && $now >= $deadline;
+        }
 
         // The supervisor owns the exact timeout and writes 124 after it has
         // terminated the command tree. Give it a short grace window before the
@@ -626,7 +640,8 @@ DESC;
             ProcessSupervisor::terminateTree((int) $task['pid'], false);
             $running = self::isBackgroundProcessAlive($task);
             if ($running !== true) {
-                $exitCode = self::readBackgroundExitCode($statusPath) ?? -1;
+                $statusInfo = self::readBackgroundStatus($statusPath);
+                $exitCode = $statusInfo['exitCode'] ?? -1;
                 // Fall through to harvest as a timed-out completion.
                 $timedOut = true;
             }
@@ -692,6 +707,7 @@ DESC;
             'running' => false,
             'exitCode' => $code,
             'timedOut' => $timedOut && $code !== 0,
+            'outputLimited' => (bool) ($statusInfo['outputLimited'] ?? false),
         ];
 
         if ($timedOut && $code !== 0) {
@@ -839,7 +855,10 @@ DESC;
         }
     }
 
-    private static function readBackgroundExitCode(string $statusPath): ?int
+    /**
+     * @return array{exitCode: int, timedOut: bool, outputLimited: bool}|null
+     */
+    private static function readBackgroundStatus(string $statusPath): ?array
     {
         if ($statusPath === '' || ! is_file($statusPath)) {
             return null;
@@ -849,11 +868,31 @@ DESC;
             return null;
         }
         $raw = trim($raw);
-        if ($raw === '' || ! preg_match('/^-?\d+$/', $raw)) {
+        if ($raw === '') {
             return null;
         }
 
-        return (int) $raw;
+        $decoded = json_decode($raw, true);
+        if (is_array($decoded) && is_numeric($decoded['exitCode'] ?? null)) {
+            return [
+                'exitCode' => (int) $decoded['exitCode'],
+                'timedOut' => (bool) ($decoded['timedOut'] ?? false),
+                'outputLimited' => (bool) ($decoded['outputLimited'] ?? false),
+            ];
+        }
+
+        // Read status files written by an older in-process supervisor. Code
+        // 124 was the only timeout marker in that format.
+        if (preg_match('/^-?\d+$/', $raw) !== 1) {
+            return null;
+        }
+        $exitCode = (int) $raw;
+
+        return [
+            'exitCode' => $exitCode,
+            'timedOut' => $exitCode === 124,
+            'outputLimited' => false,
+        ];
     }
 
     /**

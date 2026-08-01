@@ -122,6 +122,64 @@ class McpClientTest extends TestCase
         }
     }
 
+    public function test_closing_stdio_kills_descendants_before_stdin_eof_can_orphan_them(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows' || ! function_exists('pcntl_fork') || ! function_exists('posix_kill')) {
+            $this->markTestSkipped('POSIX process-tree probe is unavailable.');
+        }
+
+        $server = tempnam(sys_get_temp_dir(), 'mcp-descendant-server-');
+        $pidFile = tempnam(sys_get_temp_dir(), 'mcp-descendant-pid-');
+        $this->assertNotFalse($server);
+        $this->assertNotFalse($pidFile);
+        @unlink($pidFile);
+
+        file_put_contents($server, "<?php\n"
+            ."\$childPid = pcntl_fork();\n"
+            ."if (\$childPid === 0) { sleep(10); exit(0); }\n"
+            .'file_put_contents('.var_export($pidFile, true).', (string) $childPid);'."\n"
+            .'fgets(STDIN);'."\n");
+
+        $transport = McpTransport::fromConfig([
+            'transport' => 'stdio',
+            'command' => PHP_BINARY,
+            'args' => [$server],
+            'url' => null,
+            'env' => [],
+            'headers' => [],
+        ]);
+
+        $childPid = 0;
+        try {
+            $transport->connect();
+            for ($attempt = 0; $attempt < 40 && ! is_file($pidFile); $attempt++) {
+                usleep(25_000);
+            }
+            $childPid = (int) trim((string) @file_get_contents($pidFile));
+            $this->assertGreaterThan(0, $childPid);
+            $this->assertTrue(@posix_kill($childPid, 0));
+
+            $transport->close();
+
+            $exited = false;
+            for ($attempt = 0; $attempt < 40; $attempt++) {
+                if (! @posix_kill($childPid, 0)) {
+                    $exited = true;
+                    break;
+                }
+                usleep(25_000);
+            }
+            $this->assertTrue($exited, 'MCP stdio descendant survived transport close.');
+        } finally {
+            $transport->close();
+            if ($childPid > 0 && @posix_kill($childPid, 0)) {
+                @posix_kill($childPid, defined('SIGKILL') ? SIGKILL : 9);
+            }
+            @unlink($server);
+            @unlink($pidFile);
+        }
+    }
+
     public function test_stdio_request_drains_large_stderr_while_waiting_for_stdout(): void
     {
         if (PHP_OS_FAMILY === 'Windows') {
@@ -156,6 +214,58 @@ PHP);
             $result = $transport->request('ping', [], 3);
 
             $this->assertSame(['ok' => true], $result);
+        } finally {
+            $transport->close();
+            @unlink($server);
+        }
+    }
+
+    public function test_stdio_server_rejects_an_oversized_response_frame(): void
+    {
+        $transport = McpTransport::fromConfig([
+            'transport' => 'stdio',
+            'command' => PHP_BINARY,
+            'args' => [dirname(__DIR__).'/fixtures/mcp-large-response-server.php'],
+            'url' => null,
+            'env' => [],
+            'headers' => [],
+        ]);
+
+        try {
+            $transport->connect(3);
+            $this->expectException(McpConnectionException::class);
+            $this->expectExceptionMessage('MCP error');
+            $transport->request('tools/list', [], 3);
+        } finally {
+            $transport->close();
+        }
+    }
+
+    public function test_stdio_request_reports_server_exit_before_write_timeout(): void
+    {
+        $server = tempnam(sys_get_temp_dir(), 'mcp-exit-server-');
+        $this->assertNotFalse($server);
+        file_put_contents($server, "<?php\nexit(3);\n");
+
+        $transport = McpTransport::fromConfig([
+            'transport' => 'stdio',
+            'command' => PHP_BINARY,
+            'args' => [$server],
+            'url' => null,
+            'env' => [],
+            'headers' => [],
+        ]);
+
+        try {
+            $transport->connect();
+            $start = microtime(true);
+            try {
+                $transport->request('ping', [], 3);
+                $this->fail('Expected an MCP process-exited error.');
+            } catch (McpConnectionException $e) {
+                $this->assertStringContainsString('process exited before response', $e->getMessage());
+                $this->assertLessThan(1.0, microtime(true) - $start);
+            }
         } finally {
             $transport->close();
             @unlink($server);

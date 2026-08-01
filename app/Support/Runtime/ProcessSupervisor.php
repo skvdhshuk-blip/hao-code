@@ -74,14 +74,21 @@ final class ProcessSupervisor
 
         if (function_exists('posix_kill')) {
             // Negative PID = process group (setsid / job-control leader).
+            // Snapshot descendants before signalling the root. The fallback
+            // launcher may not have its own process group; once the root exits
+            // its children can be re-parented and no longer discoverable via
+            // pgrep -P.
+            $hasOwnProcessGroup = function_exists('posix_getpgid')
+                && @posix_getpgid($pid) === $pid;
+            $descendants = $hasOwnProcessGroup ? [] : self::collectDescendantPids($pid);
+            self::signalPids($descendants, $sig);
             @posix_kill(-$pid, $sig);
             @posix_kill($pid, $sig);
-            self::killDescendants($pid, $sig);
             if (! $force) {
                 usleep(150_000);
+                self::signalPids($descendants, $killSig);
                 @posix_kill(-$pid, $killSig);
                 @posix_kill($pid, $killSig);
-                self::killDescendants($pid, $killSig);
             }
 
             return;
@@ -99,6 +106,51 @@ final class ProcessSupervisor
                 self::runCommand(['kill', '-9', '-'.(int) $pid]);
                 self::runCommand(['kill', '-9', (string) $pid]);
                 self::killDescendants($pid, $killSig);
+            }
+        }
+    }
+
+    /**
+     * @return list<int>
+     */
+    private static function collectDescendantPids(int $pid, array &$seen = []): array
+    {
+        if ($pid <= 0 || PHP_OS_FAMILY === 'Windows' || isset($seen[$pid])) {
+            return [];
+        }
+
+        $seen[$pid] = true;
+        $result = self::runCommand(['pgrep', '-P', (string) $pid]);
+        $raw = $result['stdout'];
+        if (! is_string($raw) || trim($raw) === '') {
+            return [];
+        }
+
+        $descendants = [];
+        foreach (preg_split('/\s+/', trim($raw)) ?: [] as $child) {
+            if (! ctype_digit($child)) {
+                continue;
+            }
+            $childPid = (int) $child;
+            if ($childPid <= 0 || isset($seen[$childPid])) {
+                continue;
+            }
+            $descendants[] = $childPid;
+            $descendants = array_merge(
+                $descendants,
+                self::collectDescendantPids($childPid, $seen),
+            );
+        }
+
+        return array_values(array_unique($descendants));
+    }
+
+    /** @param list<int> $pids */
+    private static function signalPids(array $pids, int $signal): void
+    {
+        foreach (array_reverse($pids) as $pid) {
+            if ($pid > 0) {
+                @posix_kill($pid, $signal);
             }
         }
     }

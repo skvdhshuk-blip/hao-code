@@ -881,6 +881,25 @@ YAML);
         $this->assertStringContainsString('Output truncated', $final->output);
     }
 
+    public function test_background_output_limit_is_reported_when_process_exits_before_pipe_drain(): void
+    {
+        $result = $this->tool->call([
+            'command' => 'python3 -c "import sys; sys.stdout.write(\'x\' * 200000)"',
+            'run_in_background' => true,
+            'timeout' => 5000,
+        ], $this->context);
+        $taskId = $result->metadata['taskId'] ?? null;
+
+        $this->assertFalse($result->isError, $result->output);
+        $this->assertIsString($taskId);
+
+        $final = $this->awaitBackgroundTask($taskId);
+
+        $this->assertTrue($final->isError, $final->output);
+        $this->assertSame(1, $final->metadata['exitCode'] ?? null);
+        $this->assertStringContainsString('Output truncated', $final->output);
+    }
+
     public function test_background_output_limit_never_writes_truncation_notice_past_cap(): void
     {
         $method = (new \ReflectionClass(BackgroundBashSupervisor::class))->getMethod('appendWithLimit');
@@ -929,6 +948,29 @@ YAML);
         $this->assertFileExists($marker);
         $this->assertSame('x', file_get_contents($marker), 'Command must run exactly once despite non-zero exit');
         @unlink($marker);
+    }
+
+    public function test_late_poll_does_not_relabel_completed_nonzero_exit_as_timeout(): void
+    {
+        $result = $this->tool->call([
+            'command' => 'exit 7',
+            'run_in_background' => true,
+            'timeout' => 1000,
+        ], $this->context);
+        $taskId = $result->metadata['taskId'] ?? null;
+
+        $this->assertFalse($result->isError, $result->output);
+        $this->assertIsString($taskId);
+
+        // Let the command finish, then deliberately poll after its configured
+        // deadline. Completion status must still come from the supervisor.
+        usleep(1_100_000);
+        $final = $this->awaitBackgroundTask($taskId);
+
+        $this->assertTrue($final->isError, $final->output);
+        $this->assertSame(7, $final->metadata['exitCode'] ?? null);
+        $this->assertFalse($final->metadata['timedOut'] ?? false);
+        $this->assertStringContainsString('failed with exit code 7', $final->output);
     }
 
     /** @return array{outFile: string, statusFile: string} */

@@ -775,7 +775,7 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.18.48`. Notable changes since `v1.10.0`:
+is based on `v1.18.50`. Notable changes since `v1.10.0`:
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/
@@ -944,6 +944,12 @@ is based on `v1.18.48`. Notable changes since `v1.10.0`:
 - `v1.18.48` — Host Grep PHP fallback and Glob now honor root `.gitignore`
   rules before returning or descending into ignored files, reducing duplicate
   worktree/vendor search cost while preserving bounded traversal semantics.
+- `v1.18.49` — Fallback search and MCP process boundaries now reject
+  pathological traversal, validate cross-platform roots, and close stale
+  stdio descendants during reconnect and shutdown.
+- `v1.18.50` — Large-file Read/Edit/Write paths, foreground/background Bash,
+  parallel tool cancellation, Grep/Glob resource limits, and Windows path
+  normalization now fail closed with bounded work and regression coverage.
 
 ## License
 

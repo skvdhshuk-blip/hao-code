@@ -129,4 +129,23 @@ class McpDynamicToolTest extends TestCase
         $writable = $this->makeTool();
         $this->assertFalse($writable->isConcurrencySafe([]));
     }
+
+    public function test_formatting_bounds_large_and_malformed_mcp_blocks(): void
+    {
+        $tool = $this->makeTool();
+        $method = (new \ReflectionClass(McpDynamicTool::class))->getMethod('formatMcpResult');
+        $method->setAccessible(true);
+
+        $output = $method->invoke($tool, [
+            'content' => [
+                ['type' => 'text', 'text' => str_repeat('x', 150_000)],
+                ['type' => 'text', 'text' => ['unexpected' => 'array']],
+                ['type' => 'image', 'mimeType' => ['unexpected' => 'array'], 'data' => ['not' => 'bytes']],
+            ],
+        ]);
+
+        $this->assertIsString($output);
+        $this->assertLessThanOrEqual(100_000, strlen($output));
+        $this->assertStringContainsString('MCP result truncated', $output);
+    }
 }

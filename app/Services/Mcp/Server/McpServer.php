@@ -15,6 +15,8 @@ class McpServer
 {
     private const MAX_FRAME_BYTES = 1048576; // 1 MiB
 
+    private const WRITE_TIMEOUT_SECONDS = 5.0;
+
     private const PROTOCOL_VERSION = '2024-11-05';
 
     private bool $initialized = false;
@@ -60,7 +62,7 @@ class McpServer
     {
         $msg = json_decode($json, true);
         if (! is_array($msg)) {
-            return json_encode([
+            return $this->encodeMessage([
                 'jsonrpc' => '2.0',
                 'id' => null,
                 'error' => ['code' => -32700, 'message' => 'Parse error'],
@@ -72,7 +74,7 @@ class McpServer
         $params = $msg['params'] ?? [];
 
         if (! is_string($method) || $method === '') {
-            return json_encode([
+            return $this->encodeMessage([
                 'jsonrpc' => '2.0',
                 'id' => $id,
                 'error' => ['code' => -32600, 'message' => 'Invalid Request'],
@@ -114,7 +116,7 @@ class McpServer
             }
 
             if ($id !== null) {
-                return json_encode(['jsonrpc' => '2.0', 'id' => $id, 'result' => $result]);
+                return $this->encodeMessage(['jsonrpc' => '2.0', 'id' => $id, 'result' => $result]);
             }
 
             return null;
@@ -123,11 +125,11 @@ class McpServer
             $message = str_starts_with($e->getMessage(), 'Method not found') ? 'Method not found' : 'Internal error';
             $this->tracer?->recordException($span, $e);
 
-            return json_encode(['jsonrpc' => '2.0', 'id' => $id, 'error' => ['code' => $code, 'message' => $message]]);
+            return $this->encodeMessage(['jsonrpc' => '2.0', 'id' => $id, 'error' => ['code' => $code, 'message' => $message]]);
         } catch (\Throwable $e) {
             $this->tracer?->recordException($span, $e);
 
-            return json_encode(['jsonrpc' => '2.0', 'id' => $id, 'error' => ['code' => -32603, 'message' => 'Internal error']]);
+            return $this->encodeMessage(['jsonrpc' => '2.0', 'id' => $id, 'error' => ['code' => -32603, 'message' => 'Internal error']]);
         } finally {
             $span?->end();
         }
@@ -282,7 +284,7 @@ class McpServer
 
     private function sendResult(mixed $id, array $result): void
     {
-        $this->writeFrame(json_encode([
+        $this->writeFrame($this->encodeMessage([
             'jsonrpc' => '2.0',
             'id' => $id,
             'result' => $result,
@@ -291,7 +293,7 @@ class McpServer
 
     private function sendError(mixed $id, int $code, string $message): void
     {
-        $this->writeFrame(json_encode([
+        $this->writeFrame($this->encodeMessage([
             'jsonrpc' => '2.0',
             'id' => $id,
             'error' => ['code' => $code, 'message' => $message],
@@ -300,7 +302,65 @@ class McpServer
 
     private function writeFrame(string $json): void
     {
-        fwrite(STDOUT, $json."\n");
-        fflush(STDOUT);
+        if (strlen($json) > self::MAX_FRAME_BYTES) {
+            $decoded = json_decode($json, true);
+            $id = is_array($decoded) ? ($decoded['id'] ?? null) : null;
+            $json = json_encode([
+                'jsonrpc' => '2.0',
+                'id' => $id,
+                'error' => [
+                    'code' => -32603,
+                    'message' => 'MCP response exceeds 1 MiB limit',
+                ],
+            ], JSON_UNESCAPED_SLASHES | JSON_INVALID_UTF8_SUBSTITUTE);
+            if (! is_string($json)) {
+                $this->running = false;
+
+                return;
+            }
+        }
+
+        $payload = $json."\n";
+        $offset = 0;
+        $deadline = microtime(true) + self::WRITE_TIMEOUT_SECONDS;
+        $previousBlocking = stream_get_meta_data(STDOUT)['blocked'] ?? true;
+        @stream_set_blocking(STDOUT, false);
+        try {
+            while ($offset < strlen($payload) && microtime(true) < $deadline) {
+                $written = @fwrite(STDOUT, substr($payload, $offset));
+                if ($written === false) {
+                    $this->running = false;
+
+                    return;
+                }
+                if ($written > 0) {
+                    $offset += $written;
+                    continue;
+                }
+                usleep(10_000);
+            }
+        } finally {
+            @stream_set_blocking(STDOUT, (bool) $previousBlocking);
+        }
+
+        if ($offset < strlen($payload)) {
+            $this->running = false;
+        } else {
+            fflush(STDOUT);
+        }
+    }
+
+    /** @param array<string, mixed> $message */
+    private function encodeMessage(array $message): string
+    {
+        try {
+            return json_encode(
+                $message,
+                JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE
+                    | JSON_INVALID_UTF8_SUBSTITUTE | JSON_THROW_ON_ERROR,
+            );
+        } catch (\Throwable) {
+            return '{"jsonrpc":"2.0","id":null,"error":{"code":-32603,"message":"Internal error"}}';
+        }
     }
 }

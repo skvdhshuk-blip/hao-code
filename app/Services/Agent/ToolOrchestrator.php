@@ -254,6 +254,24 @@ class ToolOrchestrator
     }
 
     /**
+     * Parallel workers must not run any tool lifecycle hook.  Post hooks can
+     * still mutate files or external state even when the tool itself is
+     * read-only, and failure hooks can have the same side effects.
+     *
+     * @internal
+     */
+    public function mayRunToolHooks(string $toolName): bool
+    {
+        foreach (['PreToolUse', 'PostToolUse', 'PostToolUseFailure'] as $event) {
+            if ($this->hookExecutor->hasHooksFor($event, $toolName)) {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
      * Execute a single tool block (public entry point for streaming executor).
      */
     public function executeToolBlock(
@@ -348,7 +366,7 @@ class ToolOrchestrator
             if ($tool
                 && $tool->isConcurrencySafe($classificationInput)
                 && $tool->isReadOnly($classificationInput)
-                && ! $this->mayRunPreToolUseHook($tool->name())) {
+                && ! $this->mayRunToolHooks($tool->name())) {
                 $safeBlocks[$origIdx] = $block;
             } else {
                 $unsafeBlocks[$origIdx] = $block;
@@ -414,11 +432,32 @@ class ToolOrchestrator
         $results = [];
         $completedResults = [];
 
+        // A parent-side cancellation callback cannot be observed by a child
+        // after fork (the child owns a copy of the callback state). Keep the
+        // terminal aborted result construction in one place so cancellation
+        // while children are running does not leave missing results or
+        // completion callbacks behind.
+        $recordAborted = function (int $idx) use (&$results, &$completedResults, $blocks, $onComplete): void {
+            $result = ToolResult::aborted();
+            $results[$idx] = $result->toApiFormat((string) ($blocks[$idx]['id'] ?? ''));
+            $completedResults[$idx] = $result;
+            if ($onComplete) {
+                $onComplete($blocks[$idx]['name'], $result);
+            }
+        };
+
         // Capture the parent's readFileState snapshot before forking so we can
         // detect which entries the child added.
         $parentStateBefore = $context->getReadFileStateSnapshot();
 
         foreach ($blocks as $idx => $block) {
+            // Do not start more children after a start callback (or another
+            // concurrent signal) has cancelled the batch.
+            if ($context->isAborted()) {
+                $recordAborted($idx);
+                continue;
+            }
+
             // Use tempnam() for an unpredictable, 0600-mode filename instead of
             // a guessable "<prefix>_<idx>_<pid>" — predictable names let other
             // local users race or symlink-swap the IPC file.
@@ -473,17 +512,26 @@ class ToolOrchestrator
             }
         }
 
-        // Wait for all children
-        foreach ($pids as $idx => $pid) {
-            pcntl_waitpid($pid, $status);
-            if (isset($tempFiles[$idx]) && file_exists($tempFiles[$idx])) {
-                // allowed_classes => false blocks PHP object injection even if a
-                // gadget chain is present in dependencies and an attacker can
-                // influence the file contents.
-                $rawPayload = $this->readIpcPayload($tempFiles[$idx]);
-                $data = $rawPayload === false
-                    ? false
-                    : @unserialize($rawPayload, ['allowed_classes' => false]);
+        $finalizeChild = function (int $idx) use (
+            &$results,
+            &$completedResults,
+            &$tempFiles,
+            $blocks,
+            $context,
+            $onComplete,
+        ): void {
+            if (! isset($results[$idx])) {
+                $data = false;
+                if (isset($tempFiles[$idx]) && file_exists($tempFiles[$idx])) {
+                    // allowed_classes => false blocks PHP object injection even if a
+                    // gadget chain is present in dependencies and an attacker can
+                    // influence the file contents.
+                    $rawPayload = $this->readIpcPayload($tempFiles[$idx]);
+                    $data = $rawPayload === false
+                        ? false
+                        : @unserialize($rawPayload, ['allowed_classes' => false]);
+                }
+
                 if (is_array($data) && isset($data['result'])) {
                     // New format: result + readState
                     $results[$idx] = $data['result'];
@@ -494,7 +542,7 @@ class ToolOrchestrator
                             // Corrupt or legacy IPC payload: reconstruct below.
                         }
                     }
-                    if (!empty($data['readState'])) {
+                    if (! empty($data['readState'])) {
                         $context->mergeReadFileStateSnapshot($data['readState']);
                     }
                 } elseif (is_array($data)) {
@@ -507,6 +555,9 @@ class ToolOrchestrator
                         'is_error' => true,
                     ];
                 }
+            }
+
+            if (isset($tempFiles[$idx])) {
                 @unlink($tempFiles[$idx]);
             }
             if ($onComplete) {
@@ -516,6 +567,61 @@ class ToolOrchestrator
                     isError: (bool) ($results[$idx]['is_error'] ?? false),
                 );
                 $onComplete($toolName, $result);
+            }
+        };
+
+        // Poll instead of blocking in pcntl_waitpid(). This keeps the parent
+        // responsive to cancellation and lets it terminate every remaining
+        // process tree instead of waiting for the first hung child forever.
+        $remaining = $pids;
+        while ($remaining !== []) {
+            $madeProgress = false;
+            foreach ($remaining as $idx => $pid) {
+                $status = 0;
+                $waited = pcntl_waitpid($pid, $status, WNOHANG);
+                if ($waited === -1) {
+                    // Signals can interrupt a non-blocking wait. Do not mark
+                    // the child complete on EINTR; it may still be running.
+                    // A non-EINTR -1 means the child is no longer waitable
+                    // (for example, a host signal handler reaped it), so the
+                    // existing payload/error finalization remains the safest
+                    // terminal path.
+                    $interrupted = defined('PCNTL_EINTR')
+                        && function_exists('pcntl_get_last_error')
+                        && pcntl_get_last_error() === constant('PCNTL_EINTR');
+                    if ($interrupted) {
+                        continue;
+                    }
+                }
+                if ($waited === $pid || $waited === -1) {
+                    $finalizeChild($idx);
+                    unset($remaining[$idx]);
+                    $madeProgress = true;
+                }
+            }
+
+            if ($remaining === []) {
+                break;
+            }
+
+            if ($context->isAborted()) {
+                foreach ($remaining as $pid) {
+                    \HaoCode\Support\Runtime\ProcessSupervisor::terminateTree($pid, false);
+                }
+                foreach (array_keys($remaining) as $idx) {
+                    $status = 0;
+                    @pcntl_waitpid($pids[$idx], $status);
+                    $recordAborted($idx);
+                    if (isset($tempFiles[$idx])) {
+                        @unlink($tempFiles[$idx]);
+                    }
+                    unset($remaining[$idx]);
+                }
+                break;
+            }
+
+            if (! $madeProgress) {
+                usleep(10_000);
             }
         }
 

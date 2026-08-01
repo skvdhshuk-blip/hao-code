@@ -91,6 +91,9 @@ class ToolAdapter
     {
         $list = [];
         foreach ($this->tools as $name => $tool) {
+            if (! $tool->isEnabled()) {
+                continue;
+            }
             $schema = $tool->inputSchema()->toJsonSchema();
             $list[] = [
                 'name' => $name,
@@ -109,7 +112,7 @@ class ToolAdapter
     public function invoke(string $name, array $args): array
     {
         $tool = $this->tools[$name] ?? null;
-        if ($tool === null) {
+        if ($tool === null || ! $tool->isEnabled()) {
             return $this->denied('access denied');
         }
 
@@ -133,7 +136,7 @@ class ToolAdapter
         $args = $tool->backfillObservableInput($args, $ctx);
 
         // Path validation for built-ins that accept file paths (red lines #3 & #4)
-        $pathArg = $args['file_path'] ?? $args['path'] ?? $args['pattern'] ?? null;
+        $pathArg = $args['file_path'] ?? $args['path'] ?? null;
         if ($pathArg !== null && is_string($pathArg)) {
             // Normalize the path for checking; resolve relative to root on
             // both Unix and Windows (including drive-letter and UNC paths).
@@ -236,20 +239,24 @@ class ToolAdapter
     private function isPublicProjectSkill(SkillDefinition $skill): bool
     {
         // Must have public: true in frontmatter (we check skillDir is under project dir)
-        $cwd = getcwd() ?: '/';
-        $projectSkillsDir = realpath($cwd.'/.haocode/skills') ?: $cwd.'/.haocode/skills';
-        $skillRealDir = realpath($skill->skillDir) ?: $skill->skillDir;
+        $projectRoot = CanonicalPathResolver::resolve($this->root, getcwd() ?: '/');
+        $projectSkillsDir = CanonicalPathResolver::resolve(
+            rtrim($projectRoot, '/\\').'/.haocode/skills',
+            $projectRoot,
+        );
+        $skillRealDir = realpath($skill->skillDir)
+            ?: CanonicalPathResolver::resolve($skill->skillDir, $projectRoot);
 
         // Only project skills (not global ~/.haocode/skills)
-        if (! str_starts_with($skillRealDir, $projectSkillsDir)) {
+        if (! CanonicalPathResolver::isWithin($skillRealDir, $projectSkillsDir)) {
             return false;
         }
 
         // We need the skill to have 'public: true' — we check via context property
         // SkillDefinition doesn't carry this directly; we'll re-read the file
-        $skillFile = $skill->skillDir.'/SKILL.md';
+        $skillFile = rtrim($skillRealDir, '/\\').'/SKILL.md';
         if (! file_exists($skillFile)) {
-            $skillFile = $skill->skillDir.'.md';
+            $skillFile = $skillRealDir.'.md';
         }
         if (! file_exists($skillFile)) {
             return false;

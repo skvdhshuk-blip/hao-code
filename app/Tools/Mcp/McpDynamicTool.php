@@ -18,6 +18,8 @@ use HaoCode\Tools\ToolUseContext;
  */
 final class McpDynamicTool implements ToolInterface
 {
+    private const MAX_FORMATTED_OUTPUT_BYTES = 100_000;
+
     private readonly ToolInputSchema $schema;
 
     public function __construct(
@@ -72,7 +74,7 @@ final class McpDynamicTool implements ToolInterface
 
         $output = $this->formatMcpResult($result);
 
-        if ($result['isError']) {
+        if (($result['isError'] ?? false) === true) {
             return ToolResult::error($output);
         }
 
@@ -146,42 +148,87 @@ final class McpDynamicTool implements ToolInterface
     {
         $content = $result['content'] ?? [];
 
-        if (empty($content)) {
+        if (! is_array($content) || $content === []) {
             return '(empty response)';
         }
 
-        $parts = [];
+        $output = '';
+        $truncated = false;
         foreach ($content as $block) {
-            if (!is_array($block)) {
-                $parts[] = (string) $block;
-                continue;
+            $part = $this->formatContentBlock($block);
+            $separator = $output === '' ? '' : "\n";
+            $remaining = self::MAX_FORMATTED_OUTPUT_BYTES - strlen($output);
+            if ($remaining <= 0) {
+                $truncated = true;
+                break;
             }
 
-            $type = $block['type'] ?? 'text';
-            match ($type) {
-                'text' => $parts[] = $block['text'] ?? '',
-                'image' => $parts[] = '[Image: ' . ($block['mimeType'] ?? 'unknown') . ', ' . strlen($block['data'] ?? '') . ' bytes]',
-                'resource' => $parts[] = $this->formatResourceContent($block),
-                default => $parts[] = json_encode($block, JSON_UNESCAPED_SLASHES),
-            };
+            $piece = $separator.$part;
+            if (strlen($piece) > $remaining) {
+                $output .= substr($piece, 0, $remaining);
+                $truncated = true;
+                break;
+            }
+            $output .= $piece;
         }
 
-        return implode("\n", $parts);
+        if ($truncated) {
+            $marker = "\n[MCP result truncated at ".self::MAX_FORMATTED_OUTPUT_BYTES.' bytes]';
+            $room = self::MAX_FORMATTED_OUTPUT_BYTES - strlen($marker);
+            $output = substr($output, 0, max(0, $room)).$marker;
+        }
+
+        return $output;
+    }
+
+    private function formatContentBlock(mixed $block): string
+    {
+        if (! is_array($block)) {
+            return $this->stringifyValue($block);
+        }
+
+        $type = is_string($block['type'] ?? null) ? $block['type'] : 'text';
+
+        return match ($type) {
+            'text' => $this->stringifyValue($block['text'] ?? ''),
+            'image' => '[Image: '.$this->stringifyValue($block['mimeType'] ?? 'unknown')
+                .', '.(is_string($block['data'] ?? null) ? strlen($block['data']) : 0).' bytes]',
+            'resource' => $this->formatResourceContent($block),
+            default => $this->stringifyValue($block),
+        };
     }
 
     private function formatResourceContent(array $block): string
     {
         $resource = $block['resource'] ?? [];
-        $uri = $resource['uri'] ?? 'unknown';
+        if (! is_array($resource)) {
+            return 'Resource [unknown]';
+        }
+        $uri = $this->stringifyValue($resource['uri'] ?? 'unknown');
         $text = $resource['text'] ?? null;
         $blob = $resource['blob'] ?? null;
 
         if ($text !== null) {
-            return "Resource [{$uri}]:\n{$text}";
+            return "Resource [{$uri}]:\n".$this->stringifyValue($text);
         }
         if ($blob !== null) {
-            return "Resource [{$uri}]: binary data (" . strlen($blob) . " bytes)";
+            return "Resource [{$uri}]: binary data ("
+                .(is_string($blob) ? strlen($blob) : 0).' bytes)';
         }
         return "Resource [{$uri}]";
+    }
+
+    private function stringifyValue(mixed $value): string
+    {
+        if (is_string($value)) {
+            return $value;
+        }
+        if ($value === null || is_scalar($value)) {
+            return (string) $value;
+        }
+
+        $encoded = json_encode($value, JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE | JSON_PARTIAL_OUTPUT_ON_ERROR);
+
+        return is_string($encoded) ? $encoded : '[unrepresentable MCP value]';
     }
 }

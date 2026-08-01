@@ -35,6 +35,9 @@ final class McpTransport
     /** 4 MB read-buffer ceiling to prevent OOM from malicious servers */
     private const READ_BUFFER_MAX = 4 * 1024 * 1024;
 
+    /** HTTP JSON/error bodies use the same hard ceiling as stdio frames. */
+    private const HTTP_RESPONSE_MAX = 4 * 1024 * 1024;
+
     private const STDERR_BUFFER_MAX = 32 * 1024;
 
     private const SERVER_STREAM_TIMEOUT_SECONDS = 30;
@@ -239,6 +242,18 @@ final class McpTransport
         }
         $this->cancelServerEventStream();
 
+        // Terminate the server tree before closing its pipes. Closing stdin
+        // can make a wrapper exit immediately; if that happens first, a
+        // descendant that outlives the wrapper would no longer be discoverable
+        // through the parent/child relationship.
+        if (is_resource($this->process)) {
+            $status = @proc_get_status($this->process);
+            $pid = (int) ($status['pid'] ?? 0);
+            if ($pid > 0) {
+                ProcessSupervisor::terminateTree($pid, false);
+            }
+        }
+
         if ($this->stdin !== null) {
             @fclose($this->stdin);
             $this->stdin = null;
@@ -252,12 +267,6 @@ final class McpTransport
             $this->stderr = null;
         }
         if (is_resource($this->process)) {
-            // Send SIGTERM, then SIGKILL after a short wait
-            $status = proc_get_status($this->process);
-            $pid = (int) ($status['pid'] ?? 0);
-            if ($status['running'] ?? false) {
-                ProcessSupervisor::terminateTree($pid, false);
-            }
             proc_close($this->process);
         }
         $this->process = null;
@@ -454,7 +463,7 @@ final class McpTransport
 
             $this->throwIfReadBufferOversized();
 
-            if ($writeOffset >= strlen($payload) && $this->stdioProcessRunning() === false) {
+            if ($this->stdioProcessRunning() === false) {
                 $this->drainStdoutPipe();
                 $this->drainStderrPipe();
                 $result = $this->consumeStdioReadBuffer($expectedId);
@@ -712,7 +721,9 @@ final class McpTransport
             );
         }
 
-        return $this->decodeJsonRpcResponse($response->getContent(false), $message['id']);
+        $body = $this->readHttpBody($response, max(0.001, $deadline - microtime(true)));
+
+        return $this->decodeJsonRpcResponse($body, $message['id']);
     }
 
     /** @param array<string, mixed> $message */
@@ -731,7 +742,8 @@ final class McpTransport
         if ($status === 202 || $status === 204) {
             return;
         }
-        if ($status >= 200 && $status < 300 && $response->getContent(false) === '') {
+        if ($status >= 200 && $status < 300
+            && $this->readHttpBody($response, max(0.001, $timeoutSeconds)) === '') {
             return;
         }
 
@@ -879,9 +891,54 @@ final class McpTransport
     private function responsePreview(ResponseInterface $response): string
     {
         try {
-            return substr($response->getContent(false), 0, 500);
+            return substr($this->readHttpBody($response, 1.0), 0, 500);
         } catch (\Throwable) {
             return '';
+        }
+    }
+
+    private function readHttpBody(ResponseInterface $response, float $timeoutSeconds): string
+    {
+        try {
+            $headers = $response->getHeaders(false);
+            $contentLength = $headers['content-length'][0] ?? null;
+            if (is_string($contentLength) && ctype_digit($contentLength)
+                && (int) $contentLength > self::HTTP_RESPONSE_MAX) {
+                $response->cancel();
+
+                throw McpConnectionException::protocol(
+                    'MCP HTTP response exceeded '.self::HTTP_RESPONSE_MAX.' bytes.',
+                );
+            }
+
+            $body = '';
+            foreach ($this->httpClient->stream($response, max(0.001, $timeoutSeconds)) as $chunk) {
+                if ($chunk->isTimeout()) {
+                    throw McpConnectionException::transport('MCP HTTP response timed out');
+                }
+                if ($chunk->isFirst() || $chunk->isLast()) {
+                    continue;
+                }
+
+                $content = $chunk->getContent();
+                if ($content === '') {
+                    continue;
+                }
+                if (strlen($body) + strlen($content) > self::HTTP_RESPONSE_MAX) {
+                    $response->cancel();
+
+                    throw McpConnectionException::protocol(
+                        'MCP HTTP response exceeded '.self::HTTP_RESPONSE_MAX.' bytes.',
+                    );
+                }
+                $body .= $content;
+            }
+
+            return $body;
+        } catch (McpConnectionException $exception) {
+            throw $exception;
+        } catch (\Throwable $exception) {
+            throw McpConnectionException::transport('Failed to read MCP HTTP response: '.$exception->getMessage());
         }
     }
 

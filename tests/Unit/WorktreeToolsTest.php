@@ -133,6 +133,26 @@ class WorktreeToolsTest extends TestCase
         $this->assertSame(['keep', 'remove'], $schema['properties']['action']['enum']);
     }
 
+    public function test_exit_resolves_windows_absolute_git_paths_without_prefixing_worktree(): void
+    {
+        $method = (new \ReflectionClass(ExitWorktreeTool::class))->getMethod('resolveGitPath');
+        $method->setAccessible(true);
+        $tool = new ExitWorktreeTool;
+
+        $this->assertSame(
+            'C:\\repo\\.git',
+            $method->invoke($tool, 'C:\\repo\\worktree', 'C:\\repo\\.git'),
+        );
+        $this->assertSame(
+            'C:/repo/.git',
+            $method->invoke($tool, 'C:/repo/worktree', 'C:/repo/.git'),
+        );
+        $this->assertSame(
+            '\\\\server\\share\\repo\\.git',
+            $method->invoke($tool, '\\\\server\\share\\repo\\worktree', '\\\\server\\share\\repo\\.git'),
+        );
+    }
+
     public function test_exit_call_returns_error_when_not_in_worktree(): void
     {
         // sys_get_temp_dir() is not a git worktree

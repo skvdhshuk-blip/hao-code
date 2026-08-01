@@ -229,6 +229,40 @@ class FileEditToolTest extends TestCase
         }
     }
 
+    public function test_large_file_edit_streams_replacement_without_loading_the_original(): void
+    {
+        $file = $this->makeTmpFile(str_repeat("padding\n", 200_000).'needle\n');
+
+        $result = $this->tool->call([
+            'file_path' => $file,
+            'old_string' => 'needle',
+            'new_string' => 'replacement',
+        ], $this->context);
+
+        $this->assertFalse($result->isError, $result->output);
+        $this->assertStringContainsString('large file', $result->output);
+        $this->assertStringEndsWith('replacement\n', (string) file_get_contents($file));
+        @unlink($file);
+    }
+
+    public function test_large_file_edit_rejects_a_binary_byte_beyond_the_prefix_sample(): void
+    {
+        $file = $this->makeTmpFile(str_repeat("padding\n", 150_000).'needle\n'."tail\0binary\n");
+        $before = file_get_contents($file);
+
+        $result = $this->tool->call([
+            'file_path' => $file,
+            'old_string' => 'needle',
+            'new_string' => 'replacement',
+        ], $this->context);
+
+        $this->assertTrue($result->isError, $result->output);
+        $this->assertStringContainsString('binary', strtolower($result->output));
+        $this->assertSame($before, file_get_contents($file));
+
+        @unlink($file);
+    }
+
     public function test_validate_input_rejects_huge_replacement_payloads(): void
     {
         $error = $this->tool->validateInput([

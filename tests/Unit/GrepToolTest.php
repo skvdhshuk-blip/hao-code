@@ -175,6 +175,22 @@ class GrepToolTest extends TestCase
         $this->assertStringContainsString('Invalid regex', $result->output);
     }
 
+    public function test_validate_input_bounds_search_work_and_result_limits(): void
+    {
+        $this->assertStringContainsString(
+            'head_limit',
+            (string) $this->tool->validateInput(['pattern' => 'needle', 'head_limit' => 1_001], $this->context),
+        );
+        $this->assertStringContainsString(
+            '-a',
+            strtolower((string) $this->tool->validateInput(['pattern' => 'needle', '-A' => 1_001], $this->context)),
+        );
+        $this->assertStringContainsString(
+            'pattern',
+            (string) $this->tool->validateInput(['pattern' => str_repeat('x', 16_385)], $this->context),
+        );
+    }
+
     // ─── files_with_matches mode ──────────────────────────────────────────
 
     public function test_files_with_matches_mode_returns_only_file_paths(): void
@@ -395,6 +411,42 @@ class GrepToolTest extends TestCase
         $this->assertStringContainsString('file.txt:1:needle', $result->output);
     }
 
+    public function test_windows_drive_and_unc_paths_are_normalized_case_insensitively(): void
+    {
+        $ref = new \ReflectionClass(GrepTool::class);
+        $relative = $ref->getMethod('relativePath');
+        $relative->setAccessible(true);
+        $normalize = $ref->getMethod('normalizeOutputPath');
+        $normalize->setAccessible(true);
+        $stripFile = $ref->getMethod('stripFilePathPrefix');
+        $stripFile->setAccessible(true);
+
+        $this->assertSame(
+            'src/Services/App.php',
+            $relative->invoke(
+                $this->tool,
+                'c:\\workspace\\project\\src\\Services\\App.php',
+                'C:\\Workspace\\Project',
+            ),
+        );
+        $this->assertSame(
+            'nested/File.php:7:needle',
+            $normalize->invoke(
+                $this->tool,
+                '\\\\server\\share\\project\\nested\\File.php:7:needle',
+                '\\\\SERVER\\SHARE\\project',
+            ),
+        );
+        $this->assertSame(
+            ':3:needle',
+            $stripFile->invoke(
+                $this->tool,
+                'c:\\workspace\\project\\App.php:3:needle',
+                'C:\\Workspace\\Project\\App.php',
+            ),
+        );
+    }
+
     public function test_backfill_canonicalizes_symlink_before_sensitive_path_check(): void
     {
         if (PHP_OS_FAMILY === 'Windows') {
@@ -483,6 +535,30 @@ class GrepToolTest extends TestCase
         $this->assertStringNotContainsString('ignored-dir/hidden.txt', $result->output);
     }
 
+    public function test_php_fallback_descends_ignored_directories_for_negated_gitignore_entries(): void
+    {
+        file_put_contents($this->tmpDir.'/.gitignore', "ignored-dir/\n!ignored-dir/keep.txt\n");
+        mkdir($this->tmpDir.'/ignored-dir', 0755, true);
+        file_put_contents($this->tmpDir.'/ignored-dir/hidden.txt', "needle\n");
+        file_put_contents($this->tmpDir.'/ignored-dir/keep.txt', "needle\n");
+
+        $result = $this->grepPhp('needle', outputMode: 'files_with_matches');
+
+        $this->assertFalse($result->isError);
+        $this->assertStringContainsString('ignored-dir/keep.txt', $result->output);
+        $this->assertStringNotContainsString('ignored-dir/hidden.txt', $result->output);
+    }
+
+    public function test_php_fallback_rejects_an_unbounded_gitignore_file(): void
+    {
+        file_put_contents($this->tmpDir.'/.gitignore', str_repeat("ignored-*.tmp\n", 80_000));
+
+        $result = $this->grepPhp('needle', outputMode: 'files_with_matches');
+
+        $this->assertTrue($result->isError);
+        $this->assertStringContainsString('.gitignore', $result->output);
+    }
+
     public function test_php_fallback_prunes_default_ignored_directories_before_recursing(): void
     {
         if (PHP_OS_FAMILY === 'Windows') {
@@ -561,6 +637,34 @@ class GrepToolTest extends TestCase
         $this->assertStringContainsString('src.txt', $result->output);
         $this->assertStringNotContainsString('.claude/worktrees', $result->output);
         $this->assertStringNotContainsString('vendor/package', $result->output);
+    }
+
+    public function test_ripgrep_rejects_an_unbounded_single_output_line(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('Executable shim coverage is POSIX-focused.');
+        }
+
+        $fakeRg = $this->tmpDir.'/rg';
+        $script = 'exec '.escapeshellarg(PHP_BINARY).' -r '
+            .escapeshellarg('echo str_repeat("x", 1_000_001);');
+        file_put_contents($fakeRg, "#!/bin/sh\n{$script}\n");
+        chmod($fakeRg, 0700);
+        $previousPath = getenv('PATH');
+        putenv('PATH='.$this->tmpDir.':'.($previousPath === false ? '' : $previousPath));
+
+        try {
+            $result = $this->grepRg('needle', $this->tmpDir, outputMode: 'content', headLimit: 1);
+
+            $this->assertTrue($result->isError, $result->output);
+            $this->assertStringContainsString('output line exceeded', $result->output);
+        } finally {
+            if ($previousPath === false) {
+                putenv('PATH');
+            } else {
+                putenv('PATH='.$previousPath);
+            }
+        }
     }
 
     public function test_php_fallback_explicitly_rejects_unsupported_type_filter(): void

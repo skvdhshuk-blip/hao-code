@@ -155,8 +155,20 @@ final class BackgroundBashSupervisor
                 continue;
             }
             $chunk = @stream_get_contents($pipes[$index]);
-            if (is_string($chunk) && $chunk !== '' && $bytesWritten < $maxOutputBytes) {
-                self::appendWithLimit($out, $bytesWritten, $maxOutputBytes, $chunk);
+            if (is_string($chunk) && $chunk !== '') {
+                if ($bytesWritten >= $maxOutputBytes || strlen($chunk) > ($maxOutputBytes - $bytesWritten)) {
+                    $outputLimited = true;
+                    self::appendWithLimit(
+                        $out,
+                        $bytesWritten,
+                        $maxOutputBytes,
+                        $chunk,
+                        "\n\n[Output truncated at {$maxOutputBytes} bytes; command terminated]",
+                    );
+                    ProcessSupervisor::terminateTree($pid, false);
+                } else {
+                    self::appendWithLimit($out, $bytesWritten, $maxOutputBytes, $chunk);
+                }
             }
             fclose($pipes[$index]);
         }
@@ -169,15 +181,25 @@ final class BackgroundBashSupervisor
         fclose($out);
 
         $finalCode = $timedOut ? 124 : ($outputLimited ? self::OUTPUT_LIMIT_EXIT_CODE : $exitCode);
-        self::writeStatus($statusFile, $finalCode);
+        self::writeStatus($statusFile, $finalCode, $timedOut, $outputLimited);
 
         return $finalCode;
     }
 
-    private static function writeStatus(string $statusFile, int $exitCode): void
+    private static function writeStatus(
+        string $statusFile,
+        int $exitCode,
+        bool $timedOut = false,
+        bool $outputLimited = false,
+    ): void
     {
         $tmp = $statusFile.'.tmp.'.getmypid().'.'.bin2hex(random_bytes(3));
-        if (@file_put_contents($tmp, (string) $exitCode, LOCK_EX) !== false) {
+        $payload = json_encode([
+            'exitCode' => $exitCode,
+            'timedOut' => $timedOut,
+            'outputLimited' => $outputLimited,
+        ], JSON_UNESCAPED_SLASHES);
+        if (is_string($payload) && @file_put_contents($tmp, $payload, LOCK_EX) !== false) {
             @rename($tmp, $statusFile);
         } else {
             @unlink($tmp);

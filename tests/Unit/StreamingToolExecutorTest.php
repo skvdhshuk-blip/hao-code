@@ -348,7 +348,7 @@ class StreamingToolExecutorTest extends TestCase
     {
         $expectedResult = ['tool_use_id' => 'toolu_1', 'content' => 'done', 'is_error' => false];
         $orchestrator = $this->createMock(ToolOrchestrator::class);
-        $orchestrator->method('mayRunPreToolUseHook')->with('MockTool')->willReturn(true);
+        $orchestrator->method('mayRunToolHooks')->with('MockTool')->willReturn(true);
         $orchestrator->expects($this->once())->method('executeToolBlock')->willReturn($expectedResult);
 
         $executor = new StreamingToolExecutor(
@@ -369,7 +369,7 @@ class StreamingToolExecutorTest extends TestCase
         }
 
         $orchestrator = $this->createMock(ToolOrchestrator::class);
-        $orchestrator->method('mayRunPreToolUseHook')->willReturn(false);
+        $orchestrator->method('mayRunToolHooks')->willReturn(false);
         $orchestrator->method('executeToolBlock')->willReturnCallback(static function (array $block): array {
             sleep(2);
 
@@ -490,7 +490,7 @@ class StreamingToolExecutorTest extends TestCase
         @unlink($marker);
 
         $orchestrator = $this->createMock(ToolOrchestrator::class);
-        $orchestrator->method('mayRunPreToolUseHook')->willReturn(false);
+        $orchestrator->method('mayRunToolHooks')->willReturn(false);
         $orchestrator->method('executeToolBlock')->willReturnCallback(static function (array $block) use ($marker): array {
             $command = 'sleep 1; printf leaked > '.escapeshellarg($marker);
             $process = proc_open(['sh', '-c', $command], [
@@ -611,7 +611,7 @@ class StreamingToolExecutorTest extends TestCase
         }
 
         $orchestrator = $this->createMock(ToolOrchestrator::class);
-        $orchestrator->method('mayRunPreToolUseHook')->willReturn(false);
+        $orchestrator->method('mayRunToolHooks')->willReturn(false);
         $orchestrator->method('executeToolBlock')->willReturnCallback(
             static function (array $block, ToolUseContext $context, ?callable $onStart, ?callable $onComplete): array {
                 $result = ToolResult::success('ok', ['blob' => str_repeat('x', 1_100_000)]);

@@ -176,6 +176,40 @@ class FileReadToolTest extends TestCase
         unlink($file);
     }
 
+    public function test_large_text_window_is_rejected_before_building_an_unbounded_result(): void
+    {
+        $file = $this->makeTmpFile(str_repeat(str_repeat('x', 2_000)."\n", 600));
+
+        $result = $this->tool->call(['file_path' => $file], $this->context);
+
+        $this->assertTrue($result->isError);
+        $this->assertStringContainsString('Read output exceeds', $result->output);
+        $this->assertFalse($this->context->wasFileRead($file));
+        unlink($file);
+    }
+
+    public function test_text_read_honors_abort_while_streaming_and_does_not_record_receipt(): void
+    {
+        $file = $this->makeTmpFile(str_repeat(str_repeat('x', 2_000)."\n", 2_000));
+        $checks = 0;
+        $context = new ToolUseContext(
+            workingDirectory: sys_get_temp_dir(),
+            sessionId: 'read-abort-session',
+            shouldAbort: static function () use (&$checks): bool {
+                $checks++;
+
+                return $checks >= 2;
+            },
+        );
+
+        $result = $this->tool->call(['file_path' => $file], $context);
+
+        $this->assertTrue($result->isError);
+        $this->assertSame('Tool execution aborted', $result->output);
+        $this->assertFalse($context->wasFileRead($file));
+        unlink($file);
+    }
+
     public function test_failed_read_does_not_record_a_write_receipt(): void
     {
         $file = $this->makeTmpFile("one\ntwo\n");
@@ -375,12 +409,68 @@ class FileReadToolTest extends TestCase
         @unlink($notebookPath);
     }
 
+    public function test_notebook_input_is_bounded_even_when_it_exceeds_the_cap(): void
+    {
+        $notebook = [
+            'cells' => [],
+            'metadata' => ['padding' => str_repeat('x', 8_388_608)],
+        ];
+        $file = $this->makeTmpFile(json_encode($notebook));
+        $notebookPath = $file.'.ipynb';
+        rename($file, $notebookPath);
+
+        try {
+            $result = $this->tool->call(['file_path' => $notebookPath], $this->context);
+
+            $this->assertTrue($result->isError);
+            $this->assertStringContainsString('Notebook too large', $result->output);
+            $this->assertFalse($this->context->wasFileRead($notebookPath));
+        } finally {
+            @unlink($notebookPath);
+        }
+    }
+
+    public function test_notebook_read_honors_abort_before_rendering(): void
+    {
+        $file = $this->makeTmpFile(json_encode([
+            'cells' => [[
+                'cell_type' => 'markdown',
+                'source' => ['body'],
+            ]],
+        ]));
+        $notebookPath = $file.'.ipynb';
+        rename($file, $notebookPath);
+        $context = new ToolUseContext(
+            workingDirectory: sys_get_temp_dir(),
+            sessionId: 'notebook-abort-session',
+            shouldAbort: static fn (): bool => true,
+        );
+
+        $result = $this->tool->call(['file_path' => $notebookPath], $context);
+
+        $this->assertSame('Tool execution aborted', $result->output);
+        $this->assertFalse($context->wasFileRead($notebookPath));
+        @unlink($notebookPath);
+    }
+
     public function test_validate_input_rejects_bare_line_reference_without_path(): void
     {
         $error = $this->tool->validateInput(['file_path' => ':0'], $this->context);
 
         $this->assertNotNull($error);
         $this->assertStringContainsString('actual path', $error);
+    }
+
+    public function test_validate_input_bounds_line_window_requests(): void
+    {
+        $this->assertStringContainsString(
+            'offset',
+            (string) $this->tool->validateInput(['file_path' => '/tmp/demo.txt', 'offset' => 1_000_001], $this->context),
+        );
+        $this->assertStringContainsString(
+            'limit',
+            (string) $this->tool->validateInput(['file_path' => '/tmp/demo.txt', 'limit' => 10_001], $this->context),
+        );
     }
 
     public function test_backfill_observable_input_strips_line_suffix_from_file_reference(): void

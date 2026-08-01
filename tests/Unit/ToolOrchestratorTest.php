@@ -273,6 +273,60 @@ class ToolOrchestratorTest extends TestCase
         );
     }
 
+    public function test_parallel_children_are_terminated_when_parent_context_is_aborted(): void
+    {
+        if (! function_exists('pcntl_fork')) {
+            $this->markTestSkipped('pcntl is required for parallel cancellation.');
+        }
+
+        $marker = sys_get_temp_dir().'/haocode-parallel-abort-'.bin2hex(random_bytes(8));
+        $registry = new ToolRegistry;
+        $registry->register(new class extends BaseTool {
+            public function name(): string { return 'HangingRead'; }
+            public function description(): string { return ''; }
+            public function inputSchema(): ToolInputSchema
+            {
+                return ToolInputSchema::make([
+                    'type' => 'object',
+                    'properties' => ['marker' => ['type' => 'string']],
+                ]);
+            }
+            public function isReadOnly(array $input): bool { return true; }
+            public function isConcurrencySafe(array $input): bool { return true; }
+            public function call(array $input, ToolUseContext $ctx): ToolResult
+            {
+                file_put_contents((string) $input['marker'], 'started', LOCK_EX);
+                usleep(1_500_000);
+
+                return ToolResult::success('finished');
+            }
+        });
+
+        $context = new ToolUseContext(
+            '/tmp',
+            'parallel-abort',
+            shouldAbort: static fn (): bool => is_file($marker),
+        );
+        $startedAt = microtime(true);
+
+        try {
+            $results = $this->makeOrchestrator($registry)->executeTools(
+                [
+                    ['id' => 'abort-1', 'name' => 'HangingRead', 'input' => ['marker' => $marker]],
+                    ['id' => 'abort-2', 'name' => 'HangingRead', 'input' => ['marker' => $marker]],
+                ],
+                $context,
+            );
+        } finally {
+            @unlink($marker);
+        }
+
+        $elapsed = microtime(true) - $startedAt;
+        $this->assertLessThan(1.0, $elapsed, 'Parent must not wait for the full child workload after cancellation.');
+        $this->assertSame(['Tool execution aborted', 'Tool execution aborted'], array_column($results, 'content'));
+        $this->assertSame([true, true], array_column($results, 'is_error'));
+    }
+
     public function test_abort_from_start_callback_skips_tool_and_emits_terminal_completion(): void
     {
         $registry = new ToolRegistry;
@@ -768,7 +822,10 @@ class ToolOrchestratorTest extends TestCase
         $checker = $this->allowAllChecker();
         $hooks = $this->createMock(HookExecutor::class);
         $hooks->method('execute')->willReturn(new HookResult(true));
-        $hooks->method('hasHooksFor')->with('PreToolUse', 'SafeTool')->willReturn(true);
+        $hooks->method('hasHooksFor')->willReturnCallback(
+            static fn (string $event, ?string $toolName = null): bool =>
+                $event === 'PreToolUse' && $toolName === 'SafeTool',
+        );
 
         $orchestrator = new ToolOrchestrator($registry, $checker, $hooks);
         $results = $orchestrator->executeTools([

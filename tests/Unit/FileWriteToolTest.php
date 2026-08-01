@@ -77,6 +77,22 @@ class FileWriteToolTest extends TestCase
         $this->assertStringContainsString('updated', $result->output);
     }
 
+    public function test_large_existing_file_does_not_get_loaded_for_change_summary(): void
+    {
+        $path = $this->tmpPath('.txt');
+        file_put_contents($path, str_repeat("old\n", 300_000));
+        $this->context->recordFileRead($path);
+
+        $result = $this->tool->call([
+            'file_path' => $path,
+            'content' => 'new content',
+        ], $this->context);
+
+        $this->assertFalse($result->isError, $result->output);
+        $this->assertStringContainsString('change summary omitted', $result->output);
+        $this->assertSame('new content', file_get_contents($path));
+    }
+
     public function test_it_overwrites_existing_file_content(): void
     {
         $path = $this->tmpPath('.txt');

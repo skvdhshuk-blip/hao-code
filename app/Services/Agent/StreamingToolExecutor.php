@@ -83,7 +83,7 @@ class StreamingToolExecutor
         $isSafe = $tool
             && $tool->isConcurrencySafe($input)
             && $tool->isReadOnly($input)
-            && ! $this->toolOrchestrator->mayRunPreToolUseHook($tool->name());
+            && ! $this->toolOrchestrator->mayRunToolHooks($tool->name());
 
         if ($isSafe
             && count($this->earlyPids) < self::MAX_EARLY_EXECUTIONS
@@ -180,6 +180,22 @@ class StreamingToolExecutor
             $aborted = false;
             do {
                 $waitResult = pcntl_waitpid($info['pid'], $status, WNOHANG);
+                if ($waitResult === -1) {
+                    // EINTR means the child was not reaped; retry instead of
+                    // reading a potentially incomplete IPC payload as final.
+                    $interrupted = defined('PCNTL_EINTR')
+                        && function_exists('pcntl_get_last_error')
+                        && pcntl_get_last_error() === constant('PCNTL_EINTR');
+                    if ($interrupted) {
+                        usleep(1_000);
+                        continue;
+                    }
+                    // A non-EINTR -1 means another handler already reaped the
+                    // child or the PID is no longer waitable. Fall through to
+                    // the bounded IPC read, which produces a controlled error
+                    // if no complete payload was written.
+                    break;
+                }
                 if ($waitResult === 0 && $this->isCancelled()) {
                     $this->killPid($info['pid']);
                     pcntl_waitpid($info['pid'], $status);

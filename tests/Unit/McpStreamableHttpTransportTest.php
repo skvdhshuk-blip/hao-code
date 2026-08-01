@@ -86,6 +86,25 @@ final class McpStreamableHttpTransportTest extends TestCase
         $this->assertGreaterThanOrEqual(0.001, $capturedTimeout);
     }
 
+    public function test_http_json_response_is_bounded_before_decode(): void
+    {
+        $http = new MockHttpClient(static fn (): MockResponse => new MockResponse(
+            str_repeat('x', 4 * 1024 * 1024 + 1),
+            [
+                'http_code' => 200,
+                'response_headers' => ['Content-Type: application/json'],
+            ],
+        ));
+        $transport = $this->makeTransport($http);
+
+        try {
+            $transport->request('tools/list');
+            $this->fail('Expected oversized HTTP response to be rejected.');
+        } catch (McpConnectionException $exception) {
+            $this->assertStringContainsString('exceeded', $exception->getMessage());
+        }
+    }
+
     public function test_sse_request_resumes_with_last_event_id(): void
     {
         $requests = [];
@@ -433,6 +452,57 @@ final class McpStreamableHttpTransportTest extends TestCase
         $this->assertCount(2, $listCalls);
         $this->assertSame([], $listCalls[0] ?? []);
         $this->assertSame(['cursor' => 'page-2'], $listCalls[1] ?? []);
+    }
+
+    public function test_list_tools_rejects_unbounded_page_aggregation(): void
+    {
+        $http = new MockHttpClient(function (string $method, string $url, array $options): MockResponse {
+            $payload = $this->decodeRequestBody($options);
+            $rpcMethod = $payload['method'] ?? $method;
+
+            if ($rpcMethod === 'initialize') {
+                return $this->jsonResponse([
+                    'jsonrpc' => '2.0',
+                    'id' => $payload['id'],
+                    'result' => [
+                        'protocolVersion' => '2025-11-25',
+                        'capabilities' => ['tools' => new \stdClass],
+                        'serverInfo' => ['name' => 'fixture', 'version' => '1'],
+                    ],
+                ]);
+            }
+            if ($rpcMethod === 'notifications/initialized') {
+                return new MockResponse('', ['http_code' => 202]);
+            }
+            if ($method === 'GET') {
+                return new MockResponse('', ['http_code' => 405]);
+            }
+            if ($rpcMethod === 'tools/list') {
+                $tools = [];
+                for ($i = 0; $i < 10_001; $i++) {
+                    $tools[] = [
+                        'name' => 'tool-'.$i,
+                        'description' => '',
+                        'inputSchema' => ['type' => 'object'],
+                    ];
+                }
+
+                return $this->jsonResponse([
+                    'jsonrpc' => '2.0',
+                    'id' => $payload['id'],
+                    'result' => ['tools' => $tools],
+                ]);
+            }
+
+            return new MockResponse('', ['http_code' => 204]);
+        });
+        $transport = $this->makeTransport($http);
+        $client = new McpClient($transport, 'fixture');
+        $client->connect();
+
+        $this->expectException(McpConnectionException::class);
+        $this->expectExceptionMessage('aggregated items');
+        $client->listTools(false, 2);
     }
 
     public function test_explicit_authorization_header_is_not_replaced_by_oauth_retry(): void

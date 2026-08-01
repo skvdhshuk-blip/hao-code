@@ -26,6 +26,12 @@ final class McpClient
     /** Safety cap for tools/list, resources/list, prompts/list pagination. */
     private const LIST_MAX_PAGES = 100;
 
+    /** Prevent a valid-looking paginated server from exhausting client memory. */
+    private const LIST_MAX_ITEMS = 10_000;
+
+    /** Cursor values are protocol metadata, not an unbounded payload channel. */
+    private const LIST_MAX_CURSOR_BYTES = 16_384;
+
     private bool $initialized = false;
 
     /** @var array<string, mixed>|null Server capabilities from initialize response */
@@ -482,6 +488,11 @@ final class McpClient
             $pageItems = $result[$itemsKey] ?? [];
             if (is_array($pageItems)) {
                 foreach ($pageItems as $item) {
+                    if (count($items) >= self::LIST_MAX_ITEMS) {
+                        throw new McpConnectionException(
+                            "MCP {$method} exceeded ".self::LIST_MAX_ITEMS.' aggregated items.',
+                        );
+                    }
                     $items[] = $item;
                 }
             }
@@ -490,6 +501,11 @@ final class McpClient
             if (! is_string($next) || $next === '') {
                 $hasMore = false;
                 break;
+            }
+            if (strlen($next) > self::LIST_MAX_CURSOR_BYTES) {
+                throw new McpConnectionException(
+                    "MCP {$method} returned a cursor larger than ".self::LIST_MAX_CURSOR_BYTES.' bytes.',
+                );
             }
             if (isset($seenCursors[$next])) {
                 throw new McpConnectionException(

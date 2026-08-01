@@ -11,8 +11,12 @@ class GlobTool extends BaseTool
 {
     private const MAX_RESULTS = 100;
     private const MAX_VISITED_FILES = 20_000;
+    private const GLOB_TIMEOUT_SECONDS = 10.0;
     private const MAX_PATTERN_LENGTH = 512;
     private const MAX_BRACE_EXPANSIONS = 256;
+    private const MAX_GITIGNORE_BYTES = 1_000_000;
+    private const MAX_GITIGNORE_LINE_BYTES = 16_384;
+    private const MAX_GITIGNORE_PATTERNS = 10_000;
     private const IGNORED_DIRECTORIES = [
         '.git',
         '.hg',
@@ -88,20 +92,38 @@ DESC;
         $visitedEntries = 0;
         $truncatedByVisitLimit = false;
         $aborted = false;
-        $gitignorePatterns = $this->loadGitignorePatterns($path);
-        $this->globRecursive(
-            $path,
-            $regexPatterns,
-            $gitignorePatterns,
-            $matches,
-            $totalCount,
-            $visitedEntries,
-            $truncatedByVisitLimit,
-            $context->isAborted(...),
-            $aborted,
-        );
+        $timedOut = false;
+        $deadline = microtime(true) + self::GLOB_TIMEOUT_SECONDS;
+        try {
+            $gitignorePatterns = $this->loadGitignorePatterns($path);
+        } catch (\LengthException $e) {
+            return ToolResult::error($e->getMessage());
+        }
+        try {
+            $this->globRecursive(
+                $path,
+                $regexPatterns,
+                $gitignorePatterns,
+                $matches,
+                $totalCount,
+                $visitedEntries,
+                $truncatedByVisitLimit,
+                $context->isAborted(...),
+                $aborted,
+                $deadline,
+                $timedOut,
+            );
+        } catch (\UnexpectedValueException|\RuntimeException $e) {
+            return ToolResult::error("Unable to search path {$path}: {$e->getMessage()}");
+        }
         if ($aborted) {
             return ToolResult::aborted('Glob search aborted.');
+        }
+        if ($timedOut) {
+            return ToolResult::error(
+                'Glob search timed out after '.self::GLOB_TIMEOUT_SECONDS.' seconds. '
+                .'Narrow the path or pattern to continue.',
+            );
         }
 
         if (empty($matches)) {
@@ -160,6 +182,8 @@ DESC;
         bool &$truncatedByVisitLimit,
         ?callable $shouldAbort = null,
         bool &$aborted = false,
+        ?float $deadline = null,
+        bool &$timedOut = false,
     ): void
     {
         if (!is_dir($dir)) {
@@ -172,9 +196,13 @@ DESC;
             function (\SplFileInfo $current) use ($dir, $gitignorePatterns): bool {
                 $relativePath = $this->relativePath($current->getPathname(), $dir);
 
-                if ($this->isIgnoredPath($relativePath)
-                    || $this->isGitignoreIgnored($relativePath, $current->isDir(), $gitignorePatterns)) {
+                if ($this->isIgnoredPath($relativePath)) {
                     return false;
+                }
+
+                if ($this->isGitignoreIgnored($relativePath, $current->isDir(), $gitignorePatterns)) {
+                    return $current->isDir()
+                        && $this->shouldDescendForGitignoreNegation($relativePath, $gitignorePatterns);
                 }
 
                 return ! $current->isDir() || ! $current->isLink();
@@ -189,6 +217,10 @@ DESC;
         foreach ($iterator as $file) {
             if ($shouldAbort !== null && $shouldAbort()) {
                 $aborted = true;
+                break;
+            }
+            if ($deadline !== null && microtime(true) >= $deadline) {
+                $timedOut = true;
                 break;
             }
 
@@ -247,42 +279,68 @@ DESC;
             return [];
         }
 
-        $patterns = [];
-        $lines = @file($gitignore, FILE_IGNORE_NEW_LINES);
-        if (! is_array($lines)) {
+        $handle = @fopen($gitignore, 'rb');
+        if (! is_resource($handle)) {
             return [];
         }
 
-        foreach ($lines as $line) {
-            $line = trim($line);
-            if ($line === '' || str_starts_with($line, '#')) {
-                continue;
-            }
+        $patterns = [];
+        $bytesRead = 0;
+        try {
+            while (($rawLine = @fgets($handle, self::MAX_GITIGNORE_LINE_BYTES + 2)) !== false) {
+                $bytesRead += strlen($rawLine);
+                if ($bytesRead > self::MAX_GITIGNORE_BYTES) {
+                    throw new \LengthException(
+                        'Glob refused to load a .gitignore larger than '.self::MAX_GITIGNORE_BYTES
+                        .' bytes. Narrow the search root or simplify .gitignore.',
+                    );
+                }
+                if (strlen($rawLine) > self::MAX_GITIGNORE_LINE_BYTES && ! str_ends_with($rawLine, "\n")) {
+                    throw new \LengthException(
+                        'Glob refused to load a .gitignore line larger than '.self::MAX_GITIGNORE_LINE_BYTES
+                        .' bytes. Simplify .gitignore before searching.',
+                    );
+                }
 
-            $negated = str_starts_with($line, '!');
-            if ($negated) {
-                $line = substr($line, 1);
-            }
+                $line = trim($rawLine);
+                if ($line === '' || str_starts_with($line, '#')) {
+                    continue;
+                }
 
-            $line = str_replace('\\', '/', trim($line));
-            if ($line === '') {
-                continue;
-            }
+                $negated = str_starts_with($line, '!');
+                if ($negated) {
+                    $line = substr($line, 1);
+                }
 
-            $anchored = str_starts_with($line, '/');
-            $line = ltrim($line, '/');
-            $directory = str_ends_with($line, '/');
-            $line = rtrim($line, '/');
-            if ($line === '') {
-                continue;
-            }
+                $line = str_replace('\\', '/', trim($line));
+                if ($line === '') {
+                    continue;
+                }
 
-            $patterns[] = [
-                'pattern' => $line,
-                'negated' => $negated,
-                'directory' => $directory,
-                'anchored' => $anchored,
-            ];
+                $anchored = str_starts_with($line, '/');
+                $line = ltrim($line, '/');
+                $directory = str_ends_with($line, '/');
+                $line = rtrim($line, '/');
+                if ($line === '') {
+                    continue;
+                }
+
+                if (count($patterns) >= self::MAX_GITIGNORE_PATTERNS) {
+                    throw new \LengthException(
+                        'Glob refused to load more than '.self::MAX_GITIGNORE_PATTERNS
+                        .' .gitignore patterns. Simplify .gitignore before searching.',
+                    );
+                }
+
+                $patterns[] = [
+                    'pattern' => $line,
+                    'negated' => $negated,
+                    'directory' => $directory,
+                    'anchored' => $anchored,
+                ];
+            }
+        } finally {
+            fclose($handle);
         }
 
         return $patterns;
@@ -305,6 +363,31 @@ DESC;
         }
 
         return $ignored;
+    }
+
+    /** @param list<array{pattern:string,negated:bool,directory:bool,anchored:bool}> $patterns */
+    private function shouldDescendForGitignoreNegation(string $relativePath, array $patterns): bool
+    {
+        $relativePath = str_replace('\\', '/', trim($relativePath, '/'));
+        foreach ($patterns as $pattern) {
+            if (! $pattern['negated']) {
+                continue;
+            }
+
+            $negated = trim($pattern['pattern'], '/');
+            if ($negated === '') {
+                continue;
+            }
+            // A basename-only negation can match below any ignored directory.
+            if (! str_contains($negated, '/')) {
+                return true;
+            }
+            if ($negated === $relativePath || str_starts_with($negated, $relativePath.'/')) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /** @param array{pattern:string, negated:bool, directory:bool, anchored:bool} $pattern */

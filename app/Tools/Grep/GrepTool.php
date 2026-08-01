@@ -12,8 +12,18 @@ class GrepTool extends BaseTool
 {
     private const MAX_VISITED_FILES = 20_000;
     private const MAX_LINE_BYTES = 1_000_000;
+    private const PHP_FALLBACK_TIMEOUT_SECONDS = 10.0;
+    private const MAX_GITIGNORE_BYTES = 1_000_000;
+    private const MAX_GITIGNORE_LINE_BYTES = 16_384;
+    private const MAX_GITIGNORE_PATTERNS = 10_000;
+    private const MAX_PATTERN_BYTES = 16_384;
+    private const MAX_GLOB_BYTES = 512;
+    private const MAX_CONTEXT_LINES = 1_000;
+    private const MAX_HEAD_LIMIT = 1_000;
+    private const MAX_OFFSET = 100_000;
     private const RIPGREP_TIMEOUT_SECONDS = 10.0;
     private const RIPGREP_STDERR_MAX = 32_000;
+    private const RIPGREP_OUTPUT_MAX = 1_000_000;
     private const IGNORED_DIRECTORIES = [
         '.git',
         '.hg',
@@ -132,6 +142,18 @@ DESC;
         $headLimit = $input['head_limit'] ?? 250;
         $offset = $input['offset'] ?? 0;
 
+        $boundsError = $this->searchBoundsError(
+            $pattern,
+            $glob,
+            $afterLines,
+            $beforeLines,
+            $headLimit,
+            $offset,
+        );
+        if ($boundsError !== null) {
+            return ToolResult::error($boundsError);
+        }
+
         if ($context->isAborted()) {
             return ToolResult::aborted('Grep search aborted.');
         }
@@ -149,6 +171,22 @@ DESC;
             $pattern, $path, $outputMode, $glob,
             $caseInsensitive, $afterLines, $beforeLines, $headLimit,
             $offset, $type, $multiline, $context->isAborted(...),
+        );
+    }
+
+    public function validateInput(array $input, ToolUseContext $context): ?string
+    {
+        if (! is_string($input['pattern'] ?? null)) {
+            return 'pattern must be a string.';
+        }
+
+        return $this->searchBoundsError(
+            $input['pattern'],
+            $input['glob'] ?? null,
+            $input['-C'] ?? $input['-A'] ?? 0,
+            $input['-C'] ?? $input['-B'] ?? 0,
+            $input['head_limit'] ?? 250,
+            $input['offset'] ?? 0,
         );
     }
 
@@ -323,8 +361,10 @@ DESC;
         $stdoutBuffer = '';
         $stderr = '';
         $lines = [];
+        $capturedOutputBytes = 0;
         $truncated = false;
         $exitCode = -1;
+        $processExited = false;
 
         while (true) {
             if ($shouldAbort !== null && $shouldAbort()) {
@@ -343,13 +383,47 @@ DESC;
             if (is_string($chunk) && $chunk !== '') {
                 $stdoutBuffer .= $chunk;
                 while (($newline = strpos($stdoutBuffer, "\n")) !== false) {
-                    $lines[] = substr($stdoutBuffer, 0, $newline);
+                    $line = substr($stdoutBuffer, 0, $newline);
                     $stdoutBuffer = substr($stdoutBuffer, $newline + 1);
+                    $capturedOutputBytes += strlen($line) + 1;
+                    if ($capturedOutputBytes > self::RIPGREP_OUTPUT_MAX) {
+                        ProcessSupervisor::terminateTree($pid, false);
+                        foreach ([1, 2] as $index) {
+                            if (is_resource($pipes[$index] ?? null)) {
+                                fclose($pipes[$index]);
+                            }
+                        }
+                        @proc_close($process);
+
+                        return [
+                            2,
+                            $lines,
+                            'ripgrep output exceeded '.self::RIPGREP_OUTPUT_MAX.' bytes.',
+                            true,
+                        ];
+                    }
+                    $lines[] = $line;
                     if (count($lines) >= $lineLimit) {
                         $truncated = true;
                         ProcessSupervisor::terminateTree($pid, false);
                         break 2;
                     }
+                }
+                if (strlen($stdoutBuffer) > self::MAX_LINE_BYTES) {
+                    ProcessSupervisor::terminateTree($pid, false);
+                    foreach ([1, 2] as $index) {
+                        if (is_resource($pipes[$index] ?? null)) {
+                            fclose($pipes[$index]);
+                        }
+                    }
+                    @proc_close($process);
+
+                    return [
+                        2,
+                        $lines,
+                        'ripgrep output line exceeded '.self::MAX_LINE_BYTES.' bytes.',
+                        true,
+                    ];
                 }
             }
 
@@ -363,9 +437,23 @@ DESC;
 
             $status = proc_get_status($process);
             if (! ($status['running'] ?? false)) {
-                $exitCode = ($status['signaled'] ?? false)
-                    ? 128 + (int) ($status['termsig'] ?? 0)
-                    : (int) ($status['exitcode'] ?? -1);
+                if (! $processExited) {
+                    $exitCode = ($status['signaled'] ?? false)
+                        ? 128 + (int) ($status['termsig'] ?? 0)
+                        : (int) ($status['exitcode'] ?? -1);
+                    $processExited = true;
+                }
+            }
+
+            // proc_get_status() can report that the child exited while the
+            // pipe still contains unread bytes. Keep draining both pipes so
+            // the output limits apply to the complete process output rather
+            // than only to the first kernel-buffer-sized chunk.
+            if ($processExited
+                && is_resource($pipes[1] ?? null)
+                && is_resource($pipes[2] ?? null)
+                && feof($pipes[1])
+                && feof($pipes[2])) {
                 break;
             }
             if (microtime(true) >= $deadline) {
@@ -384,6 +472,37 @@ DESC;
         }
 
         if ($stdoutBuffer !== '' && count($lines) < $lineLimit) {
+            if (strlen($stdoutBuffer) > self::MAX_LINE_BYTES) {
+                foreach ([1, 2] as $index) {
+                    if (is_resource($pipes[$index] ?? null)) {
+                        fclose($pipes[$index]);
+                    }
+                }
+                @proc_close($process);
+
+                return [
+                    2,
+                    $lines,
+                    'ripgrep output line exceeded '.self::MAX_LINE_BYTES.' bytes.',
+                    true,
+                ];
+            }
+            $capturedOutputBytes += strlen($stdoutBuffer);
+            if ($capturedOutputBytes > self::RIPGREP_OUTPUT_MAX) {
+                foreach ([1, 2] as $index) {
+                    if (is_resource($pipes[$index] ?? null)) {
+                        fclose($pipes[$index]);
+                    }
+                }
+                @proc_close($process);
+
+                return [
+                    2,
+                    $lines,
+                    'ripgrep output exceeded '.self::RIPGREP_OUTPUT_MAX.' bytes.',
+                    true,
+                ];
+            }
             $lines[] = rtrim($stdoutBuffer, "\r\n");
         }
 
@@ -405,8 +524,10 @@ DESC;
         bool $caseInsensitive, int $afterLines, int $beforeLines, int $headLimit,
         int $offset = 0, ?string $type = null, bool $multiline = false, ?callable $shouldAbort = null,
     ): ToolResult {
-        if ($shouldAbort !== null && $shouldAbort()) {
-            return ToolResult::aborted('Grep search aborted.');
+        $deadline = microtime(true) + self::PHP_FALLBACK_TIMEOUT_SECONDS;
+        $stopReason = $this->searchStopReason($shouldAbort, $deadline);
+        if ($stopReason !== null) {
+            return $this->searchStopResult($stopReason);
         }
 
         if ($type !== null && $type !== '') {
@@ -443,7 +564,11 @@ DESC;
             $files = [];
             $visitedEntries = 0;
             $truncatedByVisitLimit = false;
-            $gitignorePatterns = $this->loadGitignorePatterns($path);
+            try {
+                $gitignorePatterns = $this->loadGitignorePatterns($path);
+            } catch (\LengthException $e) {
+                return ToolResult::error($e->getMessage());
+            }
             try {
                 $directory = new \RecursiveDirectoryIterator($path, \RecursiveDirectoryIterator::SKIP_DOTS);
                 $filter = new \RecursiveCallbackFilterIterator(
@@ -455,9 +580,13 @@ DESC;
                             ltrim(str_replace($path, '', $current->getPathname()), '/\\'),
                         );
 
-                        if ($this->isIgnoredPath($relativePath)
-                            || $this->isGitignoreIgnored($relativePath, $current->isDir(), $gitignorePatterns)) {
+                        if ($this->isIgnoredPath($relativePath)) {
                             return false;
+                        }
+
+                        if ($this->isGitignoreIgnored($relativePath, $current->isDir(), $gitignorePatterns)) {
+                            return $current->isDir()
+                                && $this->shouldDescendForGitignoreNegation($relativePath, $gitignorePatterns);
                         }
 
                         return ! $current->isDir() || ! $current->isLink();
@@ -469,8 +598,9 @@ DESC;
                     \RecursiveIteratorIterator::CATCH_GET_CHILD,
                 );
                 foreach ($iterator as $file) {
-                    if ($shouldAbort !== null && $shouldAbort()) {
-                        return ToolResult::aborted('Grep search aborted.');
+                    $stopReason = $this->searchStopReason($shouldAbort, $deadline);
+                    if ($stopReason !== null) {
+                        return $this->searchStopResult($stopReason);
                     }
 
                     $visitedEntries++;
@@ -520,8 +650,9 @@ DESC;
         $seenEntries = 0;
 
         foreach ($files as $file) {
-            if ($shouldAbort !== null && $shouldAbort()) {
-                return ToolResult::aborted('Grep search aborted.');
+            $stopReason = $this->searchStopReason($shouldAbort, $deadline);
+            if ($stopReason !== null) {
+                return $this->searchStopResult($stopReason);
             }
 
             $handle = @fopen($file, 'rb');
@@ -542,10 +673,11 @@ DESC;
                     if ($line === null) {
                         break;
                     }
-                    if ($shouldAbort !== null && $shouldAbort()) {
+                    $stopReason = $this->searchStopReason($shouldAbort, $deadline);
+                    if ($stopReason !== null) {
                         fclose($handle);
 
-                        return ToolResult::aborted('Grep search aborted.');
+                        return $this->searchStopResult($stopReason);
                     }
 
                     if (preg_match($regex, $line)) {
@@ -571,10 +703,11 @@ DESC;
                     if ($line === null) {
                         break;
                     }
-                    if ($shouldAbort !== null && $shouldAbort()) {
+                    $stopReason = $this->searchStopReason($shouldAbort, $deadline);
+                    if ($stopReason !== null) {
                         fclose($handle);
 
-                        return ToolResult::aborted('Grep search aborted.');
+                        return $this->searchStopResult($stopReason);
                     }
 
                     if (preg_match($regex, $line)) {
@@ -602,10 +735,11 @@ DESC;
                 if ($line === null) {
                     break;
                 }
-                if ($shouldAbort !== null && $shouldAbort()) {
+                $stopReason = $this->searchStopReason($shouldAbort, $deadline);
+                if ($stopReason !== null) {
                     fclose($handle);
 
-                    return ToolResult::aborted('Grep search aborted.');
+                    return $this->searchStopResult($stopReason);
                 }
 
                 $lineNumber++;
@@ -662,6 +796,60 @@ DESC;
         return ToolResult::success(
             $entries === [] ? $this->noMatchesMessage($pattern) : implode("\n", $entries),
         );
+    }
+
+    private function searchStopReason(?callable $shouldAbort, float $deadline): ?string
+    {
+        if ($shouldAbort !== null && $shouldAbort()) {
+            return 'aborted';
+        }
+        if (microtime(true) >= $deadline) {
+            return 'timeout';
+        }
+
+        return null;
+    }
+
+    private function searchBoundsError(
+        mixed $pattern,
+        mixed $glob,
+        mixed $afterLines,
+        mixed $beforeLines,
+        mixed $headLimit,
+        mixed $offset,
+    ): ?string {
+        if (! is_string($pattern) || strlen($pattern) > self::MAX_PATTERN_BYTES) {
+            return 'pattern is too long (max '.self::MAX_PATTERN_BYTES.' bytes).';
+        }
+        if ($glob !== null && (! is_string($glob) || strlen($glob) > self::MAX_GLOB_BYTES)) {
+            return 'glob is too long (max '.self::MAX_GLOB_BYTES.' bytes).';
+        }
+        foreach ([
+            '-A' => $afterLines,
+            '-B' => $beforeLines,
+        ] as $name => $value) {
+            if (! is_int($value) || $value < 0 || $value > self::MAX_CONTEXT_LINES) {
+                return "{$name} must be between 0 and ".self::MAX_CONTEXT_LINES.'.';
+            }
+        }
+        if (! is_int($headLimit) || $headLimit < 0 || $headLimit > self::MAX_HEAD_LIMIT) {
+            return 'head_limit must be between 0 and '.self::MAX_HEAD_LIMIT.'.';
+        }
+        if (! is_int($offset) || $offset < 0 || $offset > self::MAX_OFFSET) {
+            return 'offset must be between 0 and '.self::MAX_OFFSET.'.';
+        }
+
+        return null;
+    }
+
+    private function searchStopResult(string $reason): ToolResult
+    {
+        return $reason === 'aborted'
+            ? ToolResult::aborted('Grep search aborted.')
+            : ToolResult::error(
+                'Grep search timed out after '.self::PHP_FALLBACK_TIMEOUT_SECONDS.' seconds. '
+                .'Narrow the path or pattern to continue.',
+            );
     }
 
     /**
@@ -735,42 +923,68 @@ DESC;
             return [];
         }
 
-        $patterns = [];
-        $lines = @file($gitignore, FILE_IGNORE_NEW_LINES);
-        if (! is_array($lines)) {
+        $handle = @fopen($gitignore, 'rb');
+        if (! is_resource($handle)) {
             return [];
         }
 
-        foreach ($lines as $line) {
-            $line = trim($line);
-            if ($line === '' || str_starts_with($line, '#')) {
-                continue;
-            }
+        $patterns = [];
+        $bytesRead = 0;
+        try {
+            while (($rawLine = @fgets($handle, self::MAX_GITIGNORE_LINE_BYTES + 2)) !== false) {
+                $bytesRead += strlen($rawLine);
+                if ($bytesRead > self::MAX_GITIGNORE_BYTES) {
+                    throw new \LengthException(
+                        'Grep refused to load a .gitignore larger than '.self::MAX_GITIGNORE_BYTES
+                        .' bytes. Narrow the search root or simplify .gitignore.',
+                    );
+                }
+                if (strlen($rawLine) > self::MAX_GITIGNORE_LINE_BYTES && ! str_ends_with($rawLine, "\n")) {
+                    throw new \LengthException(
+                        'Grep refused to load a .gitignore line larger than '.self::MAX_GITIGNORE_LINE_BYTES
+                        .' bytes. Simplify .gitignore before searching.',
+                    );
+                }
 
-            $negated = str_starts_with($line, '!');
-            if ($negated) {
-                $line = substr($line, 1);
-            }
+                $line = trim($rawLine);
+                if ($line === '' || str_starts_with($line, '#')) {
+                    continue;
+                }
 
-            $line = str_replace('\\', '/', trim($line));
-            if ($line === '') {
-                continue;
-            }
+                $negated = str_starts_with($line, '!');
+                if ($negated) {
+                    $line = substr($line, 1);
+                }
 
-            $anchored = str_starts_with($line, '/');
-            $line = ltrim($line, '/');
-            $directory = str_ends_with($line, '/');
-            $line = rtrim($line, '/');
-            if ($line === '') {
-                continue;
-            }
+                $line = str_replace('\\', '/', trim($line));
+                if ($line === '') {
+                    continue;
+                }
 
-            $patterns[] = [
-                'pattern' => $line,
-                'negated' => $negated,
-                'directory' => $directory,
-                'anchored' => $anchored,
-            ];
+                $anchored = str_starts_with($line, '/');
+                $line = ltrim($line, '/');
+                $directory = str_ends_with($line, '/');
+                $line = rtrim($line, '/');
+                if ($line === '') {
+                    continue;
+                }
+
+                if (count($patterns) >= self::MAX_GITIGNORE_PATTERNS) {
+                    throw new \LengthException(
+                        'Grep refused to load more than '.self::MAX_GITIGNORE_PATTERNS
+                        .' .gitignore patterns. Simplify .gitignore before searching.',
+                    );
+                }
+
+                $patterns[] = [
+                    'pattern' => $line,
+                    'negated' => $negated,
+                    'directory' => $directory,
+                    'anchored' => $anchored,
+                ];
+            }
+        } finally {
+            fclose($handle);
         }
 
         return $patterns;
@@ -793,6 +1007,31 @@ DESC;
         }
 
         return $ignored;
+    }
+
+    /** @param list<array{pattern:string,negated:bool,directory:bool,anchored:bool}> $patterns */
+    private function shouldDescendForGitignoreNegation(string $relativePath, array $patterns): bool
+    {
+        $relativePath = str_replace('\\', '/', trim($relativePath, '/'));
+        foreach ($patterns as $pattern) {
+            if (! $pattern['negated']) {
+                continue;
+            }
+
+            $negated = trim($pattern['pattern'], '/');
+            if ($negated === '') {
+                continue;
+            }
+            // A basename-only negation can match below any ignored directory.
+            if (! str_contains($negated, '/')) {
+                return true;
+            }
+            if ($negated === $relativePath || str_starts_with($negated, $relativePath.'/')) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /** @param array{pattern:string, negated:bool, directory:bool, anchored:bool} $pattern */
@@ -825,14 +1064,10 @@ DESC;
     private function relativePath(string $file, string $searchPath): string
     {
         if (is_file($searchPath)) {
-            return basename($file);
+            return $this->pathBasename($file);
         }
 
-        $prefix = rtrim($searchPath, '/\\').DIRECTORY_SEPARATOR;
-
-        $relative = str_starts_with($file, $prefix)
-            ? substr($file, strlen($prefix))
-            : $file;
+        $relative = $this->stripPathPrefix($file, $searchPath) ?? $file;
 
         return str_replace('\\', '/', $relative);
     }
@@ -840,22 +1075,63 @@ DESC;
     private function normalizeOutputPath(string $line, string $searchPath): string
     {
         if (is_file($searchPath)) {
-            return str_starts_with($line, $searchPath)
-                ? basename($searchPath).substr($line, strlen($searchPath))
-                : $line;
+            $suffix = $this->stripFilePathPrefix($line, $searchPath);
+
+            return $suffix === null ? $line : $this->pathBasename($searchPath).$suffix;
         }
 
-        $prefixes = array_unique([
-            rtrim($searchPath, '/\\').'/',
-            rtrim($searchPath, '/\\').'\\',
-        ]);
-        foreach ($prefixes as $prefix) {
-            if (str_starts_with($line, $prefix)) {
-                return substr($line, strlen($prefix));
-            }
+        return $this->stripPathPrefix($line, $searchPath) ?? $line;
+    }
+
+    private function stripPathPrefix(string $path, string $basePath): ?string
+    {
+        $normalizedPath = str_replace('\\', '/', $path);
+        $normalizedBase = rtrim(str_replace('\\', '/', $basePath), '/').'/';
+        $length = strlen($normalizedBase);
+        if ($length === 0) {
+            return null;
         }
 
-        return $line;
+        $matches = $this->isWindowsPath($path)
+            || $this->isWindowsPath($basePath)
+            || PHP_OS_FAMILY === 'Windows'
+                ? strncasecmp(substr($normalizedPath, 0, $length), $normalizedBase, $length) === 0
+                : str_starts_with($normalizedPath, $normalizedBase);
+
+        return $matches ? substr($normalizedPath, $length) : null;
+    }
+
+    private function stripFilePathPrefix(string $path, string $filePath): ?string
+    {
+        $normalizedPath = str_replace('\\', '/', $path);
+        $normalizedFile = str_replace('\\', '/', $filePath);
+        $length = strlen($normalizedFile);
+        $caseInsensitive = $this->isWindowsPath($path)
+            || $this->isWindowsPath($filePath)
+            || PHP_OS_FAMILY === 'Windows';
+        $matches = $caseInsensitive
+            ? strncasecmp(substr($normalizedPath, 0, $length), $normalizedFile, $length) === 0
+            : str_starts_with($normalizedPath, $normalizedFile);
+        if (! $matches) {
+            return null;
+        }
+
+        $suffix = substr($normalizedPath, $length);
+        if ($suffix !== '' && ! str_starts_with($suffix, ':')) {
+            return null;
+        }
+
+        return $suffix;
+    }
+
+    private function isWindowsPath(string $path): bool
+    {
+        return preg_match('/^(?:[A-Za-z]:[\\\\\/]|\\\\\\\\|\/\/)/', $path) === 1;
+    }
+
+    private function pathBasename(string $path): string
+    {
+        return basename(str_replace('\\', '/', $path));
     }
 
     private function noMatchesMessage(string $pattern): string

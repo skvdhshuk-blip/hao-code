@@ -12,6 +12,9 @@ use HaoCode\Tools\ToolUseContext;
 class FileReadTool extends BaseTool
 {
     private const MAX_TEXT_LINE_BYTES = 1_000_000;
+    private const MAX_TEXT_OUTPUT_BYTES = 1_000_000;
+    private const MAX_TEXT_OFFSET = 1_000_000;
+    private const MAX_TEXT_LIMIT = 10_000;
     private const MAX_PDF_OUTPUT_BYTES = 100_000;
     private const PDF_TIMEOUT_SECONDS = 10.0;
     private const MAX_NOTEBOOK_BYTES = 8_388_608; // 8 MiB JSON input cap
@@ -129,11 +132,25 @@ DESC;
                     .'(max '.round(self::MAX_NOTEBOOK_BYTES / 1024 / 1024, 1).' MB)',
                 );
             }
-            $rawContent = file_get_contents($filePath);
-            if ($rawContent === false) {
+            // The size check above is only a snapshot.  Read at most one byte
+            // past the cap so a notebook that grows (or is a FIFO/special
+            // file) cannot turn this branch into an unbounded allocation.
+            $handle = @fopen($filePath, 'rb');
+            if (! is_resource($handle)) {
                 return ToolResult::error("Failed to read file: {$filePath}");
             }
-            $result = $this->readNotebook($filePath, $rawContent);
+            $rawContent = @stream_get_contents($handle, self::MAX_NOTEBOOK_BYTES + 1);
+            fclose($handle);
+            if (! is_string($rawContent)) {
+                return ToolResult::error("Failed to read file: {$filePath}");
+            }
+            if (strlen($rawContent) > self::MAX_NOTEBOOK_BYTES) {
+                return ToolResult::error(
+                    'Notebook too large: exceeds '.round(self::MAX_NOTEBOOK_BYTES / 1024 / 1024, 1).' MB '
+                    .'(max '.round(self::MAX_NOTEBOOK_BYTES / 1024 / 1024, 1).' MB)',
+                );
+            }
+            $result = $this->readNotebook($filePath, $rawContent, $context->isAborted(...));
             if (! $result->isError) {
                 $context->recordFileRead(
                     $filePath,
@@ -147,9 +164,12 @@ DESC;
             return $result;
         }
 
-        $scan = $this->readTextLineWindow($filePath, $offset, $limit);
+        $scan = $this->readTextLineWindow($filePath, $offset, $limit, $context->isAborted(...));
         if ($scan === null) {
             return ToolResult::error("Failed to read file: {$filePath}");
+        }
+        if (($scan['aborted'] ?? false) === true) {
+            return ToolResult::aborted();
         }
         if (is_string($scan['error'] ?? null)) {
             return ToolResult::error($scan['error']);
@@ -166,6 +186,10 @@ DESC;
 
         $selectedLines = $scan['selectedLines'];
 
+        if ($context->isAborted()) {
+            return ToolResult::aborted();
+        }
+
         $output = '';
         foreach ($selectedLines as $i => $line) {
             $lineNum = $offset + $i;
@@ -173,8 +197,6 @@ DESC;
         }
 
         $isPartial = ($offset > 1 || $limit < $totalLines);
-        $context->recordObservedFileRevision($scan['revision'], null, $offset, $limit, $isPartial, $totalLines);
-
         $header = "File: {$filePath} ({$totalLines} lines total)\n";
         if ($isPartial) {
             $endLine = $offset + count($selectedLines) - 1;
@@ -182,7 +204,20 @@ DESC;
         }
         $header .= str_repeat('-', 60) . "\n";
 
-        return ToolResult::success($header . $output);
+        $rendered = $header . $output;
+        if (strlen($rendered) > self::MAX_TEXT_OUTPUT_BYTES) {
+            return ToolResult::error(
+                'Read output exceeds '.self::MAX_TEXT_OUTPUT_BYTES." bytes in {$filePath}. "
+                .'Use a smaller limit or a later offset.',
+            );
+        }
+        if ($context->isAborted()) {
+            return ToolResult::aborted();
+        }
+
+        $context->recordObservedFileRevision($scan['revision'], null, $offset, $limit, $isPartial, $totalLines);
+
+        return ToolResult::success($rendered);
     }
 
     public function isReadOnly(array $input): bool
@@ -199,6 +234,15 @@ DESC;
 
         if ($this->isBareLineReference($filePath)) {
             return 'file_path must include an actual path, not only a line reference like ":12".';
+        }
+
+        $offset = $input['offset'] ?? 1;
+        if (! is_int($offset) || $offset < 1 || $offset > self::MAX_TEXT_OFFSET) {
+            return 'offset must be between 1 and '.self::MAX_TEXT_OFFSET.'.';
+        }
+        $limit = $input['limit'] ?? 2000;
+        if (! is_int($limit) || $limit < 1 || $limit > self::MAX_TEXT_LIMIT) {
+            return 'limit must be between 1 and '.self::MAX_TEXT_LIMIT.'.';
         }
 
         if (isset($input['pages']) && trim((string) $input['pages']) !== '') {
@@ -337,8 +381,13 @@ DESC;
         );
     }
 
-    private function readNotebook(string $filePath, string $content): ToolResult
+    /** @param callable(): bool|null $shouldAbort */
+    private function readNotebook(string $filePath, string $content, ?callable $shouldAbort = null): ToolResult
     {
+        if ($shouldAbort !== null && $shouldAbort()) {
+            return ToolResult::aborted();
+        }
+
         $notebook = json_decode($content, true);
 
         if (!is_array($notebook) || !isset($notebook['cells'])) {
@@ -350,6 +399,9 @@ DESC;
         $cellCount = count($notebook['cells']);
 
         foreach ($notebook['cells'] as $i => $cell) {
+            if ($shouldAbort !== null && $shouldAbort()) {
+                return ToolResult::aborted();
+            }
             if (strlen($output) >= self::MAX_NOTEBOOK_OUTPUT_BYTES) {
                 $outputLimited = true;
                 break;
@@ -406,9 +458,14 @@ DESC;
     /**
      * Stream a text file and retain only the requested line window.
      *
-     * @return array{selectedLines?: string[], totalLines?: int, revision?: FileRevision, error?: string}|null
+     * @return array{selectedLines?: string[], totalLines?: int, revision?: FileRevision, error?: string, aborted?: bool}|null
      */
-    private function readTextLineWindow(string $filePath, int $offset, int $limit): ?array
+    private function readTextLineWindow(
+        string $filePath,
+        int $offset,
+        int $limit,
+        ?callable $shouldAbort = null,
+    ): ?array
     {
         $handle = @fopen($filePath, 'rb');
         if (! is_resource($handle)) {
@@ -420,6 +477,7 @@ DESC;
         $buffer = '';
         $hash = hash_init('sha256');
         $size = 0;
+        $selectedBytes = 0;
         $stat = @fstat($handle);
         if (! is_array($stat)) {
             fclose($handle);
@@ -429,6 +487,9 @@ DESC;
 
         try {
             while (! feof($handle)) {
+                if ($shouldAbort !== null && $shouldAbort()) {
+                    return ['aborted' => true];
+                }
                 $chunk = fread($handle, 64 * 1024);
                 if ($chunk === false) {
                     return null;
@@ -457,7 +518,15 @@ DESC;
                     }
                     $lineNumber++;
                     if ($lineNumber >= $offset && count($selected) < $limit) {
+                        $nextSelectedBytes = $selectedBytes + strlen($line) + 64;
+                        if ($nextSelectedBytes > self::MAX_TEXT_OUTPUT_BYTES) {
+                            return [
+                                'error' => 'Read output exceeds '.self::MAX_TEXT_OUTPUT_BYTES." bytes in {$filePath}. "
+                                    .'Use a smaller limit or a later offset.',
+                            ];
+                        }
                         $selected[] = $line;
+                        $selectedBytes = $nextSelectedBytes;
                     }
                     $buffer = substr($buffer, (int) $match[0][1] + strlen($match[0][0]));
                 }
@@ -472,7 +541,15 @@ DESC;
                 }
                 $lineNumber++;
                 if ($lineNumber >= $offset && count($selected) < $limit) {
+                    $nextSelectedBytes = $selectedBytes + strlen($buffer) + 64;
+                    if ($nextSelectedBytes > self::MAX_TEXT_OUTPUT_BYTES) {
+                        return [
+                            'error' => 'Read output exceeds '.self::MAX_TEXT_OUTPUT_BYTES." bytes in {$filePath}. "
+                                .'Use a smaller limit or a later offset.',
+                        ];
+                    }
                     $selected[] = $buffer;
+                    $selectedBytes = $nextSelectedBytes;
                 }
             }
         } finally {

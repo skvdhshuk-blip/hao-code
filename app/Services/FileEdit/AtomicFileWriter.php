@@ -18,6 +18,43 @@ final class AtomicFileWriter
         ?FileRevision $expectedRevision,
         ?callable $beforeCommit = null,
     ): void {
+        $this->writeInternal(
+            $filePath,
+            function ($sourceHandle, $tempHandle, string $temporary) use ($content): void {
+                $this->writeAll($tempHandle, $content, $temporary);
+            },
+            $expectedRevision,
+            $beforeCommit,
+        );
+    }
+
+    /**
+     * Atomically publish content produced while the locked source file is
+     * streamed.  This keeps large Edit operations bounded without weakening
+     * the same revision checks used by regular string writes.
+     *
+     * @param callable(resource, resource, string): void $producer
+     * @param callable(string): void|null $beforeCommit
+     */
+    public function writeFromProducer(
+        string $filePath,
+        callable $producer,
+        ?FileRevision $expectedRevision,
+        ?callable $beforeCommit = null,
+    ): void {
+        $this->writeInternal($filePath, $producer, $expectedRevision, $beforeCommit);
+    }
+
+    /**
+     * @param callable(resource, resource, string): void $producer
+     * @param callable(string): void|null $beforeCommit
+     */
+    private function writeInternal(
+        string $filePath,
+        callable $producer,
+        ?FileRevision $expectedRevision,
+        ?callable $beforeCommit = null,
+    ): void {
         $existed = file_exists($filePath);
         $target = $existed ? (realpath($filePath) ?: $filePath) : $filePath;
         $directory = dirname($target);
@@ -85,7 +122,10 @@ final class AtomicFileWriter
                 throw new \RuntimeException("Failed to open temporary file: {$temporary}");
             }
             try {
-                $this->writeAll($tempHandle, $content, $temporary);
+                // The source handle remains exclusively locked for the whole
+                // production step, so the callback cannot read a revision that
+                // differs from the one checked immediately before it.
+                $producer($handle, $tempHandle, $temporary);
                 if (! fflush($tempHandle)) {
                     throw new \RuntimeException("Failed to flush temporary file: {$temporary}");
                 }

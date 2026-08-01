@@ -14,6 +14,7 @@ use HaoCode\Tools\ToolUseContext;
 class FileWriteTool extends BaseTool
 {
     private const MAX_WRITE_CONTENT_BYTES = 1_000_000;
+    private const MAX_DIFF_SOURCE_BYTES = 1_000_000;
 
     public function name(): string
     {
@@ -74,8 +75,23 @@ DESC;
         }
 
         $originalContent = null;
+        $diffSourceSkipped = false;
         if ($existed) {
-            $originalContent = file_get_contents($filePath);
+            // Read at most one byte past the summary cap.  A filesize check
+            // alone is only a snapshot and a concurrently growing file could
+            // otherwise turn this diagnostic-only read into an unbounded
+            // allocation.
+            $sample = @file_get_contents($filePath, false, null, 0, self::MAX_DIFF_SOURCE_BYTES + 1);
+            if (! is_string($sample)) {
+                $diffSourceSkipped = true;
+            } elseif (strlen($sample) > self::MAX_DIFF_SOURCE_BYTES) {
+                // The replacement itself is bounded, but loading an
+                // unrelated multi-gigabyte old file solely to print a
+                // summary would defeat that resource boundary.
+                $diffSourceSkipped = true;
+            } else {
+                $originalContent = $sample;
+            }
         }
 
         // Ensure parent directory exists
@@ -133,6 +149,9 @@ DESC;
                 }
                 $output .= "\n\nGit diff:\n" . $gitDiff;
             }
+        } elseif ($existed && $diffSourceSkipped) {
+            $output .= ' [change summary omitted: existing file exceeds '
+                .self::MAX_DIFF_SOURCE_BYTES.' bytes]';
         }
 
         // Scan for secrets and warn
