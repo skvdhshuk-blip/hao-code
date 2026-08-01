@@ -23,6 +23,7 @@ class ToolOrchestrator
 
     private const MAX_PARALLEL_TOOLS = 8;
     private const MAX_IPC_PAYLOAD_BYTES = 1_000_000;
+    private const DEFAULT_PARALLEL_TOOL_TIMEOUT_SECONDS = 120.0;
 
     private $permissionPromptHandler = null;
     private ?ToolResultStorage $toolResultStorage = null;
@@ -62,7 +63,12 @@ class ToolOrchestrator
         private readonly PermissionChecker $permissionChecker,
         private readonly HookExecutor $hookExecutor,
         private readonly ?PhoenixTracer $tracer = null,
-    ) {}
+        private readonly float $parallelToolTimeoutSeconds = self::DEFAULT_PARALLEL_TOOL_TIMEOUT_SECONDS,
+    ) {
+        if (! is_finite($this->parallelToolTimeoutSeconds) || $this->parallelToolTimeoutSeconds <= 0) {
+            throw new \InvalidArgumentException('Parallel tool timeout must be greater than zero.');
+        }
+    }
 
     public function setToolResultStorage(ToolResultStorage $storage): void
     {
@@ -445,10 +451,22 @@ class ToolOrchestrator
                 $onComplete($blocks[$idx]['name'], $result);
             }
         };
+        $recordTimedOut = function (int $idx) use (&$results, &$completedResults, $blocks, $onComplete): void {
+            $result = ToolResult::error(
+                'Tool execution timed out.',
+                ['timedOut' => true],
+            );
+            $results[$idx] = $result->toApiFormat((string) ($blocks[$idx]['id'] ?? ''));
+            $completedResults[$idx] = $result;
+            if ($onComplete) {
+                $onComplete($blocks[$idx]['name'], $result);
+            }
+        };
 
         // Capture the parent's readFileState snapshot before forking so we can
         // detect which entries the child added.
         $parentStateBefore = $context->getReadFileStateSnapshot();
+        $deadline = microtime(true) + $this->parallelToolTimeoutSeconds;
 
         foreach ($blocks as $idx => $block) {
             // Do not start more children after a start callback (or another
@@ -612,6 +630,22 @@ class ToolOrchestrator
                     $status = 0;
                     @pcntl_waitpid($pids[$idx], $status);
                     $recordAborted($idx);
+                    if (isset($tempFiles[$idx])) {
+                        @unlink($tempFiles[$idx]);
+                    }
+                    unset($remaining[$idx]);
+                }
+                break;
+            }
+
+            if (microtime(true) >= $deadline) {
+                foreach ($remaining as $pid) {
+                    \HaoCode\Support\Runtime\ProcessSupervisor::terminateTree($pid, false);
+                }
+                foreach (array_keys($remaining) as $idx) {
+                    $status = 0;
+                    @pcntl_waitpid($pids[$idx], $status);
+                    $recordTimedOut($idx);
                     if (isset($tempFiles[$idx])) {
                         @unlink($tempFiles[$idx]);
                     }

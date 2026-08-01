@@ -22,6 +22,9 @@ class ToolUseContext
     /** @var array<string, array<string, mixed>>|null receipts observed in the current tool-result batch */
     private ?array $pendingReadFileState = null;
 
+    /** Original directory to restore after leaving a session worktree. */
+    private ?string $worktreeOriginalDirectory = null;
+
     private FileStateCache $fileStateCache;
 
     public function __construct(
@@ -48,6 +51,24 @@ class ToolUseContext
     public function setWorkingDirectory(string $workingDirectory): void
     {
         $this->workingDirectory = $workingDirectory;
+    }
+
+    /** @internal */
+    public function rememberWorktreeOriginalDirectory(string $directory): void
+    {
+        $this->worktreeOriginalDirectory = $directory;
+    }
+
+    /** @internal */
+    public function getWorktreeOriginalDirectory(): ?string
+    {
+        return $this->worktreeOriginalDirectory;
+    }
+
+    /** @internal */
+    public function clearWorktreeOriginalDirectory(): void
+    {
+        $this->worktreeOriginalDirectory = null;
     }
 
     /**

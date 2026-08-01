@@ -327,6 +327,77 @@ class ToolOrchestratorTest extends TestCase
         $this->assertSame([true, true], array_column($results, 'is_error'));
     }
 
+    public function test_parallel_child_timeout_terminates_process_tree_and_returns_timeout_result(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows' || ! function_exists('pcntl_fork') || ! function_exists('posix_kill')) {
+            $this->markTestSkipped('POSIX forked-tool timeout coverage is unavailable.');
+        }
+
+        $marker = tempnam(sys_get_temp_dir(), 'haocode-parallel-timeout-');
+        $this->assertNotFalse($marker);
+        @unlink($marker);
+
+        $registry = new ToolRegistry;
+        $registry->register(new class($marker) extends BaseTool {
+            public function __construct(private readonly string $marker) {}
+            public function name(): string { return 'HangingRead'; }
+            public function description(): string { return ''; }
+            public function inputSchema(): ToolInputSchema
+            {
+                return ToolInputSchema::make(['type' => 'object']);
+            }
+            public function isReadOnly(array $input): bool { return true; }
+            public function isConcurrencySafe(array $input): bool { return true; }
+            public function call(array $input, ToolUseContext $context): ToolResult
+            {
+                $process = proc_open(
+                    ['sh', '-c', 'sleep 1; printf leaked > '.escapeshellarg($this->marker)],
+                    [
+                        0 => ['file', '/dev/null', 'r'],
+                        1 => ['file', '/dev/null', 'w'],
+                        2 => ['file', '/dev/null', 'w'],
+                    ],
+                    $pipes,
+                    sys_get_temp_dir(),
+                );
+                foreach ($pipes ?? [] as $pipe) {
+                    if (is_resource($pipe)) {
+                        fclose($pipe);
+                    }
+                }
+                usleep(5_000_000);
+                if (is_resource($process)) {
+                    @proc_close($process);
+                }
+
+                return ToolResult::success('late');
+            }
+        });
+
+        try {
+            $orchestrator = new ToolOrchestrator(
+                toolRegistry: $registry,
+                permissionChecker: $this->allowAllChecker(),
+                hookExecutor: $this->noopHooks(),
+                parallelToolTimeoutSeconds: 0.25,
+            );
+            $startedAt = microtime(true);
+            $results = $orchestrator->executeTools([
+                ['id' => 'timeout-1', 'name' => 'HangingRead', 'input' => []],
+                ['id' => 'timeout-2', 'name' => 'HangingRead', 'input' => []],
+            ], new ToolUseContext('/tmp', 'parallel-timeout'));
+
+            $this->assertLessThan(2.0, microtime(true) - $startedAt);
+            $this->assertSame(['Tool execution timed out.', 'Tool execution timed out.'], array_column($results, 'content'));
+            $this->assertSame([true, true], array_column($results, 'is_error'));
+
+            usleep(1_200_000);
+            $this->assertFileDoesNotExist($marker, 'Timed-out parallel descendants must not outlive the parent worker.');
+        } finally {
+            @unlink($marker);
+        }
+    }
+
     public function test_abort_from_start_callback_skips_tool_and_emits_terminal_completion(): void
     {
         $registry = new ToolRegistry;

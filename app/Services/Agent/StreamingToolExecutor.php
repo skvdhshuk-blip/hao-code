@@ -25,6 +25,7 @@ class StreamingToolExecutor
 {
     private const MAX_EARLY_EXECUTIONS = 8;
     private const MAX_IPC_PAYLOAD_BYTES = 1_000_000;
+    private const DEFAULT_EARLY_TOOL_TIMEOUT_SECONDS = 120.0;
 
     /** @var array<int, array{pid: int, temp_file: string, block: array}> */
     private array $earlyPids = [];
@@ -49,7 +50,12 @@ class StreamingToolExecutor
         private readonly ToolRegistry $toolRegistry,
         private readonly ?CancellationToken $cancellationToken = null,
         private readonly bool $disableEarlyExecution = false,
-    ) {}
+        private readonly float $earlyToolTimeoutSeconds = self::DEFAULT_EARLY_TOOL_TIMEOUT_SECONDS,
+    ) {
+        if (! is_finite($this->earlyToolTimeoutSeconds) || $this->earlyToolTimeoutSeconds <= 0) {
+            throw new \InvalidArgumentException('Early tool timeout must be greater than zero.');
+        }
+    }
 
     public function setContext(ToolUseContext $context, ?callable $onStart, ?callable $onComplete): void
     {
@@ -178,6 +184,8 @@ class StreamingToolExecutor
         // 1. Collect results from early-forked processes and merge readFileState
         foreach ($this->earlyPids as $index => $info) {
             $aborted = false;
+            $timedOut = false;
+            $deadline = microtime(true) + $this->earlyToolTimeoutSeconds;
             do {
                 $waitResult = pcntl_waitpid($info['pid'], $status, WNOHANG);
                 if ($waitResult === -1) {
@@ -202,12 +210,18 @@ class StreamingToolExecutor
                     $aborted = true;
                     break;
                 }
+                if ($waitResult === 0 && microtime(true) >= $deadline) {
+                    $this->killPid($info['pid']);
+                    pcntl_waitpid($info['pid'], $status);
+                    $timedOut = true;
+                    break;
+                }
                 if ($waitResult === 0) {
                     usleep(10_000);
                 }
             } while ($waitResult === 0);
 
-            $data = $aborted ? false : $this->readIpcPayload($info['temp_file']);
+            $data = ($aborted || $timedOut) ? false : $this->readIpcPayload($info['temp_file']);
             // allowed_classes => false blocks PHP object injection — the temp
             // file is owned by us but written by the child fork, and a
             // compromised dependency could otherwise trigger a gadget chain.
@@ -217,6 +231,8 @@ class StreamingToolExecutor
 
             if ($aborted) {
                 $result = $this->abortedResult($info['block']);
+            } elseif ($timedOut) {
+                $result = $this->timedOutResult($info['block']);
             } elseif (is_array($payload) && isset($payload['result'])) {
                 // New format: result + readFileState from child
                 $result = $payload['result'];
@@ -239,8 +255,10 @@ class StreamingToolExecutor
             unset($this->earlyPids[$index]);
 
             if ($this->onToolComplete) {
-                $toolResult = null;
-                if (is_array($payload) && is_array($payload['toolResult'] ?? null)) {
+                $toolResult = $aborted
+                    ? ToolResult::aborted()
+                    : ($timedOut ? ToolResult::error('Tool execution timed out.', ['timedOut' => true]) : null);
+                if ($toolResult === null && is_array($payload) && is_array($payload['toolResult'] ?? null)) {
                     try {
                         $toolResult = ToolResult::fromArray($payload['toolResult']);
                     } catch (\InvalidArgumentException) {
@@ -401,6 +419,15 @@ class StreamingToolExecutor
         return [
             'tool_use_id' => $block['id'],
             'content' => 'Tool execution aborted',
+            'is_error' => true,
+        ];
+    }
+
+    private function timedOutResult(array $block): array
+    {
+        return [
+            'tool_use_id' => $block['id'],
+            'content' => 'Tool execution timed out.',
             'is_error' => true,
         ];
     }

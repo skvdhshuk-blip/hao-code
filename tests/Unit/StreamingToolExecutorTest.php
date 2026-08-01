@@ -567,6 +567,44 @@ class StreamingToolExecutorTest extends TestCase
         $this->assertSame('Tool execution aborted', $results[0]['content']);
     }
 
+    public function test_timeout_interrupts_wait_for_forked_tool_and_returns_timeout_result(): void
+    {
+        if (! function_exists('pcntl_fork') || ! function_exists('posix_kill')) {
+            $this->markTestSkipped('pcntl and posix are required for forked-tool timeout coverage.');
+        }
+
+        $orchestrator = $this->createMock(ToolOrchestrator::class);
+        $orchestrator->method('executeToolBlock')->willReturnCallback(function (): array {
+            sleep(3);
+
+            return ['tool_use_id' => 'toolu_1', 'content' => 'late', 'is_error' => false];
+        });
+        $completed = [];
+
+        $executor = new StreamingToolExecutor(
+            $orchestrator,
+            $this->makeRegistry(readOnly: true, concurrencySafe: true),
+            earlyToolTimeoutSeconds: 0.25,
+        );
+        $executor->setContext(
+            new ToolUseContext('/tmp', 'test'),
+            null,
+            static function (string $name, ToolResult $result) use (&$completed): void {
+                $completed[] = [$name, $result];
+            },
+        );
+        $executor->onToolBlockReady($this->makeBlock(), 0);
+
+        $startedAt = microtime(true);
+        $results = $executor->collectResults();
+
+        $this->assertLessThan(2.0, microtime(true) - $startedAt);
+        $this->assertTrue($results[0]['is_error']);
+        $this->assertSame('Tool execution timed out.', $results[0]['content']);
+        $this->assertCount(1, $completed);
+        $this->assertTrue($completed[0][1]->metadata['timedOut'] ?? false);
+    }
+
     public function test_early_completion_callback_preserves_metadata_and_outcome_across_ipc(): void
     {
         if (! function_exists('pcntl_fork') || ! function_exists('posix_kill')) {

@@ -187,6 +187,33 @@ class WorktreeToolsTest extends TestCase
         }
     }
 
+    public function test_enter_from_repository_subdirectory_uses_root_and_restores_original_directory(): void
+    {
+        $repo = $this->makeGitRepo('haocode-enter-subdir-');
+        mkdir($repo.'/src', 0755, true);
+        $context = new ToolUseContext($repo.'/src', 'worktree-subdir');
+
+        try {
+            $enter = (new EnterWorktreeTool)->call(['name' => 'nested'], $context);
+            $this->assertFalse($enter->isError, $enter->output);
+            $worktree = $context->workingDirectory;
+            $this->assertSame($repo.'/src', $context->getWorktreeOriginalDirectory());
+            $this->assertStringStartsWith($repo.'/.claude/worktrees/', $worktree);
+            $this->assertStringContainsString('.claude/worktrees', file_get_contents($repo.'/.gitignore'));
+
+            $exit = (new ExitWorktreeTool)->call(['action' => 'keep'], $context);
+            $this->assertFalse($exit->isError, $exit->output);
+            $this->assertSame($repo.'/src', $context->workingDirectory);
+            $this->assertNull($context->getWorktreeOriginalDirectory());
+        } finally {
+            if (isset($worktree) && is_dir($worktree)) {
+                $this->git($repo, 'worktree remove --force '.escapeshellarg($worktree), allowFailure: true);
+                $this->git($repo, 'branch -D worktree-nested', allowFailure: true);
+            }
+            $this->removeTree($repo);
+        }
+    }
+
     public function test_exit_remove_uses_worktree_main_repo_not_php_process_cwd(): void
     {
         $repoA = $this->makeGitRepo('haocode-exit-a-');

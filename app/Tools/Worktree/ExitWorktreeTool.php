@@ -3,6 +3,7 @@
 namespace HaoCode\Tools\Worktree;
 
 use HaoCode\Services\Git\HardenedGitRunner;
+use HaoCode\Support\Filesystem\CanonicalPathResolver;
 use HaoCode\Tools\Bash\BashTool;
 use HaoCode\Tools\BaseTool;
 use HaoCode\Tools\ToolInputSchema;
@@ -61,6 +62,7 @@ class ExitWorktreeTool extends BaseTool
         if ($mainRoot === null || ! is_dir($mainRoot)) {
             return ToolResult::error('Could not resolve the main repository for this worktree.');
         }
+        $restoreDirectory = $this->restoreDirectory($context->getWorktreeOriginalDirectory(), $mainRoot);
 
         if ($action === 'remove') {
             // Check for uncommitted changes
@@ -86,8 +88,9 @@ class ExitWorktreeTool extends BaseTool
             if (is_dir($cwd)) {
                 return ToolResult::error("Failed to remove worktree: {$removed['stderr']}{$removed['stdout']}");
             }
-            $context->setWorkingDirectory($mainRoot);
-            BashTool::setSessionWorkingDirectory($context->sessionId, $mainRoot);
+            $context->clearWorktreeOriginalDirectory();
+            $context->setWorkingDirectory($restoreDirectory);
+            BashTool::setSessionWorkingDirectory($context->sessionId, $restoreDirectory);
 
             return ToolResult::success(
                 "Worktree removed: {$cwd}\n" .
@@ -97,14 +100,28 @@ class ExitWorktreeTool extends BaseTool
 
         // action === 'keep'
         $branch = trim($this->git($cwd, ['branch', '--show-current'])['stdout']);
-        $context->setWorkingDirectory($mainRoot);
-        BashTool::setSessionWorkingDirectory($context->sessionId, $mainRoot);
+        $context->clearWorktreeOriginalDirectory();
+        $context->setWorkingDirectory($restoreDirectory);
+        BashTool::setSessionWorkingDirectory($context->sessionId, $restoreDirectory);
 
         return ToolResult::success(
             "Worktree kept: {$cwd}\n" .
             "Branch: {$branch}\n" .
             "Returned to original directory. The worktree is still available."
         );
+    }
+
+    private function restoreDirectory(?string $originalDirectory, string $mainRoot): string
+    {
+        if (! is_string($originalDirectory) || $originalDirectory === '') {
+            return $mainRoot;
+        }
+
+        $resolved = realpath($originalDirectory);
+
+        return is_string($resolved) && CanonicalPathResolver::isWithin($resolved, $mainRoot)
+            ? $resolved
+            : $mainRoot;
     }
 
     public function isReadOnly(array $input): bool

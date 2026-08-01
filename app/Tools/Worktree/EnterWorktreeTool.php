@@ -5,6 +5,7 @@ namespace HaoCode\Tools\Worktree;
 use HaoCode\Services\FileEdit\AtomicFileWriter;
 use HaoCode\Services\FileEdit\FileRevision;
 use HaoCode\Services\Git\HardenedGitRunner;
+use HaoCode\Support\Filesystem\CanonicalPathResolver;
 use HaoCode\Tools\Bash\BashTool;
 use HaoCode\Tools\BaseTool;
 use HaoCode\Tools\ToolInputSchema;
@@ -41,18 +42,34 @@ class EnterWorktreeTool extends BaseTool
     public function call(array $input, ToolUseContext $context): ToolResult
     {
         $name = $input['name'] ?? null;
-        $cwd = realpath($context->workingDirectory) ?: $context->workingDirectory;
+        $originalDirectory = realpath($context->workingDirectory) ?: $context->workingDirectory;
 
         // Check if we're in a git repo
-        $gitCheck = $this->git($cwd, ['rev-parse', '--is-inside-work-tree']);
+        $gitCheck = $this->git($originalDirectory, ['rev-parse', '--is-inside-work-tree']);
         if (trim($gitCheck['stdout']) !== 'true') {
             return ToolResult::error('Not inside a git repository. Worktrees require a git repo.');
         }
 
+        $rootResult = $this->git($originalDirectory, ['rev-parse', '--show-toplevel']);
+        $repoRoot = trim($rootResult['stdout']);
+        if ($repoRoot === '' || ! is_dir($repoRoot)) {
+            return ToolResult::error('Could not resolve the repository root for this worktree.');
+        }
+        $repoRoot = realpath($repoRoot) ?: $repoRoot;
+
         // Check if already in a linked worktree (git-dir differs from git-common-dir)
-        $gitDir = trim($this->git($cwd, ['rev-parse', '--git-dir'])['stdout']);
-        $commonDir = trim($this->git($cwd, ['rev-parse', '--git-common-dir'])['stdout']);
-        if ($gitDir !== '' && $commonDir !== '' && $gitDir !== $commonDir) {
+        $gitDir = $this->resolveGitPath(
+            $originalDirectory,
+            trim($this->git($originalDirectory, ['rev-parse', '--git-dir'])['stdout']),
+        );
+        $commonDir = $this->resolveGitPath(
+            $originalDirectory,
+            trim($this->git($originalDirectory, ['rev-parse', '--git-common-dir'])['stdout']),
+        );
+        if ($gitDir === null || $commonDir === null) {
+            return ToolResult::error('Could not resolve the Git worktree directories.');
+        }
+        if (! $this->samePath($gitDir, $commonDir)) {
             return ToolResult::error('Already in a worktree session.');
         }
 
@@ -70,13 +87,13 @@ class EnterWorktreeTool extends BaseTool
             $name = mb_substr($name, 0, 64);
         }
 
-        $gitignore = $cwd . '/.gitignore';
+        $gitignore = $repoRoot . DIRECTORY_SEPARATOR . '.gitignore';
         if (is_link($gitignore)) {
             return ToolResult::error('Refusing to update .gitignore because it is a symlink.');
         }
 
         // Create .claude/worktrees directory
-        $claudeDir = $cwd . '/.claude';
+        $claudeDir = $repoRoot . DIRECTORY_SEPARATOR . '.claude';
         if (is_link($claudeDir)) {
             return ToolResult::error('Refusing to create worktree: .claude is a symlink.');
         }
@@ -102,7 +119,7 @@ class EnterWorktreeTool extends BaseTool
             return ToolResult::error('Refusing to create worktree outside the repository .claude directory.');
         }
 
-        $worktreePath = $worktreeBase . '/' . $name;
+        $worktreePath = $worktreeBase . DIRECTORY_SEPARATOR . $name;
 
         // Check if worktree already exists
         if (is_dir($worktreePath)) {
@@ -111,8 +128,8 @@ class EnterWorktreeTool extends BaseTool
 
         // Create worktree from HEAD
         $branchName = 'worktree-' . $name;
-        $created = $this->git($cwd, [
-            '-c', 'core.hooksPath=/dev/null',
+        $created = $this->git($repoRoot, [
+            '-c', 'core.hooksPath='.(PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null'),
             'worktree', 'add', '-b', $branchName, $worktreePath, 'HEAD',
         ]);
 
@@ -143,6 +160,7 @@ class EnterWorktreeTool extends BaseTool
             }
         }
         $resolvedWorktree = realpath($worktreePath) ?: $worktreePath;
+        $context->rememberWorktreeOriginalDirectory($originalDirectory);
         $context->setWorkingDirectory($resolvedWorktree);
         BashTool::setSessionWorkingDirectory($context->sessionId, $resolvedWorktree);
 
@@ -169,6 +187,31 @@ class EnterWorktreeTool extends BaseTool
     public function isReadOnly(array $input): bool
     {
         return false;
+    }
+
+    private function resolveGitPath(string $cwd, string $path): ?string
+    {
+        if ($path === '') {
+            return null;
+        }
+
+        try {
+            $resolved = CanonicalPathResolver::resolve($path, $cwd);
+        } catch (\Throwable) {
+            return null;
+        }
+
+        return realpath($resolved) ?: $resolved;
+    }
+
+    private function samePath(string $left, string $right): bool
+    {
+        $left = rtrim(str_replace('\\', '/', $left), '/');
+        $right = rtrim(str_replace('\\', '/', $right), '/');
+
+        return PHP_OS_FAMILY === 'Windows'
+            ? strcasecmp($left, $right) === 0
+            : $left === $right;
     }
 
     /** @param list<string> $args @return array{stdout: string, stderr: string, exitCode: int} */
