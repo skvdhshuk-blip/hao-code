@@ -29,6 +29,30 @@ final class McpStreamableHttpTransportTest extends TestCase
         ]], $events);
     }
 
+    public function test_sse_decoder_rejects_oversized_unterminated_line_before_buffering_it(): void
+    {
+        $decoder = new McpSseDecoder(32);
+
+        $this->expectException(McpConnectionException::class);
+        $decoder->push(str_repeat('x', 33));
+    }
+
+    public function test_sse_decoder_counts_event_metadata_toward_buffer_limit(): void
+    {
+        $decoder = new McpSseDecoder(64);
+
+        $this->expectException(McpConnectionException::class);
+        $decoder->push("event: ".str_repeat('x', 65)."\n");
+    }
+
+    public function test_sse_decoder_counts_event_id_metadata_toward_buffer_limit(): void
+    {
+        $decoder = new McpSseDecoder(64);
+
+        $this->expectException(McpConnectionException::class);
+        $decoder->push("id: ".str_repeat('x', 65)."\n");
+    }
+
     public function test_post_sse_dispatches_notification_and_answers_reverse_request(): void
     {
         $requests = [];

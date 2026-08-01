@@ -35,6 +35,16 @@ final class McpSseDecoder
      */
     public function push(string $chunk, bool $endOfStream = false): array
     {
+        // A gateway can keep an event unterminated indefinitely. Reject a
+        // delimiter-free chunk before concatenating it so the guard itself does
+        // not require allocating an unbounded line buffer first.
+        if ($chunk !== ''
+            && strpbrk($chunk, "\r\n") === false
+            && $this->bufferedBytes() + strlen($chunk) > $this->maxBufferBytes
+        ) {
+            $this->resetAfterOverflow();
+        }
+
         $this->lineBuffer .= $chunk;
         $events = [];
 
@@ -158,20 +168,35 @@ final class McpSseDecoder
 
     private function guardBufferSize(): void
     {
-        $dataBytes = array_sum(array_map('strlen', $this->dataLines));
-        if (strlen($this->lineBuffer) + $dataBytes <= $this->maxBufferBytes) {
+        if ($this->bufferedBytes() <= $this->maxBufferBytes) {
             return;
         }
 
+        $this->resetAfterOverflow();
+    }
+
+    private function bufferedBytes(): int
+    {
+        $dataBytes = array_sum(array_map('strlen', $this->dataLines));
+
+        return strlen($this->lineBuffer)
+            + $dataBytes
+            + strlen($this->pendingEventId ?? '')
+            + strlen($this->eventType ?? '');
+    }
+
+    private function resetAfterOverflow(): never
+    {
         $this->lineBuffer = '';
         $this->dataLines = [];
+        $this->lastEventId = null;
         $this->pendingEventId = null;
         $this->retry = null;
         $this->eventType = null;
         $this->hasFields = false;
 
         throw McpConnectionException::transport(
-            "MCP SSE event exceeded {$this->maxBufferBytes} bytes"
+            "MCP SSE event exceeded {$this->maxBufferBytes} bytes",
         );
     }
 }

@@ -389,7 +389,11 @@ DESC;
             "printf '\\n{$cwdMarker}%s' \"\$PWD\"\n" .
             "exit \$__haocode_status";
 
-        return 'bash -lc ' . escapeshellarg($script);
+        // ProcessSupervisor::open() already launches this value as the
+        // argument to bash -lc. Do not wrap it in a second shell command:
+        // on Windows, the extra escapeshellarg() layer strips quotes from
+        // otherwise valid commands such as `php -r 'echo "x";'`.
+        return $script;
     }
 
     /**

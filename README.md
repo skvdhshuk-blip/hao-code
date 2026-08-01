@@ -775,7 +775,7 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.18.52`. Notable changes since `v1.10.0`:
+is based on `v1.18.53`. Notable changes since `v1.10.0`:
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/
@@ -952,6 +952,9 @@ is based on `v1.18.52`. Notable changes since `v1.10.0`:
   normalization now fail closed with bounded work and regression coverage.
 - `v1.18.51` — Extensionless large text files no longer inherit a false binary
   classification from PHP's `application/octet-stream` MIME fallback.
+- `v1.18.53` — Preserve quoted Bash command arguments on Windows, validate and
+  normalize inputs before parallel/early execution, and bound unterminated MCP
+  SSE metadata before buffering it.
 - `v1.18.52` — Remaining tool resource boundaries now clean up forked process
   trees and IPC files on callback failures, host search honors ancestor and
   nested `.gitignore` rules, and parallel safety classification uses normalized

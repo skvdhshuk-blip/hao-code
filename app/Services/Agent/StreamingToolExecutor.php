@@ -2,6 +2,7 @@
 
 namespace HaoCode\Services\Agent;
 
+use HaoCode\Contracts\ToolInterface;
 use HaoCode\Support\Runtime\ProcessSupervisor;
 use HaoCode\Tools\ToolRegistry;
 use HaoCode\Tools\ToolUseContext;
@@ -85,23 +86,19 @@ class StreamingToolExecutor
         $tool = $this->toolRegistry->getTool($block['name']);
         $input = $block['input'] ?? [];
         $isSafe = false;
+        $preparedBlock = $block;
         if ($tool !== null) {
-            try {
-                // Safety classification must observe the same normalized input
-                // that execution will pass to permissions and the tool.  A
-                // custom tool can derive its read-only/concurrency decision
-                // from context-backed fields added by backfillObservableInput;
-                // classifying the raw model input would fork such a tool before
-                // its real safety contract is known.
-                $classificationInput = $tool->backfillObservableInput($input, $this->context);
+            $classificationInput = $this->prepareClassificationInput($tool, $input);
+            if ($classificationInput !== null) {
                 $isSafe = $tool->isConcurrencySafe($classificationInput)
                     && $tool->isReadOnly($classificationInput)
                     && ! $this->toolOrchestrator->mayRunToolHooks($tool->name())
                     && ! $this->toolOrchestrator->mayRunPermissionPrompts();
-            } catch (\Throwable) {
-                // A malformed or context-sensitive normalization must fail
-                // closed and run through the normal validation/permission path.
-                $isSafe = false;
+                if ($isSafe) {
+                    // The parent-side start callback must observe the same
+                    // normalized input that the eventual execution observes.
+                    $preparedBlock['input'] = $classificationInput;
+                }
             }
         }
 
@@ -109,9 +106,31 @@ class StreamingToolExecutor
             && count($this->earlyPids) < self::MAX_EARLY_EXECUTIONS
             && function_exists('pcntl_fork')
             && function_exists('posix_kill')) {
-            $this->forkTool($block, $index);
+            $this->forkTool($preparedBlock, $index);
         } else {
             $this->queuedBlocks[$index] = $block;
+        }
+    }
+
+    /**
+     * Apply the execution validation/normalization pipeline before early safety
+     * classification. Returning null fails closed into queued execution.
+     */
+    private function prepareClassificationInput(ToolInterface $tool, mixed $input): ?array
+    {
+        if (! is_array($input)) {
+            return null;
+        }
+
+        try {
+            $input = $tool->inputSchema()->validate($input);
+            if ($tool->validateInput($input, $this->context) !== null) {
+                return null;
+            }
+
+            return $tool->backfillObservableInput($input, $this->context);
+        } catch (\Throwable) {
+            return null;
         }
     }
 

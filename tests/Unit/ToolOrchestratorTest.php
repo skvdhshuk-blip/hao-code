@@ -249,6 +249,7 @@ class ToolOrchestratorTest extends TestCase
             true,
         ));
         $started = 0;
+        $completed = [];
         $context = new ToolUseContext(
             '/tmp',
             'abort-batch',
@@ -264,12 +265,21 @@ class ToolOrchestratorTest extends TestCase
             static function () use (&$started): void {
                 $started++;
             },
+            static function (string $toolName, ToolResult $result) use (&$completed): void {
+                $completed[] = [$toolName, $result];
+            },
         );
 
         $this->assertSame(0, $started);
         $this->assertSame(
             ['Tool execution aborted', 'Tool execution aborted'],
             array_column($results, 'content'),
+        );
+        $this->assertCount(2, $completed);
+        $this->assertSame(['SafeAbortSensitive', 'SafeAbortSensitive'], array_column($completed, 0));
+        $this->assertSame(
+            [ToolOutcome::Aborted, ToolOutcome::Aborted],
+            array_map(static fn (array $entry): ToolOutcome => $entry[1]->outcome(), $completed),
         );
     }
 
@@ -1002,6 +1012,92 @@ class ToolOrchestratorTest extends TestCase
         ], new ToolUseContext('/tmp', 'context-sensitive-classification'));
 
         $this->assertSame([(string) $parentPid, (string) $parentPid], array_column($results, 'content'));
+    }
+
+    public function test_parallel_classification_validates_and_preserves_normalized_callback_input(): void
+    {
+        $startedInputs = [];
+        $registry = new ToolRegistry;
+        $registry->register(new class extends BaseTool {
+            public function name(): string { return 'NormalizedPathRead'; }
+            public function description(): string { return ''; }
+            public function inputSchema(): ToolInputSchema
+            {
+                return ToolInputSchema::make(
+                    ['type' => 'object'],
+                    ['path' => ['required', 'string']],
+                );
+            }
+            public function backfillObservableInput(array $input, ToolUseContext $context): array
+            {
+                if (! str_starts_with($input['path'], '/')) {
+                    $input['path'] = rtrim($context->workingDirectory, '/').'/'.$input['path'];
+                }
+
+                return $input;
+            }
+            public function isReadOnly(array $input): bool { return true; }
+            public function isConcurrencySafe(array $input): bool { return true; }
+            public function call(array $input, ToolUseContext $context): ToolResult
+            {
+                return ToolResult::success($input['path']);
+            }
+        });
+
+        $this->makeOrchestrator($registry)->executeTools(
+            [
+                ['id' => 'normalized-1', 'name' => 'NormalizedPathRead', 'input' => ['path' => 'one.txt']],
+                ['id' => 'normalized-2', 'name' => 'NormalizedPathRead', 'input' => ['path' => 'two.txt']],
+            ],
+            new ToolUseContext('/tmp/normalized-callback', 'normalized-callback'),
+            onToolStart: static function (string $toolName, array $input) use (&$startedInputs): void {
+                $startedInputs[] = $input;
+            },
+        );
+
+        $this->assertSame([
+            ['path' => '/tmp/normalized-callback/one.txt'],
+            ['path' => '/tmp/normalized-callback/two.txt'],
+        ], $startedInputs);
+    }
+
+    public function test_parallel_classification_fails_closed_for_semantically_invalid_input(): void
+    {
+        $started = 0;
+        $registry = new ToolRegistry;
+        $registry->register(new class extends BaseTool {
+            public function name(): string { return 'InvalidRead'; }
+            public function description(): string { return ''; }
+            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object']); }
+            public function validateInput(array $input, ToolUseContext $context): ?string
+            {
+                return 'semantic input is invalid';
+            }
+            public function isReadOnly(array $input): bool { return true; }
+            public function isConcurrencySafe(array $input): bool { return true; }
+            public function call(array $input, ToolUseContext $context): ToolResult
+            {
+                return ToolResult::success('must not execute');
+            }
+        });
+
+        $results = $this->makeOrchestrator($registry)->executeTools(
+            [
+                ['id' => 'invalid-1', 'name' => 'InvalidRead', 'input' => []],
+                ['id' => 'invalid-2', 'name' => 'InvalidRead', 'input' => []],
+            ],
+            new ToolUseContext('/tmp', 'invalid-classification'),
+            onToolStart: static function () use (&$started): void {
+                $started++;
+            },
+        );
+
+        $this->assertSame(0, $started);
+        $this->assertCount(2, $results);
+        foreach ($results as $result) {
+            $this->assertTrue($result['is_error']);
+            $this->assertStringContainsString('semantic input is invalid', $result['content']);
+        }
     }
 
     public function test_execute_tools_does_not_parallelize_when_permission_prompt_may_run(): void

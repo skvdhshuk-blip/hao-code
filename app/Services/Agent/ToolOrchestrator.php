@@ -353,12 +353,16 @@ class ToolOrchestrator
         ?callable $onToolComplete = null,
     ): array {
         if ($context->isAborted()) {
-            return array_map(
-                static fn (array $block): array => ToolResult::aborted()->toApiFormat(
-                    (string) ($block['id'] ?? ''),
-                ),
-                $toolUseBlocks,
-            );
+            $results = [];
+            foreach ($toolUseBlocks as $block) {
+                $result = ToolResult::aborted();
+                if ($onToolComplete) {
+                    $onToolComplete((string) ($block['name'] ?? ''), $result);
+                }
+                $results[] = $result->toApiFormat((string) ($block['id'] ?? ''));
+            }
+
+            return $results;
         }
 
         if (count($toolUseBlocks) <= 1) {
@@ -379,27 +383,38 @@ class ToolOrchestrator
 
         foreach ($toolUseBlocks as $origIdx => $block) {
             $tool = $this->toolRegistry->getTool($block['name']);
-            $classificationInput = $block['input'] ?? [];
             $isSafe = false;
-            if ($tool !== null) {
+            $preparedBlock = $block;
+            $rawInput = $block['input'] ?? null;
+            if ($tool !== null && is_array($rawInput)) {
                 try {
-                    // Classify the normalized input, not the raw model payload.
-                    // Tools may derive their safety from context-backed fields
-                    // populated by backfillObservableInput; forking before that
-                    // normalization can run a context-sensitive write in a
-                    // supposedly read-only worker.
-                    $classificationInput = $tool->backfillObservableInput($classificationInput, $context);
-                    $isSafe = $tool->isConcurrencySafe($classificationInput)
-                        && $tool->isReadOnly($classificationInput)
-                        && ! $this->mayRunToolHooks($tool->name())
-                        && ! $this->mayRunPermissionPrompts();
+                    // Run the same validation and normalization pipeline that
+                    // sequential execution uses before deciding whether a
+                    // worker may be forked.  Otherwise an invalid invocation can
+                    // emit onStart from the parent before the child rejects it,
+                    // and context-derived fields are missing from that callback.
+                    $preparedInput = $this->validateAndNormalizeInput($tool, $rawInput, $context);
+                    if ($preparedInput['error'] === null) {
+                        $classificationInput = $preparedInput['input'];
+                        $isSafe = $tool->isConcurrencySafe($classificationInput)
+                            && $tool->isReadOnly($classificationInput)
+                            && ! $this->mayRunToolHooks($tool->name())
+                            && ! $this->mayRunPermissionPrompts();
+                        if ($isSafe) {
+                            // Keep the parent callback and the child invocation
+                            // on the same observable input.  The child still
+                            // re-runs the normal execution pipeline.
+                            $preparedBlock['input'] = $classificationInput;
+                        }
+                    }
                 } catch (\Throwable) {
-                    // A normalization/classification failure must fail closed.
+                    // A validation/normalization/classification failure must
+                    // fail closed and use the sequential error path.
                     $isSafe = false;
                 }
             }
             if ($isSafe) {
-                $safeBlocks[$origIdx] = $block;
+                $safeBlocks[$origIdx] = $preparedBlock;
             } else {
                 $unsafeBlocks[$origIdx] = $block;
             }

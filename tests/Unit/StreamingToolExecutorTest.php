@@ -463,6 +463,108 @@ class StreamingToolExecutorTest extends TestCase
         $this->assertSame([$expectedResult], $executor->collectResults());
     }
 
+    public function test_early_execution_validates_and_passes_normalized_input_to_start_callback(): void
+    {
+        $startedInputs = [];
+        $registry = new ToolRegistry;
+        $registry->register(new class extends BaseTool {
+            public function name(): string { return 'NormalizedPathRead'; }
+            public function description(): string { return ''; }
+            public function inputSchema(): ToolInputSchema
+            {
+                return ToolInputSchema::make(
+                    ['type' => 'object'],
+                    ['path' => ['required', 'string']],
+                );
+            }
+            public function backfillObservableInput(array $input, ToolUseContext $context): array
+            {
+                if (! str_starts_with($input['path'], '/')) {
+                    $input['path'] = rtrim($context->workingDirectory, '/').'/'.$input['path'];
+                }
+
+                return $input;
+            }
+            public function isReadOnly(array $input): bool { return true; }
+            public function isConcurrencySafe(array $input): bool { return true; }
+            public function call(array $input, ToolUseContext $context): ToolResult
+            {
+                return ToolResult::success('ok');
+            }
+        });
+
+        $orchestrator = $this->createMock(ToolOrchestrator::class);
+        $orchestrator->method('mayRunToolHooks')->willReturn(false);
+        $orchestrator->method('mayRunPermissionPrompts')->willReturn(false);
+        $orchestrator->method('executeToolBlock')->willReturnCallback(
+            static function (array $block, ToolUseContext $context, ?callable $onStart, ?callable $onComplete): array {
+                $onStart?->__invoke($block['name'], $block['input']);
+                $result = ToolResult::success('ok');
+                $onComplete?->__invoke($block['name'], $result);
+
+                return $result->toApiFormat($block['id']);
+            },
+        );
+
+        $executor = new StreamingToolExecutor($orchestrator, $registry);
+        $executor->setContext(
+            new ToolUseContext('/tmp/stream-normalized', 'stream-normalized'),
+            static function (string $toolName, array $input) use (&$startedInputs): void {
+                $startedInputs[] = $input;
+            },
+            null,
+        );
+        $executor->onToolBlockReady([
+            'id' => 'normalized-stream-1',
+            'name' => 'NormalizedPathRead',
+            'input' => ['path' => 'relative.txt'],
+        ], 0);
+
+        $executor->collectResults();
+
+        $this->assertSame([['path' => '/tmp/stream-normalized/relative.txt']], $startedInputs);
+    }
+
+    public function test_early_execution_requires_successful_semantic_validation(): void
+    {
+        $registry = new ToolRegistry;
+        $registry->register(new class extends BaseTool {
+            public function name(): string { return 'InvalidRead'; }
+            public function description(): string { return ''; }
+            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object']); }
+            public function validateInput(array $input, ToolUseContext $context): ?string
+            {
+                return 'semantic input is invalid';
+            }
+            public function isReadOnly(array $input): bool { return true; }
+            public function isConcurrencySafe(array $input): bool { return true; }
+            public function call(array $input, ToolUseContext $context): ToolResult
+            {
+                return ToolResult::success('must not execute');
+            }
+        });
+
+        $orchestrator = $this->createMock(ToolOrchestrator::class);
+        $orchestrator->method('mayRunToolHooks')->willReturn(false);
+        $orchestrator->method('mayRunPermissionPrompts')->willReturn(false);
+        $orchestrator->expects($this->once())->method('executeToolBlock')->willReturn([
+            'tool_use_id' => 'invalid-stream-1',
+            'content' => 'queued',
+            'is_error' => false,
+        ]);
+
+        $executor = new StreamingToolExecutor($orchestrator, $registry);
+        $executor->setContext(new ToolUseContext('/tmp', 'invalid-stream'), null, null);
+        $executor->onToolBlockReady([
+            'id' => 'invalid-stream-1',
+            'name' => 'InvalidRead',
+            'input' => [],
+        ], 0);
+
+        $this->assertSame(0, $executor->earlyExecutionCount());
+        $this->assertSame('queued', $executor->collectResults()[0]['content']);
+    }
+
     public function test_early_execution_is_disabled_when_permission_prompt_may_run(): void
     {
         $orchestrator = $this->createMock(ToolOrchestrator::class);
