@@ -40,6 +40,16 @@ final class HardenedGitRunner
             return '';
         }
 
+        // A repository-local filter.clean/process command is executable code,
+        // just like diff.external and textconv.  Git's --no-ext-diff and
+        // --no-textconv flags do not disable filters used while converting the
+        // working tree.  Refuse the supplemental diff rather than allowing an
+        // untrusted repository to execute a helper; the file mutation itself
+        // remains successful and the caller can still show its own summary.
+        if ($this->hasExternalFilter($root, $relative, $shouldAbort)) {
+            return '';
+        }
+
         $result = $this->runGit($root, [
             '--no-pager',
             'diff',
@@ -100,7 +110,55 @@ final class HardenedGitRunner
             }
         }
 
-        return $this->run(array_merge(['git'], $argv), $cwd, $timeoutSeconds ?? self::TIMEOUT_SECONDS, $shouldAbort);
+        // These config overrides apply to every internal Git query, including
+        // status/rev-parse calls used by worktree management.  Without them a
+        // repository-local fsmonitor hook can run arbitrary code even when no
+        // diff is being requested.
+        $safeConfig = [
+            '-c', 'core.fsmonitor=false',
+            '-c', 'core.hooksPath='.(PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null'),
+        ];
+
+        return $this->run(
+            array_merge(['git'], $safeConfig, $argv),
+            $cwd,
+            $timeoutSeconds ?? self::TIMEOUT_SECONDS,
+            $shouldAbort,
+        );
+    }
+
+    /** @param callable(): bool|null $shouldAbort */
+    private function hasExternalFilter(string $root, string $relative, ?callable $shouldAbort): bool
+    {
+        $result = $this->runGit($root, [
+            '--no-pager',
+            'check-attr',
+            '--all',
+            '--',
+            $relative,
+        ], timeoutSeconds: 1.0, shouldAbort: $shouldAbort);
+
+        if ($result['aborted'] || $result['timedOut'] || $result['truncated']) {
+            return true;
+        }
+        if ($result['exitCode'] !== 0) {
+            // A failed attribute query must not be followed by a potentially
+            // executable diff. Treat the supplemental diff as unavailable.
+            return true;
+        }
+
+        foreach (preg_split('/\R/', $result['stdout']) ?: [] as $line) {
+            if (preg_match('/:\s*filter:\s*(\S.*)$/i', $line, $matches) !== 1) {
+                continue;
+            }
+
+            $value = trim($matches[1]);
+            if ($value !== '' && strcasecmp($value, 'unspecified') !== 0) {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     /**

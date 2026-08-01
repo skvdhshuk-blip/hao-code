@@ -80,13 +80,13 @@ class ExitWorktreeTool extends BaseTool
             // Remove worktree
             $removed = $this->git($mainRoot, ['worktree', 'remove', '--force', $cwd]);
 
+            if ($removed['exitCode'] !== 0 || is_dir($cwd)) {
+                return ToolResult::error("Failed to remove worktree: {$removed['stderr']}{$removed['stdout']}");
+            }
+
             // Also delete the branch if it was a worktree-specific branch
             if ($branch && str_starts_with($branch, 'worktree-')) {
                 $this->git($mainRoot, ['branch', '-D', $branch]);
-            }
-
-            if (is_dir($cwd)) {
-                return ToolResult::error("Failed to remove worktree: {$removed['stderr']}{$removed['stdout']}");
             }
             $context->clearWorktreeOriginalDirectory();
             $context->setWorkingDirectory($restoreDirectory);

@@ -191,6 +191,68 @@ class DiffGeneratorTest extends TestCase
         }
     }
 
+    public function test_hardened_git_runner_disables_repository_fsmonitor(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows' || trim((string) shell_exec('command -v git 2>/dev/null')) === '') {
+            $this->markTestSkipped('git and POSIX shell are required for fsmonitor coverage.');
+        }
+
+        $root = sys_get_temp_dir().'/haocode-git-fsmonitor-'.bin2hex(random_bytes(6));
+        mkdir($root, 0700, true);
+        $marker = $root.'/fsmonitor-ran';
+        $script = $root.'/fsmonitor.sh';
+
+        try {
+            file_put_contents($script, "#!/bin/sh\nprintf ran > ".escapeshellarg($marker)."\nexit 0\n");
+            chmod($script, 0700);
+
+            $this->runGit($root, 'init');
+            $this->runGit($root, 'config core.fsmonitor '.escapeshellarg($script));
+
+            $result = (new HardenedGitRunner())->runGit($root, ['status', '--porcelain']);
+
+            $this->assertSame(0, $result['exitCode'], $result['stderr']);
+            $this->assertFileDoesNotExist($marker, 'Repository fsmonitor commands must not run during internal Git queries.');
+        } finally {
+            $this->removeTree($root);
+        }
+    }
+
+    public function test_git_diff_does_not_run_repository_filter_driver(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows' || trim((string) shell_exec('command -v git 2>/dev/null')) === '') {
+            $this->markTestSkipped('git and POSIX shell are required for filter coverage.');
+        }
+
+        $root = sys_get_temp_dir().'/haocode-git-filter-'.bin2hex(random_bytes(6));
+        mkdir($root, 0700, true);
+        $file = $root.'/tracked.txt';
+        $attributes = $root.'/.gitattributes';
+        $marker = $root.'/filter-ran';
+        $script = $root.'/filter.sh';
+
+        try {
+            file_put_contents($file, "old\n");
+            file_put_contents($attributes, "*.txt filter=evil\n");
+            file_put_contents($script, "#!/bin/sh\nprintf ran > ".escapeshellarg($marker)."\ncat\n");
+            chmod($script, 0700);
+
+            $this->runGit($root, 'init');
+            // Stage the initial version before defining the filter command so
+            // setup itself cannot create a false positive marker.
+            $this->runGit($root, 'add .gitattributes tracked.txt');
+            $this->runGit($root, 'config filter.evil.clean '.escapeshellarg($script));
+            file_put_contents($file, "new\n");
+
+            $diff = DiffGenerator::gitDiff($file);
+
+            $this->assertSame('', $diff);
+            $this->assertFileDoesNotExist($marker, 'Repository filter commands must not run during supplemental Git diffs.');
+        } finally {
+            $this->removeTree($root);
+        }
+    }
+
     public function test_hardened_git_runner_honors_abort_and_kills_delayed_side_effects(): void
     {
         if (PHP_OS_FAMILY === 'Windows') {

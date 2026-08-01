@@ -681,4 +681,35 @@ class StreamingToolExecutorTest extends TestCase
         $this->assertTrue($completed[0][1]->isError);
         $this->assertSame('Tool result exceeded IPC size limit.', $completed[0][1]->output);
     }
+
+    public function test_early_execution_bounds_oversized_tool_use_ids_in_fallback(): void
+    {
+        if (! function_exists('pcntl_fork') || ! function_exists('posix_kill')) {
+            $this->markTestSkipped('pcntl and posix are required for early tool execution.');
+        }
+
+        $orchestrator = $this->createMock(ToolOrchestrator::class);
+        $orchestrator->method('mayRunToolHooks')->willReturn(false);
+        $orchestrator->method('executeToolBlock')->willReturnCallback(
+            static function (array $block, ToolUseContext $context, ?callable $onStart, ?callable $onComplete): array {
+                $result = ToolResult::success('ok');
+                $onComplete?->__invoke($block['name'], $result);
+
+                return $result->toApiFormat($block['id']);
+            },
+        );
+
+        $executor = new StreamingToolExecutor(
+            $orchestrator,
+            $this->makeRegistry(readOnly: true, concurrencySafe: true),
+        );
+        $executor->setContext(new ToolUseContext('/tmp', 'test'), null, null);
+        $executor->onToolBlockReady($this->makeBlock(str_repeat('x', 1_100_000)), 0);
+
+        $results = $executor->collectResults();
+
+        $this->assertTrue($results[0]['is_error']);
+        $this->assertSame('Tool result exceeded IPC size limit.', $results[0]['content']);
+        $this->assertLessThanOrEqual(4_096, strlen($results[0]['tool_use_id']));
+    }
 }

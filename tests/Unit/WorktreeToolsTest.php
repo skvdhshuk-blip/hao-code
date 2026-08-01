@@ -341,6 +341,73 @@ class WorktreeToolsTest extends TestCase
         }
     }
 
+    public function test_enter_bounds_gitignore_read_and_reports_warning(): void
+    {
+        $repo = $this->makeGitRepo('haocode-gitignore-limit-');
+        file_put_contents($repo.'/.gitignore', str_repeat('x', 1_000_001));
+        $context = new ToolUseContext($repo, 'worktree-gitignore-limit');
+
+        try {
+            $result = (new EnterWorktreeTool)->call(['name' => 'limited'], $context);
+
+            $this->assertFalse($result->isError, $result->output);
+            $this->assertStringContainsString('failed to read .gitignore', strtolower($result->output));
+            $this->assertDirectoryExists($context->workingDirectory);
+        } finally {
+            $worktree = $context->workingDirectory;
+            if ($worktree !== $repo && is_dir($worktree)) {
+                $this->git($repo, 'worktree remove --force '.escapeshellarg($worktree), allowFailure: true);
+                $this->git($repo, 'branch -D worktree-limited', allowFailure: true);
+            }
+            $this->removeTree($repo);
+        }
+    }
+
+    public function test_exit_does_not_delete_branch_when_worktree_remove_fails(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('POSIX wrapper is used to simulate a failed Git remove.');
+        }
+
+        $repo = $this->makeGitRepo('haocode-exit-failed-remove-');
+        $context = new ToolUseContext($repo, 'worktree-failed-remove');
+        $binDir = $repo.'/fake-bin';
+        $realGit = trim((string) shell_exec('command -v git 2>/dev/null'));
+        mkdir($binDir, 0700, true);
+        $fakeGit = $binDir.'/git';
+        file_put_contents(
+            $fakeGit,
+            "#!/bin/sh\ncase \" \$* \" in\n  *' worktree remove '*) echo blocked >&2; exit 42 ;;\nesac\nexec ".escapeshellarg($realGit)." \"\$@\"\n",
+        );
+        chmod($fakeGit, 0700);
+        $oldPath = getenv('PATH');
+
+        try {
+            $enter = (new EnterWorktreeTool)->call(['name' => 'failed'], $context);
+            $this->assertFalse($enter->isError, $enter->output);
+            $worktree = $context->workingDirectory;
+            putenv('PATH='.$binDir.PATH_SEPARATOR.(is_string($oldPath) ? $oldPath : ''));
+
+            $result = (new ExitWorktreeTool)->call(['action' => 'remove', 'discard_changes' => true], $context);
+
+            $this->assertTrue($result->isError, $result->output);
+            $this->assertDirectoryExists($worktree);
+            $this->assertSame($worktree, $context->workingDirectory);
+            $this->assertStringContainsString('worktree-failed', $this->git($repo, 'branch --list worktree-failed'));
+        } finally {
+            if (is_string($oldPath)) {
+                putenv('PATH='.$oldPath);
+            } else {
+                putenv('PATH');
+            }
+            if (isset($worktree) && is_dir($worktree)) {
+                $this->git($repo, 'worktree remove --force '.escapeshellarg($worktree), allowFailure: true);
+                $this->git($repo, 'branch -D worktree-failed', allowFailure: true);
+            }
+            $this->removeTree($repo);
+        }
+    }
+
     private function makeGitRepo(string $prefix): string
     {
         if (trim((string) shell_exec('command -v git 2>/dev/null')) === '') {

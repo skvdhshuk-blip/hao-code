@@ -25,6 +25,7 @@ class StreamingToolExecutor
 {
     private const MAX_EARLY_EXECUTIONS = 8;
     private const MAX_IPC_PAYLOAD_BYTES = 1_000_000;
+    private const MAX_IPC_TOOL_ID_BYTES = 4_096;
     private const DEFAULT_EARLY_TOOL_TIMEOUT_SECONDS = 120.0;
 
     /** @var array<int, array{pid: int, temp_file: string, block: array}> */
@@ -395,13 +396,24 @@ class StreamingToolExecutor
         if (strlen($serialized) > self::MAX_IPC_PAYLOAD_BYTES) {
             $fallback = ToolResult::error('Tool result exceeded IPC size limit.');
             $serialized = serialize([
-                'result' => $fallback->toApiFormat((string) ($block['id'] ?? '')),
+                'result' => $fallback->toApiFormat($this->boundedToolUseId($block)),
                 'toolResult' => $fallback->toArray(),
                 'readState' => [],
             ]);
         }
 
         file_put_contents($tempFile, $serialized);
+    }
+
+    /** @param array<string, mixed> $block */
+    private function boundedToolUseId(array $block): string
+    {
+        $id = $block['id'] ?? '';
+        if (! is_scalar($id)) {
+            return '';
+        }
+
+        return substr((string) $id, 0, self::MAX_IPC_TOOL_ID_BYTES);
     }
 
     private function readIpcPayload(string $tempFile): string|false

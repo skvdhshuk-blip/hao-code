@@ -14,6 +14,8 @@ use HaoCode\Tools\ToolUseContext;
 
 class EnterWorktreeTool extends BaseTool
 {
+    private const MAX_GITIGNORE_BYTES = 1_000_000;
+
     public function name(): string
     {
         return 'EnterWorktree';
@@ -133,15 +135,15 @@ class EnterWorktreeTool extends BaseTool
             'worktree', 'add', '-b', $branchName, $worktreePath, 'HEAD',
         ]);
 
-        if (!is_dir($worktreePath)) {
+        if ($created['exitCode'] !== 0 || ! is_dir($worktreePath)) {
             return ToolResult::error("Failed to create worktree: {$created['stderr']}{$created['stdout']}");
         }
 
         $gitignoreWarning = null;
 
         // Add .claude/worktrees to .gitignore if not already
-        $gitignoreContent = file_exists($gitignore) ? file_get_contents($gitignore) : '';
-        if ($gitignoreContent === false) {
+        $gitignoreContent = $this->readGitignore($gitignore);
+        if ($gitignoreContent === null) {
             $gitignoreWarning = 'Warning: failed to read .gitignore; .claude/worktrees was not added.';
         } elseif (!str_contains($gitignoreContent, '.claude/worktrees')) {
             $expectedRevision = file_exists($gitignore) ? FileRevision::capture($gitignore) : null;
@@ -212,6 +214,27 @@ class EnterWorktreeTool extends BaseTool
         return PHP_OS_FAMILY === 'Windows'
             ? strcasecmp($left, $right) === 0
             : $left === $right;
+    }
+
+    private function readGitignore(string $path): ?string
+    {
+        if (! file_exists($path)) {
+            return '';
+        }
+
+        $handle = @fopen($path, 'rb');
+        if (! is_resource($handle)) {
+            return null;
+        }
+
+        $content = stream_get_contents($handle, self::MAX_GITIGNORE_BYTES + 1);
+        fclose($handle);
+
+        if (! is_string($content) || strlen($content) > self::MAX_GITIGNORE_BYTES) {
+            return null;
+        }
+
+        return $content;
     }
 
     /** @param list<string> $args @return array{stdout: string, stderr: string, exitCode: int} */

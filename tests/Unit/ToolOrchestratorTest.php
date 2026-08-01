@@ -1294,6 +1294,42 @@ class ToolOrchestratorTest extends TestCase
         $this->assertSame('Tool result exceeded IPC size limit.', $completed[1][1]->output);
     }
 
+    public function test_parallel_tool_bounds_oversized_tool_use_ids_in_fallback(): void
+    {
+        if (! function_exists('pcntl_fork')) {
+            $this->markTestSkipped('pcntl is required for parallel tool IPC.');
+        }
+
+        $registry = new ToolRegistry;
+        $registry->register($this->makeTool(
+            'LargeIdTool',
+            static fn (): ToolResult => ToolResult::success('ok'),
+            true,
+        ));
+
+        $id = str_repeat('x', 1_100_000);
+        $completed = [];
+        $results = $this->makeOrchestrator($registry)->executeTools(
+            toolUseBlocks: [
+                ['id' => $id, 'name' => 'LargeIdTool', 'input' => []],
+                ['id' => 'small-id', 'name' => 'LargeIdTool', 'input' => []],
+            ],
+            context: new ToolUseContext('/tmp', 'test-session'),
+            onToolComplete: static function (string $toolName, ToolResult $result) use (&$completed): void {
+                $completed[] = [$toolName, $result];
+            },
+        );
+
+        $this->assertTrue($results[0]['is_error']);
+        $this->assertSame('Tool result exceeded IPC size limit.', $results[0]['content']);
+        $this->assertLessThanOrEqual(4_096, strlen($results[0]['tool_use_id']));
+        $this->assertFalse($results[1]['is_error']);
+        $this->assertSame('small-id', $results[1]['tool_use_id']);
+        $this->assertCount(2, $completed);
+        $this->assertSame('Tool result exceeded IPC size limit.', $completed[0][1]->output);
+        $this->assertSame('ok', $completed[1][1]->output);
+    }
+
     // ─── repeated Read hint ───────────────────────────────────────────────
 
     public function test_read_hint_appears_only_after_threshold(): void
