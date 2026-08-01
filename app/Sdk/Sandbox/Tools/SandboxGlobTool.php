@@ -73,7 +73,7 @@ final class SandboxGlobTool extends SandboxTool
             $output .= "  {$match}\n";
         }
         if ($limited) {
-            $output .= "\n[More files not shown. Narrow your pattern to see more.]";
+            $output .= "\n[Results are bounded. Narrow your pattern to see more.]";
         }
 
         return ToolResult::success($output, $metadata);

@@ -410,7 +410,7 @@ class SandboxTest extends TestCase
 
             $this->assertFalse($result->isError, $result->output);
             $this->assertStringContainsString("Found 100 file(s) matching '**/*.txt' (showing first 100):", $result->output);
-            $this->assertStringContainsString('More files not shown. Narrow your pattern to see more.', $result->output);
+            $this->assertStringContainsString('Results are bounded. Narrow your pattern to see more.', $result->output);
             $this->assertStringNotContainsString(' in sandbox:', $result->output);
         } finally {
             $runtime->close();

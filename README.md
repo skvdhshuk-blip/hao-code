@@ -834,7 +834,7 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.18.58`. Notable changes since `v1.10.0`:
+is based on `v1.18.59`. Notable changes since `v1.10.0`:
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/
@@ -1026,6 +1026,8 @@ is based on `v1.18.58`. Notable changes since `v1.10.0`:
   lifecycle helper. Sandbox Glob keeps the host result heading and explicit
   bounded-result notice, while sandbox search failures use tool-specific
   prefixes.
+- `v1.18.59` — Sandbox Glob's bounded-result wording no longer implies an
+  unknown total count; it remains explicit without overstating the result.
 - `v1.18.56` — AgentRun Glob/Grep now prune and bound remote searches, preserve
   path-level glob semantics, and expose residual-difference metadata; Tokimo
   and AgentRun abort waits mid-run, and all sandbox exec backends use the
