@@ -41,7 +41,12 @@ final class SandboxBashTool extends SandboxTool
             return ToolResult::error('Sandbox Bash does not support background commands.');
         }
         if ($context->isAborted()) {
-            return ToolResult::error('Command interrupted by user.', ['exitCode' => 130, 'aborted' => true]);
+            return ToolResult::error('Command interrupted by user.', [
+                'exitCode' => 130,
+                'aborted' => true,
+                'timedOut' => false,
+                'outputLimited' => false,
+            ]);
         }
 
         try {
@@ -83,7 +88,7 @@ final class SandboxBashTool extends SandboxTool
         ];
 
         return $result['exitCode'] === 0 && ! $result['timedOut'] && ! ($metadata['outputLimited'])
-            ? ToolResult::success($output, ['exitCode' => $result['exitCode']])
+            ? ToolResult::success($output, $metadata)
             : ToolResult::error($output, $metadata);
     }
 

@@ -226,8 +226,9 @@ class ContextCompactorWarningTest extends TestCase
     {
         $compactor = $this->makeCompactor(self::CUSTOM_WINDOW);
 
-        // Above the fixed 40k micro floor but below the scaled auto threshold
-        $this->assertTrue($compactor->shouldMicroCompact(50_000));
+        // MICRO_COMPACT_THRESHOLD = 40_000 * 128/200 = 25_600.
+        $this->assertFalse($compactor->shouldMicroCompact(25_600));
+        $this->assertTrue($compactor->shouldMicroCompact(25_601));
         // Above the scaled auto threshold → auto-compact takes over
         $this->assertFalse($compactor->shouldMicroCompact(self::CUSTOM_AUTO_THRESHOLD + 1));
     }

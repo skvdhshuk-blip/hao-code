@@ -4,7 +4,6 @@ namespace HaoCode\Services\Compact;
 
 use HaoCode\Services\Agent\MessageHistory;
 use HaoCode\Services\Agent\QueryEngine;
-use HaoCode\Services\Cache\FileStateCache;
 use HaoCode\Services\Hooks\HookExecutor;
 
 class ContextCompactor
@@ -47,8 +46,6 @@ class ContextCompactor
     private int $compactFailures = 0;
     private const MAX_COMPACT_FAILURES = 3;
 
-    private ?FileStateCache $fileStateCache = null;
-
     /**
      * Resolved context window for this instance.
      *
@@ -88,9 +85,9 @@ class ContextCompactor
         return $this->scaleFromDefaultWindow(self::AUTO_COMPACT_THRESHOLD);
     }
 
-    public function setFileStateCache(FileStateCache $cache): void
+    private function microCompactThreshold(): int
     {
-        $this->fileStateCache = $cache;
+        return $this->scaleFromDefaultWindow(self::MICRO_COMPACT_THRESHOLD);
     }
 
     /**
@@ -172,7 +169,7 @@ class ContextCompactor
 
     public function shouldMicroCompact(int $totalInputTokens): bool
     {
-        return $totalInputTokens > self::MICRO_COMPACT_THRESHOLD
+        return $totalInputTokens > $this->microCompactThreshold()
             && $totalInputTokens <= $this->autoCompactThreshold();
     }
 

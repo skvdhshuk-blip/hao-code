@@ -75,6 +75,16 @@ class StreamProcessorTest extends TestCase
         $this->assertSame('', $p->getAccumulatedText());
     }
 
+    public function test_text_accumulation_fails_closed_at_byte_limit(): void
+    {
+        $p = new StreamProcessor;
+        $p->processEvent($this->startText());
+        $p->processEvent($this->textDelta(str_repeat('x', 1_000_000)));
+
+        $this->expectException(\LengthException::class);
+        $p->processEvent($this->textDelta('x'));
+    }
+
     // ─── thinking blocks ──────────────────────────────────────────────────
 
     public function test_thinking_delta_accumulates(): void
@@ -90,6 +100,25 @@ class StreamProcessorTest extends TestCase
         ]));
         $this->assertSame('thinking...', $p->getAccumulatedThinking());
         $this->assertTrue($p->hasThinking());
+    }
+
+    public function test_thinking_accumulation_fails_closed_at_byte_limit(): void
+    {
+        $p = new StreamProcessor;
+        $p->processEvent($this->event('content_block_start', [
+            'index' => 0,
+            'content_block' => ['type' => 'thinking', 'thinking' => ''],
+        ]));
+        $p->processEvent($this->event('content_block_delta', [
+            'index' => 0,
+            'delta' => ['type' => 'thinking_delta', 'thinking' => str_repeat('x', 1_000_000)],
+        ]));
+
+        $this->expectException(\LengthException::class);
+        $p->processEvent($this->event('content_block_delta', [
+            'index' => 0,
+            'delta' => ['type' => 'thinking_delta', 'thinking' => 'x'],
+        ]));
     }
 
     public function test_thinking_callback_fired(): void

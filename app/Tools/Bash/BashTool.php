@@ -303,6 +303,8 @@ DESC;
             return ToolResult::error($message, [
                 'exitCode' => 130,
                 'aborted' => true,
+                'timedOut' => false,
+                'outputLimited' => false,
             ]);
         }
 
@@ -311,7 +313,7 @@ DESC;
             $partialNote = $partial ? "\nPartial output:\n{$partial}" : '';
             return ToolResult::error(
                 "Command timed out after {$timeout}s.{$partialNote}",
-                ['exitCode' => -1, 'timedOut' => true],
+                ['exitCode' => 124, 'timedOut' => true, 'outputLimited' => false],
             );
         }
 
@@ -323,7 +325,7 @@ DESC;
 
             return ToolResult::error(
                 "Command output exceeded ".self::MAX_CAPTURED_OUTPUT_BYTES." bytes and was terminated.\nPartial output:\n{$partial}",
-                ['exitCode' => 1, 'outputLimited' => true],
+                ['exitCode' => 1, 'timedOut' => false, 'outputLimited' => true],
             );
         }
 
@@ -362,6 +364,11 @@ DESC;
         }
 
         if ($exitCode !== 0) {
+            $metadata = [
+                'exitCode' => $exitCode,
+                'timedOut' => false,
+                'outputLimited' => false,
+            ];
             // Check if this exit code is semantically non-error for the command
             $exitContext = $this->interpretExitCode($command, $exitCode, $output);
 
@@ -369,17 +376,21 @@ DESC;
                 // Not a real error, just a semantic exit (e.g., grep found no matches)
                 return ToolResult::success(
                     $output . "\n" . ($exitContext['note'] ?? ''),
-                    ['exitCode' => $exitCode]
+                    $metadata,
                 );
             }
 
             return ToolResult::error(
                 "Command exited with code {$exitCode}\n{$output}" . ($exitContext['note'] ? "\n" . $exitContext['note'] : ''),
-                ['exitCode' => $exitCode]
+                $metadata,
             );
         }
 
-        return ToolResult::success($output, ['exitCode' => $exitCode]);
+        return ToolResult::success($output, [
+            'exitCode' => $exitCode,
+            'timedOut' => false,
+            'outputLimited' => false,
+        ]);
     }
 
     private function wrapCommandWithWorkingDirectoryCapture(string $command, string $cwdMarker): string
@@ -640,7 +651,13 @@ DESC;
             $result = "<warnings>\n" . implode("\n", $warnings) . "\n</warnings>\n\n" . $result;
         }
 
-        return ToolResult::success($result, ['taskId' => $taskId, 'pid' => $pid]);
+        return ToolResult::success($result, [
+            'taskId' => $taskId,
+            'pid' => $pid,
+            'running' => true,
+            'timedOut' => false,
+            'outputLimited' => false,
+        ]);
     }
 
     /**
@@ -681,7 +698,7 @@ DESC;
             $running = self::isBackgroundProcessAlive($task);
             if ($running !== true) {
                 $statusInfo = self::readBackgroundStatus($statusPath);
-                $exitCode = $statusInfo['exitCode'] ?? -1;
+                $exitCode = $statusInfo['exitCode'] ?? 124;
                 // Fall through to harvest as a timed-out completion.
                 $timedOut = true;
             }
@@ -692,7 +709,14 @@ DESC;
 
             return ToolResult::success(
                 "Task {$taskId} still running (PID: {$task['pid']}, {$elapsed}s elapsed)",
-                ['taskId' => $taskId, 'pid' => $task['pid'], 'running' => true, 'elapsed' => $elapsed],
+                [
+                    'taskId' => $taskId,
+                    'pid' => $task['pid'],
+                    'running' => true,
+                    'elapsed' => $elapsed,
+                    'timedOut' => false,
+                    'outputLimited' => false,
+                ],
             );
         }
 
@@ -763,7 +787,7 @@ DESC;
         }
         unset(self::$backgroundTasks[$taskId]);
 
-        $code = $exitCode ?? -1;
+        $code = $timedOut ? 124 : ($exitCode ?? -1);
         $meta = [
             'taskId' => $taskId,
             'pid' => $task['pid'],

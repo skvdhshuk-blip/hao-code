@@ -17,8 +17,8 @@ export ANTHROPIC_API_KEY=your-api-key
 
 Hao Code does not load `.env` files by itself. If your application already
 loads `.env`, you may pass the resulting value through `HaoCodeConfig`.
-`OPENAI_API_KEY` is not read automatically; pass it as `apiKey` or configure it
-in the selected provider entry in `~/.haocode/settings.json`.
+For `openai` and `openai_chat`, `OPENAI_API_KEY` is used when no explicit
+`apiKey` or matching provider-entry key is set; it is not an Anthropic fallback.
 
 ---
 
@@ -246,6 +246,13 @@ Generator merely because `break` was used while another reference is retained;
 HaoCode rejects overlapping operations until that release triggers the stream's
 abort and cleanup. Abandoning a stream never resumes queued model or tool work.
 
+Provider-controlled streaming input is bounded: provider SSE lines and
+multiline events over 4 MiB fail with an `ApiErrorException` of type
+`protocol_error`, while provider error bodies are retained only as bounded
+prefixes. MCP stream/frame parsing applies the same fail-closed principle. The
+normalized text and thinking accumulators reject more than 1,000,000 bytes per
+stream with a `LengthException` rather than retaining an unbounded response.
+
 ### conversation()
 
 Create a multi-turn conversation with persistent context.
@@ -405,6 +412,10 @@ $result->toArray();        // ['category' => 'shipping', ...]
 $result->toJson();         // '{"category":"shipping",...}'
 ```
 
+`StructuredResult::toJson()` always keeps Unicode and slashes unescaped and
+throws `JsonException` when the data cannot be encoded. `__toString()` uses the
+same encoding policy with `JSON_PRETTY_PRINT`.
+
 **Retry conversation reuse.** Parse and schema retries always share one
 in-memory `Conversation` (even when `ephemeral: true`) so prior tool results
 remain visible and side effects are not re-issued on a blank agent. `ephemeral`
@@ -437,7 +448,7 @@ $config = new HaoCodeConfig(
 
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
-| `apiKey` | `?string` | `null` | API key for the selected provider. Anthropic may use legacy project/global settings and `ANTHROPIC_API_KEY`; OpenAI wire formats use only an explicitly matching provider entry or `OPENAI_API_KEY` |
+| `apiKey` | `?string` | `null` | API key for the selected provider. Anthropic may use legacy project/global settings and `ANTHROPIC_API_KEY`; OpenAI wire formats resolve from explicit `apiKey`, the matching provider entry, or `OPENAI_API_KEY` |
 | `model` | `?string` | `null` | Model ID. Anthropic falls back to the configured Claude default; `openai` and `openai_chat` require an explicit model or one in the selected provider entry |
 | `baseUrl` | `?string` | `null` | API endpoint URL (for proxies, custom endpoints) |
 | `maxTokens` | `?int` | `null` | Maximum output tokens per response |
@@ -1822,7 +1833,11 @@ $result = HaoCode::query('Summarize this incident.', new HaoCodeConfig(
 If the selected provider bucket has credentials, a separate `apiKey` is not
 required. `RateLimitTracker` exists as an optional in-memory primitive, but
 `HaoCodeConfig` does not currently attach one; normal SDK pool failover is driven
-by provider errors and the pool's exhaustion TTL.
+by provider errors and the pool's exhaustion TTL. The pool constructor and
+`markExhausted()` require finite, non-negative TTL values. A supplied
+`retryAfterSeconds` is stored for that credential's current exhaustion only; it
+does not change the pool default or other credentials, and invalid values throw
+`InvalidArgumentException`.
 
 ---
 

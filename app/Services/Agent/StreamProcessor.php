@@ -6,6 +6,9 @@ use HaoCode\Services\Api\StreamEvent;
 
 class StreamProcessor
 {
+    /** Hard cap for one accumulated text/thinking stream (bytes). */
+    private const MAX_ACCUMULATED_OUTPUT_BYTES = 1_000_000;
+
     /** @var array<int, array{type: string, text?: string, id?: string, name?: string, input?: string}> */
     private array $contentBlocks = [];
 
@@ -85,10 +88,15 @@ class StreamProcessor
     {
         $index = $data['index'];
         $block = $data['content_block'];
+        $initialText = (string) ($block['text'] ?? $block['thinking'] ?? '');
+
+        if (in_array($block['type'] ?? '', ['text', 'thinking'], true)) {
+            $this->assertWithinOutputLimit($initialText, (string) $block['type']);
+        }
 
         $this->contentBlocks[$index] = [
             'type' => $block['type'],
-            'text' => $block['text'] ?? '',
+            'text' => $initialText,
             'id' => $block['id'] ?? null,
             'name' => $block['name'] ?? null,
             'input' => '',
@@ -108,15 +116,17 @@ class StreamProcessor
         $type = $this->contentBlocks[$index]['type'];
 
         if ($type === 'text' && ($delta['type'] ?? '') === 'text_delta') {
-            $text = $delta['text'];
-            $this->contentBlocks[$index]['text'] .= $text;
-            $this->accumulatedText .= $text;
+            $text = (string) ($delta['text'] ?? '');
+            $blockText = (string) ($this->contentBlocks[$index]['text'] ?? '');
+            $this->appendBoundedChunk($blockText, $this->accumulatedText, $text, 'text');
+            $this->contentBlocks[$index]['text'] = $blockText;
         } elseif ($type === 'tool_use' && ($delta['type'] ?? '') === 'input_json_delta') {
             $this->contentBlocks[$index]['input'] .= $delta['partial_json'];
         } elseif ($type === 'thinking' && ($delta['type'] ?? '') === 'thinking_delta') {
-            $thinking = $delta['thinking'];
-            $this->contentBlocks[$index]['text'] .= $thinking;
-            $this->accumulatedThinking .= $thinking;
+            $thinking = (string) ($delta['thinking'] ?? '');
+            $blockText = (string) ($this->contentBlocks[$index]['text'] ?? '');
+            $this->appendBoundedChunk($blockText, $this->accumulatedThinking, $thinking, 'thinking');
+            $this->contentBlocks[$index]['text'] = $blockText;
             if ($this->onThinkingDelta !== null) {
                 ($this->onThinkingDelta)($thinking);
             }
@@ -190,6 +200,32 @@ class StreamProcessor
     {
         $errorMsg = $data['error']['message'] ?? 'Unknown streaming error';
         throw new \RuntimeException("API Error: {$errorMsg}");
+    }
+
+    private function appendBoundedChunk(
+        string &$blockText,
+        string &$accumulated,
+        string $chunk,
+        string $kind,
+    ): void {
+        if (strlen($blockText) + strlen($chunk) > self::MAX_ACCUMULATED_OUTPUT_BYTES
+            || strlen($accumulated) + strlen($chunk) > self::MAX_ACCUMULATED_OUTPUT_BYTES) {
+            throw new \LengthException(
+                "Streaming {$kind} output exceeded ".self::MAX_ACCUMULATED_OUTPUT_BYTES.' bytes.',
+            );
+        }
+
+        $blockText .= $chunk;
+        $accumulated .= $chunk;
+    }
+
+    private function assertWithinOutputLimit(string $value, string $kind): void
+    {
+        if (strlen($value) > self::MAX_ACCUMULATED_OUTPUT_BYTES) {
+            throw new \LengthException(
+                "Streaming {$kind} output exceeded ".self::MAX_ACCUMULATED_OUTPUT_BYTES.' bytes.',
+            );
+        }
     }
 
     public function getAccumulatedText(): string

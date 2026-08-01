@@ -534,8 +534,9 @@ class BashToolTest extends TestCase
         $this->assertTrue($result->isError, 'Timed-out command must return an error result');
         $this->assertStringContainsString('timed out', strtolower($result->output));
         $this->assertLessThan(3.0, $elapsed, 'Tool should return well within 3 s (timeout was 0.5 s)');
-        $this->assertSame(-1, $result->metadata['exitCode'] ?? null);
+        $this->assertSame(124, $result->metadata['exitCode'] ?? null);
         $this->assertTrue($result->metadata['timedOut'] ?? false);
+        $this->assertFalse($result->metadata['outputLimited'] ?? true);
     }
 
     public function test_timeout_kills_process_group_children(): void

@@ -54,11 +54,12 @@ run:
 composer require sk-wang/hao-code && vendor/bin/hao-code-sandbox install --with-runtime
 ```
 
-You do not need to install Tokimo separately. The installer downloads only the
-runner for the current OS/CPU and stores verified artifacts in the user cache.
-On macOS and Linux, full runtime setup may ask for `sudo` while extracting the
-rootfs so its Linux uid/gid ownership is preserved. From a hao-code source
-checkout, replace `vendor/bin/hao-code-sandbox` with `bin/hao-code-sandbox`.
+You do not need to install Tokimo separately. The installer downloads the
+verified runner and, with `--with-runtime`, the guest kernel/rootfs artifacts
+for the current OS/CPU into the user cache. On macOS and Linux, full runtime
+setup may ask for `sudo` while extracting the rootfs so its Linux uid/gid
+ownership is preserved. From a hao-code source checkout, replace
+`vendor/bin/hao-code-sandbox` with `bin/hao-code-sandbox`.
 
 ## Quick Start
 
@@ -181,9 +182,9 @@ $config = new HaoCodeConfig(
 
 If no explicit config is provided, the SDK reads environment and settings
 values such as `ANTHROPIC_API_KEY`, `HAOCODE_MODEL`, `HAOCODE_API_BASE_URL`, and
-`HAOCODE_MAX_TOKENS`. `OPENAI_API_KEY` is not an automatic fallback; pass it as
-`apiKey` or put it in the selected provider entry in
-`~/.haocode/settings.json`.
+`HAOCODE_MAX_TOKENS`. When the selected provider type is `openai` or
+`openai_chat`, `OPENAI_API_KEY` is used if no explicit `apiKey` or matching
+provider-entry key is set; it is not an Anthropic fallback.
 For `openai` and `openai_chat`, a model must also be supplied explicitly or by
 the selected provider entry; the Anthropic default is never sent to those
 providers.
@@ -399,6 +400,13 @@ foreach (HaoCode::stream('Explain PHP Fibers in three sentences') as $message) {
 }
 ```
 
+Provider-controlled streaming input is bounded: provider SSE lines and
+multiline events over 4 MiB fail with a `protocol_error`, and provider error
+bodies are retained only as bounded prefixes. MCP stream/frame parsing applies
+the same fail-closed principle. The normalized text and thinking accumulators
+also reject more than 1,000,000 bytes per stream instead of retaining an
+unbounded response in memory.
+
 ## Conversations
 
 Use a conversation handle when later prompts should keep the same message history and session:
@@ -503,7 +511,9 @@ Schema and JSON-parse retries always reuse one in-memory `Conversation` (even
 when `ephemeral: true`) so tool side effects and transcript history stay in the
 same agent run. `ephemeral` only controls durable session persistence, not retry
 isolation. Correction turns ask for fixed JSON only and tell the model not to
-repeat completed side effects.
+repeat completed side effects. `StructuredResult::toJson()` preserves Unicode
+and slashes and throws `JsonException` when the result cannot be JSON-encoded;
+`__toString()` uses the same encoding policy with pretty printing.
 
 ## MCP Tools
 
@@ -680,6 +690,11 @@ $config = new HaoCodeConfig(
     maxBudgetUsd: 1.00,
 );
 ```
+
+`exhaustedTtlSeconds` and an explicit `retryAfterSeconds` must be finite,
+non-negative numbers. Each exhausted credential keeps the TTL used for that
+exhaustion, so a provider-specific retry delay does not silently replace the
+pool default for other credentials.
 
 Built-in USD budgets use exact pricing for the Claude models listed by this
 release. Unknown or non-Anthropic models report `cost_available: false`;
@@ -950,12 +965,13 @@ is based on `v1.18.54`. Notable changes since `v1.10.0`:
 - `v1.18.50` — Large-file Read/Edit/Write paths, foreground/background Bash,
   parallel tool cancellation, Grep/Glob resource limits, and Windows path
   normalization now fail closed with bounded work and regression coverage.
-- `v1.18.51` — Extensionless large text files no longer inherit a false binary
-  classification from PHP's `application/octet-stream` MIME fallback.
 - `v1.18.54` — Provider, MCP, and sandbox error bodies are now read with
   bounded prefixes; SSE lines and multiline events reject oversized input;
   stdio rejects newline-terminated oversized frames; and fallback search
   resource limits include literal Glob patterns and retained Grep context.
+  `CredentialPool` rejects non-finite or negative exhaustion TTLs, and
+  `StructuredResult::toJson()` now fails with `JsonException` instead of
+  returning an invalid JSON value.
 - `v1.18.53` — Preserve quoted Bash command arguments on Windows, validate and
   normalize inputs before parallel/early execution, and bound unterminated MCP
   SSE metadata before buffering it.
@@ -963,6 +979,8 @@ is based on `v1.18.54`. Notable changes since `v1.10.0`:
   trees and IPC files on callback failures, host search honors ancestor and
   nested `.gitignore` rules, and parallel safety classification uses normalized
   inputs while failing closed around permission prompts.
+- `v1.18.51` — Extensionless large text files no longer inherit a false binary
+  classification from PHP's `application/octet-stream` MIME fallback.
 
 ## License
 

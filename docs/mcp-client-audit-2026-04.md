@@ -1,228 +1,153 @@
-# MCP 客户端完成度审计（2026-04-23）
+# MCP 客户端现状审计（截至 2026-08-01）
 
-## 审计范围
+> 文件名保留历史日期，避免破坏已有链接；以下内容以当前工作区代码为准，基线为
+> `v1.18.54`。这不是协议能力路线图，只记录已经存在的 MCP 功能、边界和剩余的
+> 现有行为问题。
 
-| 文件 | 行数 |
-|------|------|
-| `app/Services/Mcp/McpClient.php` | 260 |
-| `app/Services/Mcp/McpTransport.php` | 425 |
-| `app/Services/Mcp/McpConnectionManager.php` | 256 |
-| `app/Services/Mcp/McpServerConfigManager.php` | 271 |
-| **合计** | **1212** |
+## 结论
 
-审计依据：MCP 协议规范 2024-11-05，覆盖 9 个协议域。
+旧版“39% 完成度”审计已经失效。当前客户端已经覆盖初始化协商、tools/resources/
+prompts、分页、通知分发、反向 `roots/list`、ping、日志级别、completion、OAuth、
+Streamable HTTP 会话恢复和显式重连等能力。
 
----
+当前 MCP 代码的主要质量特征是：
 
-## 总体完成度
+- `McpClient` 把协议能力翻译成稳定的 PHP 方法，不把 JSON-RPC 细节泄漏到 Agent
+  工具层。
+- `McpTransport` 同时承担 stdio、Streamable HTTP 和 SSE 响应解析，并负责入站通知
+  与反向请求的分发。
+- 列表分页、stdio 帧、SSE、HTTP 响应、stderr 和 MCP 工具输出都有边界。
+- 失败连接不会阻断其它 MCP server；连接管理器保留每个 server 的失败状态。
 
-**39%（3.5/9 协议域完整）**
+## 当前能力矩阵
 
-完整实现：initialize/initialized、tools/list + tools/call、resources/list + resources/read。
-部分实现：notifications（仅发送 initialized 单条）。
-完全缺失：prompts、roots（反向请求）、logging、completion/complete、ping。
+| 能力 | 当前行为 | 代码落点 |
+|------|----------|----------|
+| initialize / initialized | 客户端发送 `2025-11-25`，接受已实现的历史版本；服务端返回未知版本时 fail-closed | `McpClient::connect()` |
+| tools/list + tools/call | 支持缓存、`nextCursor` 分页、annotations、统一超时和 HTTP session 恢复 | `McpClient::listTools()` / `callTool()` |
+| resources/list + resources/read | 支持缓存、分页、超时、session 恢复和多 server 聚合 | `McpClient` / `McpConnectionManager` |
+| prompts/list + prompts/get | 支持能力检查、缓存、分页、参数和多 server 聚合 | `McpClient` / `McpConnectionManager` |
+| notifications | 支持按 method 注册多个 handler；`tools/resources/prompts/list_changed` 会清缓存 | `McpTransport::onNotification()` |
+| reverse RPC | 支持服务端发起 `roots/list`，未知 method 返回 JSON-RPC `-32601` | `McpTransport::onRequest()` |
+| ping / logging / completion | 已有 `ping()`、`setLogLevel()`、`complete()` 方法和 OTEL span | `McpClient` |
+| stdio | argv 形式启动子进程，限制环境继承，非阻塞读写，捕获并脱敏 stderr | `McpTransport` |
+| Streamable HTTP / SSE | 支持 JSON、增量 SSE、session id、GET event stream、`Last-Event-ID` 和 `retry` | `McpTransport` |
+| OAuth | 支持 client credentials / refresh token；secret 只从环境变量读取 | `McpOAuthTokenProvider` |
+| 生命周期 | `close()` 清理 server tree、pipe、HTTP session 和 event stream；manager 支持显式重连 | `McpTransport` / `McpConnectionManager` |
 
----
+## 关键实现与边界
 
-## 协议域逐项
+### 初始化与协议版本
 
-### 1. initialize / initialized
+`McpClient` 当前声明的最新协议版本是 `2025-11-25`，同时接受：
 
-- **完成度：95%**
-- **代码证据：**
-  - `app/Services/Mcp/McpClient.php:62-84` — 发送 `initialize` 请求，携带 `protocolVersion: 2024-11-05`、`capabilities.roots.listChanged: true`、`clientInfo`
-  - `app/Services/Mcp/McpClient.php:82` — 发送 `notifications/initialized` 通知
-  - `app/Services/Mcp/McpClient.php:77-79` — 保存 `capabilities`、`serverInfo`、`instructions`
-- **缺口：**
-  - P1：`protocolVersion` 协商写死 `2024-11-05`，服务端返回不同版本时无 fail-fast 处理（Spec 已决议本轮 fail-fast，不做降级，但缺少版本校验逻辑）
-  - P1：`capabilities` 声明 `roots.listChanged: true` 但客户端从未处理服务端发来的 `roots/list` 请求（声明与实现不一致）
+- `2025-11-25`
+- `2025-06-18`
+- `2025-03-26`
+- `2024-11-05`
+- `2024-10-07`
 
----
+服务端返回缺失或未知版本时，初始化抛出 protocol 类型的
+`McpConnectionException`，不会继续使用未协商的协议。连接失败会清理 client 状态、
+缓存和 transport。
 
-### 2. tools/list + tools/call
+客户端声明支持 `roots.listChanged`，并通过 `setRoots()` 提供服务端请求
+`roots/list` 时返回的 workspace roots。
 
-- **完成度：85%**
-- **代码证据：**
-  - `app/Services/Mcp/McpClient.php:109-138` — `listTools()`，支持缓存，解析 `name/description/inputSchema/annotations`
-  - `app/Services/Mcp/McpClient.php:146-167` — `callTool()`，支持 `timeoutSeconds` 参数，返回 `content/isError/structuredContent`
-  - `app/Services/Mcp/McpConnectionManager.php:125-152` — `discoverAllTools()`，聚合多 server 工具，生成 `mcp__<server>__<tool>` 命名
-- **缺口：**
-  - P1：`tools/list` 无 `cursor` 分页支持（服务端有 cursor 时只拿第一页）
-  - P1：`tools/list` 无 `nextCursor` 迭代逻辑
-  - P1：`notifications/tools/list_changed` 通知到达时缓存不会自动失效（仅有手动 `clearCache()`）
+### 列表分页与资源边界
 
----
+`tools/list`、`resources/list` 和 `prompts/list` 都走同一个分页循环：
 
-### 3. resources/list + resources/read + resources/subscribe
+- 单次操作最多 100 页；
+- 聚合最多 10,000 个条目；
+- 聚合 JSON 体最多 16 MiB；
+- cursor 最多 16 KiB；
+- 整个分页操作共享一个绝对 deadline，而不是每页重新获得完整超时。
 
-- **完成度：55%**
-- **代码证据：**
-  - `app/Services/Mcp/McpClient.php:175-209` — `listResources()`，支持缓存，解析 `uri/name/mimeType/description`
-  - `app/Services/Mcp/McpClient.php:217-228` — `readResource()`，发送 `resources/read`，返回 `contents`
-  - `app/Services/Mcp/McpConnectionManager.php:158-180` — `discoverAllResources()`，聚合多 server 资源
-- **缺口：**
-  - P1：`resources/list` 无分页（cursor）支持
-  - P1：`notifications/resources/list_changed` 到达时缓存不失效
-  - P2（下轮新工作项）：`resources/subscribe` 完全未实现——MCP 协议中客户端可订阅特定资源的变更通知，服务端发 `notifications/resources/updated`；当前无订阅注册、无通知监听、无取消订阅接口
+缓存只保留已经成功完成的列表。服务端发送对应的 `list_changed` 通知后，内置
+handler 会清除对应缓存；调用方也可以使用 `clearCache()` 主动清理。
 
----
+### 入站通知与反向请求
 
-### 4. prompts/list + prompts/get
+`McpTransport` 不再丢弃没有 `id` 的入站通知：它会按 method 调用已注册的 handler。
+带有 `id` 和 `method` 的入站 JSON-RPC 请求会进入 request handler，并返回成功结果或
+标准错误响应。
 
-- **完成度：0%**
-- **代码证据：无**
-- **缺口：**
-  - P0：`prompts/list` 完全未实现（无方法、无缓存、无能力检查 `capabilities.prompts`）
-  - P0：`prompts/get` 完全未实现（无参数构造、无响应解析）
-  - P0：`McpConnectionManager` 缺少 `discoverAllPrompts()` 聚合方法
-  - P1：`notifications/prompts/list_changed` 无处理
+目前内置处理的是：
 
----
+- `notifications/tools/list_changed`
+- `notifications/resources/list_changed`
+- `notifications/prompts/list_changed`
+- `roots/list`
 
-### 5. notifications/*（分发基础设施）
+其它通知（例如 `notifications/message`、资源更新通知）可以通过
+`McpClient::registerNotificationHandler()` 接入宿主应用。handler 异常会被隔离，避免
+破坏 transport 读循环；如果宿主需要记录这些异常，应在自定义 handler 内完成。
 
-- **完成度：10%**
-- **代码证据：**
-  - `app/Services/Mcp/McpClient.php:82` — 仅发送 `notifications/initialized`（单向出站）
-  - `app/Services/Mcp/McpTransport.php:99-111` — `notify()` 方法支持发送通知
-  - `app/Services/Mcp/McpTransport.php:237-239` — `sendStdio` 读循环中跳过无 `id` 的消息（即悄悄丢弃所有入站通知）
-- **缺口：**
-  - P0：完全没有入站通知分发器——服务端发来的所有 `notifications/*` 消息（`tools/list_changed`、`resources/list_changed`、`resources/updated`、`prompts/list_changed`、`roots/list_changed` 等）均被丢弃
-  - P0：无 `registerNotificationHandler(string $method, callable $handler)` 机制
-  - P1：`list_changed` 类通知未触发缓存失效
+### stdio 进程与 HTTP 流
 
----
+stdio 只继承安全的启动环境和配置中显式提供的 `env`，不会隐式把宿主全部环境变量
+传给 MCP server。stdout/stderr 使用非阻塞 pipe，stderr 保留在有界缓冲区中，并在
+错误预览和 `drainStderr()` 中做 token、key 和绝对路径脱敏。
 
-### 6. roots/list + roots/list_changed（反向请求）
+边界如下：
 
-- **完成度：5%**
-- **代码证据：**
-  - `app/Services/Mcp/McpClient.php:65` — 声明 `capabilities.roots.listChanged: true`（仅声明，无实现）
-- **缺口：**
-  - P0：服务端向客户端发起的 `roots/list` 请求（反向 JSON-RPC）完全无处理——当前读循环（`McpTransport:237`）遇到带 `method` 但无 `id` 的消息跳过（实际 `roots/list` 有 `id`，会卡在等待响应却永远不响应，造成协议死锁）
-  - P0：无客户端 workspace roots 注册接口（`setRoots(array $roots)`）
-  - P1：`notifications/roots/list_changed` 事件无处理（服务端通知客户端根目录变更）
+- stdio 未终止 JSONL 帧或读缓冲超过 4 MiB 时拒绝继续解析；
+- HTTP JSON/error body 不超过 4 MiB；
+- SSE decoder 使用有界缓冲；
+- stderr 保留最多 32 KiB；
+- HTTP event stream 采用协作式 `poll()`，不会在 PHP 进程中偷偷创建后台线程。
 
----
+Streamable HTTP 支持请求级 POST 响应，也支持独立 GET event stream。GET 返回 405 时，
+仍可继续使用请求级响应。连接关闭时会尽力发送 DELETE，并清理 session 和子进程资源。
 
-### 7. logging/setLevel + log message
+### Session 恢复与显式重连
 
-- **完成度：0%**
-- **代码证据：无**
-- **缺口：**
-  - P1：`logging/setLevel` 完全未实现——客户端应能调用此方法控制服务端日志级别
-  - P1：服务端发来的 `notifications/message`（log message）无接收与转发逻辑
-  - P1：无 OTEL 集成将 MCP server 日志纳入 span（Spec Acceptance Criteria 要求每个 RPC 有 `mcp.client.request.<method>` span）
+HTTP session 过期时，当前请求在绝对 deadline 内重新 initialize、清理列表缓存并重发
+一次。连接管理器的 `reconnect()` 最多执行 3 次连接尝试，失败之间使用 500ms、1000ms
+退避；`ensureConnected()` 会在 client 不再连接时触发它。
 
----
+这不是后台自动重连：`McpConnectionManager::poll()` 只记录连接失败，不会无条件重启
+server。宿主需要在合适的生命周期点调用 `ensureConnected()` 或 `reconnect()`，这样
+不会在一个长时间运行的 PHP worker 中产生不可控的重启循环。
 
-### 8. completion/complete
+## 仍需注意的现有行为
 
-- **完成度：0%**
-- **代码证据：无**
-- **缺口：**
-  - P1：`completion/complete` 完全未实现——用于 prompt/resource 参数的自动补全
-  - P1：无参数构造（`ref` 字段区分 `ref/prompt` / `ref/resource`），无响应解析
+以下不是“缺少新协议功能”，而是当前已有行为的边界，调用方应明确处理：
 
----
+1. stdio 没有独立的后台读循环。通知和反向请求会在下一次请求的读写过程中被处理；
+   如果 server 在长时间空闲期间只发送通知，宿主需要主动触发合适的 I/O 生命周期。
+2. `setRoots()` 当前更新本地 roots，供后续 `roots/list` 使用；它不会自动向 server
+   发送 roots 变更通知。若宿主在连接建立后改变 roots，应在自己的协议生命周期中处理
+   这一点。
+3. `setLogLevel()`、`complete()` 等低层方法由 server 的能力和错误响应决定；客户端
+   不会为了调用方静默伪造服务端能力。
+4. MCP 动态工具在进入 Agent 消息前仍有独立的结果输出上限；原始 server 响应不会
+   无界地进入上下文。
 
-### 9. ping
+## 旧审计结论的复核
 
-- **完成度：0%**
-- **代码证据：无**
-- **缺口：**
-  - P1：`ping` 方法完全未实现（双向，客户端和服务端均可发起）
-  - P1：无心跳保活机制（长连接 stdio 进程静默后无检测）
+| 旧审计结论 | 当前状态 |
+|------------|----------|
+| prompts 完全未实现 | 已有 `listPrompts()`、`getPrompt()`、能力检查、分页和 manager 聚合 |
+| 入站通知全部丢弃 | 已有按 method 的通知 handler 和缓存失效 |
+| `roots/list` 无响应 | 已有 roots 注册与反向请求响应 |
+| tools/resources 无分页 | 三类 list 均使用 `nextCursor` 循环和总量边界 |
+| 没有 ping / logging / completion | `ping()`、`setLogLevel()`、`complete()` 已存在 |
+| protocol version 写死且不校验 | 发送最新版本，并校验服务端版本是否在支持集合内 |
+| stderr 直接关闭 | stdio stderr 已捕获、限长并脱敏 |
+| HTTP session 过期不会恢复 | `McpSessionExpiredException` 触发一次 deadline 内重初始化和重发 |
+| manager 没有重连 | 已有显式 `reconnect()`、退避和 `ensureConnected()` |
 
----
+旧报告中关于 `resources/subscribe`、sampling、progress 等未纳入当前工具面的协议域，
+属于其它协议能力，不应在“只打磨已有功能”的工作中伪装成回归项或顺手扩展范围。
 
-## 错误处理 / 超时 / 重连完善度
+## 维护约束
 
-### 错误处理
-
-| 场景 | 现状 | 评估 |
-|------|------|------|
-| JSON-RPC `error` 字段 | 抛 `McpConnectionException`，含 code + message | 良好 |
-| HTTP 4xx/5xx | 已分类处理 401/404/其他 | 良好 |
-| curl 失败 | 抛异常，含 curl 错误信息 | 良好 |
-| stdio 写失败 | 抛异常 | 良好 |
-| 无效 initialize 响应 | 抛异常 | 良好 |
-| 错误分类（protocol/transport/application） | 仅有单一 `McpConnectionException`，无分类 | 缺口 P1 |
-| stderr 捕获 | `McpTransport:188` 直接关闭 stderr pipe（`@fclose($pipes[2])`），服务端错误日志丢失 | 缺口 P1 |
-
-### 超时
-
-| 场景 | 现状 | 评估 |
-|------|------|------|
-| `connect()` 超时 | 参数传递但仅用于 initialize RPC，stdio `proc_open` 无连接超时 | 部分 |
-| `callTool()` 超时 | 支持 per-call `timeoutSeconds`，默认 60s | 良好 |
-| `listTools()` 超时 | 无超时参数，使用 transport 默认 60s | 可改进 |
-| `listResources()` / `readResource()` 超时 | 同上 | 可改进 |
-| HTTP `CURLOPT_CONNECTTIMEOUT` | 固定 10s | 良好 |
-| per-call timeout override | 仅 `callTool` 暴露，其余方法不可 override | 缺口 P1 |
-
-### 重连
-
-| 场景 | 现状 | 评估 |
-|------|------|------|
-| stdio 进程退出检测 | `isConnected()` 通过 `proc_get_status` 检测 | 有检测 |
-| 自动重连 | 完全无 | 缺口 P0 |
-| 指数退避 | 无 | 缺口 P0 |
-| 最大重试次数 | 无 | 缺口 P0 |
-| HTTP session 过期重连 | 404 时清 session ID 并抛异常，上层不会自动重试 | 缺口 P1 |
-| 重连后缓存清除 | `clearCache()` 方法存在但无自动触发 | 缺口 P1 |
-
----
-
-## 缺口汇总表
-
-| 缺口 | 优先级 | 建议（PR B） |
-|------|--------|-------------|
-| `prompts/list` + `prompts/get` 实现 | P0 | `McpClient::listPrompts()` + `getPrompt()` |
-| 入站通知分发器（`registerNotificationHandler`） | P0 | `McpTransport` 读循环分发 + `McpClient` 注册接口 |
-| `roots/list` 反向请求响应 | P0 | 读循环检测有 `id`+`method` 的入站请求，回 JSON-RPC response |
-| 断线重连（指数退避，最大 3 次） | P0 | `McpConnectionManager::reconnect()` |
-| `ping` 心跳 | P1 | `McpClient::ping()` |
-| `logging/setLevel` | P1 | `McpClient::setLogLevel()` |
-| `completion/complete` | P1 | `McpClient::complete()` |
-| `list_changed` 通知清缓存 | P1 | 通知 handler 自动调 `clearCache()` |
-| per-call timeout 全方法暴露 | P1 | `listTools/listResources/readResource` 加 `$timeout` 参数 |
-| stderr 捕获（纳入 OTEL） | P1 | 保留 stderr pipe，异步读取，记录 span event |
-| 错误分类（protocol/transport/application） | P1 | 扩展 `McpConnectionException` 或新增子类 |
-| HTTP session 过期自动重试 | P1 | `sendHttp` 捕获 404 后重新 initialize 并重发 |
-| `protocolVersion` 版本校验 fail-fast | P1 | initialize 响应对比版本，不匹配抛异常 |
-| `resources/subscribe` + `notifications/resources/updated` | P2（下轮新工作项） | 独立工作项：订阅 + 通知 + 取消订阅 |
-| `sampling`（server 反向调 client LLM） | P2（下轮新工作项） | 独立工作项 |
-| `progress notifications` | P2（下轮新工作项） | 独立工作项 |
-| `cancellation` | P2（下轮新工作项） | 独立工作项 |
-| HTTP / SSE transport 替代 stdio | P2（下轮新工作项） | 独立工作项 |
-
----
-
-## 下一步（PR B 范围）
-
-补齐 P0（4 项）+ P1（9 项），预估 ~380 行：
-
-- `McpClient.php` 增量 ~180 行
-  - `listPrompts()` / `getPrompt()`（+40 行）
-  - `ping()`（+15 行）
-  - `setLogLevel()`（+15 行）
-  - `complete()`（+25 行）
-  - `registerNotificationHandler()` + 反向请求响应接口（+30 行）
-  - `setRoots()` + roots 响应逻辑（+20 行）
-  - per-call timeout 参数补充（+10 行）
-  - protocolVersion fail-fast 校验（+10 行）
-  - HTTP session 过期自动重试（+15 行）
-
-- `McpTransport.php` 增量 ~50 行
-  - 读循环入站通知/请求分发（+30 行）
-  - stderr 捕获（+20 行）
-
-- `McpConnectionManager.php` 增量 ~60 行
-  - `reconnect()` + 指数退避（+40 行）
-  - `discoverAllPrompts()`（+20 行）
-
-- `tests/Feature/Mcp/ClientTest.php` 新增 ~90 行
-  - P0/P1 单元测试 + filesystem server 冒烟测试（`--group mcp-filesystem`）
-
-**P2 五项全部推迟，各自独立建工作项。**
+- 修改 MCP transport 或 client 时，至少覆盖：stdio、HTTP/SSE、分页、session 过期、
+  反向请求、通知 handler 和资源上限。
+- 任何新增的读取路径都必须保留 deadline、帧/响应上限和敏感信息脱敏。
+- 连接失败应保持 server 级隔离；不要因为单个 MCP server 失败而让其它 server 的
+  工具发现和调用失效。
+- 文档中的协议版本、能力矩阵和边界以 `app/Services/Mcp/` 当前实现为准；不要继续
+  使用旧的“39% 完成度”数字。
