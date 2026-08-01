@@ -74,6 +74,7 @@ jobs:
           tests/Unit/ProcessSupervisorTest.php
           tests/Unit/SensitivePathGuardTest.php
           tests/Unit/TestDiscoveryCheckTest.php
+          tests/Unit/WindowsToolCompatibilityTest.php
           tests/Unit/WorktreeToolsTest.php
           --no-progress
 

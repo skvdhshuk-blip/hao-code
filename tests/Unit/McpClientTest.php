@@ -220,6 +220,110 @@ PHP);
         }
     }
 
+    public function test_stdio_request_completes_after_partial_large_stdin_writes(): void
+    {
+        $server = tempnam(sys_get_temp_dir(), 'mcp-partial-write-server-');
+        $this->assertNotFalse($server);
+        file_put_contents($server, <<<'PHP'
+<?php
+while (($line = fgets(STDIN)) !== false) {
+    $request = json_decode($line, true);
+    if (!is_array($request) || !isset($request['id'])) {
+        continue;
+    }
+    $blob = $request['params']['blob'] ?? '';
+    fwrite(STDOUT, json_encode([
+        'jsonrpc' => '2.0',
+        'id' => $request['id'],
+        'result' => ['bytes' => is_string($blob) ? strlen($blob) : 0],
+    ])."\n");
+    fflush(STDOUT);
+}
+PHP);
+
+        $transport = McpTransport::fromConfig([
+            'transport' => 'stdio',
+            'command' => PHP_BINARY,
+            'args' => [$server],
+            'url' => null,
+            'env' => [],
+            'headers' => [],
+        ]);
+
+        try {
+            $transport->connect();
+            $size = 2 * 1024 * 1024;
+            $result = $transport->request('large-request', ['blob' => str_repeat('x', $size)], 5);
+
+            $this->assertSame(['bytes' => $size], $result);
+        } finally {
+            $transport->close();
+            @unlink($server);
+        }
+    }
+
+    public function test_stdio_reverse_request_write_drains_stdout_pressure(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows') {
+            $this->markTestSkipped('stdio pipe pressure test is POSIX-focused.');
+        }
+
+        $server = tempnam(sys_get_temp_dir(), 'mcp-reverse-stdout-server-');
+        $this->assertNotFalse($server);
+        file_put_contents($server, <<<'PHP'
+<?php
+$line = fgets(STDIN);
+$request = json_decode($line ?: '', true);
+$id = $request['id'] ?? null;
+
+fwrite(STDOUT, json_encode([
+    'jsonrpc' => '2.0',
+    'id' => 99,
+    'method' => 'roots/list',
+    'params' => [],
+])."\n");
+fflush(STDOUT);
+
+// Keep stdout busy while waiting for the client's reverse-RPC response.
+// Without concurrent stdout draining on the client this blocks before stdin
+// can accept the large response payload.
+fwrite(STDOUT, str_repeat('n', 2 * 1024 * 1024)."\n");
+fflush(STDOUT);
+
+$reverseResponse = fgets(STDIN);
+if ($reverseResponse === false) {
+    exit(2);
+}
+
+fwrite(STDOUT, json_encode([
+    'jsonrpc' => '2.0',
+    'id' => $id,
+    'result' => ['ok' => true],
+])."\n");
+fflush(STDOUT);
+PHP);
+
+        $transport = McpTransport::fromConfig([
+            'transport' => 'stdio',
+            'command' => PHP_BINARY,
+            'args' => [$server],
+            'url' => null,
+            'env' => [],
+            'headers' => [],
+        ]);
+        $transport->onRequest('roots/list', static fn (): array => [
+            'roots' => str_repeat('r', 2 * 1024 * 1024),
+        ]);
+
+        try {
+            $transport->connect();
+            $this->assertSame(['ok' => true], $transport->request('ping', [], 5));
+        } finally {
+            $transport->close();
+            @unlink($server);
+        }
+    }
+
     public function test_stdio_server_rejects_an_oversized_response_frame(): void
     {
         $transport = McpTransport::fromConfig([

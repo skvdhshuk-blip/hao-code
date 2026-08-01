@@ -423,6 +423,7 @@ final class McpTransport
             $remaining = max(0.0, $deadline - microtime(true));
             $seconds = (int) floor($remaining);
             $microseconds = (int) max(1, min(999_999, ($remaining - $seconds) * 1_000_000));
+            $selectFailed = false;
 
             if ($read === [] && $write === []) {
                 usleep(10_000);
@@ -432,6 +433,19 @@ final class McpTransport
                     usleep(10_000);
                     $read = [];
                     $write = [];
+                    $selectFailed = true;
+                }
+            }
+
+            if ($selectFailed) {
+                // stream_select() is not implemented for every kind of
+                // proc_open pipe on native Windows. The streams are already
+                // non-blocking, so poll them directly instead of turning a
+                // usable MCP server into a timeout-only failure mode.
+                $this->drainStdoutPipe();
+                $this->drainStderrPipe();
+                if ($writeOffset < strlen($payload) && is_resource($this->stdin)) {
+                    $write = [$this->stdin];
                 }
             }
 
@@ -485,6 +499,9 @@ final class McpTransport
         $offset = 0;
         while ($offset < strlen($payload) && microtime(true) < $deadline) {
             $read = [];
+            if (is_resource($this->stdout)) {
+                $read[] = $this->stdout;
+            }
             if (is_resource($this->stderr)) {
                 $read[] = $this->stderr;
             }
@@ -494,16 +511,36 @@ final class McpTransport
             $seconds = (int) floor($remaining);
             $microseconds = (int) max(1, min(999_999, ($remaining - $seconds) * 1_000_000));
             $changed = @stream_select($read, $write, $except, $seconds, $microseconds);
+            $selectFailed = false;
             if ($changed === false) {
                 usleep(10_000);
-                continue;
+                $read = [];
+                $write = [];
+                $selectFailed = true;
+            }
+
+            if ($selectFailed) {
+                // See sendStdio(): direct non-blocking polling is the
+                // cross-platform fallback when select cannot watch pipes.
+                $this->drainStdoutPipe();
+                $this->drainStderrPipe();
+                if (is_resource($this->stdin)) {
+                    $write = [$this->stdin];
+                }
             }
 
             foreach ($read as $stream) {
-                if ($stream === $this->stderr) {
+                if ($stream === $this->stdout) {
+                    // A server may keep writing notifications while it waits
+                    // for this reverse-RPC response. Drain stdout as well as
+                    // stderr or the server can block on its output pipe while
+                    // this side is blocked writing stdin.
+                    $this->drainStdoutPipe();
+                } elseif ($stream === $this->stderr) {
                     $this->drainStderrPipe();
                 }
             }
+            $this->throwIfReadBufferOversized();
             if ($write !== []) {
                 $written = @fwrite($this->stdin, substr($payload, $offset));
                 if ($written === false) {

@@ -170,14 +170,15 @@ DESC;
             return ToolResult::error('Failed to allocate temporary files for command output.');
         }
 
+        $captureWithPipes = ($capture['usePipes'] ?? false) === true;
         $descriptors = [
             0 => ['pipe', 'r'],
             // Use file descriptors rather than proc_open pipes so foreground
             // commands that launch background children with `&` do not keep the
             // tool waiting for EOF. On POSIX the files are FIFOs, letting the
             // parent enforce the capture byte cap before data reaches disk.
-            1 => ['file', $capture['stdoutFile'], 'w'],
-            2 => ['file', $capture['stderrFile'], 'w'],
+            1 => $captureWithPipes ? ['pipe', 'w'] : ['file', $capture['stdoutFile'], 'w'],
+            2 => $captureWithPipes ? ['pipe', 'w'] : ['file', $capture['stderrFile'], 'w'],
         ];
 
         $cwdMarker = '__HAOCODE_CWD__' . bin2hex(random_bytes(8)) . '__';
@@ -192,6 +193,25 @@ DESC;
 
         $process = $opened['process'];
         $pid = $opened['pid'];
+
+        if ($captureWithPipes) {
+            $capture['stdoutHandle'] = $opened['pipes'][1] ?? null;
+            $capture['stderrHandle'] = $opened['pipes'][2] ?? null;
+            if (! is_resource($capture['stdoutHandle']) || ! is_resource($capture['stderrHandle'])) {
+                ProcessSupervisor::terminateTree($pid, true);
+                foreach ($opened['pipes'] as $pipe) {
+                    if (is_resource($pipe)) {
+                        fclose($pipe);
+                    }
+                }
+                @proc_close($process);
+                $this->closeForegroundCaptureFiles($capture);
+
+                return ToolResult::error('Failed to allocate bounded command output pipes.');
+            }
+            stream_set_blocking($capture['stdoutHandle'], false);
+            stream_set_blocking($capture['stderrHandle'], false);
+        }
 
         $stdout = '';
         $stderr = '';
@@ -394,10 +414,23 @@ DESC;
     /**
      * Allocate stdout/stderr capture endpoints for foreground Bash.
      *
-     * @return array{stdoutFile: string, stderrFile: string, stdoutHandle: resource, stderrHandle: resource}|null
+     * @return array{stdoutFile: ?string, stderrFile: ?string, stdoutHandle: resource|null, stderrHandle: resource|null, usePipes: bool}|null
      */
     private function allocateForegroundCaptureFiles(): ?array
     {
+        // Windows has no POSIX FIFO equivalent. Use proc_open pipes there so
+        // the parent can enforce the combined byte cap before output reaches a
+        // regular file; a fast `yes`/build log must not fill the temp volume.
+        if (PHP_OS_FAMILY === 'Windows') {
+            return [
+                'stdoutFile' => null,
+                'stderrFile' => null,
+                'stdoutHandle' => null,
+                'stderrHandle' => null,
+                'usePipes' => true,
+            ];
+        }
+
         $stdoutFile = tempnam(sys_get_temp_dir(), 'haocode_bash_stdout_');
         $stderrFile = tempnam(sys_get_temp_dir(), 'haocode_bash_stderr_');
 
@@ -462,10 +495,11 @@ DESC;
             'stderrFile' => $stderrFile,
             'stdoutHandle' => $stdoutHandle,
             'stderrHandle' => $stderrHandle,
+            'usePipes' => false,
         ];
     }
 
-    /** @param array{stdoutFile: string, stderrFile: string, stdoutHandle: resource, stderrHandle: resource} $capture */
+    /** @param array{stdoutFile: ?string, stderrFile: ?string, stdoutHandle: resource|null, stderrHandle: resource|null, usePipes: bool} $capture */
     private function closeForegroundCaptureFiles(array $capture): void
     {
         if (is_resource($capture['stdoutHandle'])) {
@@ -474,8 +508,12 @@ DESC;
         if (is_resource($capture['stderrHandle'])) {
             fclose($capture['stderrHandle']);
         }
-        @unlink($capture['stdoutFile']);
-        @unlink($capture['stderrFile']);
+        if (is_string($capture['stdoutFile'] ?? null)) {
+            @unlink($capture['stdoutFile']);
+        }
+        if (is_string($capture['stderrFile'] ?? null)) {
+            @unlink($capture['stderrFile']);
+        }
     }
 
     /**
@@ -663,6 +701,29 @@ DESC;
                 .'file has not been written yet. Cannot treat the task as completed.',
                 ['taskId' => $taskId, 'pid' => $task['pid'], 'running' => null, 'status' => 'unknown'],
             );
+        }
+
+        if ($exitCode === null && $running === false) {
+            // The supervisor writes the status atomically immediately before
+            // it exits. proc_get_status() can observe that exit a few ticks
+            // earlier than the parent sees the renamed file; never turn that
+            // race into a fabricated exit code -1 or timeout.
+            for ($attempt = 0; $attempt < 5 && $exitCode === null; $attempt++) {
+                usleep(10_000);
+                $statusInfo = self::readBackgroundStatus($statusPath);
+                $exitCode = $statusInfo['exitCode'] ?? null;
+            }
+            if ($exitCode === null) {
+                return ToolResult::error(
+                    "Task {$taskId} status is unknown: supervisor exited before its authoritative "
+                    .'status file became visible. Retry checkTask() to harvest the final result.',
+                    ['taskId' => $taskId, 'pid' => $task['pid'], 'running' => false, 'status' => 'unknown'],
+                );
+            }
+            // The status file is authoritative once it becomes visible. In
+            // particular, do not retain the wall-clock fallback above when a
+            // successful supervisor completion wins this race.
+            $timedOut = (bool) ($statusInfo['timedOut'] ?? false);
         }
 
         // Process finished (or status file present) — harvest output + exit code.

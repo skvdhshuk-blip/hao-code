@@ -488,7 +488,7 @@ class Conversation
         // session transcript, then the original RunOptions. Rebuilding only
         // from agent+options can fall back to getcwd() and lose the original
         // session working directory on the next send().
-        $liveCwd = $this->loop->getRunContext()?->workingDirectory;
+        $liveCwd = $this->loop->getCurrentWorkingDirectory();
         $liveProject = $this->loop->getRunContext()?->projectDirectory;
         /** @var SessionManager $sessionManager */
         $sessionManager = \HaoCode\Support\Runtime\SdkRuntime::app(SessionManager::class);

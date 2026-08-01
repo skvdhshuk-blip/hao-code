@@ -29,6 +29,9 @@ final class McpClient
     /** Prevent a valid-looking paginated server from exhausting client memory. */
     private const LIST_MAX_ITEMS = 10_000;
 
+    /** Bound decoded list payloads in addition to the per-page transport cap. */
+    private const LIST_MAX_AGGREGATE_BYTES = 16 * 1024 * 1024;
+
     /** Cursor values are protocol metadata, not an unbounded payload channel. */
     private const LIST_MAX_CURSOR_BYTES = 16_384;
 
@@ -461,6 +464,7 @@ final class McpClient
     private function listAllPages(string $method, string $itemsKey, int $timeoutSeconds): array
     {
         $items = [];
+        $aggregateBytes = 0;
         $cursor = null;
         $seenCursors = [];
         $hasMore = true;
@@ -493,7 +497,23 @@ final class McpClient
                             "MCP {$method} exceeded ".self::LIST_MAX_ITEMS.' aggregated items.',
                         );
                     }
+
+                    $encodedItem = json_encode(
+                        $item,
+                        JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE,
+                    );
+                    $itemBytes = is_string($encodedItem)
+                        ? strlen($encodedItem)
+                        : strlen(serialize($item));
+                    if ($aggregateBytes + $itemBytes > self::LIST_MAX_AGGREGATE_BYTES) {
+                        throw new McpConnectionException(
+                            "MCP {$method} exceeded ".self::LIST_MAX_AGGREGATE_BYTES
+                            .' aggregated bytes.',
+                        );
+                    }
+
                     $items[] = $item;
+                    $aggregateBytes += $itemBytes;
                 }
             }
 

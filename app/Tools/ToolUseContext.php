@@ -15,6 +15,8 @@ class ToolUseContext
     public readonly \Closure|null $onProgress;
     /** @var (\Closure(): bool)|null */
     public readonly \Closure|null $shouldAbort;
+    /** @var (\Closure(string): void)|null */
+    public readonly \Closure|null $onWorkingDirectoryChanged;
 
     /** @var array<string, array<string, mixed>> canonical path => revision receipt */
     private array $readFileState = [];
@@ -36,9 +38,11 @@ class ToolUseContext
         public readonly ?AgentRunContext $runContext = null,
         public readonly ?LlmProvider $provider = null,
         public readonly ?ToolRegistry $toolRegistry = null,
+        \Closure|null $onWorkingDirectoryChanged = null,
     ) {
         $this->onProgress = $onProgress;
         $this->shouldAbort = $shouldAbort;
+        $this->onWorkingDirectoryChanged = $onWorkingDirectoryChanged;
         $this->fileStateCache = $fileStateCache ?? new FileStateCache();
     }
 
@@ -50,7 +54,14 @@ class ToolUseContext
     /** @internal */
     public function setWorkingDirectory(string $workingDirectory): void
     {
+        if ($this->workingDirectory === $workingDirectory) {
+            return;
+        }
+
         $this->workingDirectory = $workingDirectory;
+        if ($this->onWorkingDirectoryChanged !== null) {
+            ($this->onWorkingDirectoryChanged)($workingDirectory);
+        }
     }
 
     /** @internal */

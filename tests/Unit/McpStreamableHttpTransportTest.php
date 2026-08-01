@@ -505,6 +505,58 @@ final class McpStreamableHttpTransportTest extends TestCase
         $client->listTools(false, 2);
     }
 
+    public function test_list_tools_rejects_unbounded_byte_aggregation(): void
+    {
+        $page = 0;
+        $http = new MockHttpClient(function (string $method, string $url, array $options) use (&$page): MockResponse {
+            $payload = $this->decodeRequestBody($options);
+            $rpcMethod = $payload['method'] ?? $method;
+
+            if ($rpcMethod === 'initialize') {
+                return $this->jsonResponse([
+                    'jsonrpc' => '2.0',
+                    'id' => $payload['id'],
+                    'result' => [
+                        'protocolVersion' => '2025-11-25',
+                        'capabilities' => ['tools' => new \stdClass],
+                        'serverInfo' => ['name' => 'fixture', 'version' => '1'],
+                    ],
+                ]);
+            }
+            if ($rpcMethod === 'notifications/initialized') {
+                return new MockResponse('', ['http_code' => 202]);
+            }
+            if ($method === 'GET') {
+                return new MockResponse('', ['http_code' => 405]);
+            }
+            if ($rpcMethod === 'tools/list') {
+                $page++;
+
+                return $this->jsonResponse([
+                    'jsonrpc' => '2.0',
+                    'id' => $payload['id'],
+                    'result' => [
+                        'tools' => [[
+                            'name' => 'large-'.$page,
+                            'description' => str_repeat('x', 3_500_000),
+                            'inputSchema' => ['type' => 'object'],
+                        ]],
+                        'nextCursor' => $page < 5 ? 'page-'.$page : null,
+                    ],
+                ]);
+            }
+
+            return new MockResponse('', ['http_code' => 204]);
+        });
+        $transport = $this->makeTransport($http);
+        $client = new McpClient($transport, 'fixture');
+        $client->connect();
+
+        $this->expectException(McpConnectionException::class);
+        $this->expectExceptionMessage('aggregated bytes');
+        $client->listTools(false, 10);
+    }
+
     public function test_explicit_authorization_header_is_not_replaced_by_oauth_retry(): void
     {
         $secretName = 'HAOCODE_TEST_MCP_CLIENT_SECRET_'.bin2hex(random_bytes(4));

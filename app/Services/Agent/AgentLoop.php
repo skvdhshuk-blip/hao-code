@@ -193,6 +193,24 @@ class AgentLoop
         $this->sessionManager->setCurrentWorkingDirectory($dir);
     }
 
+    /** @internal */
+    public function getCurrentWorkingDirectory(): ?string
+    {
+        return $this->workingDirectory ?? $this->runContext?->workingDirectory;
+    }
+
+    /**
+     * Keep the loop/session cwd in sync with a worktree transition made by a
+     * tool without discarding the live ToolUseContext or its read receipts.
+     *
+     * @internal
+     */
+    private function synchronizeToolWorkingDirectory(string $directory): void
+    {
+        $this->workingDirectory = $directory;
+        $this->sessionManager->setCurrentWorkingDirectory($directory);
+    }
+
     public function abort(): void
     {
         $this->aborted = true;
@@ -285,6 +303,9 @@ class AgentLoop
             runContext: $this->runContext,
             provider: $this->provider,
             toolRegistry: $this->toolRegistry,
+            onWorkingDirectoryChanged: function (string $directory): void {
+                $this->synchronizeToolWorkingDirectory($directory);
+            },
         );
         $context->beginReadReceiptBatch();
         $readReceiptBatchCommitted = false;
@@ -549,6 +570,9 @@ class AgentLoop
                 runContext: $this->runContext,
                 provider: $this->provider,
                 toolRegistry: $this->toolRegistry,
+                onWorkingDirectoryChanged: function (string $directory): void {
+                    $this->synchronizeToolWorkingDirectory($directory);
+                },
             );
             $streamingExecutor->setContext($context, $onToolStart, $onToolComplete);
             $context->beginReadReceiptBatch();
@@ -884,7 +908,7 @@ class AgentLoop
     private function buildRunSnapshot(int $turnCount): array
     {
         return [
-            'cwd' => $this->runContext?->workingDirectory,
+            'cwd' => $this->getCurrentWorkingDirectory(),
             'project_directory' => $this->runContext?->projectDirectory,
             'worktree_path' => $this->runContext?->worktreePath,
             'worktree_branch' => $this->runContext?->worktreeBranch,

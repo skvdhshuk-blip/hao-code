@@ -51,6 +51,23 @@ class ToolUseContextTest extends TestCase
         $this->assertTrue($called);
     }
 
+    public function test_working_directory_change_notifies_the_owner_without_replacing_context(): void
+    {
+        $changedTo = null;
+        $context = new ToolUseContext(
+            workingDirectory: '/tmp/old-cwd',
+            sessionId: 'cwd-sync',
+            onWorkingDirectoryChanged: static function (string $directory) use (&$changedTo): void {
+                $changedTo = $directory;
+            },
+        );
+
+        $context->setWorkingDirectory('/tmp/new-cwd');
+
+        $this->assertSame('/tmp/new-cwd', $context->workingDirectory);
+        $this->assertSame('/tmp/new-cwd', $changedTo);
+    }
+
     public function test_read_state_is_isolated_between_contexts(): void
     {
         $file = tempnam(sys_get_temp_dir(), 'haocode-context-');
