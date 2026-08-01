@@ -86,7 +86,12 @@ final class ProcessSupervisor
             @posix_kill($pid, $sig);
             if (! $force) {
                 usleep(150_000);
-                self::signalPids($descendants, $killSig);
+                // A child may have been forked between the first descendant
+                // snapshot and the TERM signal. Re-scan while the root is
+                // still expected to be alive so that late descendants cannot
+                // outlive the process tree termination window.
+                $lateDescendants = self::collectDescendantPids($pid);
+                self::signalPids(array_values(array_unique(array_merge($descendants, $lateDescendants))), $killSig);
                 @posix_kill(-$pid, $killSig);
                 @posix_kill($pid, $killSig);
             }
@@ -120,18 +125,13 @@ final class ProcessSupervisor
         }
 
         $seen[$pid] = true;
-        $result = self::runCommand(['pgrep', '-P', (string) $pid]);
-        $raw = $result['stdout'];
-        if (! is_string($raw) || trim($raw) === '') {
+        $childPids = self::directChildPids($pid);
+        if ($childPids === []) {
             return [];
         }
 
         $descendants = [];
-        foreach (preg_split('/\s+/', trim($raw)) ?: [] as $child) {
-            if (! ctype_digit($child)) {
-                continue;
-            }
-            $childPid = (int) $child;
+        foreach ($childPids as $childPid) {
             if ($childPid <= 0 || isset($seen[$childPid])) {
                 continue;
             }
@@ -161,17 +161,12 @@ final class ProcessSupervisor
             return;
         }
 
-        $result = self::runCommand(['pgrep', '-P', (string) $pid]);
-        $raw = $result['stdout'];
-        if (! is_string($raw) || trim($raw) === '') {
+        $childPids = self::directChildPids($pid);
+        if ($childPids === []) {
             return;
         }
 
-        foreach (preg_split('/\s+/', trim($raw)) ?: [] as $child) {
-            if (! ctype_digit($child)) {
-                continue;
-            }
-            $childPid = (int) $child;
+        foreach ($childPids as $childPid) {
             self::killDescendants($childPid, $sig);
             if (function_exists('posix_kill')) {
                 @posix_kill($childPid, $sig);
@@ -182,10 +177,40 @@ final class ProcessSupervisor
     }
 
     /**
+     * Query direct children without routing a short-lived pgrep through the
+     * non-blocking pipe supervisor. On macOS proc_close() can wait for the
+     * pipe-draining helper for hundreds of milliseconds, which widens the
+     * timeout window enough for a descendant to perform a late side effect.
+     *
+     * @return list<int>
+     */
+    private static function directChildPids(int $pid): array
+    {
+        if ($pid <= 0) {
+            return [];
+        }
+
+        $result = self::runCommand(['pgrep', '-P', (string) $pid], 0.1);
+        $raw = $result['stdout'];
+        if (! is_string($raw) || trim($raw) === '') {
+            return [];
+        }
+
+        $pids = [];
+        foreach (array_slice(preg_split('/\s+/', trim($raw)) ?: [], 0, 4096) as $child) {
+            if (ctype_digit($child) && (int) $child > 0) {
+                $pids[] = (int) $child;
+            }
+        }
+
+        return array_values(array_unique($pids));
+    }
+
+    /**
      * @param list<string> $argv
      * @return array{exitCode: int, stdout: string}
      */
-    private static function runCommand(array $argv): array
+    private static function runCommand(array $argv, float $timeoutSeconds = 0.5): array
     {
         $descriptors = [
             0 => ['file', PHP_OS_FAMILY === 'Windows' ? 'NUL' : '/dev/null', 'r'],
@@ -213,7 +238,7 @@ final class ProcessSupervisor
             }
         }
 
-        $deadline = microtime(true) + 0.5;
+        $deadline = microtime(true) + max(0.01, $timeoutSeconds);
         $stdout = '';
         $exitCode = -1;
         while (true) {

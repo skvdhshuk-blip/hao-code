@@ -272,6 +272,23 @@ class GlobToolTest extends TestCase
         $this->assertStringNotContainsString('debug.log', $result->output);
     }
 
+    public function test_it_respects_gitignore_from_repository_ancestor_when_searching_subdirectory(): void
+    {
+        $repo = $this->tmpDir.'/repo';
+        $searchRoot = $repo.'/src';
+        mkdir($searchRoot, 0755, true);
+        mkdir($repo.'/.git', 0755, true);
+        file_put_contents($repo.'/.gitignore', "*.log\n");
+        file_put_contents($searchRoot.'/ignored.log', 'log');
+        file_put_contents($searchRoot.'/kept.txt', 'text');
+
+        $result = $this->call(['pattern' => '**/*', 'path' => $searchRoot]);
+
+        $this->assertFalse($result->isError);
+        $this->assertStringContainsString('kept.txt', $result->output);
+        $this->assertStringNotContainsString('ignored.log', $result->output);
+    }
+
     public function test_it_descends_ignored_directories_for_negated_gitignore_entries(): void
     {
         $this->touch('.gitignore', "ignored-dir/\n!ignored-dir/keep.php\n");
@@ -293,6 +310,18 @@ class GlobToolTest extends TestCase
 
         $this->assertTrue($result->isError);
         $this->assertStringContainsString('.gitignore', $result->output);
+    }
+
+    public function test_it_reports_visit_truncation_even_when_no_files_match(): void
+    {
+        for ($i = 0; $i <= 20_000; $i++) {
+            $this->touch('entry-'.$i.'.txt');
+        }
+
+        $result = $this->call(['pattern' => '*.php']);
+
+        $this->assertTrue($result->isError, $result->output);
+        $this->assertStringContainsString('stopped after visiting', $result->output);
     }
 
     public function test_it_prunes_default_ignored_directories_before_recursing(): void

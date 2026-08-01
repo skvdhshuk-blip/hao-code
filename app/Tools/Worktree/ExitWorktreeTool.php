@@ -54,10 +54,14 @@ class ExitWorktreeTool extends BaseTool
         $gitCommonDir = trim($this->git($cwd, ['rev-parse', '--git-common-dir'])['stdout']);
         $gitDir = trim($this->git($cwd, ['rev-parse', '--git-dir'])['stdout']);
 
-        if ($gitCommonDir === '' || $gitCommonDir === $gitDir) {
+        if ($gitCommonDir === '' || $gitDir === '') {
             return ToolResult::error('Not in a worktree session. Nothing to exit.');
         }
         $commonDir = $this->resolveGitPath($cwd, $gitCommonDir);
+        $worktreeGitDir = $this->resolveGitPath($cwd, $gitDir);
+        if ($commonDir === null || $worktreeGitDir === null || $this->samePath($commonDir, $worktreeGitDir)) {
+            return ToolResult::error('Not in a worktree session. Nothing to exit.');
+        }
         $mainRoot = $commonDir === null ? null : dirname($commonDir);
         if ($mainRoot === null || ! is_dir($mainRoot)) {
             return ToolResult::error('Could not resolve the main repository for this worktree.');
@@ -143,6 +147,16 @@ class ExitWorktreeTool extends BaseTool
         }
 
         return realpath($path) ?: $path;
+    }
+
+    private function samePath(string $left, string $right): bool
+    {
+        $left = rtrim(str_replace('\\', '/', $left), '/');
+        $right = rtrim(str_replace('\\', '/', $right), '/');
+
+        return PHP_OS_FAMILY === 'Windows'
+            ? strcasecmp($left, $right) === 0
+            : $left === $right;
     }
 
     private function isAbsolutePath(string $path): bool

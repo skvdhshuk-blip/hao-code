@@ -484,6 +484,39 @@ class BashToolTest extends TestCase
         $this->assertFileDoesNotExist($marker, 'Output limit must terminate before delayed side effects run');
     }
 
+    public function test_foreground_capture_never_falls_back_to_unbounded_regular_files(): void
+    {
+        $method = new \ReflectionMethod(BashTool::class, 'allocateForegroundCaptureFiles');
+        $capture = $method->invoke($this->tool);
+
+        $this->assertIsArray($capture);
+        try {
+            if (($capture['usePipes'] ?? false) === true) {
+                $this->assertNull($capture['stdoutFile'] ?? null);
+                $this->assertNull($capture['stderrFile'] ?? null);
+
+                return;
+            }
+
+            $this->assertTrue(function_exists('posix_mkfifo'));
+            $this->assertTrue(is_string($capture['stdoutFile'] ?? null));
+            $this->assertTrue(is_string($capture['stderrFile'] ?? null));
+            $this->assertSame('fifo', filetype($capture['stdoutFile']));
+            $this->assertSame('fifo', filetype($capture['stderrFile']));
+        } finally {
+            foreach (['stdoutHandle', 'stderrHandle'] as $key) {
+                if (is_resource($capture[$key] ?? null)) {
+                    fclose($capture[$key]);
+                }
+            }
+            foreach (['stdoutFile', 'stderrFile'] as $key) {
+                if (is_string($capture[$key] ?? null)) {
+                    @unlink($capture[$key]);
+                }
+            }
+        }
+    }
+
     // ─── call: timeout enforcement ────────────────────────────────────────
 
     public function test_call_times_out_long_running_command(): void

@@ -452,27 +452,25 @@ DESC;
             $stdoutFifo = @posix_mkfifo($stdoutFile, 0600);
             $stderrFifo = @posix_mkfifo($stderrFile, 0600);
             $useFifo = $stdoutFifo && $stderrFifo;
-            if (! $useFifo) {
-                @unlink($stdoutFile);
-                @unlink($stderrFile);
-                $stdoutFile = tempnam(sys_get_temp_dir(), 'haocode_bash_stdout_');
-                $stderrFile = tempnam(sys_get_temp_dir(), 'haocode_bash_stderr_');
-                if ($stdoutFile === false || $stderrFile === false) {
-                    if (is_string($stdoutFile) && file_exists($stdoutFile)) {
-                        @unlink($stdoutFile);
-                    }
-                    if (is_string($stderrFile) && file_exists($stderrFile)) {
-                        @unlink($stderrFile);
-                    }
-
-                    return null;
-                }
-            }
         }
 
-        $mode = $useFifo ? 'r+' : 'r';
-        $stdoutHandle = @fopen($stdoutFile, $mode);
-        $stderrHandle = @fopen($stderrFile, $mode);
+        // Never fall back to ordinary files: the child could fill them faster
+        // than the parent drains them, defeating the physical output cap.
+        if (! $useFifo) {
+            @unlink($stdoutFile);
+            @unlink($stderrFile);
+
+            return [
+                'stdoutFile' => null,
+                'stderrFile' => null,
+                'stdoutHandle' => null,
+                'stderrHandle' => null,
+                'usePipes' => true,
+            ];
+        }
+
+        $stdoutHandle = @fopen($stdoutFile, 'r+');
+        $stderrHandle = @fopen($stderrFile, 'r+');
 
         if (! is_resource($stdoutHandle) || ! is_resource($stderrHandle)) {
             if (is_resource($stdoutHandle)) {

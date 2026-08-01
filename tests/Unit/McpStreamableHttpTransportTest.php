@@ -362,6 +362,25 @@ final class McpStreamableHttpTransportTest extends TestCase
         $this->assertTrue($transport->isConnected());
     }
 
+    public function test_poll_passes_its_timeout_to_optional_stream_reconnect(): void
+    {
+        $getTimeout = null;
+        $http = new MockHttpClient(function (string $method, string $url, array $options) use (&$getTimeout): MockResponse {
+            if ($method === 'GET') {
+                $getTimeout = $options['timeout'] ?? null;
+                throw new \RuntimeException('GET stream unavailable');
+            }
+
+            return new MockResponse('', ['http_code' => 202]);
+        });
+        $transport = $this->makeTransport($http);
+
+        $transport->poll(0.01);
+
+        $this->assertIsFloat($getTimeout);
+        $this->assertLessThanOrEqual(0.01, $getTimeout);
+    }
+
     public function test_invalid_json_on_independent_get_stream_is_reported(): void
     {
         $http = new MockHttpClient(static fn (): MockResponse => new MockResponse(

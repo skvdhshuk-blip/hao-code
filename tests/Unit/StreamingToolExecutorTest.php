@@ -144,6 +144,62 @@ class StreamingToolExecutorTest extends TestCase
         $this->assertEmpty($results);
     }
 
+    public function test_start_callback_exception_reaps_early_child_and_ipc_file(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows' || ! function_exists('pcntl_fork') || ! function_exists('posix_kill')) {
+            $this->markTestSkipped('POSIX forked-tool cleanup coverage is unavailable.');
+        }
+
+        $marker = tempnam(sys_get_temp_dir(), 'haocode-stream-callback-');
+        $this->assertNotFalse($marker);
+        @unlink($marker);
+
+        $orchestrator = $this->createMock(ToolOrchestrator::class);
+        $orchestrator->method('mayRunToolHooks')->willReturn(false);
+        $orchestrator->method('executeToolBlock')->willReturnCallback(
+            function (array $block) use ($marker): array {
+                $process = proc_open(
+                    ['sh', '-c', 'sleep 1; printf leaked > '.escapeshellarg($marker)],
+                    [
+                        0 => ['file', '/dev/null', 'r'],
+                        1 => ['file', '/dev/null', 'w'],
+                        2 => ['file', '/dev/null', 'w'],
+                    ],
+                    $pipes,
+                    sys_get_temp_dir(),
+                );
+                foreach ($pipes ?? [] as $pipe) {
+                    if (is_resource($pipe)) {
+                        fclose($pipe);
+                    }
+                }
+                usleep(5_000_000);
+                if (is_resource($process)) {
+                    @proc_close($process);
+                }
+
+                return ['tool_use_id' => $block['id'], 'content' => 'late', 'is_error' => false];
+            },
+        );
+
+        try {
+            $executor = new StreamingToolExecutor(
+                $orchestrator,
+                $this->makeRegistry(readOnly: true, concurrencySafe: true),
+            );
+            $executor->setContext(new ToolUseContext('/tmp', 'test'), static function (): void {
+                throw new \RuntimeException('start callback failed');
+            }, null);
+
+            $this->expectException(\RuntimeException::class);
+            $executor->onToolBlockReady($this->makeBlock(), 0);
+        } finally {
+            usleep(1_200_000);
+            $this->assertFileDoesNotExist($marker, 'A streaming start callback failure must reap the early child.');
+            @unlink($marker);
+        }
+    }
+
     // ─── on_complete callback passed through for queued blocks ───────────
 
     public function test_on_complete_passed_to_orchestrator_for_queued_block(): void
@@ -360,6 +416,77 @@ class StreamingToolExecutorTest extends TestCase
 
         $this->assertSame(0, $executor->earlyExecutionCount());
         $this->assertSame([$expectedResult], $executor->collectResults());
+    }
+
+    public function test_early_classification_uses_backfilled_input(): void
+    {
+        $registry = new ToolRegistry;
+        $registry->register(new class extends BaseTool {
+            public function name(): string { return 'ContextSensitiveRead'; }
+            public function description(): string { return ''; }
+            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object']); }
+            public function backfillObservableInput(array $input, ToolUseContext $context): array
+            {
+                $input['unsafe_after_backfill'] = true;
+
+                return $input;
+            }
+            public function isReadOnly(array $input): bool
+            {
+                return ! ($input['unsafe_after_backfill'] ?? false);
+            }
+            public function isConcurrencySafe(array $input): bool
+            {
+                return $this->isReadOnly($input);
+            }
+            public function call(array $input, ToolUseContext $context): ToolResult
+            {
+                return ToolResult::success('ok');
+            }
+        });
+
+        $expectedResult = ['tool_use_id' => 'context-1', 'content' => 'queued', 'is_error' => false];
+        $orchestrator = $this->createMock(ToolOrchestrator::class);
+        $orchestrator->expects($this->once())
+            ->method('executeToolBlock')
+            ->willReturn($expectedResult);
+
+        $executor = new StreamingToolExecutor($orchestrator, $registry);
+        $executor->setContext(new ToolUseContext('/tmp', 'context-sensitive-stream'), null, null);
+        $executor->onToolBlockReady([
+            'id' => 'context-1',
+            'name' => 'ContextSensitiveRead',
+            'input' => [],
+        ], 0);
+
+        $this->assertSame(0, $executor->earlyExecutionCount());
+        $this->assertSame([$expectedResult], $executor->collectResults());
+    }
+
+    public function test_early_execution_is_disabled_when_permission_prompt_may_run(): void
+    {
+        $orchestrator = $this->createMock(ToolOrchestrator::class);
+        $orchestrator->method('mayRunToolHooks')->willReturn(false);
+        $orchestrator->method('mayRunPermissionPrompts')->willReturn(true);
+        $orchestrator->expects($this->once())
+            ->method('executeToolBlock')
+            ->willReturn([
+                'tool_use_id' => 'toolu_1',
+                'content' => 'queued',
+                'is_error' => false,
+            ]);
+
+        $executor = new StreamingToolExecutor(
+            $orchestrator,
+            $this->makeRegistry(readOnly: true, concurrencySafe: true),
+        );
+        $executor->setContext(new ToolUseContext('/tmp', 'prompting-stream'), null, null);
+        $executor->onToolBlockReady($this->makeBlock(), 0);
+
+        $this->assertSame(0, $executor->earlyExecutionCount());
+        $this->assertSame([
+            ['tool_use_id' => 'toolu_1', 'content' => 'queued', 'is_error' => false],
+        ], $executor->collectResults());
     }
 
     public function test_early_execution_has_worker_limit(): void

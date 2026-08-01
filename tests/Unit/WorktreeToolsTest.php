@@ -161,6 +161,23 @@ class WorktreeToolsTest extends TestCase
         $this->assertStringContainsString('Not in a worktree', $result->output);
     }
 
+    public function test_exit_from_main_repository_subdirectory_is_not_a_worktree(): void
+    {
+        $repo = $this->makeGitRepo('haocode-exit-main-subdir-');
+        mkdir($repo.'/src', 0755, true);
+        $context = new ToolUseContext($repo.'/src', 'main-subdir');
+
+        try {
+            $result = (new ExitWorktreeTool)->call(['action' => 'keep'], $context);
+
+            $this->assertTrue($result->isError, $result->output);
+            $this->assertStringContainsString('Not in a worktree', $result->output);
+            $this->assertSame($repo.'/src', $context->workingDirectory);
+        } finally {
+            $this->removeTree($repo);
+        }
+    }
+
     public function test_enter_switches_context_and_exit_keep_restores_main_repo(): void
     {
         $repo = $this->makeGitRepo('haocode-enter-keep-');

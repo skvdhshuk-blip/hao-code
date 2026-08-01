@@ -279,6 +279,19 @@ class ToolOrchestrator
     }
 
     /**
+     * Parallel workers must not execute a tool while an approval callback may
+     * need to run.  The callback is owned by the parent conversation and is
+     * not safe to invoke from a forked child; a child cannot suspend the
+     * parent's model turn waiting for a human decision.
+     *
+     * @internal
+     */
+    public function mayRunPermissionPrompts(): bool
+    {
+        return $this->permissionPromptHandler !== null || $this->enablePermissionInterrupts;
+    }
+
+    /**
      * Execute a single tool block (public entry point for streaming executor).
      */
     public function executeToolBlock(
@@ -367,13 +380,25 @@ class ToolOrchestrator
         foreach ($toolUseBlocks as $origIdx => $block) {
             $tool = $this->toolRegistry->getTool($block['name']);
             $classificationInput = $block['input'] ?? [];
-            if ($tool?->name() === 'Agent') {
-                $classificationInput = $tool->backfillObservableInput($classificationInput, $context);
+            $isSafe = false;
+            if ($tool !== null) {
+                try {
+                    // Classify the normalized input, not the raw model payload.
+                    // Tools may derive their safety from context-backed fields
+                    // populated by backfillObservableInput; forking before that
+                    // normalization can run a context-sensitive write in a
+                    // supposedly read-only worker.
+                    $classificationInput = $tool->backfillObservableInput($classificationInput, $context);
+                    $isSafe = $tool->isConcurrencySafe($classificationInput)
+                        && $tool->isReadOnly($classificationInput)
+                        && ! $this->mayRunToolHooks($tool->name())
+                        && ! $this->mayRunPermissionPrompts();
+                } catch (\Throwable) {
+                    // A normalization/classification failure must fail closed.
+                    $isSafe = false;
+                }
             }
-            if ($tool
-                && $tool->isConcurrencySafe($classificationInput)
-                && $tool->isReadOnly($classificationInput)
-                && ! $this->mayRunToolHooks($tool->name())) {
+            if ($isSafe) {
                 $safeBlocks[$origIdx] = $block;
             } else {
                 $unsafeBlocks[$origIdx] = $block;
@@ -464,205 +489,228 @@ class ToolOrchestrator
             }
         };
 
+        $cleanupParallel = function () use (&$pids, &$tempFiles): void {
+            foreach ($pids as $pid) {
+                \HaoCode\Support\Runtime\ProcessSupervisor::terminateTree($pid, true);
+            }
+            foreach ($pids as $pid) {
+                $status = 0;
+                @pcntl_waitpid($pid, $status);
+            }
+            foreach ($tempFiles as $tempFile) {
+                @unlink($tempFile);
+            }
+            $pids = [];
+            $tempFiles = [];
+        };
+
         // Capture the parent's readFileState snapshot before forking so we can
         // detect which entries the child added.
         $parentStateBefore = $context->getReadFileStateSnapshot();
         $deadline = microtime(true) + $this->parallelToolTimeoutSeconds;
 
-        foreach ($blocks as $idx => $block) {
-            // Do not start more children after a start callback (or another
-            // concurrent signal) has cancelled the batch.
-            if ($context->isAborted()) {
-                $recordAborted($idx);
-                continue;
-            }
-
-            // Use tempnam() for an unpredictable, 0600-mode filename instead of
-            // a guessable "<prefix>_<idx>_<pid>" — predictable names let other
-            // local users race or symlink-swap the IPC file.
-            $tempFile = $this->allocateIpcTempFile('haocode_tool_');
-            $tempFiles[$idx] = $tempFile;
-
-            $pid = pcntl_fork();
-            if ($pid === -1) {
-                // Fork failed, execute inline
-                @unlink($tempFile);
-                $results[$idx] = $this->executeSingleTool($block, $context, $onStart, $onComplete);
-                unset($tempFiles[$idx]);
-                continue;
-            }
-
-            if ($pid === 0) {
-                if (function_exists('posix_setsid')) {
-                    @posix_setsid();
-                }
-                // Child process
-                $completedResult = null;
-                $result = $this->executeSingleTool(
-                    $block,
-                    $context,
-                    null,
-                    static function (string $toolName, ToolResult $toolResult) use (&$completedResult): void {
-                        $completedResult = $toolResult;
-                    },
-                );
-                // Serialize both the tool result and any readFileState changes so the
-                // parent can merge them back (fixes read-before-write across fork).
-                $childState = $context->getReadFileStateSnapshot();
-                $newEntries = array_filter(
-                    $childState,
-                    static fn (array $value, string $path): bool =>
-                        ! isset($parentStateBefore[$path]) || $parentStateBefore[$path] !== $value,
-                    ARRAY_FILTER_USE_BOTH,
-                );
-                $payload = [
-                    'result' => $result,
-                    'toolResult' => $completedResult?->toArray(),
-                    'readState' => $newEntries,
-                ];
-                $this->writeIpcPayload($tempFile, $payload, $block);
-                exit(0);
-            }
-
-            // Parent
-            $pids[$idx] = $pid;
-            if ($onStart) {
-                $onStart($block['name'], $block['input'] ?? []);
-            }
-        }
-
-        $finalizeChild = function (int $idx) use (
-            &$results,
-            &$completedResults,
-            &$tempFiles,
-            $blocks,
-            $context,
-            $onComplete,
-        ): void {
-            if (! isset($results[$idx])) {
-                $data = false;
-                if (isset($tempFiles[$idx]) && file_exists($tempFiles[$idx])) {
-                    // allowed_classes => false blocks PHP object injection even if a
-                    // gadget chain is present in dependencies and an attacker can
-                    // influence the file contents.
-                    $rawPayload = $this->readIpcPayload($tempFiles[$idx]);
-                    $data = $rawPayload === false
-                        ? false
-                        : @unserialize($rawPayload, ['allowed_classes' => false]);
+        try {
+            foreach ($blocks as $idx => $block) {
+                // Do not start more children after a start callback (or another
+                // concurrent signal) has cancelled the batch.
+                if ($context->isAborted()) {
+                    $recordAborted($idx);
+                    continue;
                 }
 
-                if (is_array($data) && isset($data['result'])) {
-                    // New format: result + readState
-                    $results[$idx] = $data['result'];
-                    if (is_array($data['toolResult'] ?? null)) {
-                        try {
-                            $completedResults[$idx] = ToolResult::fromArray($data['toolResult']);
-                        } catch (\InvalidArgumentException) {
-                            // Corrupt or legacy IPC payload: reconstruct below.
+                // Use tempnam() for an unpredictable, 0600-mode filename instead of
+                // a guessable "<prefix>_<idx>_<pid>" — predictable names let other
+                // local users race or symlink-swap the IPC file.
+                $tempFile = $this->allocateIpcTempFile('haocode_tool_');
+                $tempFiles[$idx] = $tempFile;
+
+                $pid = pcntl_fork();
+                if ($pid === -1) {
+                    // Fork failed, execute inline.
+                    @unlink($tempFile);
+                    $results[$idx] = $this->executeSingleTool($block, $context, $onStart, $onComplete);
+                    unset($tempFiles[$idx]);
+                    continue;
+                }
+
+                if ($pid === 0) {
+                    if (function_exists('posix_setsid')) {
+                        @posix_setsid();
+                    }
+                    // Child process.
+                    $completedResult = null;
+                    $result = $this->executeSingleTool(
+                        $block,
+                        $context,
+                        null,
+                        static function (string $toolName, ToolResult $toolResult) use (&$completedResult): void {
+                            $completedResult = $toolResult;
+                        },
+                    );
+                    // Serialize both the tool result and any readFileState changes so the
+                    // parent can merge them back (fixes read-before-write across fork).
+                    $childState = $context->getReadFileStateSnapshot();
+                    $newEntries = array_filter(
+                        $childState,
+                        static fn (array $value, string $path): bool =>
+                            ! isset($parentStateBefore[$path]) || $parentStateBefore[$path] !== $value,
+                        ARRAY_FILTER_USE_BOTH,
+                    );
+                    $payload = [
+                        'result' => $result,
+                        'toolResult' => $completedResult?->toArray(),
+                        'readState' => $newEntries,
+                    ];
+                    $this->writeIpcPayload($tempFile, $payload, $block);
+                    exit(0);
+                }
+
+                // Parent.
+                $pids[$idx] = $pid;
+                if ($onStart) {
+                    $onStart($block['name'], $block['input'] ?? []);
+                }
+            }
+
+            $finalizeChild = function (int $idx) use (
+                &$results,
+                &$completedResults,
+                &$tempFiles,
+                &$pids,
+                $blocks,
+                $context,
+                $onComplete,
+            ): void {
+                if (! isset($results[$idx])) {
+                    $data = false;
+                    if (isset($tempFiles[$idx]) && file_exists($tempFiles[$idx])) {
+                        // allowed_classes => false blocks PHP object injection even if a
+                        // gadget chain is present in dependencies and an attacker can
+                        // influence the file contents.
+                        $rawPayload = $this->readIpcPayload($tempFiles[$idx]);
+                        $data = $rawPayload === false
+                            ? false
+                            : @unserialize($rawPayload, ['allowed_classes' => false]);
+                    }
+
+                    if (is_array($data) && isset($data['result'])) {
+                        // New format: result + readState.
+                        $results[$idx] = $data['result'];
+                        if (is_array($data['toolResult'] ?? null)) {
+                            try {
+                                $completedResults[$idx] = ToolResult::fromArray($data['toolResult']);
+                            } catch (\InvalidArgumentException) {
+                                // Corrupt or legacy IPC payload: reconstruct below.
+                            }
+                        }
+                        if (! empty($data['readState'])) {
+                            $context->mergeReadFileStateSnapshot($data['readState']);
+                        }
+                    } elseif (is_array($data)) {
+                        // Legacy format: bare result (backward compat).
+                        $results[$idx] = $data;
+                    } else {
+                        $results[$idx] = [
+                            'tool_use_id' => $blocks[$idx]['id'],
+                            'content' => 'Failed to read parallel result',
+                            'is_error' => true,
+                        ];
+                    }
+                }
+
+                if (isset($tempFiles[$idx])) {
+                    @unlink($tempFiles[$idx]);
+                }
+                unset($pids[$idx]);
+                if ($onComplete) {
+                    $toolName = $blocks[$idx]['name'];
+                    $result = $completedResults[$idx] ?? new ToolResult(
+                        output: (string) ($results[$idx]['content'] ?? ''),
+                        isError: (bool) ($results[$idx]['is_error'] ?? false),
+                    );
+                    $onComplete($toolName, $result);
+                }
+            };
+
+            // Poll instead of blocking in pcntl_waitpid(). This keeps the parent
+            // responsive to cancellation and lets it terminate every remaining
+            // process tree instead of waiting for the first hung child forever.
+            $remaining = $pids;
+            while ($remaining !== []) {
+                $madeProgress = false;
+                foreach ($remaining as $idx => $pid) {
+                    $status = 0;
+                    $waited = pcntl_waitpid($pid, $status, WNOHANG);
+                    if ($waited === -1) {
+                        // Signals can interrupt a non-blocking wait. Do not mark
+                        // the child complete on EINTR; it may still be running.
+                        // A non-EINTR -1 means the child is no longer waitable
+                        // (for example, a host signal handler reaped it), so the
+                        // existing payload/error finalization remains the safest
+                        // terminal path.
+                        $interrupted = defined('PCNTL_EINTR')
+                            && function_exists('pcntl_get_last_error')
+                            && pcntl_get_last_error() === constant('PCNTL_EINTR');
+                        if ($interrupted) {
+                            continue;
                         }
                     }
-                    if (! empty($data['readState'])) {
-                        $context->mergeReadFileStateSnapshot($data['readState']);
-                    }
-                } elseif (is_array($data)) {
-                    // Legacy format: bare result (backward compat)
-                    $results[$idx] = $data;
-                } else {
-                    $results[$idx] = [
-                        'tool_use_id' => $blocks[$idx]['id'],
-                        'content' => 'Failed to read parallel result',
-                        'is_error' => true,
-                    ];
-                }
-            }
-
-            if (isset($tempFiles[$idx])) {
-                @unlink($tempFiles[$idx]);
-            }
-            if ($onComplete) {
-                $toolName = $blocks[$idx]['name'];
-                $result = $completedResults[$idx] ?? new ToolResult(
-                    output: (string) ($results[$idx]['content'] ?? ''),
-                    isError: (bool) ($results[$idx]['is_error'] ?? false),
-                );
-                $onComplete($toolName, $result);
-            }
-        };
-
-        // Poll instead of blocking in pcntl_waitpid(). This keeps the parent
-        // responsive to cancellation and lets it terminate every remaining
-        // process tree instead of waiting for the first hung child forever.
-        $remaining = $pids;
-        while ($remaining !== []) {
-            $madeProgress = false;
-            foreach ($remaining as $idx => $pid) {
-                $status = 0;
-                $waited = pcntl_waitpid($pid, $status, WNOHANG);
-                if ($waited === -1) {
-                    // Signals can interrupt a non-blocking wait. Do not mark
-                    // the child complete on EINTR; it may still be running.
-                    // A non-EINTR -1 means the child is no longer waitable
-                    // (for example, a host signal handler reaped it), so the
-                    // existing payload/error finalization remains the safest
-                    // terminal path.
-                    $interrupted = defined('PCNTL_EINTR')
-                        && function_exists('pcntl_get_last_error')
-                        && pcntl_get_last_error() === constant('PCNTL_EINTR');
-                    if ($interrupted) {
-                        continue;
+                    if ($waited === $pid || $waited === -1) {
+                        $finalizeChild($idx);
+                        unset($remaining[$idx]);
+                        $madeProgress = true;
                     }
                 }
-                if ($waited === $pid || $waited === -1) {
-                    $finalizeChild($idx);
-                    unset($remaining[$idx]);
-                    $madeProgress = true;
-                }
-            }
 
-            if ($remaining === []) {
-                break;
-            }
-
-            if ($context->isAborted()) {
-                foreach ($remaining as $pid) {
-                    \HaoCode\Support\Runtime\ProcessSupervisor::terminateTree($pid, false);
+                if ($remaining === []) {
+                    break;
                 }
-                foreach (array_keys($remaining) as $idx) {
-                    $status = 0;
-                    @pcntl_waitpid($pids[$idx], $status);
-                    $recordAborted($idx);
-                    if (isset($tempFiles[$idx])) {
-                        @unlink($tempFiles[$idx]);
+
+                if ($context->isAborted()) {
+                    foreach ($remaining as $pid) {
+                        \HaoCode\Support\Runtime\ProcessSupervisor::terminateTree($pid, true);
                     }
-                    unset($remaining[$idx]);
-                }
-                break;
-            }
-
-            if (microtime(true) >= $deadline) {
-                foreach ($remaining as $pid) {
-                    \HaoCode\Support\Runtime\ProcessSupervisor::terminateTree($pid, false);
-                }
-                foreach (array_keys($remaining) as $idx) {
-                    $status = 0;
-                    @pcntl_waitpid($pids[$idx], $status);
-                    $recordTimedOut($idx);
-                    if (isset($tempFiles[$idx])) {
-                        @unlink($tempFiles[$idx]);
+                    foreach (array_keys($remaining) as $idx) {
+                        $status = 0;
+                        @pcntl_waitpid($pids[$idx], $status);
+                        unset($pids[$idx]);
+                        $recordAborted($idx);
+                        if (isset($tempFiles[$idx])) {
+                            @unlink($tempFiles[$idx]);
+                        }
+                        unset($remaining[$idx]);
                     }
-                    unset($remaining[$idx]);
+                    break;
                 }
-                break;
+
+                if (microtime(true) >= $deadline) {
+                    foreach ($remaining as $pid) {
+                        \HaoCode\Support\Runtime\ProcessSupervisor::terminateTree($pid, true);
+                    }
+                    foreach (array_keys($remaining) as $idx) {
+                        $status = 0;
+                        @pcntl_waitpid($pids[$idx], $status);
+                        unset($pids[$idx]);
+                        $recordTimedOut($idx);
+                        if (isset($tempFiles[$idx])) {
+                            @unlink($tempFiles[$idx]);
+                        }
+                        unset($remaining[$idx]);
+                    }
+                    break;
+                }
+
+                if (! $madeProgress) {
+                    usleep(10_000);
+                }
             }
 
-            if (! $madeProgress) {
-                usleep(10_000);
-            }
+            // Return with original block indices intact so the caller can re-sort them
+            // into the correct call order.
+            return $results;
+        } finally {
+            $cleanupParallel();
         }
-
-        // Return with original block indices intact so the caller can re-sort them
-        // into the correct call order.
-        return $results;
     }
 
     /**

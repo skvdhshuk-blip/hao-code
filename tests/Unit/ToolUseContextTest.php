@@ -106,6 +106,40 @@ class ToolUseContextTest extends TestCase
         }
     }
 
+    public function test_mark_incomplete_prefers_the_pending_revision_over_an_old_committed_revision(): void
+    {
+        $file = tempnam(sys_get_temp_dir(), 'haocode-context-');
+        file_put_contents($file, 'old content');
+        $context = new ToolUseContext(dirname($file), 'pending-receipt');
+
+        try {
+            $context->recordFileRead($file, 'old content');
+            $oldRevision = $context->getFileRevision($file);
+            $this->assertNotNull($oldRevision);
+
+            file_put_contents($file, 'new content');
+            $context->beginReadReceiptBatch();
+            $context->recordFileRead($file, 'new content');
+            $context->markFileReadIncomplete($file);
+
+            $pending = $context->getPendingReadFileStateSnapshot();
+            $this->assertArrayHasKey($oldRevision->canonicalPath, $pending);
+            $this->assertSame(
+                hash('sha256', 'new content'),
+                $pending[$oldRevision->canonicalPath]['sha256'],
+            );
+            $this->assertFalse($pending[$oldRevision->canonicalPath]['complete']);
+
+            $context->commitReadReceiptBatch();
+            $revision = $context->getFileRevision($file);
+            $this->assertNotNull($revision);
+            $this->assertSame(hash('sha256', 'new content'), $revision->sha256);
+            $this->assertFalse($revision->complete);
+        } finally {
+            @unlink($file);
+        }
+    }
+
     public function test_virtual_read_receipt_can_be_revoked_without_host_metadata(): void
     {
         $context = new ToolUseContext('/workspace', 'virtual-receipt');

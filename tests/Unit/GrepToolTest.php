@@ -535,6 +535,23 @@ class GrepToolTest extends TestCase
         $this->assertStringNotContainsString('ignored-dir/hidden.txt', $result->output);
     }
 
+    public function test_php_fallback_respects_gitignore_from_repository_ancestor_when_searching_subdirectory(): void
+    {
+        $repo = $this->tmpDir.'/repo';
+        $searchRoot = $repo.'/src';
+        mkdir($searchRoot, 0755, true);
+        mkdir($repo.'/.git', 0755, true);
+        file_put_contents($repo.'/.gitignore', "*.log\n");
+        file_put_contents($searchRoot.'/ignored.log', "needle\n");
+        file_put_contents($searchRoot.'/kept.txt', "needle\n");
+
+        $result = $this->grepPhp('needle', path: $searchRoot, outputMode: 'files_with_matches');
+
+        $this->assertFalse($result->isError);
+        $this->assertStringContainsString('kept.txt', $result->output);
+        $this->assertStringNotContainsString('ignored.log', $result->output);
+    }
+
     public function test_php_fallback_descends_ignored_directories_for_negated_gitignore_entries(): void
     {
         file_put_contents($this->tmpDir.'/.gitignore', "ignored-dir/\n!ignored-dir/keep.txt\n");

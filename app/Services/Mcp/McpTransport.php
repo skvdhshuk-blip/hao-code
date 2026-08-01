@@ -309,7 +309,7 @@ final class McpTransport
 
         if ($this->serverEventStream === null) {
             if ($this->serverEventStreamSupported && microtime(true) >= $this->serverReconnectAt) {
-                $this->openServerEventStream();
+                $this->openServerEventStream(max(0.001, $timeoutSeconds));
             }
 
             return;

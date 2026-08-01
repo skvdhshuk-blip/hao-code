@@ -84,13 +84,26 @@ class StreamingToolExecutor
 
         $tool = $this->toolRegistry->getTool($block['name']);
         $input = $block['input'] ?? [];
-        if ($tool?->name() === 'Agent') {
-            $input = $tool->backfillObservableInput($input, $this->context);
+        $isSafe = false;
+        if ($tool !== null) {
+            try {
+                // Safety classification must observe the same normalized input
+                // that execution will pass to permissions and the tool.  A
+                // custom tool can derive its read-only/concurrency decision
+                // from context-backed fields added by backfillObservableInput;
+                // classifying the raw model input would fork such a tool before
+                // its real safety contract is known.
+                $classificationInput = $tool->backfillObservableInput($input, $this->context);
+                $isSafe = $tool->isConcurrencySafe($classificationInput)
+                    && $tool->isReadOnly($classificationInput)
+                    && ! $this->toolOrchestrator->mayRunToolHooks($tool->name())
+                    && ! $this->toolOrchestrator->mayRunPermissionPrompts();
+            } catch (\Throwable) {
+                // A malformed or context-sensitive normalization must fail
+                // closed and run through the normal validation/permission path.
+                $isSafe = false;
+            }
         }
-        $isSafe = $tool
-            && $tool->isConcurrencySafe($input)
-            && $tool->isReadOnly($input)
-            && ! $this->toolOrchestrator->mayRunToolHooks($tool->name());
 
         if ($isSafe
             && count($this->earlyPids) < self::MAX_EARLY_EXECUTIONS
@@ -167,7 +180,18 @@ class StreamingToolExecutor
         ];
 
         if ($this->onToolStart) {
-            ($this->onToolStart)($block['name'], $block['input'] ?? []);
+            try {
+                ($this->onToolStart)($block['name'], $block['input'] ?? []);
+            } catch (\Throwable $e) {
+                // A host callback is allowed to abort the stream by throwing,
+                // but the child must not outlive that failure or leave its IPC
+                // file behind for the next stream.
+                $this->killPid($pid);
+                @pcntl_waitpid($pid, $status);
+                @unlink($tempFile);
+                unset($this->earlyPids[$index]);
+                throw $e;
+            }
         }
     }
 
@@ -386,7 +410,9 @@ class StreamingToolExecutor
 
     private function killPid(int $pid): void
     {
-        ProcessSupervisor::terminateTree($pid, false);
+        // Cancellation and timeout are terminal states; force the whole tree
+        // down so a detached descendant cannot outlive the stream cleanup.
+        ProcessSupervisor::terminateTree($pid, true);
     }
 
     /** @param array<string, mixed> $payload */

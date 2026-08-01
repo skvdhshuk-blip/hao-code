@@ -398,6 +398,64 @@ class ToolOrchestratorTest extends TestCase
         }
     }
 
+    public function test_parallel_start_callback_exception_cleans_started_child_tree(): void
+    {
+        if (PHP_OS_FAMILY === 'Windows' || ! function_exists('pcntl_fork') || ! function_exists('posix_kill')) {
+            $this->markTestSkipped('POSIX forked-tool cleanup coverage is unavailable.');
+        }
+
+        $marker = tempnam(sys_get_temp_dir(), 'haocode-parallel-callback-');
+        $this->assertNotFalse($marker);
+        @unlink($marker);
+
+        $registry = new ToolRegistry;
+        $registry->register($this->makeTool(
+            'CallbackSensitiveRead',
+            function () use ($marker): ToolResult {
+                $process = proc_open(
+                    ['sh', '-c', 'sleep 1; printf leaked > '.escapeshellarg($marker)],
+                    [
+                        0 => ['file', '/dev/null', 'r'],
+                        1 => ['file', '/dev/null', 'w'],
+                        2 => ['file', '/dev/null', 'w'],
+                    ],
+                    $pipes,
+                    sys_get_temp_dir(),
+                );
+                foreach ($pipes ?? [] as $pipe) {
+                    if (is_resource($pipe)) {
+                        fclose($pipe);
+                    }
+                }
+                usleep(5_000_000);
+                if (is_resource($process)) {
+                    @proc_close($process);
+                }
+
+                return ToolResult::success('late');
+            },
+            readOnly: true,
+        ));
+
+        try {
+            $this->expectException(\RuntimeException::class);
+            $this->makeOrchestrator($registry)->executeTools(
+                [
+                    ['id' => 'callback-1', 'name' => 'CallbackSensitiveRead', 'input' => []],
+                    ['id' => 'callback-2', 'name' => 'CallbackSensitiveRead', 'input' => []],
+                ],
+                $this->context(),
+                static function (): void {
+                    throw new \RuntimeException('start callback failed');
+                },
+            );
+        } finally {
+            usleep(1_200_000);
+            $this->assertFileDoesNotExist($marker, 'A start callback failure must not leave a forked child running.');
+            @unlink($marker);
+        }
+    }
+
     public function test_abort_from_start_callback_skips_tool_and_emits_terminal_completion(): void
     {
         $registry = new ToolRegistry;
@@ -906,6 +964,73 @@ class ToolOrchestratorTest extends TestCase
 
         $this->assertSame((string) $parentPid, $results[0]['content']);
         $this->assertSame((string) $parentPid, $results[1]['content']);
+    }
+
+    public function test_execute_tools_classifies_using_backfilled_input(): void
+    {
+        $parentPid = getmypid();
+        $registry = new ToolRegistry;
+        $registry->register(new class extends BaseTool {
+            public function name(): string { return 'ContextSensitiveRead'; }
+            public function description(): string { return ''; }
+            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object']); }
+            public function backfillObservableInput(array $input, ToolUseContext $context): array
+            {
+                // The effective invocation is not safe after context
+                // normalization, even though the raw model payload is empty.
+                $input['unsafe_after_backfill'] = true;
+
+                return $input;
+            }
+            public function isReadOnly(array $input): bool
+            {
+                return ! ($input['unsafe_after_backfill'] ?? false);
+            }
+            public function isConcurrencySafe(array $input): bool
+            {
+                return $this->isReadOnly($input);
+            }
+            public function call(array $input, ToolUseContext $context): ToolResult
+            {
+                return ToolResult::success((string) getmypid());
+            }
+        });
+
+        $results = $this->makeOrchestrator($registry)->executeTools([
+            ['id' => 'context-1', 'name' => 'ContextSensitiveRead', 'input' => []],
+            ['id' => 'context-2', 'name' => 'ContextSensitiveRead', 'input' => []],
+        ], new ToolUseContext('/tmp', 'context-sensitive-classification'));
+
+        $this->assertSame([(string) $parentPid, (string) $parentPid], array_column($results, 'content'));
+    }
+
+    public function test_execute_tools_does_not_parallelize_when_permission_prompt_may_run(): void
+    {
+        $parentPid = getmypid();
+        $registry = new ToolRegistry;
+        $registry->register(new class extends BaseTool {
+            public function name(): string { return 'PromptingRead'; }
+            public function description(): string { return ''; }
+            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object']); }
+            public function isReadOnly(array $input): bool { return true; }
+            public function isConcurrencySafe(array $input): bool { return true; }
+            public function call(array $input, ToolUseContext $context): ToolResult
+            {
+                return ToolResult::success((string) getmypid());
+            }
+        });
+
+        $checker = $this->createMock(PermissionChecker::class);
+        $checker->method('check')->willReturn(PermissionDecision::ask('approval required'));
+        $orchestrator = new ToolOrchestrator($registry, $checker, $this->noopHooks());
+        $orchestrator->setPermissionPromptHandler(static fn (): bool => true);
+
+        $results = $orchestrator->executeTools([
+            ['id' => 'prompt-1', 'name' => 'PromptingRead', 'input' => []],
+            ['id' => 'prompt-2', 'name' => 'PromptingRead', 'input' => []],
+        ], new ToolUseContext('/tmp', 'prompting-parallel'));
+
+        $this->assertSame([(string) $parentPid, (string) $parentPid], array_column($results, 'content'));
     }
 
     public function test_execute_tools_preserves_original_call_order_for_interleaved_blocks(): void

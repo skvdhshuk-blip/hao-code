@@ -255,7 +255,7 @@ class ToolUseContext
         if ($key === null) {
             return;
         }
-        $value = $this->readFileState[$key] ?? ($this->pendingReadFileState[$key] ?? null);
+        $value = $this->pendingReadFileState[$key] ?? ($this->readFileState[$key] ?? null);
         if (! is_array($value) || FileRevision::fromArray($value) === null) {
             return;
         }
