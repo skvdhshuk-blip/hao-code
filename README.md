@@ -242,11 +242,28 @@ explicit `allowedTools` list as shown below and omit them unless needed. Legacy
 cron tool classes are not registered by the default runtime because no prompt
 execution driver is wired.
 
+The replacement boundary is fixed by mode:
+
+| Tool family | `filesystem` | `full` | Boundary |
+| --- | --- | --- | --- |
+| `Read`, `Write`, `Glob`, `Grep` | Sandbox | Sandbox | All file reads/searches use the sandbox backend |
+| `Bash` | Disabled | Sandbox | Only `full` runs shell commands inside the sandbox |
+| `Edit`, `apply_patch`, `NotebookEdit`, worktree, `Agent`, `SendMessage` | Disabled | Disabled | Not sandbox replacements and unavailable while sandboxed |
+| `LSP`, task/team, custom, and MCP tools | Host-side only | Host-side only | Never implicitly moved into the sandbox; allow explicitly only when the host wants them |
+
 Overwriting an existing sandbox file also requires a complete current `Read`.
 Local, native, and Tokimo backends compare the receipt while publishing the
 replacement atomically. AgentRun rechecks the remote bytes immediately before
 writing, but its file API has no conditional-write primitive, so that remote
 check cannot eliminate a concurrent change between the check and write.
+
+The read-before-write receipt is committed only when the current model tool
+batch becomes visible to the model. A `Read` and a `Write`/`Edit` in the same
+tool batch cannot authorize one another; issue the mutation in the next batch.
+
+AgentRun `Write` results expose `metadata['writeSafety'] === 'recheck_only'`
+and `metadata['conditionalWrite'] === false`. Local, Native, and Tokimo writes
+use the stronger conditional revision-aware path.
 
 Choose the backend by the isolation boundary you need:
 
@@ -491,6 +508,10 @@ it yields normal stream messages and exactly one final `result`, unless another
 Resume preserves the effective inline Skill tool scope and cumulative
 token/cost totals. A synchronous worktree Agent is finalized after its resumed
 run; retained changes are reported in the final text and `usage` metadata.
+The checkpoint also carries the effective cwd, project/worktree identity, model
+and prompt settings, allowed tools and Skill scope, remaining turns, cumulative
+usage/cost, budget-ledger identifiers, and sandbox lease identity. Credentials
+are excluded; the current resume config still revalidates the security policy.
 
 Once claimed, an interrupt moves to `resolving` and is never auto-retried (tool
 side effects may already have run). If resume fails after the claim — provider
@@ -561,6 +582,14 @@ process-launch variables such as `PATH` and `HOME`; pass required credentials
 through that server's explicit `env` map instead of relying on host inheritance.
 When a sandbox is active, `allowedTools: ['*']` does not enable host-side MCP
 servers; list the required `mcp__...` tools explicitly.
+
+For direct MCP host integrations, call `McpConnectionManager::poll()` during
+idle time (or make the next MCP request) so stdio notifications and reverse
+requests are serviced; stdio has no background reader thread. The SDK run wires
+this cooperative event pump automatically. `ensureConnected($name)` is the
+reconnecting manager entry point. `McpClient::setRoots()` only updates the
+host-side `roots/list` response and does not automatically notify an already
+connected server, so set roots before connecting when initialization needs them.
 
 The `http` transport implements MCP Streamable HTTP `2025-11-25`: JSON and
 incremental SSE responses, server-initiated requests and notifications, the
@@ -801,7 +830,7 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.18.56`. Notable changes since `v1.10.0`:
+is based on `v1.18.57`. Notable changes since `v1.10.0`:
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/
@@ -982,7 +1011,13 @@ is based on `v1.18.56`. Notable changes since `v1.10.0`:
   resource limits include literal Glob patterns and retained Grep context.
   `CredentialPool` rejects non-finite or negative exhaustion TTLs, and
   `StructuredResult::toJson()` now fails with `JsonException` instead of
-  returning an invalid JSON value.
+    returning an invalid JSON value.
+- `v1.18.57` — Native OpenAI Chat streams retain rate-limit headers for
+  credential-pool backoff, recent-session selection uses mtime plus a bounded
+  header scan, and MCP/AgentRun lifecycle and write-safety contracts are
+  documented. Retry, snapshot, parallel IPC, Skill scope, JSONL, and
+  background Bash bookkeeping were split into internal helpers without
+  changing the public SDK surface.
 - `v1.18.56` — AgentRun Glob/Grep now prune and bound remote searches, preserve
   path-level glob semantics, and expose residual-difference metadata; Tokimo
   and AgentRun abort waits mid-run, and all sandbox exec backends use the

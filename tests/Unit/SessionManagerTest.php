@@ -770,6 +770,60 @@ class SessionManagerTest extends TestCase
         $this->assertSame($manager->getSessionId(), $manager->findMostRecentSessionId(getcwd()));
     }
 
+    public function test_find_most_recent_session_id_uses_file_mtime_without_loading_transcripts(): void
+    {
+        $olderId = '2026-01-01_000000_older';
+        $newerId = '2026-01-01_000001_newer';
+        $header = static function (string $id, string $timestamp): string {
+            return json_encode([
+                'timestamp' => $timestamp,
+                'session_id' => $id,
+                'cwd' => '/tmp/session-performance-test',
+                'type' => 'user_message',
+                'content' => 'header',
+            ])."\n";
+        };
+
+        $olderPath = $this->tmpDir.'/'.$olderId.'.jsonl';
+        $newerPath = $this->tmpDir.'/'.$newerId.'.jsonl';
+        file_put_contents($olderPath, $header($olderId, '2030-01-01T00:00:00+00:00'));
+        file_put_contents($newerPath, $header($newerId, '2020-01-01T00:00:00+00:00'));
+        // Contradict the JSON timestamps deliberately: selection should use
+        // the append-driven filesystem mtime, not parse every transcript.
+        touch($olderPath, time() - 10);
+        touch($newerPath, time());
+
+        $this->assertSame($newerId, (new SessionManager)->findMostRecentSessionId());
+    }
+
+    public function test_find_most_recent_session_id_preserves_later_cwd_matches_without_loading_entries(): void
+    {
+        $sessionId = '2026-01-01_000002_worktree';
+        $path = $this->tmpDir.'/'.$sessionId.'.jsonl';
+        file_put_contents($path, implode("\n", [
+            json_encode([
+                'timestamp' => '2026-01-01T00:00:00+00:00',
+                'session_id' => $sessionId,
+                'cwd' => '/tmp/project',
+                'type' => 'user_message',
+                'content' => 'start',
+            ]),
+            json_encode([
+                'timestamp' => '2026-01-01T00:00:01+00:00',
+                'session_id' => $sessionId,
+                'cwd' => '/tmp/project/.worktree',
+                'type' => 'tool_result',
+                'content' => 'worktree transition',
+            ]),
+            '',
+        ]));
+
+        $this->assertSame(
+            $sessionId,
+            (new SessionManager)->findMostRecentSessionId('/tmp/project/.worktree'),
+        );
+    }
+
     public function test_checkpoint_write_survives_invalid_utf8_and_non_finite_doubles(): void
     {
         $manager = new SessionManager;

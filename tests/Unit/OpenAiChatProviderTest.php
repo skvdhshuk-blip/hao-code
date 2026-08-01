@@ -404,6 +404,32 @@ class OpenAiChatProviderTest extends TestCase
         }
     }
 
+    public function test_native_wrapper_fixture_captures_rate_limit_headers_and_final_status(): void
+    {
+        $provider = new OpenAiChatProvider(
+            apiKey: 'test',
+            model: 'gpt-4o-mini',
+            httpClient: new MockHttpClient([]),
+        );
+        $reflection = new \ReflectionClass($provider);
+        $headerMethod = $reflection->getMethod('extractRateLimitHeadersFromWrapperData');
+        $statusMethod = $reflection->getMethod('extractStatusCodeFromWrapperData');
+        $fixture = file(
+            dirname(__DIR__).'/fixtures/openai-chat-native-rate-limit-headers.txt',
+            FILE_IGNORE_NEW_LINES,
+        );
+
+        $this->assertIsArray($fixture);
+        $headers = $headerMethod->invoke($provider, $fixture);
+
+        $this->assertSame(429, $statusMethod->invoke($provider, $fixture));
+        $this->assertSame('17', $headers['retry-after']);
+        $this->assertSame('500', $headers['x-ratelimit-limit-requests']);
+        $this->assertSame('0', $headers['x-ratelimit-remaining-requests']);
+        $this->assertArrayNotHasKey('content-type', $headers);
+        $this->assertSame($headers, $provider->getLastRateLimitHeaders());
+    }
+
     public function test_stream_rejects_an_oversized_unterminated_sse_line(): void
     {
         $httpClient = new MockHttpClient([
@@ -525,6 +551,42 @@ class OpenAiChatProviderTest extends TestCase
 
         $this->assertContains('Connection: keep-alive', $lines);
         $this->assertNotContains('Connection: close', $lines);
+    }
+
+    public function test_http_error_preserves_rate_limit_headers_for_pool_failover(): void
+    {
+        $httpClient = new MockHttpClient([
+            new MockResponse(
+                '{"error":{"type":"rate_limit_error","message":"slow down"}}',
+                [
+                    'http_code' => 429,
+                    'response_headers' => [
+                        'Retry-After: 23',
+                        'x-ratelimit-remaining-requests: 0',
+                    ],
+                ],
+            ),
+        ]);
+        $provider = new OpenAiChatProvider(
+            apiKey: 'test',
+            model: 'gpt-4o-mini',
+            httpClient: $httpClient,
+        );
+        $maxRetries = new \ReflectionProperty($provider, 'maxRetries');
+        $maxRetries->setValue($provider, 1);
+
+        try {
+            iterator_to_array($provider->streamMessages(
+                systemPrompt: [],
+                messages: [['role' => 'user', 'content' => 'hi']],
+                tools: [],
+            ));
+            $this->fail('Expected ApiErrorException');
+        } catch (ApiErrorException $e) {
+            $this->assertSame('rate_limit_error', $e->getErrorType());
+            $this->assertSame('23', $provider->getLastRateLimitHeaders()['retry-after'] ?? null);
+            $this->assertSame('0', $provider->getLastRateLimitHeaders()['x-ratelimit-remaining-requests'] ?? null);
+        }
     }
 
     public function test_default_headers_are_unchanged_when_no_custom_headers(): void

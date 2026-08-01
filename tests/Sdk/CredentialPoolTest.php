@@ -407,6 +407,54 @@ class CredentialPoolTest extends TestCase
         $this->assertSame('', $property->getValue($inner), 'pool keys must never mutate the shared provider');
     }
 
+    public function test_pooled_provider_uses_retry_after_header_for_exhaustion_ttl(): void
+    {
+        $now = 1_000.0;
+        $pool = new CredentialPool(
+            exhaustedTtlSeconds: 60.0,
+            clock: static function () use (&$now): float {
+                return $now;
+            },
+        );
+        $pool->addMany('openai_chat', [
+            new Credential(apiKey: 'key-a'),
+            new Credential(apiKey: 'key-b'),
+        ]);
+        $calls = 0;
+
+        $inner = new class($calls) implements LlmProvider
+        {
+            public function __construct(
+                private int &$calls,
+                private string $apiKey = '',
+            ) {}
+
+            public function streamMessages(array $sp, array $msgs, array $tools, ?callable $onRaw = null, ?callable $abort = null): \Generator
+            {
+                $this->calls++;
+                if ($this->calls === 1) {
+                    throw new ApiErrorException('Rate limited', 'rate_limit_error', 429);
+                }
+
+                yield new StreamEvent('ping', []);
+            }
+
+            public function getLastRateLimitHeaders(): array
+            {
+                return ['retry-after' => '30', 'x-ratelimit-remaining-requests' => '0'];
+            }
+        };
+
+        iterator_to_array(
+            (new PooledProvider($inner, $pool, 'openai_chat'))->streamMessages([], [], []),
+        );
+
+        $this->assertSame(['total' => 2, 'healthy' => 1, 'exhausted' => 1], $pool->getStats()['openai_chat']);
+
+        $now += 31.0;
+        $this->assertSame(['total' => 2, 'healthy' => 2, 'exhausted' => 0], $pool->getStats()['openai_chat']);
+    }
+
     public function test_pooled_provider_applies_key_to_inherited_private_property_on_clone(): void
     {
         $pool = new CredentialPool;

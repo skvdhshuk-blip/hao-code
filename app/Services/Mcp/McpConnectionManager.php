@@ -206,7 +206,9 @@ final class McpConnectionManager
      * Cooperatively process pending server-initiated MCP messages.
      *
      * The timeout is shared across all connected clients rather than applied to
-     * each client independently.
+     * each client independently. The SDK run installs this as its cooperative
+     * event pump; hosts integrating the manager directly must call poll() during
+     * idle time so stdio notifications and reverse requests are serviced.
      */
     public function poll(float $timeoutSeconds = 0.0): void
     {

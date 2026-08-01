@@ -8,6 +8,11 @@ class SessionManager
 
     private const MAX_SESSION_BYTES = 128 * 1024 * 1024;
 
+    /** Only the first JSONL record is needed to select a recent session. */
+    private const SESSION_HEADER_BYTES = 32 * 1024 * 1024;
+
+    private ?SessionJsonlStore $jsonlStore = null;
+
     private string $sessionId;
 
     private string $sessionPath;
@@ -31,6 +36,28 @@ class SessionManager
         $this->sessionPath = \HaoCode\Support\Runtime\SdkRuntime::config(
             'haocode.session_path',
             \HaoCode\Support\Runtime\SdkRuntime::storagePath('app/haocode/sessions'),
+        );
+    }
+
+    private function jsonlStore(): SessionJsonlStore
+    {
+        return $this->jsonlStore ??= new SessionJsonlStore(
+            self::MAX_ENTRY_BYTES,
+            self::MAX_SESSION_BYTES,
+        );
+    }
+
+    private function interruptLifecycle(): SessionInterruptLifecycle
+    {
+        return new SessionInterruptLifecycle(
+            sessionPath: $this->sessionPath,
+            sessionId: $this->sessionId,
+            persistenceEnabled: $this->persistenceEnabled,
+            currentWorkingDirectory: $this->currentWorkingDirectory,
+            store: $this->jsonlStore(),
+            validateSessionId: fn (string $sessionId): string => $this->validateSessionId($sessionId),
+            findParentLink: fn (string $sessionId, string $interruptId): ?array =>
+                $this->findInterruptParentLink($sessionId, $interruptId),
         );
     }
 
@@ -205,157 +232,31 @@ class SessionManager
         ]);
     }
 
-    /**
-     * Persist a pending human interrupt and the minimum checkpoint required to resume it.
-     *
-     * @internal
-     */
+    /** @internal */
     public function recordPendingInterrupt(array $interrupt, array $checkpoint): void
     {
-        if (! $this->persistenceEnabled) {
-            throw new \RuntimeException('Human-in-the-loop requires a durable session.');
-        }
-
-        $entry = array_merge(
-            [
-                'timestamp' => date('c'),
-                'session_id' => $this->sessionId,
-                'cwd' => $this->currentWorkingDirectory ?? (getcwd() ?: null),
-                'type' => 'interrupt_pending',
-                'interrupt' => $interrupt,
-                'checkpoint' => $checkpoint,
-            ],
-        );
-        $line = self::encodeEntryForJsonl($entry)."\n";
-
-        $this->appendLineToSessionFile($line, 'interrupt checkpoint');
+        $this->interruptLifecycle()->recordPendingInterrupt($interrupt, $checkpoint);
     }
 
     /** @internal */
     public function recordChildWaitInterrupt(array $interrupt, array $checkpoint): void
     {
-        $interruptId = (string) ($interrupt['id'] ?? '');
-        $handle = @fopen($this->getFilePath(), 'c+');
-        if ($handle === false) {
-            throw new \RuntimeException("Session not found: {$this->sessionId}");
-        }
-        try {
-            if (! flock($handle, LOCK_EX)) {
-                throw new \RuntimeException('Could not lock session interrupt checkpoint.');
-            }
-            $latest = $this->findLatestInterruptEntry($handle, $interruptId);
-            if (($latest['type'] ?? null) !== 'interrupt_resolving') {
-                $state = str_replace('interrupt_', '', (string) ($latest['type'] ?? 'missing'));
-                throw new \RuntimeException("Interrupt {$interruptId} cannot wait for a child from state {$state}.");
-            }
-            $this->appendJsonLine($handle, [
-                'timestamp' => date('c'),
-                'session_id' => $this->sessionId,
-                'cwd' => $latest['cwd'] ?? $this->currentWorkingDirectory ?? (getcwd() ?: null),
-                'type' => 'interrupt_pending',
-                'interrupt' => $interrupt,
-                'checkpoint' => $checkpoint,
-            ]);
-        } finally {
-            flock($handle, LOCK_UN);
-            fclose($handle);
-        }
+        $this->interruptLifecycle()->recordChildWaitInterrupt($interrupt, $checkpoint);
     }
 
-    /**
-     * Atomically move a pending interrupt to resolving and return its checkpoint.
-     * Once claimed, it is never automatically retried because tool side effects may
-     * already have occurred before a process failure.
-     *
-     * @internal
-     */
+    /** @internal */
     public function claimInterrupt(string $sessionId, string $interruptId, array $decisions): array
     {
-        if (! $this->persistenceEnabled) {
-            throw new \RuntimeException('Human-in-the-loop requires a durable session.');
-        }
-
-        $sessionId = $this->validateSessionId($sessionId);
-
-        if (! is_dir($this->sessionPath)) {
-            throw new \RuntimeException("Session not found: {$sessionId}");
-        }
-
-        $path = $this->sessionPath.'/'.$sessionId.'.jsonl';
-        $handle = @fopen($path, 'c+');
-        if ($handle === false) {
-            throw new \RuntimeException("Session not found: {$sessionId}");
-        }
-
-        try {
-            if (! flock($handle, LOCK_EX)) {
-                throw new \RuntimeException('Could not lock session interrupt checkpoint.');
-            }
-
-            $latest = $this->findLatestInterruptEntry($handle, $interruptId);
-
-            if ($latest === null) {
-                throw new \RuntimeException("Interrupt not found: {$interruptId}");
-            }
-            if (($latest['type'] ?? null) !== 'interrupt_pending') {
-                $state = str_replace('interrupt_', '', (string) ($latest['type'] ?? 'unknown'));
-                throw new \RuntimeException("Interrupt {$interruptId} is already {$state}; automatic retry is disabled.");
-            }
-
-            $entry = [
-                'timestamp' => date('c'),
-                'session_id' => $sessionId,
-                'cwd' => $latest['cwd'] ?? $this->currentWorkingDirectory ?? (getcwd() ?: null),
-                'type' => 'interrupt_resolving',
-                'interrupt' => $latest['interrupt'],
-                'checkpoint' => $latest['checkpoint'],
-                'decisions' => $decisions,
-            ];
-            $this->appendJsonLine($handle, $entry);
-
-            return $entry;
-        } finally {
-            flock($handle, LOCK_UN);
-            fclose($handle);
-        }
+        return $this->interruptLifecycle()->claimInterrupt($sessionId, $interruptId, $decisions);
     }
 
     /** @internal */
     public function getInterruptState(string $sessionId, string $interruptId): array
     {
-        $sessionId = $this->validateSessionId($sessionId);
-        $path = $this->sessionPath.'/'.$sessionId.'.jsonl';
-        if (! is_file($path)) {
-            throw new \RuntimeException("Interrupt not found: {$interruptId}");
-        }
-        $handle = fopen($path, 'rb');
-        if ($handle === false) {
-            throw new \RuntimeException("Could not open session file for interrupt {$interruptId}.");
-        }
-        try {
-            if (! flock($handle, LOCK_SH)) {
-                throw new \RuntimeException("Could not lock session file for interrupt {$interruptId}.");
-            }
-            // Uses fail-closed corrupt-line detection (must not roll back resolving → pending).
-            $latest = $this->findLatestInterruptEntry($handle, $interruptId);
-        } finally {
-            @flock($handle, LOCK_UN);
-            fclose($handle);
-        }
-        if ($latest === null) {
-            throw new \RuntimeException("Interrupt not found: {$interruptId}");
-        }
-
-        return $latest;
+        return $this->interruptLifecycle()->getInterruptState($sessionId, $interruptId);
     }
 
-    /**
-     * Mark a claimed (resolving) interrupt as permanently failed.
-     * Automatic retry remains disabled; callers must surface the error.
-     *
-     * @param  array<int|string, mixed>|null  $partialResults
-     * @internal
-     */
+    /** @internal */
     public function failInterrupt(
         string $sessionId,
         string $interruptId,
@@ -363,48 +264,13 @@ class SessionManager
         string $sideEffectStatus = 'unknown',
         ?array $partialResults = null,
     ): void {
-        if (! $this->persistenceEnabled) {
-            return;
-        }
-
-        $sessionId = $this->validateSessionId($sessionId);
-        $path = $this->sessionPath.'/'.$sessionId.'.jsonl';
-        $handle = @fopen($path, 'c+');
-        if ($handle === false) {
-            return;
-        }
-
-        try {
-            if (! flock($handle, LOCK_EX)) {
-                return;
-            }
-
-            $latest = $this->findLatestInterruptEntry($handle, $interruptId);
-            if ($latest === null) {
-                return;
-            }
-            if (($latest['type'] ?? null) !== 'interrupt_resolving') {
-                return;
-            }
-
-            $entry = [
-                'timestamp' => date('c'),
-                'session_id' => $sessionId,
-                'cwd' => $latest['cwd'] ?? $this->currentWorkingDirectory ?? (getcwd() ?: null),
-                'type' => 'interrupt_failed',
-                'interrupt' => $latest['interrupt'],
-                'checkpoint' => $latest['checkpoint'] ?? null,
-                'error' => $error,
-                'side_effect_status' => in_array($sideEffectStatus, ['none', 'partial', 'unknown'], true)
-                    ? $sideEffectStatus
-                    : 'unknown',
-                'partial_results' => $partialResults,
-            ];
-            $this->appendJsonLine($handle, $entry);
-        } finally {
-            flock($handle, LOCK_UN);
-            fclose($handle);
-        }
+        $this->interruptLifecycle()->failInterrupt(
+            $sessionId,
+            $interruptId,
+            $error,
+            $sideEffectStatus,
+            $partialResults,
+        );
     }
 
     /**
@@ -439,13 +305,13 @@ class SessionManager
         string $parentInterruptId,
         string $parentActionId,
     ): void {
-        $this->appendEntryToSession($childSessionId, [
-            'type' => 'interrupt_parent',
-            'interrupt' => ['id' => $childInterruptId],
-            'parent_session_id' => $parentSessionId,
-            'parent_interrupt_id' => $parentInterruptId,
-            'parent_action_id' => $parentActionId,
-        ]);
+        $this->interruptLifecycle()->recordInterruptParentLink(
+            $childSessionId,
+            $childInterruptId,
+            $parentSessionId,
+            $parentInterruptId,
+            $parentActionId,
+        );
     }
 
     /** @internal */
@@ -465,126 +331,13 @@ class SessionManager
     /** @internal */
     public function resolveInterrupt(string $interruptId, array $toolResults): void
     {
-        $path = $this->getFilePath();
-        $handle = @fopen($path, 'c+');
-        if ($handle === false) {
-            throw new \RuntimeException("Session not found: {$this->sessionId}");
-        }
-
-        try {
-            if (! flock($handle, LOCK_EX)) {
-                throw new \RuntimeException('Could not lock session interrupt checkpoint.');
-            }
-            $latest = $this->findLatestInterruptEntry($handle, $interruptId);
-            if (($latest['type'] ?? null) !== 'interrupt_resolving') {
-                $state = str_replace('interrupt_', '', (string) ($latest['type'] ?? 'missing'));
-                throw new \RuntimeException("Interrupt {$interruptId} cannot resolve from state {$state}.");
-            }
-
-            $entry = [
-                'timestamp' => date('c'),
-                'session_id' => $this->sessionId,
-                'cwd' => $latest['cwd'] ?? $this->currentWorkingDirectory ?? (getcwd() ?: null),
-                'type' => 'interrupt_resolved',
-                'interrupt' => $latest['interrupt'],
-                'tool_results' => $toolResults,
-            ];
-            $this->appendJsonLine($handle, $entry);
-        } finally {
-            flock($handle, LOCK_UN);
-            fclose($handle);
-        }
+        $this->interruptLifecycle()->resolveInterrupt($interruptId, $toolResults);
     }
 
     /** @internal */
     public function cancelInterrupt(string $sessionId, string $interruptId, string $reason): void
     {
-        $this->cancelInterruptChain($sessionId, $interruptId, $reason, []);
-    }
-
-    /**
-     * @param array<string, true> $visited
-     */
-    private function cancelInterruptChain(
-        string $sessionId,
-        string $interruptId,
-        string $reason,
-        array $visited,
-    ): void
-    {
-        $sessionId = $this->validateSessionId($sessionId);
-        $chainKey = $sessionId.':'.$interruptId;
-        if (isset($visited[$chainKey])) {
-            throw new \RuntimeException("Interrupt parent cycle detected at {$interruptId}.");
-        }
-        $visited[$chainKey] = true;
-
-        $path = $this->sessionPath.'/'.$sessionId.'.jsonl';
-        $handle = @fopen($path, 'r+');
-        if ($handle === false) {
-            throw new \RuntimeException("Session not found: {$sessionId}");
-        }
-
-        try {
-            if (! flock($handle, LOCK_EX)) {
-                throw new \RuntimeException('Could not lock session interrupt checkpoint.');
-            }
-            $latest = $this->findLatestInterruptEntry($handle, $interruptId);
-            if (($latest['type'] ?? null) !== 'interrupt_cancelled'
-                && ($latest['type'] ?? null) !== 'interrupt_pending') {
-                $state = str_replace('interrupt_', '', (string) ($latest['type'] ?? 'missing'));
-                throw new \RuntimeException("Interrupt {$interruptId} cannot be cancelled from state {$state}.");
-            }
-
-            if (($latest['type'] ?? null) === 'interrupt_pending') {
-                $checkpoint = is_array($latest['checkpoint'] ?? null) ? $latest['checkpoint'] : [];
-                $toolResults = is_array($checkpoint['results'] ?? null) ? $checkpoint['results'] : [];
-                $blocks = is_array($checkpoint['blocks'] ?? null) ? $checkpoint['blocks'] : [];
-                if ($blocks === []) {
-                    $blocks = $latest['interrupt']['actions'] ?? [];
-                }
-                foreach ($blocks as $index => $block) {
-                    if (array_key_exists($index, $toolResults)) {
-                        continue;
-                    }
-                    $actionId = is_array($block) ? (string) ($block['id'] ?? '') : '';
-                    if ($actionId === '') {
-                        continue;
-                    }
-                    $toolResults[$index] = [
-                        'type' => 'tool_result',
-                        'tool_use_id' => $actionId,
-                        'content' => 'Cancelled: '.$reason,
-                        'is_error' => true,
-                    ];
-                }
-                ksort($toolResults);
-                $toolResults = array_values($toolResults);
-
-                $this->appendJsonLine($handle, [
-                    'timestamp' => date('c'),
-                    'session_id' => $sessionId,
-                    'cwd' => $latest['cwd'] ?? $this->currentWorkingDirectory ?? (getcwd() ?: null),
-                    'type' => 'interrupt_cancelled',
-                    'interrupt' => $latest['interrupt'],
-                    'tool_results' => $toolResults,
-                    'reason' => $reason,
-                ]);
-            }
-        } finally {
-            flock($handle, LOCK_UN);
-            fclose($handle);
-        }
-
-        $parent = $this->findInterruptParentLink($sessionId, $interruptId);
-        if ($parent !== null) {
-            $this->cancelInterruptChain(
-                (string) $parent['parent_session_id'],
-                (string) $parent['parent_interrupt_id'],
-                $reason,
-                $visited,
-            );
-        }
+        $this->interruptLifecycle()->cancelInterrupt($sessionId, $interruptId, $reason);
     }
 
     public function recordUserMessage(string $text): void
@@ -690,70 +443,7 @@ class SessionManager
 
     private function readEntriesFromPath(string $path): array
     {
-        $handle = @fopen($path, 'rb');
-        if ($handle === false) {
-            throw new \RuntimeException("Could not open session transcript: {$path}");
-        }
-
-        try {
-            if (! flock($handle, LOCK_SH)) {
-                throw new \RuntimeException("Could not lock session transcript for reading: {$path}");
-            }
-
-            $sessionId = basename($path, '.jsonl');
-            for ($attempt = 0; $attempt < 2; $attempt++) {
-                rewind($handle);
-                clearstatcache(true, $path);
-                $contents = stream_get_contents($handle);
-                if ($contents === false) {
-                    throw new \RuntimeException("Could not read session transcript: {$sessionId}");
-                }
-
-                $entries = [];
-                $lines = explode("\n", $contents);
-                $hasTrailingNewline = str_ends_with($contents, "\n");
-                if ($hasTrailingNewline) {
-                    array_pop($lines);
-                }
-
-                $retryFinalLine = false;
-                foreach ($lines as $index => $line) {
-                    if (trim($line) === '') {
-                        continue;
-                    }
-
-                    $decoded = json_decode($line, true);
-                    if (is_array($decoded)) {
-                        $entries[] = $decoded;
-
-                        continue;
-                    }
-
-                    $lineNumber = $index + 1;
-                    $isUnterminatedFinalLine = ! $hasTrailingNewline && $index === array_key_last($lines);
-                    if ($attempt === 0 && $isUnterminatedFinalLine) {
-                        $retryFinalLine = true;
-                        break;
-                    }
-
-                    throw new \RuntimeException(
-                        "Session {$sessionId} contains invalid JSON on line {$lineNumber}: "
-                        .json_last_error_msg(),
-                    );
-                }
-
-                if (! $retryFinalLine) {
-                    return $entries;
-                }
-
-                usleep(1_000);
-            }
-        } finally {
-            @flock($handle, LOCK_UN);
-            fclose($handle);
-        }
-
-        throw new \RuntimeException('Could not read session transcript.');
+        return $this->jsonlStore()->readEntries($path);
     }
 
     private function getFilePath(): string
@@ -784,50 +474,6 @@ class SessionManager
         return $sessionId;
     }
 
-    /** @param resource $handle */
-    private function findLatestInterruptEntry($handle, string $interruptId): ?array
-    {
-        rewind($handle);
-        $latest = null;
-        $sawInterruptLine = false;
-        while (($line = fgets($handle)) !== false) {
-            $trimmed = trim($line);
-            if ($trimmed === '') {
-                continue;
-            }
-            $entry = json_decode($line, true);
-            if (! is_array($entry)) {
-                // Once interrupt lifecycle has started for this id, a corrupt
-                // later line must not allow state to roll back (e.g. resolving
-                // → pending). Fail closed as indeterminate.
-                if ($sawInterruptLine || self::lineMentionsInterruptId($trimmed, $interruptId)) {
-                    throw new \RuntimeException(
-                        "Interrupt {$interruptId} state is indeterminate: session JSONL contains a corrupt line after interrupt activity began. Manual recovery required.",
-                    );
-                }
-                continue;
-            }
-            if (in_array($entry['type'] ?? null, [
-                'interrupt_pending',
-                'interrupt_resolving',
-                'interrupt_resolved',
-                'interrupt_cancelled',
-                'interrupt_failed',
-            ], true)
-                && ($entry['interrupt']['id'] ?? null) === $interruptId) {
-                $sawInterruptLine = true;
-                $latest = $entry;
-            }
-        }
-
-        return $latest;
-    }
-
-    private static function lineMentionsInterruptId(string $line, string $interruptId): bool
-    {
-        return $interruptId !== '' && str_contains($line, $interruptId);
-    }
-
     /**
      * Encode one JSONL entry, degrading gracefully instead of losing it.
      * Tool outputs and checkpoint history can carry invalid UTF-8 (binary or
@@ -837,137 +483,17 @@ class SessionManager
      */
     private static function encodeEntryForJsonl(array $entry): string
     {
-        $encoded = json_encode($entry, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        if ($encoded === false) {
-            $encoded = json_encode(self::sanitizeForJson($entry), JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
-        }
-        if ($encoded === false) {
-            $encoded = json_encode($entry, JSON_PARTIAL_OUTPUT_ON_ERROR | JSON_UNESCAPED_SLASHES);
-        }
-        if ($encoded === false) {
-            throw new \RuntimeException('Could not serialize session interrupt checkpoint.');
-        }
-
-        return $encoded;
-    }
-
-    /** @param resource $handle */
-    private function appendJsonLine($handle, array $entry): void
-    {
-        $line = self::encodeEntryForJsonl($entry)."\n";
-        $this->assertAppendFits($handle, $line);
-        fseek($handle, 0, SEEK_END);
-        $written = fwrite($handle, $line);
-        if ($written === false || $written !== strlen($line) || ! fflush($handle)) {
-            throw new \RuntimeException('Could not persist session interrupt checkpoint.');
-        }
+        return SessionJsonlStore::encodeEntryForJsonl($entry);
     }
 
     private function appendLineToSessionFile(string $line, string $purpose): void
     {
-        if (! is_dir($this->sessionPath)
-            && ! @mkdir($this->sessionPath, 0700, true)
-            && ! is_dir($this->sessionPath)) {
-            throw new \RuntimeException(
-                "Could not create session directory for {$purpose}: {$this->sessionPath}",
-            );
-        }
-
-        $handle = @fopen($this->getFilePath(), 'a');
-        if ($handle === false) {
-            throw new \RuntimeException(
-                "Could not open session file for {$purpose}: {$this->getFilePath()}",
-            );
-        }
-
-        try {
-            if (! flock($handle, LOCK_EX)) {
-                throw new \RuntimeException("Could not lock session file for {$purpose}.");
-            }
-            $this->assertAppendFits($handle, $line);
-            $written = fwrite($handle, $line);
-            if ($written === false || $written !== strlen($line)) {
-                throw new \RuntimeException("Could not write {$purpose} to session file.");
-            }
-            if (! fflush($handle)) {
-                throw new \RuntimeException("Could not flush {$purpose} to disk.");
-            }
-        } finally {
-            @flock($handle, LOCK_UN);
-            fclose($handle);
-        }
-    }
-
-    /** @param resource $handle */
-    private function assertAppendFits($handle, string $line): void
-    {
-        $lineBytes = strlen($line);
-        if ($lineBytes > self::MAX_ENTRY_BYTES) {
-            throw new \RuntimeException(
-                'Session entry exceeds the 32 MiB persistence limit.',
-            );
-        }
-
-        if (fseek($handle, 0, SEEK_END) !== 0) {
-            throw new \RuntimeException('Could not inspect session file size.');
-        }
-        $currentBytes = ftell($handle);
-        if ($currentBytes === false || $currentBytes + $lineBytes > self::MAX_SESSION_BYTES) {
-            throw new \RuntimeException(
-                'Session transcript exceeds the 128 MiB persistence limit.',
-            );
-        }
-    }
-
-    /**
-     * Recursively scrub invalid UTF-8 byte sequences and non-finite doubles
-     * so json_encode cannot fail on tool payloads.
-     */
-    private static function sanitizeForJson(mixed $value): mixed
-    {
-        if (is_string($value)) {
-            if (preg_match('//u', $value) === 1) {
-                return $value;
-            }
-            $scrubbed = @iconv('UTF-8', 'UTF-8//IGNORE', $value);
-            return $scrubbed !== false ? $scrubbed : '';
-        }
-        if (is_float($value)) {
-            return is_finite($value) ? $value : 0.0;
-        }
-        if (is_array($value)) {
-            $sanitized = [];
-            foreach ($value as $key => $item) {
-                $sanitized[self::sanitizeForJson($key)] = self::sanitizeForJson($item);
-            }
-
-            return $sanitized;
-        }
-
-        return $value;
-    }
-
-    private function appendEntryToSession(string $sessionId, array $entry): void
-    {
-        $sessionId = $this->validateSessionId($sessionId);
-        $path = $this->sessionPath.'/'.$sessionId.'.jsonl';
-        $handle = @fopen($path, 'c+');
-        if ($handle === false) {
-            throw new \RuntimeException("Session not found: {$sessionId}");
-        }
-        try {
-            if (! flock($handle, LOCK_EX)) {
-                throw new \RuntimeException('Could not lock session interrupt checkpoint.');
-            }
-            $this->appendJsonLine($handle, array_merge([
-                'timestamp' => date('c'),
-                'session_id' => $sessionId,
-                'cwd' => $this->currentWorkingDirectory ?? (getcwd() ?: null),
-            ], $entry));
-        } finally {
-            flock($handle, LOCK_UN);
-            fclose($handle);
-        }
+        $this->jsonlStore()->appendLineToSessionFile(
+            $this->sessionPath,
+            $this->getFilePath(),
+            $line,
+            $purpose,
+        );
     }
 
     public function findMostRecentSessionId(?string $cwd = null): ?string
@@ -979,28 +505,23 @@ class SessionManager
 
         $candidates = [];
         foreach ($files as $file) {
-            $entries = $this->loadSession(basename($file, '.jsonl'));
-            if ($entries === []) {
+            $header = $this->readSessionHeader($file);
+            if ($header === null) {
                 continue;
-            }
-
-            $latestTimestamp = null;
-            $matchesCwd = false;
-            foreach ($entries as $entry) {
-                $timestamp = $entry['timestamp'] ?? null;
-                if (is_string($timestamp)) {
-                    $latestTimestamp = $timestamp;
-                }
-
-                if ($cwd !== null && is_string($entry['cwd'] ?? null) && $entry['cwd'] === $cwd) {
-                    $matchesCwd = true;
-                }
             }
 
             $candidates[] = [
                 'session_id' => basename($file, '.jsonl'),
-                'timestamp' => $latestTimestamp ?? date('c', filemtime($file) ?: time()),
-                'cwd_match' => $matchesCwd,
+                // Appends update mtime, so it is the cheap and more accurate
+                // recency signal. The header timestamp is only a deterministic
+                // tie-breaker for files written within the same filesystem tick.
+                'mtime' => @filemtime($file) ?: 0,
+                'timestamp' => is_string($header['timestamp'] ?? null) ? $header['timestamp'] : '',
+                // The common no-cwd path stays header-only. When continueLatest
+                // supplies a cwd, stream the transcript line by line so legacy
+                // worktree sessions that changed cwd later keep the old match
+                // semantics without materializing the full JSONL document.
+                'cwd_match' => $cwd !== null && $this->sessionContainsCwd($file, $cwd),
             ];
         }
 
@@ -1009,10 +530,96 @@ class SessionManager
                 return $left['cwd_match'] ? -1 : 1;
             }
 
+            if ($left['mtime'] !== $right['mtime']) {
+                return $right['mtime'] <=> $left['mtime'];
+            }
+
             return strcmp($right['timestamp'], $left['timestamp']);
         });
 
         return $candidates[0]['session_id'] ?? null;
+    }
+
+    /**
+     * Read only the first JSONL record used for session selection.
+     *
+     * The complete transcript remains the responsibility of loadSession().
+     * This path is called by continueMostRecent(), where parsing every large
+     * transcript just to sort candidates creates an avoidable O(total bytes)
+     * cost.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function readSessionHeader(string $path): ?array
+    {
+        $handle = @fopen($path, 'rb');
+        if ($handle === false) {
+            return null;
+        }
+
+        try {
+            if (! flock($handle, LOCK_SH)) {
+                return null;
+            }
+
+            $line = fgets($handle, self::SESSION_HEADER_BYTES + 1);
+            if ($line === false || trim($line) === '') {
+                return null;
+            }
+
+            $decoded = json_decode($line, true);
+            if (! is_array($decoded)) {
+                throw new \RuntimeException(
+                    'Session '.basename($path, '.jsonl').' contains invalid JSON in its header: '
+                    .json_last_error_msg(),
+                );
+            }
+
+            return $decoded;
+        } finally {
+            @flock($handle, LOCK_UN);
+            fclose($handle);
+        }
+    }
+
+    private function sessionContainsCwd(string $path, string $cwd): bool
+    {
+        $handle = @fopen($path, 'rb');
+        if ($handle === false) {
+            return false;
+        }
+
+        try {
+            if (! flock($handle, LOCK_SH)) {
+                return false;
+            }
+
+            $sessionId = basename($path, '.jsonl');
+            $lineNumber = 0;
+            $matches = false;
+            while (($line = fgets($handle, self::MAX_ENTRY_BYTES + 1)) !== false) {
+                $lineNumber++;
+                if (trim($line) === '') {
+                    continue;
+                }
+
+                $decoded = json_decode($line, true);
+                if (! is_array($decoded)) {
+                    throw new \RuntimeException(
+                        "Session {$sessionId} contains invalid JSON on line {$lineNumber}: "
+                        .json_last_error_msg(),
+                    );
+                }
+                if (($decoded['cwd'] ?? null) === $cwd) {
+                    $matches = true;
+                }
+            }
+
+            return $matches;
+        } finally {
+            @flock($handle, LOCK_UN);
+            fclose($handle);
+        }
     }
 
     private function generateSessionId(): string

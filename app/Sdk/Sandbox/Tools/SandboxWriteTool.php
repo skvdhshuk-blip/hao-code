@@ -72,7 +72,19 @@ final class SandboxWriteTool extends SandboxTool
             $output .= "\n\nWARNING: Potential secrets detected: ".implode(', ', $types).'.';
         }
 
-        return ToolResult::success($output);
+        $metadata = $backend instanceof RevisionAwareSandboxBackendInterface
+            ? [
+                'writeSafety' => 'conditional',
+                'conditionalWrite' => true,
+            ]
+            : [
+                // AgentRun rechecks the remote bytes before the write request,
+                // but its file API cannot compare-and-swap that request.
+                'writeSafety' => 'recheck_only',
+                'conditionalWrite' => false,
+            ];
+
+        return ToolResult::success($output, $metadata);
     }
 
     public function validateInput(array $input, ToolUseContext $context): ?string

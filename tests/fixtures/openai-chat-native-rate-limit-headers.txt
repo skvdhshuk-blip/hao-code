@@ -1,0 +1,8 @@
+HTTP/1.1 100 Continue
+HTTP/1.1 429 Too Many Requests
+Date: Sat, 01 Aug 2026 14:00:00 GMT
+Retry-After: 17
+x-ratelimit-limit-requests: 500
+x-ratelimit-remaining-requests: 0
+x-ratelimit-reset-requests: 17ms
+Content-Type: application/json

@@ -7,6 +7,7 @@ use HaoCode\Sdk\Sandbox\Backends\AgentRunSandboxBackend;
 use HaoCode\Sdk\Sandbox\SandboxConfig;
 use HaoCode\Sdk\Sandbox\SandboxRuntime;
 use HaoCode\Sdk\Sandbox\Tools\SandboxGlobTool;
+use HaoCode\Sdk\Sandbox\Tools\SandboxWriteTool;
 use HaoCode\Tools\ToolUseContext;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\HttpClient\MockHttpClient;
@@ -56,6 +57,27 @@ class AgentRunSandboxBackendTest extends TestCase
         $this->assertSame("ok\n", $exec['stdout']);
         $this->assertSame('warn', $exec['stderr']);
         $this->assertFalse($exec['outputLimited'] ?? true);
+    }
+
+    public function test_write_result_marks_agentrun_as_recheck_only(): void
+    {
+        $http = new MockHttpClient([
+            new MockResponse('not found', ['http_code' => 404]),
+            new MockResponse('not found', ['http_code' => 404]),
+            new MockResponse('{}', ['http_code' => 200]),
+        ]);
+        $config = SandboxConfig::agentRun(accountId: '1234567890', sandboxId: 'sbx-1');
+        $client = new AgentRunClient(accountId: '1234567890', sandboxId: 'sbx-1', httpClient: $http);
+        $runtime = new SandboxRuntime($config, new AgentRunSandboxBackend($config, $client));
+
+        $result = (new SandboxWriteTool($runtime))->call(
+            ['file_path' => '/workspace/a.txt', 'content' => 'alpha'],
+            new ToolUseContext('/workspace', 'agentrun-write-contract'),
+        );
+
+        $this->assertFalse($result->isError, $result->output);
+        $this->assertSame('recheck_only', $result->metadata['writeSafety'] ?? null);
+        $this->assertFalse($result->metadata['conditionalWrite'] ?? true);
     }
 
     public function test_backend_caps_large_exec_output(): void

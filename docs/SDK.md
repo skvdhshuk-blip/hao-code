@@ -2,7 +2,7 @@
 
 Use hao-code as a framework-free PHP library to embed an AI coding agent in your application.
 
-This document describes the `v1.18.56` source line. Published package versions
+This document describes the `v1.18.57` source line. Published package versions
 are identified by Git tags and Packagist.
 
 ```bash
@@ -350,6 +350,12 @@ and cost totals. When a synchronous worktree Agent retains changes after resume,
 the final result includes `worktree_path`, `worktree_branch`, and
 `worktree_retained` in its `usage` metadata.
 
+The run snapshot carries the effective `cwd`, project/worktree identity, model
+and prompt settings, allowed tools and active Skill scope, remaining turns,
+cumulative token/cost totals, budget-ledger identifiers and the sandbox lease
+identity. Credentials are excluded. On resume, the caller's current security
+policy is revalidated and may only tighten the checkpointed boundary.
+
 Interrupt lifecycle (latest entry wins):
 
 | State | Meaning |
@@ -533,6 +539,9 @@ images through the SDK image-input APIs described in [Multimodal Input](#multimo
 The read-before-write guard records only complete, successful reads. Failed or
 partial reads do not authorize `Write` or `Edit`, and if the file's external
 revision changes, the caller must complete another full `Read` before mutation.
+Receipts from a `Read` remain pending until that tool-result batch is visible to
+the model, so a `Read` and a `Write`/`Edit` in the same model batch cannot
+authorize one another; issue the mutation in the next batch.
 
 This differs from `v1.7.0`, where an explicitly constructed config defaulted to
 all tools, permission bypass, and durable storage. Existing trusted callers must
@@ -641,6 +650,10 @@ its write request, but its file API does not expose a conditional-write
 primitive; a concurrent remote writer can therefore still race that final
 request.
 
+AgentRun `Write` returns `metadata['writeSafety'] === 'recheck_only'` and
+`metadata['conditionalWrite'] === false`. Local, Native, and Tokimo backends
+report the stronger conditional revision-aware path.
+
 Choose the backend by the isolation boundary you need:
 
 | Backend | Hosts | Use it for |
@@ -679,6 +692,12 @@ Sandbox modes:
 | `filesystem` | `Read`, `Write`, `Glob`, `Grep` | Default; `Bash` is disabled |
 | `full` | `Read`, `Write`, `Glob`, `Grep`, `Bash` | Shell commands run inside the sandbox backend |
 
+The replacement boundary is otherwise fixed: `Edit`, `apply_patch`,
+`NotebookEdit`, worktree tools, `Agent`, and `SendMessage` are disabled while a
+sandbox is active. `LSP`, task/team, custom, and MCP tools remain host-side and
+are never implicitly moved into the sandbox; list them explicitly only when the
+host intends to keep that capability.
+
 All sandbox backends bound SDK-captured command output to 100,000 bytes. Native,
 Tokimo, and AgentRun apply that bound independently to stdout and stderr; Local
 uses one shared 100,000-byte budget across both streams. When a command is
@@ -687,13 +706,8 @@ code `1`; timeout and user abort use `124` and `130` respectively. `timedOut`,
 `aborted`, and `outputLimited` are included in normal sandbox Bash execution
 metadata.
 
-While sandbox mode is active, the SDK disables `Edit`, `apply_patch`,
-`NotebookEdit`, `EnterWorktree`, `ExitWorktree`, `Agent`, and `SendMessage`.
-Other host-only tools, including `LSP` and task/team tools, are not sandbox
-replacements. Use an explicit `allowedTools` list and omit them unless the host
-intentionally wants those capabilities alongside the sandbox. Legacy
-`CronCreate`/`CronList`/`CronDelete` classes are not registered by the default
-runtime because no prompt execution driver is wired.
+Legacy `CronCreate`/`CronList`/`CronDelete` classes are not registered by the
+default runtime because no prompt execution driver is wired.
 
 When a durable HITL interrupt is raised, the active sandbox root (or remote
 identity) is **detached** instead of cleaned up. The interrupt checkpoint stores
@@ -1024,6 +1038,29 @@ Configure required credentials explicitly:
 
 Avoid committing real credentials in project settings; prefer a protected
 global settings file or generate the configuration during deployment.
+
+### MCP host lifecycle: polling and roots
+
+The SDK run installs `McpConnectionManager::poll()` as its cooperative event
+pump. A host that uses `McpClient` / `McpConnectionManager` directly must call
+`poll()` during idle time (or issue another MCP request) so server-initiated
+notifications and reverse requests are read. This is especially important for
+`stdio`: there is no independent reader thread that drains an idle server.
+`McpConnectionManager::ensureConnected($name)` is the reconnecting entry point
+when a direct host integration needs a live client.
+
+```php
+$manager->connectAll();
+$manager->poll();                 // service pending idle messages
+$client = $manager->ensureConnected('private-server');
+$client->poll(0.01);              // optional bounded wait for direct hosts
+```
+
+`McpClient::setRoots()` changes the roots returned by the host's `roots/list`
+handler. It does not automatically send `notifications/roots/list_changed`
+after a connection is established, so set roots before `connect()` when the
+server needs them during initialization. A later `setRoots()` takes effect for
+future `roots/list` requests; it is not a server notification by itself.
 
 ### Streamable HTTP and OAuth
 

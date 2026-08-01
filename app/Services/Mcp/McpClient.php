@@ -87,7 +87,12 @@ final class McpClient
     }
 
     /**
-     * Set workspace roots to advertise to the server (used to respond to roots/list).
+     * Set workspace roots used to respond to the server's roots/list request.
+     *
+     * This only updates the host-side response state. It does not send a
+     * notifications/roots/list_changed message after the connection is open;
+     * set roots before connect when the server needs to discover them during
+     * initialization.
      *
      * @param  array<array{uri: string, name?: string}>  $roots
      */
@@ -679,7 +684,11 @@ final class McpClient
     }
 
     /**
-     * Cooperatively process pending messages from an independent Streamable HTTP GET stream.
+     * Cooperatively process pending server-initiated messages.
+     *
+     * Stdio has no independent reader thread: an idle host must call poll(),
+     * or issue another MCP request, for inbound notifications/reverse
+     * requests to be observed and answered.
      */
     public function poll(float $timeoutSeconds = 0.0): void
     {

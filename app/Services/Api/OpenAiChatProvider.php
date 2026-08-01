@@ -245,6 +245,10 @@ class OpenAiChatProvider implements ApiKeyAwareProvider, SettingsAwareProvider
         ?callable $onRawEvent,
         ?callable $shouldAbort,
     ): \Generator {
+        // Headers belong to this request attempt. Do not let a previous
+        // response's Retry-After influence a later request that has no such
+        // header.
+        $this->lastRateLimitHeaders = [];
         $baseUrl = $this->resolveBaseUrl();
         $payload = $this->buildPayload($systemPrompt, $messages, $tools);
 
@@ -295,11 +299,9 @@ class OpenAiChatProvider implements ApiKeyAwareProvider, SettingsAwareProvider
 
         // 解析响应头拿状态码
         $meta = stream_get_meta_data($fp);
-        $statusLine = $meta['wrapper_data'][0] ?? '';
-        $statusCode = 0;
-        if (preg_match('#^HTTP/\d\.\d\s+(\d+)#', (string) $statusLine, $m)) {
-            $statusCode = (int) $m[1];
-        }
+        $wrapperData = $meta['wrapper_data'] ?? [];
+        $this->extractRateLimitHeadersFromWrapperData($wrapperData);
+        $statusCode = $this->extractStatusCodeFromWrapperData($wrapperData);
         if ($debug) fwrite(STDERR, "[stream] opened, status={$statusCode}\n");
 
         if ($statusCode >= 400) {
@@ -438,8 +440,10 @@ class OpenAiChatProvider implements ApiKeyAwareProvider, SettingsAwareProvider
             return;
         }
 
-        $this->throwForHttpError($response);
         $this->extractRateLimitHeaders($response);
+        // Capture headers before decoding the error body: PooledProvider uses
+        // them when a 429 is converted into a credential exhaustion decision.
+        $this->throwForHttpError($response);
 
         $state = new OpenAiChatTranslatorState();
         $lineReader = new BoundedSseLineBuffer(self::MAX_SSE_LINE_BYTES);
@@ -1190,12 +1194,84 @@ class OpenAiChatProvider implements ApiKeyAwareProvider, SettingsAwareProvider
         $headers = $response->getHeaders(false);
         $this->lastRateLimitHeaders = [];
 
-        foreach ($headers as $name => $values) {
-            $lower = strtolower($name);
-            if (str_starts_with($lower, 'x-ratelimit-') || $lower === 'retry-after') {
-                $this->lastRateLimitHeaders[$lower] = $values[0] ?? '';
+        $this->lastRateLimitHeaders = $this->filterRateLimitHeaders($headers);
+    }
+
+    /**
+     * Parse the response-header lines exposed by PHP's native stream wrapper.
+     *
+     * @param mixed $wrapperData
+     * @return array<string, string>
+     */
+    private function extractRateLimitHeadersFromWrapperData(mixed $wrapperData): array
+    {
+        if (! is_array($wrapperData)) {
+            return $this->lastRateLimitHeaders;
+        }
+
+        $headers = [];
+        foreach ($wrapperData as $line) {
+            if (! is_string($line)) {
+                continue;
+            }
+            $separator = strpos($line, ':');
+            if ($separator === false) {
+                continue;
+            }
+
+            $name = strtolower(trim(substr($line, 0, $separator)));
+            if (! $this->isRateLimitHeader($name)) {
+                continue;
+            }
+
+            $headers[$name] = trim(substr($line, $separator + 1));
+        }
+
+        $this->lastRateLimitHeaders = $headers;
+
+        return $headers;
+    }
+
+    /**
+     * @param mixed $wrapperData
+     */
+    private function extractStatusCodeFromWrapperData(mixed $wrapperData): int
+    {
+        if (! is_array($wrapperData)) {
+            return 0;
+        }
+
+        $statusCode = 0;
+        foreach ($wrapperData as $line) {
+            if (is_string($line)
+                && preg_match('#^HTTP/\d(?:\.\d)?\s+(\d+)#i', trim($line), $matches) === 1) {
+                $statusCode = (int) $matches[1];
             }
         }
+
+        return $statusCode;
+    }
+
+    /**
+     * @param array<string, list<string>> $headers
+     * @return array<string, string>
+     */
+    private function filterRateLimitHeaders(array $headers): array
+    {
+        $filtered = [];
+        foreach ($headers as $name => $values) {
+            $lower = strtolower($name);
+            if ($this->isRateLimitHeader($lower)) {
+                $filtered[$lower] = $values[0] ?? '';
+            }
+        }
+
+        return $filtered;
+    }
+
+    private function isRateLimitHeader(string $lowerName): bool
+    {
+        return str_starts_with($lowerName, 'x-ratelimit-') || $lowerName === 'retry-after';
     }
 
     private function normalizeTransportException(\Throwable $e): \Throwable
