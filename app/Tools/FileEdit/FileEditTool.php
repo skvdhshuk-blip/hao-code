@@ -644,11 +644,13 @@ DESC;
                 || str_starts_with($mime, 'audio/')
                 || str_starts_with($mime, 'video/')
                 || str_starts_with($mime, 'font/')
-                || $mime === 'application/octet-stream'
                 || $mime === 'application/pdf'
                 || $mime === 'application/zip') {
                 return true;
             }
+            // Some PHP/fileinfo versions classify extensionless text files as
+            // application/octet-stream. Let the control-byte heuristic below
+            // decide those cases instead of rejecting valid text outright.
         }
 
         // Heuristic: high ratio of non-printable / non-whitespace control bytes

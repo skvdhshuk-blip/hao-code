@@ -775,7 +775,7 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.18.50`. Notable changes since `v1.10.0`:
+is based on `v1.18.51`. Notable changes since `v1.10.0`:
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/
@@ -950,6 +950,8 @@ is based on `v1.18.50`. Notable changes since `v1.10.0`:
 - `v1.18.50` — Large-file Read/Edit/Write paths, foreground/background Bash,
   parallel tool cancellation, Grep/Glob resource limits, and Windows path
   normalization now fail closed with bounded work and regression coverage.
+- `v1.18.51` — Extensionless large text files no longer inherit a false binary
+  classification from PHP's `application/octet-stream` MIME fallback.
 
 ## License
 
