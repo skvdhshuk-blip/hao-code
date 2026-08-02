@@ -122,7 +122,7 @@ class SettingsManager
             $this->runtimeOverrides['context_window'] ?? null,
             $providerConfig['context_window'] ?? null,
             $legacyAllowed ? ($settings['context_window'] ?? null) : null,
-            $legacyAllowed ? \HaoCode\Support\Runtime\SdkRuntime::config('haocode.context_window') : null,
+            \HaoCode\Support\Runtime\SdkRuntime::config('haocode.context_window'),
         );
         if ($contextWindow === null || $contextWindow <= 0) {
             $contextWindow = 200000;

@@ -327,6 +327,24 @@ class SettingsManagerTest extends TestCase
         $this->assertSame(64000, $settings->getContextWindow());
     }
 
+    public function test_non_anthropic_provider_uses_configured_context_window(): void
+    {
+        config([
+            'haocode.context_window' => 1_000_000,
+            'haocode.model' => 'deepseek-v4-flash',
+            'haocode.provider_type' => 'openai_chat',
+        ]);
+
+        $settings = new SettingsManager;
+        $settings->set('provider_type', 'openai_chat');
+        $settings->set('model', 'deepseek-v4-flash');
+
+        $resolved = $settings->resolveProviderConfig();
+
+        $this->assertSame('openai_chat', $resolved->providerType);
+        $this->assertSame(1_000_000, $resolved->contextWindow);
+    }
+
     public function test_context_window_can_be_defined_per_provider(): void
     {
         $settings = new SettingsManager;
