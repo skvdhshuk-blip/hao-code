@@ -748,6 +748,65 @@ class AgentLoopTest extends TestCase
         $this->assertSame('response', $result);
     }
 
+    public function test_set_max_turns_rejects_zero_or_negative_values(): void
+    {
+        $loop = $this->makeLoop($this->createMock(QueryEngine::class));
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('maxTurns must be >= 1');
+
+        $loop->setMaxTurns(0);
+    }
+
+    public function test_repeated_identical_tool_errors_trigger_one_no_tool_finalization(): void
+    {
+        $queryEngine = $this->createMock(QueryEngine::class);
+        $queryEngine->expects($this->exactly(4))
+            ->method('query')
+            ->willReturnOnConsecutiveCalls(
+                $this->makeValidToolUseProcessor('AlwaysFails', 'toolu_fail_1', ['value' => 'same']),
+                $this->makeValidToolUseProcessor('AlwaysFails', 'toolu_fail_2', ['value' => 'same']),
+                $this->makeValidToolUseProcessor('AlwaysFails', 'toolu_fail_3', ['value' => 'same']),
+                $this->makePlainTextProcessor('best final answer'),
+            );
+
+        $registry = new ToolRegistry;
+        $registry->register($this->makeTool(
+            'AlwaysFails',
+            static fn (): ToolResult => ToolResult::error('disk full'),
+        ));
+
+        $permissionChecker = $this->createMock(PermissionChecker::class);
+        $permissionChecker->method('check')->willReturn(
+            \HaoCode\Services\Permissions\PermissionDecision::allow(),
+        );
+        $hookExecutor = $this->createMock(HookExecutor::class);
+        $hookExecutor->method('execute')->willReturn(new HookResult(true));
+        $contextBuilder = $this->createMock(ContextBuilder::class);
+        $contextBuilder->method('buildSystemPrompt')->willReturn([]);
+        $sessionManager = $this->createMock(SessionManager::class);
+        $sessionManager->method('getSessionId')->willReturn('test-session');
+        $compactor = $this->createMock(ContextCompactor::class);
+        $compactor->method('shouldAutoCompact')->willReturn(false);
+        $compactor->method('shouldMicroCompact')->willReturn(false);
+
+        $loop = new AgentLoop(
+            queryEngine: $queryEngine,
+            toolOrchestrator: new ToolOrchestrator($registry, $permissionChecker, $hookExecutor),
+            contextBuilder: $contextBuilder,
+            messageHistory: new MessageHistory,
+            permissionChecker: $permissionChecker,
+            sessionManager: $sessionManager,
+            contextCompactor: $compactor,
+            costTracker: new CostTracker(999.0, 9999.0),
+            toolRegistry: $registry,
+            hookExecutor: $hookExecutor,
+        );
+
+        $this->assertSame('best final answer', $loop->run('try it'));
+        $this->assertSame(3, $loop->getLastRunTurns());
+    }
+
     // ─── auto-compact uses last-turn tokens, not cumulative ───────────────
 
     public function test_auto_compact_does_not_fire_every_turn_after_first_compact(): void

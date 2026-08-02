@@ -1186,7 +1186,7 @@ class OpenAiChatProvider implements ApiKeyAwareProvider, SettingsAwareProvider
             return max(0.0, min((float) $retryAfter, 120));
         }
 
-        return min(2 ** $attempt, 10);
+        return RetryDelay::withJitter(min(2 ** $attempt, 10), 10);
     }
 
     private function extractRateLimitHeaders(ResponseInterface $response): void

@@ -516,9 +516,10 @@ class AnthropicProvider implements ApiKeyAwareProvider, SettingsAwareProvider
 
         if ($e instanceof ApiErrorException
             && ($e->getErrorType() === 'rate_limit_error' || $this->isRateLimitMessage($e->getMessage()))) {
-            return min(2 ** $attempt, 30);
+            return RetryDelay::withJitter(min(2 ** $attempt, 30), 30);
         }
-        return min(2 ** $attempt, 10);
+
+        return RetryDelay::withJitter(min(2 ** $attempt, 10), 10);
     }
 
     private function isRateLimitMessage(string $message): bool

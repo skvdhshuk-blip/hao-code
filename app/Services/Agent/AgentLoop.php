@@ -20,6 +20,8 @@ use HaoCode\Tools\ToolUseContext;
 
 class AgentLoop
 {
+    private const MAX_IDENTICAL_TOOL_ERROR_BATCHES = 3;
+
     private int $maxTurns = 50;
 
     private int $maxMalformedToolInputRetries = 4;
@@ -122,6 +124,10 @@ class AgentLoop
 
     public function setMaxTurns(int $maxTurns): void
     {
+        if ($maxTurns < 1) {
+            throw new \InvalidArgumentException('maxTurns must be >= 1.');
+        }
+
         $this->maxTurns = $maxTurns;
     }
 
@@ -504,6 +510,9 @@ class AgentLoop
         $malformedToolInputRetries = [];
         $totalMalformedToolInputRetries = 0;
         $incompleteResponseRetries = 0;
+        $lastToolErrorFingerprint = null;
+        $identicalToolErrorBatches = 0;
+        $finalizationReason = null;
         $systemPrompt = $this->systemPrompt ??= $this->contextBuilder->buildSystemPrompt();
 
         while ($turnCount < $this->maxTurns && ! $this->aborted) {
@@ -867,6 +876,17 @@ class AgentLoop
                 // 9. Record transcript
                 $this->persistAssistantTurn($assistantMessage, $toolResults);
 
+                if ($this->detectRepeatedToolErrorBatch(
+                    $toolCalls,
+                    $toolResults,
+                    $lastToolErrorFingerprint,
+                    $identicalToolErrorBatches,
+                )) {
+                    $finalizationReason = 'repeated identical tool failure';
+                    $turnCount = $this->maxTurns;
+                    break;
+                }
+
                 // 10. Auto-generate session title after first turn
                 if (! $this->autoTitleGenerated && $this->sessionManager->getTitle() === null) {
                     $this->autoTitleGenerated = true;
@@ -907,7 +927,12 @@ class AgentLoop
             return '(aborted)';
         }
 
-        return $this->finalizeAfterTurnLimit($systemPrompt, $onTextDelta, $onThinkingDelta);
+        return $this->finalizeAfterTurnLimit(
+            $systemPrompt,
+            $onTextDelta,
+            $onThinkingDelta,
+            $finalizationReason,
+        );
     }
 
     /**
@@ -1001,12 +1026,15 @@ class AgentLoop
         array $systemPrompt,
         ?callable $onTextDelta,
         ?callable $onThinkingDelta,
+        ?string $reason = null,
     ): string {
         $this->contextCompactor->microCompact($this->messageHistory);
         $messages = $this->messageHistory->getMessagesForApi();
         $messages[] = [
             'role' => 'user',
-            'content' => 'The tool-turn limit has been reached. Do not call tools. Return the best final answer now using the evidence already collected, and state any remaining uncertainty.',
+            'content' => $reason === 'repeated identical tool failure'
+                ? 'The same tool failure has repeated several times. Do not call tools. Return the best final answer now using the evidence already collected, and state any remaining uncertainty.'
+                : 'The tool-turn limit has been reached. Do not call tools. Return the best final answer now using the evidence already collected, and state any remaining uncertainty.',
         ];
 
         $estimatedTokens = ContextBudget::estimateTokens($systemPrompt, $messages, []);
@@ -1056,7 +1084,9 @@ class AgentLoop
 
         return $answer !== ''
             ? $answer
-            : "Reached maximum turn limit ({$this->maxTurns}) without a final answer.";
+            : ($reason === 'repeated identical tool failure'
+                ? 'Stopped after repeated identical tool failures without a final answer.'
+                : "Reached maximum turn limit ({$this->maxTurns}) without a final answer.");
     }
 
     public function getTotalInputTokens(): int
@@ -1284,6 +1314,97 @@ class AgentLoop
 
             $context->markFileReadIncomplete($readPaths[$id]);
         }
+    }
+
+    /**
+     * Detect a model repeating the same valid tool-error batch without changing
+     * its approach. Tool-use IDs are deliberately excluded because providers
+     * generate a new ID for every retry.
+     *
+     * @param  array<int, ToolCall>  $toolCalls
+     * @param  array<int, array<string, mixed>>  $toolResults
+     */
+    private function detectRepeatedToolErrorBatch(
+        array $toolCalls,
+        array $toolResults,
+        ?string &$lastFingerprint,
+        int &$repeatCount,
+    ): bool {
+        $resultsById = [];
+        foreach ($toolResults as $result) {
+            $id = $result['tool_use_id'] ?? null;
+            if (is_string($id) && $id !== '') {
+                $resultsById[$id] = $result;
+            }
+        }
+
+        $entries = [];
+        $hasError = false;
+        foreach ($toolCalls as $toolCall) {
+            $result = $resultsById[$toolCall->id] ?? null;
+            $isError = is_array($result) && ($result['is_error'] ?? false) === true;
+            $entry = [
+                'name' => $toolCall->name,
+                'input' => $this->canonicalizeFingerprintValue($toolCall->input),
+                'is_error' => $isError,
+                'error' => null,
+            ];
+
+            if ($isError) {
+                $hasError = true;
+                $content = $result['content'] ?? '';
+                if (! is_string($content)) {
+                    $encoded = json_encode($content, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+                    $content = is_string($encoded) ? $encoded : get_debug_type($content);
+                }
+                $normalized = preg_replace('/\s+/u', ' ', trim($content));
+                $entry['error'] = mb_substr($normalized === null ? $content : $normalized, 0, 512);
+            }
+
+            $entries[] = $entry;
+        }
+
+        if (! $hasError) {
+            $lastFingerprint = null;
+            $repeatCount = 0;
+
+            return false;
+        }
+
+        $encoded = json_encode($entries, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+        if (! is_string($encoded)) {
+            $lastFingerprint = null;
+            $repeatCount = 0;
+
+            return false;
+        }
+
+        $fingerprint = hash('sha256', $encoded);
+        if ($fingerprint === $lastFingerprint) {
+            $repeatCount++;
+        } else {
+            $lastFingerprint = $fingerprint;
+            $repeatCount = 1;
+        }
+
+        return $repeatCount >= self::MAX_IDENTICAL_TOOL_ERROR_BATCHES;
+    }
+
+    private function canonicalizeFingerprintValue(mixed $value): mixed
+    {
+        if (! is_array($value)) {
+            return $value;
+        }
+
+        $normalized = [];
+        foreach ($value as $key => $child) {
+            $normalized[$key] = $this->canonicalizeFingerprintValue($child);
+        }
+        if (! array_is_list($normalized)) {
+            ksort($normalized);
+        }
+
+        return $normalized;
     }
 
     /**

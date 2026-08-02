@@ -2,7 +2,7 @@
 
 Use hao-code as a framework-free PHP library to embed an AI coding agent in your application.
 
-This document describes the `v1.18.59` source line. Published package versions
+This document describes the `v1.18.60` source line. Published package versions
 are identified by Git tags and Packagist.
 
 ```bash
@@ -486,7 +486,7 @@ configured output tokens and a safety margin before sending a request.
 | Parameter | Type | Default | Description |
 |-----------|------|---------|-------------|
 | `cwd` | `?string` | `null` | Working directory for tool execution. Defaults to `getcwd()`. On `resume()`, when empty, the session transcript cwd is restored instead |
-| `maxTurns` | `int` | `50` | Maximum agent turns (tool-use round trips) |
+| `maxTurns` | `int` | `50` | Maximum agent turns (tool-use round trips); must be at least `1`. After three consecutive identical valid tool-error batches, the loop stops repeating the action and performs one no-tool finalization request |
 | `maxBudgetUsd` | `?float` | `null` | Shared post-response spending guard (USD) for the root run, child/Team/background agents, forked skills, structured retries, and HITL resumes. Checked before each model request and after usage is recorded — **not** a pre-reserved hard cap. In-flight or parallel work can finish slightly over the limit. On HITL resume the effective limit is `min(snapshot, config)` |
 | `allowCwdOverride` | `bool` | `false` | When `false`, `resume()` refuses a config `cwd` that differs from the session transcript cwd. Set `true` only when tools should intentionally run under a different project root |
 | `ephemeral` | `bool` | `true` | Disable session and tool-result persistence for this run |
@@ -1204,6 +1204,26 @@ class name looks like a lookup.
 - Pure query tools: override `isReadOnly()` and return `true` so Plan mode
   may auto-approve and parallel scheduling may apply.
 
+Every public run gets a fresh loop, message history, cost tracker, and tool
+registry. `SdkTool` does not require a clone implementation, so cloneable
+instances are copied for isolated child registries but non-cloneable instances
+may remain shared. Keep custom tools stateless, construct one instance per
+concurrent run, or synchronize mutable state when running under Swoole,
+RoadRunner, or another long-lived worker. The SDK runtime and its in-memory
+rate-limit bookkeeping are process-local; worker-wide coordination requires
+process isolation or an application-owned shared store.
+
+The loop also has a narrow repetition guard: after three consecutive identical
+valid tool-error batches it stops retrying that action and performs one final
+no-tool request. This complements, rather than replaces, the configured
+`maxTurns` budget.
+
+For `ToolInputSchema` backed only by a JSON Schema, a malformed self-contained
+schema is deliberately treated as an allow-through compatibility fallback so a
+single broken MCP schema does not disable every call to that tool. External
+references are still rejected without I/O. `structured()` response schemas use
+the stricter validation path and reject unusable schemas before the model call.
+
 ```php
 class ShoppingCart extends SdkTool
 {
@@ -1903,6 +1923,13 @@ by provider errors and the pool's exhaustion TTL. The pool constructor and
 `retryAfterSeconds` is stored for that credential's current exhaustion only; it
 does not change the pool default or other credentials, and invalid values throw
 `InvalidArgumentException`.
+
+Credential-pool exhaustion and `RateLimitTracker` state are process-local. In a
+multi-worker deployment, workers do not automatically observe one another's
+rate-limit state; provide an application-owned shared backend when that
+coordination is required. Provider exponential retry delays add bounded jitter
+when no `Retry-After` header is supplied, while an explicit server delay is
+honored as received.
 
 ---
 

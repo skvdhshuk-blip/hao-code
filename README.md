@@ -668,6 +668,27 @@ read-only — Plan mode will not auto-approve it, and the orchestrator will not
 fork it for parallel execution. Override `isReadOnly()` and return `true` only
 for pure query tools with no side effects.
 
+Each public run gets its own agent loop, message history, cost tracker, and
+tool registry. Custom `SdkTool` objects do not have a cloneability contract,
+however: cloneable instances are copied for isolated child registries, while
+non-cloneable instances may remain shared. Keep custom tools stateless, create
+one instance per concurrent run, or synchronize their mutable state when using
+Swoole, RoadRunner, or another long-lived worker. The SDK runtime and its
+in-memory rate-limit bookkeeping are process-local; use process isolation or an
+application-owned shared store when worker-wide coordination is required.
+
+`maxTurns` must be at least `1`. In addition to that hard turn budget, the loop
+stops repeating a valid tool call after three consecutive identical tool-error
+batches and makes one final no-tool request. Provider retries use bounded jitter
+when no `Retry-After` header is supplied, while an explicit server delay is
+honored as received.
+
+When a `ToolInputSchema` uses only JSON Schema, a malformed self-contained
+schema remains an intentional allow-through compatibility fallback so one bad
+MCP schema does not disable every call to that tool. External `$ref` targets
+are rejected without I/O. Structured response schemas use a stricter path and
+are rejected before the model call when unusable.
+
 ## Custom Skills
 
 Use `SdkSkill` to package reusable prompt guidance:
@@ -739,6 +760,13 @@ $config = new HaoCodeConfig(
 non-negative numbers. Each exhausted credential keeps the TTL used for that
 exhaustion, so a provider-specific retry delay does not silently replace the
 pool default for other credentials.
+
+Credential-pool exhaustion and `RateLimitTracker` state are in-memory and
+process-local. They coordinate calls handled by one PHP process only; a
+multi-worker deployment needs an application-owned shared implementation if
+workers must observe each other's rate limits. When a provider supplies no
+`Retry-After`, SDK exponential retries add bounded jitter to avoid synchronized
+retries across clients.
 
 Built-in USD budgets use exact pricing for the Claude models listed by this
 release. Unknown or non-Anthropic models report `cost_available: false`;
@@ -834,7 +862,7 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.18.59`. Notable changes since `v1.10.0`:
+is based on `v1.18.60`. Notable changes since `v1.10.0`:
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/
@@ -1028,6 +1056,11 @@ is based on `v1.18.59`. Notable changes since `v1.10.0`:
   prefixes.
 - `v1.18.59` — Sandbox Glob's bounded-result wording no longer implies an
   unknown total count; it remains explicit without overstating the result.
+- `v1.18.60` — AgentLoop rejects invalid zero or negative turn budgets and
+  stops repeating identical valid tool-error batches with a final no-tool
+  request; provider fallback retries add bounded jitter while honoring
+  explicit `Retry-After` delays, with the lifecycle and deployment contracts
+  documented and covered by regression tests.
 - `v1.18.56` — AgentRun Glob/Grep now prune and bound remote searches, preserve
   path-level glob semantics, and expose residual-difference metadata; Tokimo
   and AgentRun abort waits mid-run, and all sandbox exec backends use the
