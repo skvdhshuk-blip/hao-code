@@ -56,14 +56,25 @@ class ContextCompactor
      */
     private readonly int $contextWindow;
 
+    /**
+     * Safe input budget used by AgentLoop after reserving model output and a
+     * safety margin. When present, compaction must fire before this budget,
+     * not only before the raw model context window.
+     */
+    private readonly ?int $maxEstimatedInputTokens;
+
     public function __construct(
         private readonly QueryEngine $queryEngine,
         private readonly ?HookExecutor $hookExecutor = null,
         ?int $contextWindow = null,
+        ?int $maxEstimatedInputTokens = null,
     ) {
         $this->contextWindow = ($contextWindow !== null && $contextWindow > 0)
             ? $contextWindow
             : self::CONTEXT_WINDOW;
+        $this->maxEstimatedInputTokens = $maxEstimatedInputTokens !== null
+            ? max(1, $maxEstimatedInputTokens)
+            : null;
     }
 
     /**
@@ -77,12 +88,34 @@ class ContextCompactor
 
     private function effectiveContextWindow(): int
     {
-        return $this->scaleFromDefaultWindow(self::EFFECTIVE_CONTEXT_WINDOW);
+        $scaledWindow = $this->scaleFromDefaultWindow(self::EFFECTIVE_CONTEXT_WINDOW);
+
+        return $this->maxEstimatedInputTokens === null
+            ? $scaledWindow
+            : min($scaledWindow, $this->maxEstimatedInputTokens);
+    }
+
+    private function scaledBuffer(int $baselineValue): int
+    {
+        $scaledBuffer = $this->scaleFromDefaultWindow($baselineValue);
+
+        return min($this->effectiveContextWindow(), $scaledBuffer);
     }
 
     private function autoCompactThreshold(): int
     {
-        return $this->scaleFromDefaultWindow(self::AUTO_COMPACT_THRESHOLD);
+        $scaledThreshold = $this->scaleFromDefaultWindow(self::AUTO_COMPACT_THRESHOLD);
+        if ($this->maxEstimatedInputTokens === null) {
+            return $scaledThreshold;
+        }
+
+        // AgentLoop rejects requests at maxEstimatedInputTokens. Keep the
+        // existing window-derived threshold as the upper bound, but move it
+        // earlier when a large max-output reservation makes the safe input
+        // budget materially smaller than the raw context window. The limit
+        // is calculated once by AgentLoopFactory and shared here so the two
+        // guards cannot drift.
+        return max(1, min($scaledThreshold, $this->maxEstimatedInputTokens));
     }
 
     private function microCompactThreshold(): int
@@ -193,9 +226,9 @@ class ContextCompactor
 
         $tokensRemaining = $effectiveWindow - $totalInputTokens;
 
-        $isBlocking = $tokensRemaining <= $this->scaleFromDefaultWindow(self::BLOCKING_BUFFER_TOKENS);
-        $isError    = $tokensRemaining <= $this->scaleFromDefaultWindow(self::ERROR_BUFFER_TOKENS);
-        $isWarning  = $tokensRemaining <= $this->scaleFromDefaultWindow(self::WARNING_BUFFER_TOKENS);
+        $isBlocking = $tokensRemaining <= $this->scaledBuffer(self::BLOCKING_BUFFER_TOKENS);
+        $isError    = $tokensRemaining <= $this->scaledBuffer(self::ERROR_BUFFER_TOKENS);
+        $isWarning  = $tokensRemaining <= $this->scaledBuffer(self::WARNING_BUFFER_TOKENS);
 
         $message = null;
         if ($isBlocking) {

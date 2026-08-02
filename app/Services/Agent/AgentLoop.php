@@ -567,10 +567,7 @@ class AgentLoop
                         $activeTools,
                     );
                     if ($estimatedTokens > $this->maxEstimatedInputTokens) {
-                        throw new \RuntimeException(
-                            'Estimated model input exceeds the safe context budget after emergency compaction. '.
-                            'Reduce the user input, project instructions, or advertised tools.',
-                        );
+                        $this->throwContextBudgetExceeded($estimatedTokens);
                     }
                 }
             }
@@ -1053,6 +1050,11 @@ class AgentLoop
                     'content' => 'Return a concise final answer now without tools, using the retained evidence previews.',
                 ];
             }
+
+            $estimatedTokens = ContextBudget::estimateTokens($systemPrompt, $messages, []);
+            if ($estimatedTokens > $this->maxEstimatedInputTokens) {
+                $this->throwContextBudgetExceeded($estimatedTokens);
+            }
         }
 
         $processor = $this->queryEngine->query(
@@ -1087,6 +1089,16 @@ class AgentLoop
             : ($reason === 'repeated identical tool failure'
                 ? 'Stopped after repeated identical tool failures without a final answer.'
                 : "Reached maximum turn limit ({$this->maxTurns}) without a final answer.");
+    }
+
+    private function throwContextBudgetExceeded(int $estimatedTokens): never
+    {
+        throw new \RuntimeException(
+            'Estimated model input exceeds the safe context budget after emergency compaction '.
+            sprintf('(estimated %d tokens; safe limit %d). ', $estimatedTokens, $this->maxEstimatedInputTokens).
+            'The estimate includes system instructions, conversation history, and advertised tools. '.
+            'Reduce the user input, project instructions, or advertised tools.',
+        );
     }
 
     public function getTotalInputTokens(): int

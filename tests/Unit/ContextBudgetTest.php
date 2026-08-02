@@ -11,5 +11,12 @@ class ContextBudgetTest extends TestCase
     {
         $this->assertSame(113600, ContextBudget::safeInputLimit(128000, 8000));
         $this->assertSame(174000, ContextBudget::safeInputLimit(200000, 16000));
+        $this->assertSame(566000, ContextBudget::safeInputLimit(1_000_000, 384_000));
+    }
+
+    public function test_safe_input_limit_never_becomes_zero_or_negative(): void
+    {
+        $this->assertSame(190000, ContextBudget::safeInputLimit(200000, 0));
+        $this->assertSame(1, ContextBudget::safeInputLimit(200000, 300000));
     }
 }

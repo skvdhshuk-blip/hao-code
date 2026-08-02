@@ -2,6 +2,7 @@
 
 namespace Tests\Unit;
 
+use HaoCode\Services\Agent\ContextBudget;
 use HaoCode\Services\Compact\ContextCompactor;
 use HaoCode\Services\Agent\QueryEngine;
 use PHPUnit\Framework\TestCase;
@@ -21,10 +22,10 @@ class ContextCompactorWarningTest extends TestCase
     private const ERROR_THRESHOLD   = self::EFFECTIVE - 20_000; // 160_000
     private const BLOCKING_THRESHOLD = self::EFFECTIVE - 3_000; // 177_000
 
-    private function makeCompactor(?int $contextWindow = null): ContextCompactor
+    private function makeCompactor(?int $contextWindow = null, ?int $maxEstimatedInputTokens = null): ContextCompactor
     {
         $queryEngine = $this->createMock(QueryEngine::class);
-        return new ContextCompactor($queryEngine, null, $contextWindow);
+        return new ContextCompactor($queryEngine, null, $contextWindow, $maxEstimatedInputTokens);
     }
 
     // ─── percentUsed ──────────────────────────────────────────────────────
@@ -268,5 +269,18 @@ class ContextCompactorWarningTest extends TestCase
         $this->assertTrue($state['isWarning']);
         $this->assertTrue($state['isError']);
         $this->assertTrue($state['isBlocking']);
+    }
+
+    public function test_large_output_budget_moves_auto_compact_before_safe_input_limit(): void
+    {
+        $contextWindow = 1_000_000;
+        $safeInputLimit = ContextBudget::safeInputLimit($contextWindow, 384_000);
+        $compactor = $this->makeCompactor($contextWindow, $safeInputLimit);
+
+        // The raw 1M-window threshold would be 835k. The shared safe input
+        // limit is 566k, so compaction must begin before the hard guard.
+        $this->assertFalse($compactor->shouldAutoCompact($safeInputLimit));
+        $this->assertTrue($compactor->shouldAutoCompact($safeInputLimit + 1));
+        $this->assertSame(100.0, $compactor->getWarningState($safeInputLimit)['percentUsed']);
     }
 }

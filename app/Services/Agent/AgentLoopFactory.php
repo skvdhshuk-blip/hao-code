@@ -274,6 +274,11 @@ class AgentLoopFactory
         $costTracker->setProviderType($settings->getProviderType());
         $costTracker->setModel($settings->getModel());
 
+        $maxEstimatedInputTokens = ContextBudget::safeInputLimit(
+            $settings->getContextWindow(),
+            $settings->getMaxTokens(),
+        );
+
         $loop = new AgentLoop(
             queryEngine: $queryEngine,
             toolOrchestrator: $toolOrchestrator,
@@ -281,16 +286,18 @@ class AgentLoopFactory
             messageHistory: new MessageHistory(),
             permissionChecker: $permissionChecker,
             sessionManager: new SessionManager(persistenceEnabled: ! $ephemeral),
-            contextCompactor: new ContextCompactor($queryEngine, $hookExecutor, $settings->getContextWindow()),
+            contextCompactor: new ContextCompactor(
+                $queryEngine,
+                $hookExecutor,
+                $settings->getContextWindow(),
+                $maxEstimatedInputTokens,
+            ),
             costTracker: $costTracker,
             toolRegistry: $toolRegistry,
             hookExecutor: $hookExecutor,
             tracer: $tracer,
             cancellationToken: $runContext?->cancellationToken,
-            maxEstimatedInputTokens: ContextBudget::safeInputLimit(
-                $settings->getContextWindow(),
-                $settings->getMaxTokens(),
-            ),
+            maxEstimatedInputTokens: $maxEstimatedInputTokens,
             runContext: $runContext,
             provider: $client,
         );
