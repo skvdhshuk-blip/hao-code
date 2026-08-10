@@ -11,6 +11,9 @@ use Symfony\Contracts\HttpClient\ResponseInterface;
 final class AgentRunClient
 {
     private const MAX_ERROR_BODY_BYTES = 64 * 1024;
+    // Two 100 KB captured streams can expand substantially when JSON-escaped.
+    // Keep the transport buffer bounded without rejecting a valid capped result.
+    private const MAX_COMMAND_RESPONSE_BYTES = 2 * 1024 * 1024;
 
     private HttpClientInterface $http;
     private ?string $resolvedSandboxId = null;
@@ -108,7 +111,7 @@ final class AgentRunClient
             'command' => $command,
             'cwd' => $cwd,
             'timeout' => $timeoutSeconds,
-        ], shouldAbort: $shouldAbort);
+        ], shouldAbort: $shouldAbort, maxResponseBytes: self::MAX_COMMAND_RESPONSE_BYTES);
     }
 
     public function executeCode(string $code, int $timeoutSeconds = 30, string $language = 'python'): array
@@ -132,6 +135,7 @@ final class AgentRunClient
         array $query = [],
         bool $sandboxScoped = true,
         ?callable $shouldAbort = null,
+        ?int $maxResponseBytes = null,
     ): array
     {
         $url = $this->url($path, $query, $sandboxScoped);
@@ -150,12 +154,29 @@ final class AgentRunClient
         if ($data !== null) {
             $options['json'] = $data;
         }
+        if ($maxResponseBytes !== null) {
+            // Symfony otherwise buffers the entire successful command response
+            // before the backend can enforce its SDK capture limit.
+            $options['buffer'] = false;
+        }
 
         $response = $this->http->request($method, $url, $options);
-        $status = $response->getStatusCode();
+        $body = null;
+        $bodyLimited = false;
+        if ($shouldAbort !== null || $maxResponseBytes !== null) {
+            $received = $this->readStreamedResponse($response, $shouldAbort, $maxResponseBytes);
+            if ($received['aborted']) {
+                return ['__haocode_aborted' => true];
+            }
+            $status = $received['status'];
+            $body = $received['body'];
+            $bodyLimited = $received['limited'];
+        } else {
+            $status = $response->getStatusCode();
+        }
 
         if ($status < 200 || $status >= 300) {
-            $body = BoundedResponseBodyReader::read(
+            $body ??= BoundedResponseBodyReader::read(
                 $this->http,
                 $response,
                 self::MAX_ERROR_BODY_BYTES,
@@ -172,12 +193,10 @@ final class AgentRunClient
             throw new \RuntimeException("AgentRun HTTP {$status}: {$message}");
         }
 
-        $body = $shouldAbort === null
-            ? $response->getContent(false)
-            : $this->readBodyWithAbort($response, $shouldAbort);
-        if ($body === null) {
-            return ['__haocode_aborted' => true];
+        if ($bodyLimited) {
+            return ['__haocode_response_limited' => true];
         }
+        $body ??= $response->getContent(false);
 
         $decoded = [];
         if ($body !== '') {
@@ -190,14 +209,22 @@ final class AgentRunClient
         return $decoded;
     }
 
-    private function readBodyWithAbort(ResponseInterface $response, callable $shouldAbort): ?string
+    /**
+     * @return array{status: int, body: string, aborted: bool, limited: bool}
+     */
+    private function readStreamedResponse(
+        ResponseInterface $response,
+        ?callable $shouldAbort,
+        ?int $maxResponseBytes,
+    ): array
     {
         $body = '';
+        $status = null;
         foreach ($this->http->stream($response, 0.25) as $chunk) {
-            if ($shouldAbort()) {
+            if ($shouldAbort !== null && $shouldAbort()) {
                 $response->cancel();
 
-                return null;
+                return ['status' => 0, 'body' => '', 'aborted' => true, 'limited' => false];
             }
 
             if ($chunk->isTimeout()) {
@@ -208,10 +235,47 @@ final class AgentRunClient
                 throw new \RuntimeException('AgentRun response stream failed: '.$chunk->getError());
             }
 
-            $body .= $chunk->getContent();
+            if ($chunk->isFirst()) {
+                // Headers have arrived, so this is non-blocking. In contrast,
+                // calling getStatusCode() before streaming can wait through a
+                // remote command and miss an AbortController cancellation.
+                $status = $response->getStatusCode();
+                continue;
+            }
+            if ($chunk->isLast()) {
+                break;
+            }
+
+            $content = $chunk->getContent();
+            $limit = $status !== null && ($status < 200 || $status >= 300)
+                ? self::MAX_ERROR_BODY_BYTES
+                : $maxResponseBytes;
+            if ($limit !== null) {
+                $remaining = $limit - strlen($body);
+                if ($remaining <= 0 || strlen($content) > $remaining) {
+                    if ($remaining > 0) {
+                        $body .= substr($content, 0, $remaining);
+                    }
+                    $response->cancel();
+
+                    return [
+                        'status' => $status ?? $response->getStatusCode(),
+                        'body' => $body,
+                        'aborted' => false,
+                        'limited' => true,
+                    ];
+                }
+            }
+
+            $body .= $content;
         }
 
-        return $body;
+        return [
+            'status' => $status ?? $response->getStatusCode(),
+            'body' => $body,
+            'aborted' => false,
+            'limited' => false,
+        ];
     }
 
     private function url(string $path, array $query, bool $sandboxScoped): string

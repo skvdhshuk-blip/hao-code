@@ -61,6 +61,57 @@ class TokimoSandboxBackendTest extends TestCase
         }
     }
 
+    public function test_tokimo_backend_bounds_an_oversized_runner_response_and_recovers(): void
+    {
+        $cwd = $this->tmpDir('haocode-tokimo-cwd-');
+        $rootfs = $this->tmpDir('haocode-tokimo-rootfs-');
+        $runtime = SandboxManager::create(SandboxConfig::tokimo(
+            baseRootfs: $rootfs,
+            binary: dirname(__DIR__).'/fixtures/fake-tokimo-runner.php',
+            sync: 'upload-cwd',
+        ), $cwd);
+
+        try {
+            $limited = $runtime->backend->exec('oversized-response', '/workspace', 1000);
+
+            $this->assertSame(1, $limited['exitCode']);
+            $this->assertTrue($limited['outputLimited'] ?? false);
+            $this->assertSame('', $limited['stdout']);
+            $this->assertStringContainsString('response exceeded SDK capture limit', $limited['stderr']);
+
+            $recovered = $runtime->backend->exec('printf recovered', '/workspace', 1000);
+            $this->assertSame(0, $recovered['exitCode'], $recovered['stderr']);
+            $this->assertSame('printf recovered|/workspace', $recovered['stdout']);
+        } finally {
+            $runtime->close();
+            $this->removeDir($cwd);
+            $this->removeDir($rootfs);
+        }
+    }
+
+    public function test_tokimo_backend_accepts_a_normal_response_split_across_pipe_reads(): void
+    {
+        $cwd = $this->tmpDir('haocode-tokimo-cwd-');
+        $rootfs = $this->tmpDir('haocode-tokimo-rootfs-');
+        $runtime = SandboxManager::create(SandboxConfig::tokimo(
+            baseRootfs: $rootfs,
+            binary: dirname(__DIR__).'/fixtures/fake-tokimo-runner.php',
+            sync: 'upload-cwd',
+        ), $cwd);
+
+        try {
+            $result = $runtime->backend->exec('fragmented-response', '/workspace', 1000);
+
+            $this->assertSame(0, $result['exitCode'], $result['stderr']);
+            $this->assertSame('fragmented-response|/workspace', $result['stdout']);
+            $this->assertFalse($result['outputLimited'] ?? true);
+        } finally {
+            $runtime->close();
+            $this->removeDir($cwd);
+            $this->removeDir($rootfs);
+        }
+    }
+
     public function test_tokimo_backend_aborts_while_waiting_for_runner_response(): void
     {
         $cwd = $this->tmpDir('haocode-tokimo-cwd-');

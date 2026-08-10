@@ -889,7 +889,13 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.19.6`. Notable changes since `v1.10.0`:
+is based on `v1.19.7`. Notable changes since `v1.10.0`:
+
+- `v1.19.7` — AgentRun and Tokimo bound command-response transport data before
+  JSON decoding. Oversized remote/runner payloads now use the established
+  `outputLimited` result contract instead of accumulating in PHP memory, and a
+  Tokimo runner cleanly restarts after that boundary while still accepting
+  ordinary chunked JSONL responses.
 
 - `v1.19.6` — A `Conversation` loaded through `HaoCode::resume()` now cleans
   its unrelated fresh sandbox after a streaming resume pauses again, while the

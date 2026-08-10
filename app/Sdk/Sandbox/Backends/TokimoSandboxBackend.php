@@ -11,6 +11,10 @@ use HaoCode\Sdk\Sandbox\SandboxConfig;
 final class TokimoSandboxBackend implements SandboxBackendInterface, RevisionAwareSandboxBackendInterface
 {
     private const MAX_EXEC_OUTPUT_BYTES = 100_000;
+    // Base64 + JSON expands the two bounded command streams. Keep the runner
+    // protocol itself bounded before decoding its response into PHP memory.
+    private const MAX_RUNNER_RESPONSE_BYTES = 2 * 1024 * 1024;
+    private const MAX_BRIDGE_STDERR_BYTES = 64 * 1024;
 
     private readonly LocalSandboxBackend $filesystem;
 
@@ -109,6 +113,16 @@ final class TokimoSandboxBackend implements SandboxBackendInterface, RevisionAwa
         $response = $this->readResponse(max(1000, $timeoutMs + 5000), $shouldAbort);
         if ($response === null) {
             return ['stdout' => '', 'stderr' => '', 'exitCode' => 130, 'timedOut' => false, 'aborted' => true, 'outputLimited' => false];
+        }
+        if (($response['__haocode_response_limited'] ?? false) === true) {
+            return [
+                'stdout' => '',
+                'stderr' => 'Tokimo runner response exceeded SDK capture limit.',
+                'exitCode' => 1,
+                'timedOut' => false,
+                'aborted' => false,
+                'outputLimited' => true,
+            ];
         }
         $this->assertSuccessfulResponse($response, 'Tokimo command failed');
 
@@ -258,6 +272,9 @@ final class TokimoSandboxBackend implements SandboxBackendInterface, RevisionAwa
     private function closeRunnerProcess(bool $graceful): void
     {
         if (! is_resource($this->process)) {
+            $this->responseBuffer = '';
+            $this->bridgeStderr = '';
+
             return;
         }
         if ($graceful) {
@@ -281,6 +298,8 @@ final class TokimoSandboxBackend implements SandboxBackendInterface, RevisionAwa
         $this->process = null;
         $this->pipes = [];
         $this->started = false;
+        $this->responseBuffer = '';
+        $this->bridgeStderr = '';
     }
 
     private function workspaceHostPath(): string
@@ -366,14 +385,27 @@ final class TokimoSandboxBackend implements SandboxBackendInterface, RevisionAwa
                 continue;
             }
             foreach ($read as $stream) {
-                $chunk = stream_get_contents($stream);
+                $maxBytes = $stream === $this->pipes[1]
+                    ? max(1, self::MAX_RUNNER_RESPONSE_BYTES - strlen($this->responseBuffer) + 1)
+                    : self::MAX_BRIDGE_STDERR_BYTES + 1;
+                $chunk = stream_get_contents($stream, $maxBytes);
                 if ($chunk === false || $chunk === '') {
                     continue;
                 }
                 if ($stream === $this->pipes[1]) {
                     $this->responseBuffer .= $chunk;
+                    $newline = strpos($this->responseBuffer, "\n");
+                    if (($newline === false && strlen($this->responseBuffer) > self::MAX_RUNNER_RESPONSE_BYTES)
+                        || ($newline !== false && $newline > self::MAX_RUNNER_RESPONSE_BYTES)) {
+                        $this->closeRunnerProcess(false);
+
+                        return ['__haocode_response_limited' => true];
+                    }
                 } else {
-                    $this->bridgeStderr = substr($this->bridgeStderr.$chunk, -65536);
+                    $this->bridgeStderr = substr(
+                        $this->bridgeStderr.$chunk,
+                        -self::MAX_BRIDGE_STDERR_BYTES,
+                    );
                 }
             }
 

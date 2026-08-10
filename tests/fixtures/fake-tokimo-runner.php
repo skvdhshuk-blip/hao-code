@@ -26,15 +26,28 @@ while (($line = fgets(STDIN)) !== false) {
         usleep(5_000_000);
     }
 
-    $output = ($request['command'] ?? '') === 'large-output'
-        ? str_repeat('x', 150000)
-        : (($request['command'] ?? '').'|'.($request['cwd'] ?? ''));
-    fwrite(STDOUT, json_encode([
+    $output = match ($request['command'] ?? '') {
+        'large-output' => str_repeat('x', 150000),
+        'oversized-response' => str_repeat('x', 3 * 1024 * 1024),
+        default => ($request['command'] ?? '').'|'.($request['cwd'] ?? ''),
+    };
+    $response = json_encode([
         'ok' => true,
         'stdout_base64' => base64_encode($output),
         'stderr_base64' => base64_encode(''),
         'exit_code' => 0,
         'timed_out' => false,
-    ])."\n");
+    ])."\n";
+    if (($request['command'] ?? '') === 'fragmented-response') {
+        $splitAt = max(1, intdiv(strlen($response), 2));
+        fwrite(STDOUT, substr($response, 0, $splitAt));
+        fflush(STDOUT);
+        usleep(50_000);
+        fwrite(STDOUT, substr($response, $splitAt));
+        fflush(STDOUT);
+
+        continue;
+    }
+    fwrite(STDOUT, $response);
     fflush(STDOUT);
 }

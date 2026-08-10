@@ -97,6 +97,25 @@ class AgentRunSandboxBackendTest extends TestCase
         $this->assertStringContainsString('stdout truncated', $exec['stdout']);
     }
 
+    public function test_backend_bounds_an_oversized_remote_command_response_before_decoding(): void
+    {
+        $http = new MockHttpClient([
+            new MockResponse('{' . '"result":{"stdout":"' . str_repeat('x', 3 * 1024 * 1024) . '","stderr":"","exitCode":0}}', ['http_code' => 200]),
+        ]);
+        $client = new AgentRunClient(accountId: '1234567890', sandboxId: 'sbx-1', httpClient: $http);
+        $backend = new AgentRunSandboxBackend(
+            SandboxConfig::agentRun(accountId: '1234567890', sandboxId: 'sbx-1'),
+            $client,
+        );
+
+        $exec = $backend->exec('large-response', '/tmp', 5000);
+
+        $this->assertSame(1, $exec['exitCode']);
+        $this->assertTrue($exec['outputLimited'] ?? false);
+        $this->assertSame('', $exec['stdout']);
+        $this->assertStringContainsString('response exceeded SDK capture limit', $exec['stderr']);
+    }
+
     public function test_backend_aborts_while_streaming_a_remote_exec_response(): void
     {
         $response = new MockResponse([

@@ -183,6 +183,16 @@ final class AgentRunSandboxBackend implements SandboxBackendInterface
         if (($result['__haocode_aborted'] ?? false) === true) {
             return ['stdout' => '', 'stderr' => '', 'exitCode' => 130, 'timedOut' => false, 'aborted' => true, 'outputLimited' => false];
         }
+        if (($result['__haocode_response_limited'] ?? false) === true) {
+            return [
+                'stdout' => '',
+                'stderr' => 'AgentRun command response exceeded SDK capture limit.',
+                'exitCode' => 1,
+                'timedOut' => false,
+                'aborted' => false,
+                'outputLimited' => true,
+            ];
+        }
         $exitCode = $result['exitCode']
             ?? $result['code']
             ?? $result['data']['exitCode']
