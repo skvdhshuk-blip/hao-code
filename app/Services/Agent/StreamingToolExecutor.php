@@ -13,7 +13,9 @@ use HaoCode\Tools\ToolResult;
  *
  * When a tool_use content_block_stop event arrives during streaming:
  * - Safe tools (read-only + concurrency-safe) are forked immediately via pcntl_fork
- * - Unsafe tools are queued for sequential execution after the stream ends
+ *   until a stateful tool creates an execution barrier
+ * - Unsafe tools, and safe tools after a stateful predecessor, are queued for
+ *   sequential execution after the stream ends
  *
  * After the stream completes, collectResults() waits for forked children
  * and executes queued unsafe tools, returning all results in block order.
@@ -34,6 +36,9 @@ class StreamingToolExecutor
 
     /** @var array<int, array> block index => tool_use block */
     private array $queuedBlocks = [];
+
+    /** Whether a stateful tool has made later early execution unsafe. */
+    private bool $hasSequentialBarrier = false;
 
     private bool $contextSet = false;
     private ToolUseContext $context;
@@ -69,7 +74,8 @@ class StreamingToolExecutor
 
     /**
      * Called when a tool_use block completes during streaming (content_block_stop).
-     * Safe tools are forked immediately; unsafe tools are queued.
+     * Safe tools are forked immediately until a stateful tool is queued; later
+     * tools remain queued so they observe the stateful tool's effects.
      */
     public function onToolBlockReady(array $block, int $index): void
     {
@@ -79,6 +85,15 @@ class StreamingToolExecutor
         }
 
         if ($this->disableEarlyExecution || ($block['input_json_error'] ?? null) !== null) {
+            $this->queuedBlocks[$index] = $block;
+            $this->hasSequentialBarrier = true;
+            return;
+        }
+
+        if ($this->hasSequentialBarrier) {
+            // Classification runs schema validation and context backfilling.
+            // After a stateful predecessor, defer that work too so it sees
+            // the state the real execution will observe.
             $this->queuedBlocks[$index] = $block;
             return;
         }
@@ -103,12 +118,16 @@ class StreamingToolExecutor
         }
 
         if ($isSafe
+            && ! $this->hasSequentialBarrier
             && count($this->earlyPids) < self::MAX_EARLY_EXECUTIONS
             && function_exists('pcntl_fork')
             && function_exists('posix_kill')) {
             $this->forkTool($preparedBlock, $index);
         } else {
             $this->queuedBlocks[$index] = $block;
+            if (! $isSafe) {
+                $this->hasSequentialBarrier = true;
+            }
         }
     }
 
@@ -216,7 +235,7 @@ class StreamingToolExecutor
 
     /**
      * After the stream completes, collect all tool results.
-     * Waits for early-forked safe tools, then executes queued unsafe tools.
+     * Waits for early-forked safe tools, then executes queued tools sequentially.
      * If a Bash tool errors, remaining queued tools receive synthetic errors.
      *
      * @return array API-format tool_result blocks in original block order
@@ -384,6 +403,7 @@ class StreamingToolExecutor
         ksort($results);
         $this->earlyPids = [];
         $this->queuedBlocks = [];
+        $this->hasSequentialBarrier = false;
         $this->siblingAborted = false;
         $this->abortedByTool = null;
         return array_values($results);
@@ -404,6 +424,7 @@ class StreamingToolExecutor
     {
         $this->killEarlyPids($notifyCompletion);
         $this->queuedBlocks = [];
+        $this->hasSequentialBarrier = false;
     }
 
     /**

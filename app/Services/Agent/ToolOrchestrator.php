@@ -261,7 +261,7 @@ class ToolOrchestrator
 
     /**
      * Execute a set of tool_use blocks from the API response.
-     * Parallelizes execution of concurrency-safe (read-only) tools.
+     * Parallelizes contiguous runs of concurrency-safe (read-only) tools.
      *
      * @param array $toolUseBlocks Array of {id, name, input} from API
      * @return array Array of API-format tool_result blocks
@@ -315,12 +315,27 @@ class ToolOrchestrator
             return $results;
         }
 
-        // Partition into safe (parallelizable) and unsafe (sequential).
-        // Preserve original indices so the final results can be re-sorted into
-        // call order.  Without this, interleaved blocks like [safe A, unsafe B,
-        // safe C] would produce [A, C, B] instead of [A, B, C].
-        $safeBlocks = [];   // origIdx => block
-        $unsafeBlocks = []; // origIdx => block
+        // A stateful tool is an execution barrier. Only run a contiguous safe
+        // segment in parallel so a later read-only tool observes any preceding
+        // mutation instead of being scheduled ahead of it.
+        $results = [];
+        $safeRun = [];
+        $flushSafeRun = function () use (
+            &$safeRun,
+            &$results,
+            $context,
+            $onToolStart,
+            $onToolComplete,
+        ): void {
+            if ($safeRun === []) {
+                return;
+            }
+
+            foreach ($this->executeInParallel($safeRun, $context, $onToolStart, $onToolComplete) as $origIdx => $result) {
+                $results[$origIdx] = $result;
+            }
+            $safeRun = [];
+        };
 
         foreach ($toolUseBlocks as $origIdx => $block) {
             $tool = $this->toolRegistry->getTool($block['name']);
@@ -355,26 +370,14 @@ class ToolOrchestrator
                 }
             }
             if ($isSafe) {
-                $safeBlocks[$origIdx] = $preparedBlock;
-            } else {
-                $unsafeBlocks[$origIdx] = $block;
+                $safeRun[$origIdx] = $preparedBlock;
+                continue;
             }
-        }
 
-        $results = [];
-
-        // Execute safe tools in parallel using child processes
-        if (!empty($safeBlocks)) {
-            $parallelResults = $this->executeInParallel($safeBlocks, $context, $onToolStart, $onToolComplete);
-            foreach ($parallelResults as $origIdx => $result) {
-                $results[$origIdx] = $result;
-            }
-        }
-
-        // Execute unsafe tools sequentially
-        foreach ($unsafeBlocks as $origIdx => $block) {
+            $flushSafeRun();
             $results[$origIdx] = $this->executeSingleTool($block, $context, $onToolStart, $onToolComplete);
         }
+        $flushSafeRun();
 
         // Re-sort by original call order and strip keys
         ksort($results);

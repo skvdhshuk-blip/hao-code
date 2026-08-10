@@ -944,6 +944,53 @@ class ToolOrchestratorTest extends TestCase
         $this->assertContains('unsafe:C', $contents);
     }
 
+    public function test_execute_tools_runs_read_only_tools_after_stateful_tools_as_a_later_phase(): void
+    {
+        $stateFile = tempnam(sys_get_temp_dir(), 'haocode-tool-barrier-');
+        $this->assertNotFalse($stateFile);
+        @unlink($stateFile);
+
+        $registry = new ToolRegistry;
+        $registry->register(new class($stateFile) extends BaseTool {
+            public function __construct(private readonly string $stateFile) {}
+            public function name(): string { return 'WriteState'; }
+            public function description(): string { return ''; }
+            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object'], []); }
+            public function isReadOnly(array $input): bool { return false; }
+            public function call(array $input, ToolUseContext $context): ToolResult
+            {
+                file_put_contents($this->stateFile, 'current');
+
+                return ToolResult::success('written');
+            }
+        });
+        $registry->register(new class($stateFile) extends BaseTool {
+            public function __construct(private readonly string $stateFile) {}
+            public function name(): string { return 'ReadState'; }
+            public function description(): string { return ''; }
+            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object'], []); }
+            public function isReadOnly(array $input): bool { return true; }
+            public function isConcurrencySafe(array $input): bool { return true; }
+            public function call(array $input, ToolUseContext $context): ToolResult
+            {
+                return ToolResult::success(
+                    is_file($this->stateFile) ? (string) file_get_contents($this->stateFile) : 'missing',
+                );
+            }
+        });
+
+        try {
+            $results = $this->makeOrchestrator($registry)->executeTools([
+                ['id' => 'write-state', 'name' => 'WriteState', 'input' => []],
+                ['id' => 'read-state', 'name' => 'ReadState', 'input' => []],
+            ], $this->context());
+        } finally {
+            @unlink($stateFile);
+        }
+
+        $this->assertSame(['written', 'current'], array_column($results, 'content'));
+    }
+
     public function test_execute_tools_does_not_parallelize_tools_with_pre_tool_use_hooks(): void
     {
         $parentPid = getmypid();

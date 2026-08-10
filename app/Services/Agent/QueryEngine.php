@@ -54,7 +54,14 @@ class QueryEngine
             ) as $event) {
                 $processor->processEvent($event);
 
-                if ($onTextDelta && $event->type === 'content_block_delta') {
+                if ($onTextDelta && $event->type === 'content_block_start') {
+                    $block = $event->data['content_block'] ?? [];
+                    if (($block['type'] ?? '') === 'text'
+                        && is_string($block['text'] ?? null)
+                        && $block['text'] !== '') {
+                        $onTextDelta($block['text']);
+                    }
+                } elseif ($onTextDelta && $event->type === 'content_block_delta') {
                     $delta = $event->data['delta'] ?? [];
                     if (($delta['type'] ?? '') === 'text_delta' && isset($delta['text'])) {
                         $onTextDelta($delta['text']);

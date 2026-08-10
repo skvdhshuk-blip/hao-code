@@ -73,6 +73,24 @@ class QueryEngineTest extends TestCase
         $this->assertSame(['chunk1', 'chunk2'], $received);
     }
 
+    public function test_query_calls_on_text_delta_for_initial_content_block_text(): void
+    {
+        $events = [
+            new StreamEvent('message_start', ['message' => ['id' => 'msg_1', 'usage' => ['input_tokens' => 5, 'output_tokens' => 0]]]),
+            new StreamEvent('content_block_start', ['index' => 0, 'content_block' => ['type' => 'text', 'text' => 'first']]),
+            new StreamEvent('content_block_delta', ['index' => 0, 'delta' => ['type' => 'text_delta', 'text' => ' second']]),
+        ];
+
+        $received = [];
+        $qe = new QueryEngine($this->makeClient($events), $this->makeRegistry());
+        $processor = $qe->query([], [], onTextDelta: function (string $text) use (&$received): void {
+            $received[] = $text;
+        });
+
+        $this->assertSame(['first', ' second'], $received);
+        $this->assertSame('first second', $processor->getAccumulatedText());
+    }
+
     public function test_query_does_not_call_text_delta_for_thinking_events(): void
     {
         $events = [

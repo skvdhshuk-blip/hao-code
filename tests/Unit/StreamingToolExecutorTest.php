@@ -86,6 +86,146 @@ class StreamingToolExecutorTest extends TestCase
         $this->assertSame('done', $results[0]['content']);
     }
 
+    public function test_read_only_streaming_tool_after_stateful_tool_waits_for_the_barrier(): void
+    {
+        if (! function_exists('pcntl_fork') || ! function_exists('posix_kill')) {
+            $this->markTestSkipped('pcntl and posix are required for streaming early-execution coverage.');
+        }
+
+        $stateFile = tempnam(sys_get_temp_dir(), 'haocode-stream-barrier-');
+        $this->assertNotFalse($stateFile);
+        @unlink($stateFile);
+
+        $registry = new ToolRegistry;
+        $registry->register(new class($stateFile) extends BaseTool {
+            public function __construct(private readonly string $stateFile) {}
+            public function name(): string { return 'WriteState'; }
+            public function description(): string { return ''; }
+            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object'], []); }
+            public function isReadOnly(array $input): bool { return false; }
+            public function call(array $input, ToolUseContext $context): ToolResult
+            {
+                file_put_contents($this->stateFile, 'current');
+
+                return ToolResult::success('written');
+            }
+        });
+        $registry->register(new class($stateFile) extends BaseTool {
+            public function __construct(private readonly string $stateFile) {}
+            public function name(): string { return 'ReadState'; }
+            public function description(): string { return ''; }
+            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object'], []); }
+            public function isReadOnly(array $input): bool { return true; }
+            public function isConcurrencySafe(array $input): bool { return true; }
+            public function call(array $input, ToolUseContext $context): ToolResult
+            {
+                return ToolResult::success(
+                    is_file($this->stateFile) ? (string) file_get_contents($this->stateFile) : 'missing',
+                );
+            }
+        });
+
+        $permissions = $this->createMock(PermissionChecker::class);
+        $permissions->method('check')->willReturn(PermissionDecision::allow());
+        $hooks = $this->createMock(HookExecutor::class);
+        $hooks->method('execute')->willReturn(new HookResult(allowed: true));
+        $orchestrator = new ToolOrchestrator($registry, $permissions, $hooks);
+        $executor = new StreamingToolExecutor($orchestrator, $registry);
+        $executor->setContext(new ToolUseContext('/tmp', 'streaming-stateful-barrier'), null, null);
+
+        try {
+            $executor->onToolBlockReady([
+                'id' => 'write-state',
+                'name' => 'WriteState',
+                'input' => [],
+            ], 0);
+            $executor->onToolBlockReady([
+                'id' => 'read-state',
+                'name' => 'ReadState',
+                'input' => [],
+            ], 1);
+            $results = $executor->collectResults();
+        } finally {
+            $executor->cleanup(notifyCompletion: false);
+            @unlink($stateFile);
+        }
+
+        $this->assertSame(['written', 'current'], array_column($results, 'content'));
+    }
+
+    public function test_streaming_barrier_defers_later_validation_until_after_stateful_tool(): void
+    {
+        $stateFile = tempnam(sys_get_temp_dir(), 'haocode-stream-validation-');
+        $this->assertNotFalse($stateFile);
+        @unlink($stateFile);
+        $validationStates = new \stdClass;
+        $validationStates->observed = [];
+
+        $registry = new ToolRegistry;
+        $registry->register(new class($stateFile) extends BaseTool {
+            public function __construct(private readonly string $stateFile) {}
+            public function name(): string { return 'WriteState'; }
+            public function description(): string { return ''; }
+            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object'], []); }
+            public function isReadOnly(array $input): bool { return false; }
+            public function call(array $input, ToolUseContext $context): ToolResult
+            {
+                file_put_contents($this->stateFile, 'ready');
+
+                return ToolResult::success('written');
+            }
+        });
+        $registry->register(new class($stateFile, $validationStates) extends BaseTool {
+            public function __construct(
+                private readonly string $stateFile,
+                private readonly \stdClass $validationStates,
+            ) {}
+            public function name(): string { return 'StateSensitiveRead'; }
+            public function description(): string { return ''; }
+            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object'], []); }
+            public function validateInput(array $input, ToolUseContext $context): ?string
+            {
+                $this->validationStates->observed[] = is_file($this->stateFile);
+
+                return null;
+            }
+            public function isReadOnly(array $input): bool { return true; }
+            public function isConcurrencySafe(array $input): bool { return true; }
+            public function call(array $input, ToolUseContext $context): ToolResult
+            {
+                return ToolResult::success('read');
+            }
+        });
+
+        $permissions = $this->createMock(PermissionChecker::class);
+        $permissions->method('check')->willReturn(PermissionDecision::allow());
+        $hooks = $this->createMock(HookExecutor::class);
+        $hooks->method('execute')->willReturn(new HookResult(allowed: true));
+        $orchestrator = new ToolOrchestrator($registry, $permissions, $hooks);
+        $executor = new StreamingToolExecutor($orchestrator, $registry);
+        $executor->setContext(new ToolUseContext('/tmp', 'streaming-validation-barrier'), null, null);
+
+        try {
+            $executor->onToolBlockReady([
+                'id' => 'write-state',
+                'name' => 'WriteState',
+                'input' => [],
+            ], 0);
+            $executor->onToolBlockReady([
+                'id' => 'read-state',
+                'name' => 'StateSensitiveRead',
+                'input' => [],
+            ], 1);
+            $results = $executor->collectResults();
+        } finally {
+            $executor->cleanup(notifyCompletion: false);
+            @unlink($stateFile);
+        }
+
+        $this->assertSame(['written', 'read'], array_column($results, 'content'));
+        $this->assertSame([true], $validationStates->observed);
+    }
+
     // ─── results sorted by block index ────────────────────────────────────
 
     public function test_results_sorted_by_original_block_index(): void

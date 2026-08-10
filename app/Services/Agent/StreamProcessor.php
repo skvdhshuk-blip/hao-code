@@ -9,7 +9,7 @@ class StreamProcessor
     /** Hard cap for one accumulated text/thinking stream (bytes). */
     private const MAX_ACCUMULATED_OUTPUT_BYTES = 1_000_000;
 
-    /** @var array<int, array{type: string, text?: string, id?: string, name?: string, input?: string}> */
+    /** @var array<int, array{type: string, text?: string, id?: string, name?: string, input?: string, input_from_start?: bool}> */
     private array $contentBlocks = [];
 
     private ?string $stopReason = null;
@@ -88,20 +88,49 @@ class StreamProcessor
     {
         $index = $data['index'];
         $block = $data['content_block'];
+        $type = (string) ($block['type'] ?? '');
         $initialText = (string) ($block['text'] ?? $block['thinking'] ?? '');
+        $initialToolInput = $type === 'tool_use'
+            ? $this->serializeInitialToolInput($block['input'] ?? null)
+            : '';
 
-        if (in_array($block['type'] ?? '', ['text', 'thinking'], true)) {
-            $this->assertWithinOutputLimit($initialText, (string) $block['type']);
+        $blockText = '';
+        if ($type === 'text') {
+            $this->appendBoundedChunk($blockText, $this->accumulatedText, $initialText, 'text');
+        } elseif ($type === 'thinking') {
+            $this->appendBoundedChunk($blockText, $this->accumulatedThinking, $initialText, 'thinking');
+        } else {
+            $blockText = $initialText;
         }
 
         $this->contentBlocks[$index] = [
-            'type' => $block['type'],
-            'text' => $initialText,
+            'type' => $type,
+            'text' => $blockText,
             'id' => $block['id'] ?? null,
             'name' => $block['name'] ?? null,
-            'input' => '',
+            'input' => $initialToolInput,
+            'input_from_start' => $initialToolInput !== '',
             'signature' => null, // populated by signature_delta for thinking blocks
         ];
+
+        if ($type === 'thinking' && $initialText !== '' && $this->onThinkingDelta !== null) {
+            ($this->onThinkingDelta)($initialText);
+        }
+    }
+
+    private function serializeInitialToolInput(mixed $input): string
+    {
+        if ($input === null) {
+            return '';
+        }
+
+        if (is_string($input)) {
+            return $input;
+        }
+
+        $encoded = json_encode($input, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES);
+
+        return is_string($encoded) ? $encoded : '';
     }
 
     private function handleContentBlockDelta(array $data): void
@@ -121,6 +150,14 @@ class StreamProcessor
             $this->appendBoundedChunk($blockText, $this->accumulatedText, $text, 'text');
             $this->contentBlocks[$index]['text'] = $blockText;
         } elseif ($type === 'tool_use' && ($delta['type'] ?? '') === 'input_json_delta') {
+            // Providers can put complete arguments in the start block, but
+            // Anthropic-style streams use an empty-object placeholder before
+            // sending the real argument deltas. Keep the former when no delta
+            // follows, and replace rather than append when one does.
+            if ($this->contentBlocks[$index]['input_from_start'] ?? false) {
+                $this->contentBlocks[$index]['input'] = '';
+                $this->contentBlocks[$index]['input_from_start'] = false;
+            }
             $this->contentBlocks[$index]['input'] .= $delta['partial_json'];
         } elseif ($type === 'thinking' && ($delta['type'] ?? '') === 'thinking_delta') {
             $thinking = (string) ($delta['thinking'] ?? '');
@@ -217,15 +254,6 @@ class StreamProcessor
 
         $blockText .= $chunk;
         $accumulated .= $chunk;
-    }
-
-    private function assertWithinOutputLimit(string $value, string $kind): void
-    {
-        if (strlen($value) > self::MAX_ACCUMULATED_OUTPUT_BYTES) {
-            throw new \LengthException(
-                "Streaming {$kind} output exceeded ".self::MAX_ACCUMULATED_OUTPUT_BYTES.' bytes.',
-            );
-        }
     }
 
     public function getAccumulatedText(): string

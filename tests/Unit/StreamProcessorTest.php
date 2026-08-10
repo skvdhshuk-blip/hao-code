@@ -67,6 +67,18 @@ class StreamProcessorTest extends TestCase
         $this->assertSame('Hello world', $p->getAccumulatedText());
     }
 
+    public function test_initial_text_in_content_block_start_accumulates(): void
+    {
+        $p = new StreamProcessor;
+        $p->processEvent($this->event('content_block_start', [
+            'index' => 0,
+            'content_block' => ['type' => 'text', 'text' => 'Hello '],
+        ]));
+        $p->processEvent($this->textDelta('world'));
+
+        $this->assertSame('Hello world', $p->getAccumulatedText());
+    }
+
     public function test_text_delta_ignored_for_unknown_index(): void
     {
         $p = new StreamProcessor;
@@ -100,6 +112,23 @@ class StreamProcessorTest extends TestCase
         ]));
         $this->assertSame('thinking...', $p->getAccumulatedThinking());
         $this->assertTrue($p->hasThinking());
+    }
+
+    public function test_initial_thinking_in_content_block_start_accumulates_and_notifies(): void
+    {
+        $p = new StreamProcessor;
+        $received = [];
+        $p->setOnThinkingDelta(function (string $thinking) use (&$received): void {
+            $received[] = $thinking;
+        });
+
+        $p->processEvent($this->event('content_block_start', [
+            'index' => 0,
+            'content_block' => ['type' => 'thinking', 'thinking' => 'reasoning'],
+        ]));
+
+        $this->assertSame('reasoning', $p->getAccumulatedThinking());
+        $this->assertSame(['reasoning'], $received);
     }
 
     public function test_thinking_accumulation_fails_closed_at_byte_limit(): void
@@ -227,7 +256,12 @@ class StreamProcessorTest extends TestCase
         $p = new StreamProcessor;
         $p->processEvent($this->event('content_block_start', [
             'index' => 0,
-            'content_block' => ['type' => 'tool_use', 'id' => 'tid', 'name' => 'Bash'],
+            'content_block' => [
+                'type' => 'tool_use',
+                'id' => 'tid',
+                'name' => 'Bash',
+                'input' => new \stdClass(),
+            ],
         ]));
         $p->processEvent($this->event('content_block_delta', [
             'index' => 0,
@@ -239,6 +273,46 @@ class StreamProcessorTest extends TestCase
         $this->assertSame('tid', $block['id']);
         $this->assertSame('Bash', $block['name']);
         $this->assertSame('ls', $block['input']['command']);
+    }
+
+    public function test_tool_input_in_content_block_start_is_preserved_without_deltas(): void
+    {
+        $p = new StreamProcessor;
+        $p->processEvent($this->event('content_block_start', [
+            'index' => 0,
+            'content_block' => [
+                'type' => 'tool_use',
+                'id' => 'tid',
+                'name' => 'Read',
+                'input' => ['file_path' => '/tmp/demo.txt'],
+            ],
+        ]));
+
+        $blocks = $p->getIndexedToolUseBlocks();
+        $message = $p->toAssistantMessage();
+
+        $this->assertSame(['file_path' => '/tmp/demo.txt'], $blocks[0]['input']);
+        $this->assertNull($blocks[0]['input_json_error']);
+        $this->assertSame(['file_path' => '/tmp/demo.txt'], $message['content'][0]['input']);
+    }
+
+    public function test_empty_tool_input_object_in_content_block_start_is_valid_without_deltas(): void
+    {
+        $p = new StreamProcessor;
+        $p->processEvent($this->event('content_block_start', [
+            'index' => 0,
+            'content_block' => [
+                'type' => 'tool_use',
+                'id' => 'tid',
+                'name' => 'ListTasks',
+                'input' => new \stdClass(),
+            ],
+        ]));
+
+        $blocks = $p->getIndexedToolUseBlocks();
+
+        $this->assertSame([], $blocks[0]['input']);
+        $this->assertNull($blocks[0]['input_json_error']);
     }
 
     public function test_invalid_tool_use_json_is_reported_without_dropping_context(): void

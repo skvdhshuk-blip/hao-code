@@ -2,7 +2,7 @@
 
 Use hao-code as a framework-free PHP library to embed an AI coding agent in your application.
 
-This document describes the `v1.19.1` source line. Published package versions
+This document describes the `v1.19.3` source line. Published package versions
 are identified by Git tags and Packagist.
 
 ```bash
@@ -1226,7 +1226,9 @@ class name looks like a lookup.
 
 - Mutating / stateful tools: keep the default (`isReadOnly() === false`).
 - Pure query tools: override `isReadOnly()` and return `true` so Plan mode
-  may auto-approve and parallel scheduling may apply.
+  may auto-approve and contiguous parallel scheduling may apply. A stateful
+  tool is an execution barrier, so a later pure query waits for its effects in
+  the same model response.
 
 Every public run gets a fresh loop, message history, cost tracker, and tool
 registry. `SdkTool` does not require a clone implementation, so cloneable

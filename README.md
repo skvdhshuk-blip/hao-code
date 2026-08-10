@@ -678,7 +678,9 @@ names appear in `allowedTools` (or when `allowedTools: ['*']` is used);
 `disallowedTools` always wins. By default `SdkTool` is **not** treated as
 read-only — Plan mode will not auto-approve it, and the orchestrator will not
 fork it for parallel execution. Override `isReadOnly()` and return `true` only
-for pure query tools with no side effects.
+for pure query tools with no side effects. Only contiguous pure-query calls may
+run in parallel; a stateful tool remains an execution barrier for later calls
+in the same model response.
 
 Each public run gets its own agent loop, message history, cost tracker, and
 tool registry. Custom `SdkTool` objects do not have a cloneability contract,
@@ -874,7 +876,14 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.19.2`. Notable changes since `v1.10.0`:
+is based on `v1.19.3`. Notable changes since `v1.10.0`:
+
+- `v1.19.3` — Tool scheduling now preserves stateful execution barriers: a
+  later read-only call cannot run ahead of a preceding mutation, including in
+  streaming early execution. Compatible provider streams also retain text,
+  thinking, and complete tool arguments supplied in a content-block start
+  event, while standard empty tool-input placeholders still accept later JSON
+  deltas.
 
 - `v1.19.2` — One-shot Runner and facade streams now release their owned
   runtime resources before exposing terminal results or errors, so retaining a
