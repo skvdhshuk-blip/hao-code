@@ -159,10 +159,25 @@ class TokimoSandboxBackendTest extends TestCase
             );
         }
 
-        $runner = SandboxBinaryResolver::resolve();
+        // This test asserts the project-bin resolution path, so it must not be
+        // swayed by a HAOCODE_SANDBOX_BINARY override leaking in from the
+        // developer's shell environment. Clear it for the duration of the
+        // resolution and restore the previous value afterwards.
+        $previous = getenv('HAOCODE_SANDBOX_BINARY');
+        if ($previous !== false) {
+            putenv('HAOCODE_SANDBOX_BINARY');
+        }
 
-        $this->assertSame(realpath(dirname(__DIR__, 2).'/bin'), dirname($runner));
-        $this->assertStringStartsWith('haocode-sandbox-', basename($runner));
+        try {
+            $runner = SandboxBinaryResolver::resolve();
+
+            $this->assertSame(realpath(dirname(__DIR__, 2).'/bin'), dirname($runner));
+            $this->assertStringStartsWith('haocode-sandbox-', basename($runner));
+        } finally {
+            if ($previous !== false) {
+                putenv('HAOCODE_SANDBOX_BINARY='.$previous);
+            }
+        }
     }
 
     private function tmpDir(string $prefix): string

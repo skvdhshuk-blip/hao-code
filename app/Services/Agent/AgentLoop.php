@@ -89,6 +89,9 @@ class AgentLoop
 
     private ?AgentResponseRetryPolicy $responseRetryPolicy = null;
 
+    /** Parent model captured for the current user turn, including HITL snapshots. */
+    private ?string $runBaseModel = null;
+
     public function __construct(
         private readonly QueryEngine $queryEngine,
         private readonly ToolOrchestrator $toolOrchestrator,
@@ -254,6 +257,7 @@ class AgentLoop
     ): string {
         $this->assertDurableConversationUsable();
         $originalModel = $this->runContext?->settings->getModel();
+        $this->runBaseModel = $originalModel;
         $this->toolOrchestrator->resetSkillScope();
         $agentSpan = $this->tracer?->startSpan(
             name: 'agent.run',
@@ -285,6 +289,7 @@ class AgentLoop
             }
             $this->toolOrchestrator->resetSkillScope();
             $this->cancellationToken->close();
+            $this->runBaseModel = null;
             $agentScope?->detach();
             $agentSpan?->end();
         }
@@ -306,46 +311,66 @@ class AgentLoop
         ?callable $onThinkingDelta = null,
     ): string {
         $this->assertDurableConversationUsable();
-        if ($this->abortRequestedChecker !== null && ($this->abortRequestedChecker)()) {
-            $this->lastRunTurns = 0;
-            $this->abort();
-
-            return '(aborted)';
+        $originalModel = $this->runContext?->settings->getModel();
+        $this->runBaseModel = $originalModel;
+        $restoredModelOverride = $this->toolOrchestrator->getActiveSkillModelOverride();
+        if ($restoredModelOverride !== null) {
+            // A durable interrupt can occur after an inline Skill activated but
+            // before the next model request. Apply the restored override before
+            // that first resumed request, just as runInternal() does between
+            // ordinary tool turns.
+            $this->runContext?->settings->set('model', $restoredModelOverride);
         }
-        $context = $this->toolUseContext ??= new ToolUseContext(
-            workingDirectory: $this->workingDirectory ?? (getcwd() ?: '/'),
-            sessionId: $this->sessionManager->getSessionId(),
-            shouldAbort: fn (): bool => $this->cancellationToken->isCancelled(),
-            runContext: $this->runContext,
-            provider: $this->provider,
-            toolRegistry: $this->toolRegistry,
-            onWorkingDirectoryChanged: function (string $directory): void {
-                $this->synchronizeToolWorkingDirectory($directory);
-            },
-        );
-        $context->beginReadReceiptBatch();
-        $readReceiptBatchCommitted = false;
+
         try {
-            $resolution = (new HumanInterruptCoordinator($this->sessionManager, $this->toolOrchestrator))->resolve(
-                $interruptId,
-                $decisions,
-                $context,
-                $onToolStart,
-                $onToolComplete,
-            );
-            $this->interruptSourceAgentId = $resolution['interrupt']->sourceAgentId;
-            $this->interruptSourceTeam = $resolution['interrupt']->sourceTeam;
-            $this->queueCheckpointReadReceiptsForVisibleResults($resolution['checkpoint'], $context);
-            $this->messageHistory->addToolResultMessage($resolution['results']);
-            $context->commitReadReceiptBatch();
-            $readReceiptBatchCommitted = true;
-        } finally {
-            if (! $readReceiptBatchCommitted) {
-                $context->discardReadReceiptBatch();
-            }
-        }
+            if ($this->abortRequestedChecker !== null && ($this->abortRequestedChecker)()) {
+                $this->lastRunTurns = 0;
+                $this->abort();
 
-        return $this->runInternal(null, $onTextDelta, $onToolStart, $onToolComplete, $onTurnStart, $onThinkingDelta);
+                return '(aborted)';
+            }
+            $context = $this->toolUseContext ??= new ToolUseContext(
+                workingDirectory: $this->workingDirectory ?? (getcwd() ?: '/'),
+                sessionId: $this->sessionManager->getSessionId(),
+                shouldAbort: fn (): bool => $this->cancellationToken->isCancelled(),
+                runContext: $this->runContext,
+                provider: $this->provider,
+                toolRegistry: $this->toolRegistry,
+                onWorkingDirectoryChanged: function (string $directory): void {
+                    $this->synchronizeToolWorkingDirectory($directory);
+                },
+            );
+            $context->beginReadReceiptBatch();
+            $readReceiptBatchCommitted = false;
+            try {
+                $resolution = (new HumanInterruptCoordinator($this->sessionManager, $this->toolOrchestrator))->resolve(
+                    $interruptId,
+                    $decisions,
+                    $context,
+                    $onToolStart,
+                    $onToolComplete,
+                );
+                $this->interruptSourceAgentId = $resolution['interrupt']->sourceAgentId;
+                $this->interruptSourceTeam = $resolution['interrupt']->sourceTeam;
+                $this->queueCheckpointReadReceiptsForVisibleResults($resolution['checkpoint'], $context);
+                $this->messageHistory->addToolResultMessage($resolution['results']);
+                $context->commitReadReceiptBatch();
+                $readReceiptBatchCommitted = true;
+            } finally {
+                if (! $readReceiptBatchCommitted) {
+                    $context->discardReadReceiptBatch();
+                }
+            }
+
+            return $this->runInternal(null, $onTextDelta, $onToolStart, $onToolComplete, $onTurnStart, $onThinkingDelta);
+        } finally {
+            if ($originalModel !== null && $this->toolOrchestrator->getActiveSkillModelOverride() !== null) {
+                $this->runContext?->settings->set('model', $originalModel);
+            }
+            $this->toolOrchestrator->resetSkillScope();
+            $this->cancellationToken->close();
+            $this->runBaseModel = null;
+        }
     }
 
     /**
@@ -494,12 +519,7 @@ class AgentLoop
         // Fire SessionStart hook on the very first user turn
         if ($isSessionStart) {
             $this->sessionStarted = true;
-
-            // Wire up tool result persistence storage only for durable sessions.
-            if ($this->sessionManager->isPersistenceEnabled()) {
-                $toolResultStorage = new ToolResultStorage($this->sessionManager->getSessionId());
-                $this->toolOrchestrator->setToolResultStorage($toolResultStorage);
-            }
+            $this->initializeDurableToolResultStorage();
 
             $this->hookExecutor?->execute('SessionStart', [
                 'session_id' => $this->sessionManager->getSessionId(),
@@ -613,7 +633,7 @@ class AgentLoop
                 }
 
                 // 5. Track usage
-                $usage = $processor->getUsage();
+                $usage = $this->normalizeUsage($processor->getUsage());
                 $this->recordUsage($usage);
 
                 // 5b. Cost tracking — set model for per-model pricing
@@ -948,6 +968,7 @@ class AgentLoop
             activeSkillAllowedTools: $this->toolOrchestrator->getActiveSkillAllowedTools(),
             activeSkillModelOverride: $this->toolOrchestrator->getActiveSkillModelOverride(),
             activeSkillContext: $this->toolOrchestrator->getActiveSkillContext(),
+            baseModel: $this->runBaseModel,
             estimatedCost: $this->getEstimatedCost(),
             totalInputTokens: $this->getTotalInputTokens(),
             totalOutputTokens: $this->getTotalOutputTokens(),
@@ -1066,7 +1087,7 @@ class AgentLoop
             toolsOverride: [],
         );
 
-        $usage = $processor->getUsage();
+        $usage = $this->normalizeUsage($processor->getUsage());
         $this->recordUsage($usage);
         if ($processor->getModel() !== null) {
             $this->costTracker->setModel($processor->getModel());
@@ -1183,11 +1204,11 @@ class AgentLoop
      */
     private function recordUsage(array $usage): void
     {
-        $this->lastTurnInputTokens = (int) ($usage['context_input_tokens'] ?? $usage['input_tokens'] ?? 0);
+        $this->lastTurnInputTokens = max(0, (int) ($usage['context_input_tokens'] ?? $usage['input_tokens'] ?? 0));
         $input = $this->lastTurnInputTokens;
-        $output = (int) ($usage['output_tokens'] ?? 0);
-        $cacheCreation = (int) ($usage['cache_creation_input_tokens'] ?? 0);
-        $cacheRead = (int) ($usage['cache_read_input_tokens'] ?? 0);
+        $output = max(0, (int) ($usage['output_tokens'] ?? 0));
+        $cacheCreation = max(0, (int) ($usage['cache_creation_input_tokens'] ?? 0));
+        $cacheRead = max(0, (int) ($usage['cache_read_input_tokens'] ?? 0));
 
         $this->totalInputTokens += $input;
         $this->totalOutputTokens += $output;
@@ -1195,6 +1216,49 @@ class AgentLoop
         $this->totalCacheReadTokens += $cacheRead;
 
         $this->runContext?->usageAccumulator?->add($input, $output, $cacheCreation, $cacheRead);
+    }
+
+    /**
+     * Normalize provider telemetry before it reaches usage totals or budget
+     * accounting. Compatible gateways are external input: malformed usage
+     * must never make totals/costs decrease or invalidate a shared ledger.
+     *
+     * @param array<string, mixed> $usage
+     * @return array{input_tokens: int, context_input_tokens: int, output_tokens: int, cache_creation_input_tokens: int, cache_read_input_tokens: int}
+     */
+    private function normalizeUsage(array $usage): array
+    {
+        $input = self::nonNegativeUsageCount($usage['input_tokens'] ?? null) ?? 0;
+        $contextInput = self::nonNegativeUsageCount($usage['context_input_tokens'] ?? null) ?? $input;
+
+        return [
+            'input_tokens' => $input,
+            'context_input_tokens' => $contextInput,
+            'output_tokens' => self::nonNegativeUsageCount($usage['output_tokens'] ?? null) ?? 0,
+            'cache_creation_input_tokens' => self::nonNegativeUsageCount(
+                $usage['cache_creation_input_tokens'] ?? null,
+            ) ?? 0,
+            'cache_read_input_tokens' => self::nonNegativeUsageCount(
+                $usage['cache_read_input_tokens'] ?? null,
+            ) ?? 0,
+        ];
+    }
+
+    private static function nonNegativeUsageCount(mixed $value): ?int
+    {
+        if (is_int($value)) {
+            return $value >= 0 ? $value : null;
+        }
+        if (is_float($value)) {
+            return is_finite($value) && $value >= 0 ? (int) $value : null;
+        }
+        if (is_string($value) && is_numeric($value)) {
+            $number = (float) $value;
+
+            return is_finite($number) && $number >= 0 ? (int) $number : null;
+        }
+
+        return null;
     }
 
     public function getMessageHistory(): MessageHistory
@@ -1278,6 +1342,21 @@ class AgentLoop
         $this->lastTurnInputTokens = 0;
         $this->lastRunTurns = 0;
         $this->costTracker->reset();
+    }
+
+    /**
+     * Mark that an existing durable transcript has been loaded into this loop.
+     *
+     * A resumed session needs its tool-result storage rebound to the canonical
+     * session id, but it must not replay first-turn workspace context or the
+     * SessionStart hook.
+     *
+     * @internal
+     */
+    public function markSessionResumed(): void
+    {
+        $this->sessionStarted = true;
+        $this->initializeDurableToolResultStorage();
     }
 
     /**
@@ -1504,6 +1583,17 @@ class AgentLoop
 
         $this->messageHistory->addAssistantMessage($assistantMessage);
         $this->persistAssistantTurn($assistantMessage, []);
+    }
+
+    private function initializeDurableToolResultStorage(): void
+    {
+        if (! $this->sessionManager->isPersistenceEnabled()) {
+            return;
+        }
+
+        $this->toolOrchestrator->setToolResultStorage(
+            new ToolResultStorage($this->sessionManager->getSessionId()),
+        );
     }
 
     private function assertDurableConversationUsable(): void

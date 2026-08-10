@@ -461,7 +461,9 @@ HaoCode keeps the system prompt byte-stable for the lifetime of a conversation
 and grows message history append-only. Volatile Git status is attached to the
 initial user turn instead of rewriting the system prefix, improving automatic
 prefix-cache reuse on DeepSeek and other compatible providers. DeepSeek cache
-hits are reported through `usage['cache_read_tokens']`.
+hits are reported through `usage['cache_read_tokens']`. `usage['input_tokens']`
+is cumulative for the run/conversation; use `usage['last_turn_input_tokens']`
+for the current context-window occupancy.
 
 `HaoCode::resume($sessionId)` restores tools against the session transcript's
 canonical working directory, not the current PHP process cwd. If you pass a
@@ -862,7 +864,14 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.18.60`. Notable changes since `v1.10.0`:
+is based on `v1.19.0`. Notable changes since `v1.10.0`:
+
+- `v1.19.0` — Hardened existing agent lifecycle contracts: every SDK result
+  surface reports current-turn context usage; durable and streaming interrupt
+  resumes preserve cumulative usage, scoped Skill models, and canonical session
+  lifecycle without replaying first-turn context/hooks; early tool completion
+  events reflect worker completion; malformed gateway usage cannot decrease
+  totals or cost.
 
 - `v1.11.0` — Streamable HTTP MCP sessions (incremental SSE, reverse RPC,
   recovery, OAuth, cooperative event polling), and reduced repeated Git/memory/

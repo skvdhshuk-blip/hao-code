@@ -225,46 +225,12 @@ class StreamingToolExecutor
     {
         $results = [];
 
-        // 1. Collect results from early-forked processes and merge readFileState
-        foreach ($this->earlyPids as $index => $info) {
-            $aborted = false;
-            $timedOut = false;
-            $deadline = microtime(true) + $this->earlyToolTimeoutSeconds;
-            do {
-                $waitResult = pcntl_waitpid($info['pid'], $status, WNOHANG);
-                if ($waitResult === -1) {
-                    // EINTR means the child was not reaped; retry instead of
-                    // reading a potentially incomplete IPC payload as final.
-                    $interrupted = defined('PCNTL_EINTR')
-                        && function_exists('pcntl_get_last_error')
-                        && pcntl_get_last_error() === constant('PCNTL_EINTR');
-                    if ($interrupted) {
-                        usleep(1_000);
-                        continue;
-                    }
-                    // A non-EINTR -1 means another handler already reaped the
-                    // child or the PID is no longer waitable. Fall through to
-                    // the bounded IPC read, which produces a controlled error
-                    // if no complete payload was written.
-                    break;
-                }
-                if ($waitResult === 0 && $this->isCancelled()) {
-                    $this->killPid($info['pid']);
-                    pcntl_waitpid($info['pid'], $status);
-                    $aborted = true;
-                    break;
-                }
-                if ($waitResult === 0 && microtime(true) >= $deadline) {
-                    $this->killPid($info['pid']);
-                    pcntl_waitpid($info['pid'], $status);
-                    $timedOut = true;
-                    break;
-                }
-                if ($waitResult === 0) {
-                    usleep(10_000);
-                }
-            } while ($waitResult === 0);
-
+        // 1. Collect early results as children finish. Waiting in block order
+        // would delay a fast tool's completion event behind an earlier slow
+        // sibling, defeating the streaming lifecycle contract. A single batch
+        // deadline also prevents up to MAX_EARLY_EXECUTIONS sequential timeout
+        // waits when several children hang at once.
+        $finalizeEarlyChild = function (int $index, array $info, bool $aborted = false, bool $timedOut = false) use (&$results): void {
             $data = ($aborted || $timedOut) ? false : $this->readIpcPayload($info['temp_file']);
             // allowed_classes => false blocks PHP object injection — the temp
             // file is owned by us but written by the child fork, and a
@@ -311,6 +277,65 @@ class StreamingToolExecutor
                 }
                 $toolResult ??= $this->resultArrayToToolResult($result);
                 ($this->onToolComplete)($info['block']['name'], $toolResult);
+            }
+        };
+
+        $remaining = $this->earlyPids;
+        $deadline = microtime(true) + $this->earlyToolTimeoutSeconds;
+        while ($remaining !== []) {
+            $madeProgress = false;
+            foreach ($remaining as $index => $info) {
+                if (! isset($this->earlyPids[$index])) {
+                    // A completion callback can cause the surrounding stream
+                    // to be abandoned and cleanup() to reap siblings.
+                    unset($remaining[$index]);
+                    continue;
+                }
+                $status = 0;
+                $waitResult = pcntl_waitpid($info['pid'], $status, WNOHANG);
+                if ($waitResult === -1) {
+                    // EINTR means the child was not reaped; retry instead of
+                    // reading a potentially incomplete IPC payload as final.
+                    $interrupted = defined('PCNTL_EINTR')
+                        && function_exists('pcntl_get_last_error')
+                        && pcntl_get_last_error() === constant('PCNTL_EINTR');
+                    if ($interrupted) {
+                        continue;
+                    }
+                    // A non-EINTR -1 means another handler already reaped the
+                    // child or the PID is no longer waitable. Fall through to
+                    // the bounded IPC read, which produces a controlled error
+                    // if no complete payload was written.
+                    $finalizeEarlyChild($index, $info);
+                    unset($remaining[$index]);
+                    $madeProgress = true;
+                    continue;
+                }
+                if ($waitResult === $info['pid']) {
+                    $finalizeEarlyChild($index, $info);
+                    unset($remaining[$index]);
+                    $madeProgress = true;
+                    continue;
+                }
+                if ($this->isCancelled()) {
+                    $this->killPid($info['pid']);
+                    @pcntl_waitpid($info['pid'], $status);
+                    $finalizeEarlyChild($index, $info, aborted: true);
+                    unset($remaining[$index]);
+                    $madeProgress = true;
+                    continue;
+                }
+                if (microtime(true) >= $deadline) {
+                    $this->killPid($info['pid']);
+                    @pcntl_waitpid($info['pid'], $status);
+                    $finalizeEarlyChild($index, $info, timedOut: true);
+                    unset($remaining[$index]);
+                    $madeProgress = true;
+                }
+            }
+
+            if ($remaining !== [] && ! $madeProgress) {
+                usleep(10_000);
             }
         }
 

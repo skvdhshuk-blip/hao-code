@@ -124,13 +124,7 @@ class Conversation
 
             return new QueryResult(
                 text: $response,
-                usage: [
-                    'input_tokens' => $this->loop->getTotalInputTokens(),
-                    'output_tokens' => $this->loop->getTotalOutputTokens(),
-                    'cache_creation_tokens' => $this->loop->getCacheCreationTokens(),
-                    'cache_read_tokens' => $this->loop->getCacheReadTokens(),
-                    'cost_available' => $this->loop->isCostEstimateAvailable(),
-                ],
+                usage: self::extractUsage($this->loop),
                 cost: $this->loop->getEstimatedCost(),
                 sessionId: $this->options->ephemeral ? null : $this->loop->getSessionManager()->getSessionId(),
                 // Per-operation Agent loop turns (not cumulative conversation sends).
@@ -257,13 +251,7 @@ class Conversation
 
             yield Message::result(
                 text: $response ?? '',
-                usage: [
-                    'input_tokens' => $this->loop->getTotalInputTokens(),
-                    'output_tokens' => $this->loop->getTotalOutputTokens(),
-                    'cache_creation_tokens' => $this->loop->getCacheCreationTokens(),
-                    'cache_read_tokens' => $this->loop->getCacheReadTokens(),
-                    'cost_available' => $this->loop->isCostEstimateAvailable(),
-                ],
+                usage: self::extractUsage($this->loop),
                 cost: $this->loop->getEstimatedCost(),
                 sessionId: $this->options->ephemeral ? null : $this->loop->getSessionManager()->getSessionId(),
             );
@@ -305,7 +293,7 @@ class Conversation
                         'Conversation interrupt resume returned a structured result without its query metadata.',
                     );
                 }
-                $this->reloadAfterSnapshotResume($sessionId);
+                $this->reloadAfterSnapshotResume($sessionId, $queryResult->usage, $queryResult->cost);
 
                 return $queryResult;
             }
@@ -328,13 +316,7 @@ class Conversation
 
             return new QueryResult(
                 text: $response,
-                usage: [
-                    'input_tokens' => $this->loop->getTotalInputTokens(),
-                    'output_tokens' => $this->loop->getTotalOutputTokens(),
-                    'cache_creation_tokens' => $this->loop->getCacheCreationTokens(),
-                    'cache_read_tokens' => $this->loop->getCacheReadTokens(),
-                    'cost_available' => $this->loop->isCostEstimateAvailable(),
-                ],
+                usage: self::extractUsage($this->loop),
                 cost: $this->loop->getEstimatedCost(),
                 sessionId: $this->loop->getSessionManager()->getSessionId(),
                 turnsUsed: $this->loop->getLastRunTurns(),
@@ -361,7 +343,6 @@ class Conversation
         try {
             if (! $this->snapshotRestored) {
                 $sessionId = $this->loop->getSessionManager()->getSessionId();
-                $completed = false;
                 foreach (HaoCode::streamResumeInterrupt(
                     $sessionId,
                     $interruptId,
@@ -369,12 +350,17 @@ class Conversation
                     $this->config,
                 ) as $message) {
                     if ($message->isResult()) {
-                        $completed = true;
+                        // A caller is allowed to stop consuming as soon as it
+                        // receives the terminal result. Rebuild before yielding
+                        // it so the next Conversation operation never depends
+                        // on the generator being advanced one final time.
+                        $this->reloadAfterSnapshotResume(
+                            $sessionId,
+                            $message->usage,
+                            $message->cost,
+                        );
                     }
                     yield $message;
-                }
-                if ($completed) {
-                    $this->reloadAfterSnapshotResume($sessionId);
                 }
 
                 return;
@@ -449,13 +435,12 @@ class Conversation
 
                 return;
             }
-            yield Message::result($response ?? '', [
-                'input_tokens' => $this->loop->getTotalInputTokens(),
-                'output_tokens' => $this->loop->getTotalOutputTokens(),
-                'cache_creation_tokens' => $this->loop->getCacheCreationTokens(),
-                'cache_read_tokens' => $this->loop->getCacheReadTokens(),
-                'cost_available' => $this->loop->isCostEstimateAvailable(),
-            ], $this->loop->getEstimatedCost(), $this->loop->getSessionManager()->getSessionId());
+            yield Message::result(
+                $response ?? '',
+                self::extractUsage($this->loop),
+                $this->loop->getEstimatedCost(),
+                $this->loop->getSessionManager()->getSessionId(),
+            );
         } finally {
             if ($fiber instanceof \Fiber && $fiber->isStarted() && ! $fiber->isTerminated()) {
                 $this->loop->abort();
@@ -471,17 +456,45 @@ class Conversation
         }
     }
 
-    private function reloadAfterSnapshotResume(string $sessionId): void
+    /**
+     * @param array<string, mixed>|null $resumedUsage
+     */
+    private function reloadAfterSnapshotResume(
+        string $sessionId,
+        ?array $resumedUsage = null,
+        ?float $resumedCost = null,
+    ): void
     {
         $budgetLedger = $this->loop->getBudgetLedger();
-        // Preserve lifetime usage so QueryResult tokens stay aligned with
-        // the shared cumulative cost after the loop is rebuilt.
+        $resumedUsage ??= [];
+        // Preserve lifetime usage from the independently restored loop as well
+        // as this live handle. The shared budget ledger already advances cost,
+        // but token accumulators are process-local and must be explicitly
+        // seeded or the next send() reports a lower cumulative total.
         $priorUsage = [
-            'total_input_tokens' => $this->loop->getTotalInputTokens(),
-            'total_output_tokens' => $this->loop->getTotalOutputTokens(),
-            'total_cache_creation_tokens' => $this->loop->getCacheCreationTokens(),
-            'total_cache_read_tokens' => $this->loop->getCacheReadTokens(),
-            'estimated_cost_usd' => $this->loop->getEstimatedCost(),
+            'total_input_tokens' => max(
+                $this->loop->getTotalInputTokens(),
+                self::usageCount($resumedUsage, 'input_tokens'),
+            ),
+            'total_output_tokens' => max(
+                $this->loop->getTotalOutputTokens(),
+                self::usageCount($resumedUsage, 'output_tokens'),
+            ),
+            'total_cache_creation_tokens' => max(
+                $this->loop->getCacheCreationTokens(),
+                self::usageCount($resumedUsage, 'cache_creation_tokens'),
+            ),
+            'total_cache_read_tokens' => max(
+                $this->loop->getCacheReadTokens(),
+                self::usageCount($resumedUsage, 'cache_read_tokens'),
+            ),
+            'last_turn_input_tokens' => array_key_exists('last_turn_input_tokens', $resumedUsage)
+                ? self::usageCount($resumedUsage, 'last_turn_input_tokens')
+                : $this->loop->getLastTurnInputTokens(),
+            'estimated_cost_usd' => max(
+                $this->loop->getEstimatedCost(),
+                $resumedCost !== null && is_finite($resumedCost) ? max(0.0, $resumedCost) : 0.0,
+            ),
         ];
 
         // Prefer the live run context (worktree / snapshot resume), then the
@@ -528,6 +541,27 @@ class Conversation
         $this->loop->restoreRunSnapshot($priorUsage);
         $this->snapshotRestored = false;
         $this->loadSessionInternal($sessionId);
+    }
+
+    /** @param array<string, mixed> $usage */
+    private static function usageCount(array $usage, string $key): int
+    {
+        $value = $usage[$key] ?? null;
+
+        return is_numeric($value) ? max(0, (int) $value) : 0;
+    }
+
+    /** @return array<string, int|bool> */
+    private static function extractUsage(AgentLoop $loop): array
+    {
+        return [
+            'input_tokens' => $loop->getTotalInputTokens(),
+            'output_tokens' => $loop->getTotalOutputTokens(),
+            'cache_creation_tokens' => $loop->getCacheCreationTokens(),
+            'cache_read_tokens' => $loop->getCacheReadTokens(),
+            'last_turn_input_tokens' => $loop->getLastTurnInputTokens(),
+            'cost_available' => $loop->isCostEstimateAvailable(),
+        ];
     }
 
     /**
@@ -596,6 +630,7 @@ class Conversation
         $canonicalId = $sessionManager->getLastResolvedSessionId() ?? $sessionId;
         $this->loop->getSessionManager()->switchToSession($canonicalId);
         $history->replaceMessages($loadedHistory->getMessages());
+        $this->loop->markSessionResumed();
     }
 
     /**

@@ -834,6 +834,50 @@ class StreamingToolExecutorTest extends TestCase
         $this->assertTrue($completed[0][1]->metadata['timedOut'] ?? false);
     }
 
+    public function test_early_completion_callback_is_not_blocked_by_an_earlier_slow_tool(): void
+    {
+        if (! function_exists('pcntl_fork') || ! function_exists('posix_kill')) {
+            $this->markTestSkipped('pcntl and posix are required for early tool execution.');
+        }
+
+        $orchestrator = $this->createMock(ToolOrchestrator::class);
+        $orchestrator->method('mayRunToolHooks')->willReturn(false);
+        $orchestrator->method('executeToolBlock')->willReturnCallback(
+            static function (array $block, ToolUseContext $context, ?callable $onStart, ?callable $onComplete): array {
+                if ($block['id'] === 'slow') {
+                    usleep(600_000);
+                }
+
+                $result = ToolResult::success($block['id']);
+                $onComplete?->__invoke($block['name'], $result);
+
+                return $result->toApiFormat($block['id']);
+            },
+        );
+
+        $completed = [];
+        $executor = new StreamingToolExecutor(
+            $orchestrator,
+            $this->makeRegistry(readOnly: true, concurrencySafe: true),
+        );
+        $executor->setContext(
+            new ToolUseContext('/tmp', 'test'),
+            null,
+            static function (string $name, ToolResult $result) use (&$completed): void {
+                $completed[] = $result->output;
+            },
+        );
+        $executor->onToolBlockReady($this->makeBlock('slow'), 0);
+        $executor->onToolBlockReady($this->makeBlock('fast'), 1);
+
+        // Give the fast child a chance to exit while the earlier child remains running.
+        usleep(150_000);
+        $results = $executor->collectResults();
+
+        $this->assertSame(['fast', 'slow'], $completed);
+        $this->assertSame(['slow', 'fast'], array_column($results, 'content'));
+    }
+
     public function test_early_completion_callback_preserves_metadata_and_outcome_across_ipc(): void
     {
         if (! function_exists('pcntl_fork') || ! function_exists('posix_kill')) {

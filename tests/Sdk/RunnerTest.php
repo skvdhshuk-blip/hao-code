@@ -33,6 +33,7 @@ class RunnerTest extends TestCase
         $this->loop->method('getTotalOutputTokens')->willReturn(3);
         $this->loop->method('getCacheCreationTokens')->willReturn(0);
         $this->loop->method('getCacheReadTokens')->willReturn(0);
+        $this->loop->method('getLastTurnInputTokens')->willReturn(7);
         $this->loop->method('getEstimatedCost')->willReturn(0.00001);
         $this->loop->method('getLastRunTurns')->willReturn(1);
 
@@ -53,6 +54,7 @@ class RunnerTest extends TestCase
         $this->assertSame('fake response', $result->text);
         $this->assertSame(10, $result->usage['input_tokens']);
         $this->assertSame(3, $result->usage['output_tokens']);
+        $this->assertSame(7, $result->usage['last_turn_input_tokens']);
         $this->assertSame(1, $result->turnsUsed);
         $this->assertNull($result->sessionId);
     }

@@ -85,6 +85,42 @@ class ConversationInternalsTest extends TestCase
         $this->assertEquals($config, $roundTripped);
     }
 
+    public function test_snapshot_resume_rebuilds_the_parent_model_before_restoring_skill_scope(): void
+    {
+        $loop = $this->createMock(AgentLoop::class);
+        $loop->method('getCostTracker')->willReturn(new \HaoCode\Services\Cost\CostTracker);
+
+        $factory = $this->createMock(AgentLoopFactory::class);
+        $factory->expects($this->once())
+            ->method('createIsolated')
+            ->willReturnCallback(function (...$arguments) use ($loop): AgentLoop {
+                $runContext = $arguments[4] ?? null;
+                $model = $arguments[10] ?? null;
+
+                $this->assertInstanceOf(\HaoCode\Services\Agent\AgentRunContext::class, $runContext);
+                $this->assertSame('parent-model', $runContext->settings->getModel());
+                $this->assertSame('parent-model', $model);
+
+                return $loop;
+            });
+
+        $config = new HaoCodeConfig(
+            apiKey: 'test-key',
+            model: 'parent-model',
+            allowedTools: [],
+            ephemeral: false,
+        );
+        SdkRunFactory::stageResumeSnapshot($config, [
+            'cwd' => getcwd(),
+            'model' => 'skill-model',
+            'base_model' => 'parent-model',
+            'active_skill_model_override' => 'skill-model',
+        ]);
+
+        $conversation = new Conversation($config, $factory);
+        $conversation->close();
+    }
+
     public function test_send_turns_used_is_agent_loop_turns_not_conversation_send_count(): void
     {
         $session = $this->createMock(\HaoCode\Services\Session\SessionManager::class);
@@ -371,6 +407,7 @@ class ConversationInternalsTest extends TestCase
         $loop = $this->createMock(AgentLoop::class);
         $loop->method('getMessageHistory')->willReturn($history);
         $loop->method('getSessionManager')->willReturn($session);
+        $loop->expects($this->once())->method('markSessionResumed');
 
         $factory = $this->createMock(AgentLoopFactory::class);
         $factory->method('createIsolated')->willReturn($loop);

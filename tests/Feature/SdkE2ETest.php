@@ -305,10 +305,12 @@ class SdkE2ETest extends TestCase
 
         $r1 = $conv->send('Set x = 10');
         $this->assertStringContainsString('x = 10', $r1->text);
+        $this->assertSame(32, $r1->usage['last_turn_input_tokens']);
         $this->assertSame(1, $conv->getTurnCount());
 
         $r2 = $conv->send('What is x?');
         $this->assertStringContainsString('10', $r2->text);
+        $this->assertSame(32, $r2->usage['last_turn_input_tokens']);
         $this->assertSame(2, $conv->getTurnCount());
 
         // Verify the second request included conversation history
@@ -344,6 +346,7 @@ class SdkE2ETest extends TestCase
 
         $result = array_values($resultMsgs)[0];
         $this->assertStringContainsString('First turn', $result->text);
+        $this->assertSame(32, $result->usage['last_turn_input_tokens']);
 
         $conv->close();
     }
@@ -462,6 +465,7 @@ class SdkE2ETest extends TestCase
         $this->assertIsArray($result->usage);
         $this->assertGreaterThanOrEqual(0, $result->inputTokens());
         $this->assertGreaterThanOrEqual(0, $result->outputTokens());
+        $this->assertSame(32, $result->usage['last_turn_input_tokens']);
         $this->assertIsFloat($result->cost);
         $this->assertSame(1, $result->turnsUsed);
         // Stringable
@@ -2158,9 +2162,77 @@ JSON),
         $conversation->close();
 
         $this->assertSame('Conversation resume completed.', $result->text);
+        $this->assertSame(96, $result->usage['input_tokens']);
+        $this->assertSame(32, $result->usage['last_turn_input_tokens']);
         $this->assertSame('Follow-up completed.', $followUp->text);
+        $this->assertSame(128, $followUp->usage['input_tokens']);
+        $this->assertSame(32, $followUp->usage['last_turn_input_tokens']);
         $this->assertGreaterThan($result->cost, $followUp->cost);
         $this->assertFileExists($this->projectDir.'/conversation-approved.txt');
+    }
+
+    public function test_conversation_stream_resume_restores_cumulative_usage_for_follow_up(): void
+    {
+        $model = 'claude-sonnet-4-6';
+        $this->bootWithMock([
+            MockAnthropicSse::toolUseResponse('conversation-stream-write', 'Write', [
+                'file_path' => 'conversation-stream-approved.txt',
+                'content' => 'approved',
+            ], model: $model),
+            MockAnthropicSse::textResponse('Conversation stream resume completed.', model: $model),
+            function (array $payload): MockResponse {
+                $this->assertGreaterThanOrEqual(4, MockAnthropicSse::messageCount($payload));
+
+                return MockAnthropicSse::textResponse(
+                    'Conversation stream follow-up completed.',
+                    model: 'claude-sonnet-4-6',
+                );
+            },
+        ], model: $model);
+        chdir($this->projectDir);
+        $conversation = HaoCode::conversation(new HaoCodeConfig(
+            allowedTools: ['Write'],
+            ephemeral: false,
+            interruptOn: ['Write' => true],
+            hitlMode: 'ask',
+            maxBudgetUsd: 1.0,
+        ));
+
+        $initial = iterator_to_array($conversation->stream('Write the approved conversation stream file'));
+        $interrupt = array_values(array_filter(
+            $initial,
+            static fn (Message $message): bool => $message->isInterrupt(),
+        ))[0]->interrupt;
+        $resumed = $conversation->streamResumeInterrupt(
+            $interrupt->id,
+            [HumanDecision::approve('conversation-stream-write')],
+        );
+        $resumed->rewind();
+        $result = null;
+        while ($resumed->valid()) {
+            $message = $resumed->current();
+            if ($message->isResult()) {
+                $result = $message;
+                break;
+            }
+            $resumed->next();
+        }
+        $this->assertInstanceOf(Message::class, $result);
+        // Do not advance the generator after its terminal message: users often
+        // stop consumption here. The Conversation must already be usable.
+        unset($resumed);
+        gc_collect_cycles();
+        $followUp = $conversation->send('Confirm the streamed previous work');
+        $conversation->close();
+
+        $this->assertSame('Conversation stream resume completed.', $result->text);
+        $this->assertSame(96, $result->usage['input_tokens']);
+        $this->assertSame(32, $result->usage['last_turn_input_tokens']);
+        $this->assertSame('Conversation stream follow-up completed.', $followUp->text);
+        $this->assertSame(128, $followUp->usage['input_tokens']);
+        $this->assertSame(32, $followUp->usage['last_turn_input_tokens']);
+        $this->assertGreaterThan($result->cost, $followUp->cost);
+        $this->assertFileExists($this->projectDir.'/conversation-stream-approved.txt');
     }
 
     public function test_background_owner_completes_only_after_parent_interrupt_chain_finishes(): void
@@ -2323,6 +2395,72 @@ JSON),
         $this->assertSame('Scoped resume completed.', $result->text);
     }
 
+    public function test_resume_applies_inline_skill_model_when_skill_and_gate_share_a_turn(): void
+    {
+        $this->bootWithMock([
+            MockAnthropicSse::multiToolUseResponse([
+                [
+                    'id' => 'model-scope-skill',
+                    'name' => 'Skill',
+                    'input' => ['skill' => 'model-scoped-shell'],
+                ],
+                [
+                    'id' => 'model-scope-bash',
+                    'name' => 'Bash',
+                    'input' => [
+                        'command' => 'printf resumed',
+                        'description' => 'Run the model-scoped check',
+                    ],
+                ],
+            ]),
+            function (array $payload): MockResponse {
+                $this->assertSame('skill-model', $payload['model'] ?? null);
+
+                return MockAnthropicSse::textResponse('Model-scoped resume completed.');
+            },
+        ], model: 'parent-model');
+        chdir($this->projectDir);
+        $config = new HaoCodeConfig(
+            allowedTools: ['Skill', 'Bash'],
+            skills: [
+                new SdkSkill(
+                    name: 'model-scoped-shell',
+                    description: 'Run a model-scoped shell check',
+                    prompt: 'Run the requested shell check.',
+                    allowedTools: ['Bash'],
+                    model: 'skill-model',
+                ),
+            ],
+            ephemeral: false,
+            interruptOn: ['Bash' => true],
+            hitlMode: 'ask',
+        );
+
+        try {
+            HaoCode::query('Use the model-scoped shell skill', $config);
+            $this->fail('Expected scoped Bash interrupt.');
+        } catch (HumanInterruptException $e) {
+            $interrupt = $e->interrupt;
+        }
+
+        $state = \HaoCode\Support\Runtime\SdkRuntime::app(
+            \HaoCode\Services\Session\SessionManager::class,
+        )->getInterruptState($interrupt->sessionId, $interrupt->id);
+        $snapshot = $state['checkpoint']['run_snapshot'];
+        $this->assertSame('parent-model', $snapshot['model']);
+        $this->assertSame('parent-model', $snapshot['base_model']);
+        $this->assertSame('skill-model', $snapshot['active_skill_model_override']);
+
+        $result = HaoCode::resumeInterrupt(
+            $interrupt->sessionId,
+            $interrupt->id,
+            [HumanDecision::approve('model-scope-bash')],
+            $config,
+        );
+
+        $this->assertSame('Model-scoped resume completed.', $result->text);
+    }
+
     public function test_cost_and_usage_totals_continue_across_durable_interrupt_resume(): void
     {
         $model = 'claude-sonnet-4-6';
@@ -2425,6 +2563,7 @@ JSON),
 
         $this->assertCount(1, $results);
         $this->assertSame('Stream resume completed.', $results[0]->text);
+        $this->assertSame(32, $results[0]->usage['last_turn_input_tokens']);
     }
 
     public function test_multi_tool_interrupt_executes_unguarded_sibling_once_and_checkpoints_its_result(): void

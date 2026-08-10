@@ -130,6 +130,8 @@ final class SdkRunFactory
             $runContext = $runContext->fork(budgetLedger: $budgetLedger);
         }
         if ($resumeSnapshot !== null) {
+            $baseModel = self::snapshotString($resumeSnapshot, 'base_model')
+                ?? self::snapshotString($resumeSnapshot, 'model');
             $runContext = $runContext->fork(
                 workingDirectory: self::snapshotString($resumeSnapshot, 'cwd'),
                 projectDirectory: self::snapshotString($resumeSnapshot, 'project_directory'),
@@ -142,7 +144,6 @@ final class SdkRunFactory
                 backgroundOwnerAgentId: self::snapshotString($resumeSnapshot, 'background_owner_agent_id'),
             );
             foreach ([
-                'model' => 'model',
                 'system_prompt' => 'system_prompt',
                 'append_system_prompt' => 'append_system_prompt',
             ] as $snapshotKey => $settingsKey) {
@@ -150,12 +151,16 @@ final class SdkRunFactory
                     $runContext->settings->set($settingsKey, $resumeSnapshot[$snapshotKey]);
                 }
             }
+            if ($baseModel !== null) {
+                $runContext->settings->set('model', $baseModel);
+            }
         }
         $provider = $streamingClient
             ?? self::buildStreamingClient(
                 $config,
                 $runContext->settings,
-                self::snapshotString($resumeSnapshot ?? [], 'model'),
+                self::snapshotString($resumeSnapshot ?? [], 'base_model')
+                    ?? self::snapshotString($resumeSnapshot ?? [], 'model'),
             )
             ?? \HaoCode\Support\Runtime\SdkRuntime::app(StreamingClient::class)->withSettingsManager($runContext->settings);
 
@@ -217,7 +222,8 @@ final class SdkRunFactory
                 ephemeral: $config->ephemeral,
                 additionalToolFilter: $config->additionalToolFilter(),
                 parentToolRegistry: $parentToolRegistry,
-                model: self::snapshotString($resumeSnapshot ?? [], 'model'),
+                model: self::snapshotString($resumeSnapshot ?? [], 'base_model')
+                    ?? self::snapshotString($resumeSnapshot ?? [], 'model'),
             );
         } catch (\Throwable $e) {
             $sandboxRuntime?->close();

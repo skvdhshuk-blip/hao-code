@@ -124,6 +124,7 @@ class AgentLoopTest extends TestCase
         ?ContextCompactor $compactor = null,
         ?SessionManager $sessionManager = null,
         ?ContextBuilder $contextBuilder = null,
+        ?HookExecutor $hookExecutor = null,
     ): AgentLoop
     {
         if ($contextBuilder === null) {
@@ -136,8 +137,10 @@ class AgentLoopTest extends TestCase
 
         $permissionChecker = $this->createMock(PermissionChecker::class);
 
-        $hookExecutor = $this->createMock(HookExecutor::class);
-        $hookExecutor->method('execute')->willReturn(new HookResult(true));
+        if ($hookExecutor === null) {
+            $hookExecutor = $this->createMock(HookExecutor::class);
+            $hookExecutor->method('execute')->willReturn(new HookResult(true));
+        }
 
         $compactor ??= $this->createMock(ContextCompactor::class);
         if (!$compactor instanceof \PHPUnit\Framework\MockObject\MockObject) {
@@ -213,6 +216,70 @@ class AgentLoopTest extends TestCase
         $this->assertStringContainsString('# Initial workspace context', $captured[0]['messages'][0]['content'][0]['text']);
         $this->assertSame('first request', $captured[0]['messages'][0]['content'][1]['text']);
         $this->assertSame('second request', $captured[1]['messages'][2]['content']);
+    }
+
+    public function test_resumed_session_skips_first_turn_context_and_session_start_side_effects(): void
+    {
+        $queryEngine = $this->createMock(QueryEngine::class);
+        $queryEngine->expects($this->once())
+            ->method('query')
+            ->willReturnCallback(function (array $systemPrompt, array $messages): StreamProcessor {
+                $this->assertSame([], $systemPrompt);
+                $this->assertSame([
+                    ['role' => 'user', 'content' => 'continue the loaded session'],
+                ], $messages);
+
+                return $this->makePlainTextProcessor('continued');
+            });
+        $contextBuilder = $this->createMock(ContextBuilder::class);
+        $contextBuilder->method('buildSystemPrompt')->willReturn([]);
+        $contextBuilder->expects($this->never())->method('buildTurnContext');
+        $sessionManager = $this->createMock(SessionManager::class);
+        $sessionManager->method('getSessionId')->willReturn('resumed-session');
+        $sessionManager->method('isPersistenceEnabled')->willReturn(false);
+        $hookExecutor = $this->createMock(HookExecutor::class);
+        $hookExecutor->expects($this->once())
+            ->method('execute')
+            ->willReturnCallback(function (string $event): HookResult {
+                $this->assertSame('Stop', $event);
+
+                return new HookResult(true);
+            });
+
+        $loop = $this->makeLoop(
+            $queryEngine,
+            sessionManager: $sessionManager,
+            contextBuilder: $contextBuilder,
+            hookExecutor: $hookExecutor,
+        );
+        $loop->markSessionResumed();
+
+        $this->assertSame('continued', $loop->run('continue the loaded session'));
+    }
+
+    public function test_resumed_durable_session_rebinds_tool_result_storage(): void
+    {
+        $toolOrchestrator = $this->createMock(ToolOrchestrator::class);
+        $toolOrchestrator->expects($this->once())
+            ->method('setToolResultStorage')
+            ->with($this->isInstanceOf(ToolResultStorage::class));
+        $sessionManager = $this->createMock(SessionManager::class);
+        $sessionManager->method('getSessionId')->willReturn('canonical-session');
+        $sessionManager->method('isPersistenceEnabled')->willReturn(true);
+
+        $loop = new AgentLoop(
+            queryEngine: $this->createMock(QueryEngine::class),
+            toolOrchestrator: $toolOrchestrator,
+            contextBuilder: $this->createMock(ContextBuilder::class),
+            messageHistory: new MessageHistory,
+            permissionChecker: $this->createMock(PermissionChecker::class),
+            sessionManager: $sessionManager,
+            contextCompactor: $this->createMock(ContextCompactor::class),
+            costTracker: new CostTracker,
+            toolRegistry: new ToolRegistry,
+        );
+
+        $loop->markSessionResumed();
     }
 
     public function test_external_event_pump_runs_before_each_agent_turn(): void
@@ -2026,6 +2093,86 @@ class AgentLoopTest extends TestCase
         $this->assertSame('parent-model', $settings->getModel());
     }
 
+    public function test_resume_restores_inline_skill_model_for_first_request_and_cleans_up_scope(): void
+    {
+        $settings = new \HaoCode\Services\Settings\SettingsManager('/tmp');
+        $settings->set('model', 'parent-model');
+        $settings->set('permission_mode', 'bypass_permissions');
+        $runContext = new \HaoCode\Services\Agent\AgentRunContext(
+            '/tmp',
+            '/tmp',
+            $settings,
+            new \HaoCode\Tools\Skill\SkillLoader('/tmp'),
+            new \HaoCode\Services\Agent\CancellationToken,
+        );
+
+        $registry = new ToolRegistry;
+        $permissionChecker = new \HaoCode\Services\Permissions\PermissionChecker(
+            $settings,
+            new \HaoCode\Services\Permissions\DenialTracker,
+        );
+        $hookExecutor = $this->createMock(HookExecutor::class);
+        $hookExecutor->method('execute')->willReturn(new HookResult(true));
+        $orchestrator = new ToolOrchestrator($registry, $permissionChecker, $hookExecutor);
+
+        $interrupt = new \HaoCode\Sdk\HumanInterrupt(
+            id: 'resume-skill-scope',
+            sessionId: 'resume-skill-session',
+            actions: [],
+            createdAt: '2026-01-01T00:00:00+00:00',
+        );
+        $sessionManager = $this->createMock(SessionManager::class);
+        $sessionManager->method('getSessionId')->willReturn('resume-skill-session');
+        $sessionManager->method('getInterruptState')->willReturn([
+            'type' => 'interrupt_pending',
+            'interrupt' => $interrupt->toArray(),
+        ]);
+        $sessionManager->method('claimInterrupt')->willReturn([
+            'interrupt' => $interrupt->toArray(),
+            'checkpoint' => ['blocks' => [], 'results' => []],
+        ]);
+        $sessionManager->expects($this->once())
+            ->method('resolveInterrupt')
+            ->with('resume-skill-scope', []);
+
+        $queryEngine = $this->createMock(QueryEngine::class);
+        $queryEngine->expects($this->once())->method('query')->willReturnCallback(
+            function () use ($settings): StreamProcessor {
+                $this->assertSame('skill-model', $settings->getModel());
+
+                return $this->makePlainTextProcessor('resumed');
+            },
+        );
+        $contextBuilder = $this->createMock(ContextBuilder::class);
+        $contextBuilder->method('buildSystemPrompt')->willReturn([]);
+        $compactor = $this->createMock(ContextCompactor::class);
+        $compactor->method('shouldAutoCompact')->willReturn(false);
+
+        $loop = new AgentLoop(
+            queryEngine: $queryEngine,
+            toolOrchestrator: $orchestrator,
+            contextBuilder: $contextBuilder,
+            messageHistory: new MessageHistory,
+            permissionChecker: $permissionChecker,
+            sessionManager: $sessionManager,
+            contextCompactor: $compactor,
+            costTracker: new CostTracker(999.0, 9999.0),
+            toolRegistry: $registry,
+            hookExecutor: $hookExecutor,
+            runContext: $runContext,
+        );
+        $loop->restoreRunSnapshot([
+            'active_skill_allowed_tools' => ['Read'],
+            'active_skill_model_override' => 'skill-model',
+            'active_skill_context' => 'inline',
+        ]);
+
+        $this->assertSame('resumed', $loop->resumeInterrupt('resume-skill-scope', []));
+        $this->assertSame('parent-model', $settings->getModel());
+        $this->assertNull($orchestrator->getActiveSkillAllowedTools());
+        $this->assertNull($orchestrator->getActiveSkillModelOverride());
+    }
+
     private function makeValidToolUseProcessor(string $toolName, string $toolId, array $input): StreamProcessor
     {
         $processor = new StreamProcessor;
@@ -2157,9 +2304,18 @@ class AgentLoopTest extends TestCase
 
     private function makeProcessorWithTokens(int $inputTokens, string $text): StreamProcessor
     {
+        return $this->makeProcessorWithUsage([
+            'input_tokens' => $inputTokens,
+            'output_tokens' => 1,
+        ], $text);
+    }
+
+    /** @param array<string, mixed> $usage */
+    private function makeProcessorWithUsage(array $usage, string $text): StreamProcessor
+    {
         $processor = new StreamProcessor;
         $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('message_start', [
-            'message' => ['id' => 'msg_x', 'usage' => ['input_tokens' => $inputTokens, 'output_tokens' => 1]],
+            'message' => ['id' => 'msg_x', 'usage' => $usage],
         ]));
         $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('content_block_start', [
             'index' => 0,
@@ -2303,6 +2459,43 @@ class AgentLoopTest extends TestCase
         $this->assertSame(1000, $loop->getLastTurnInputTokens());
         $this->assertSame(1000, $loop->getTotalInputTokens());
         $this->assertSame(900, $loop->getCacheReadTokens());
+    }
+
+    public function test_invalid_provider_usage_cannot_reduce_totals_or_cost(): void
+    {
+        $queryEngine = $this->createMock(QueryEngine::class);
+        $queryEngine->method('query')->willReturnOnConsecutiveCalls(
+            $this->makeProcessorWithUsage([
+                'input_tokens' => 12,
+                'context_input_tokens' => -1,
+                'output_tokens' => -4,
+                'cache_creation_input_tokens' => 'invalid',
+                'cache_read_input_tokens' => -8,
+            ], 'first'),
+            $this->makeProcessorWithUsage([
+                'input_tokens' => -12,
+                'context_input_tokens' => ['invalid'],
+                'output_tokens' => '-3',
+                'cache_creation_input_tokens' => -2,
+                'cache_read_input_tokens' => 'not-a-number',
+            ], 'second'),
+        );
+        $loop = $this->makeLoop($queryEngine);
+
+        $loop->run('first request');
+        $costAfterFirst = $loop->getEstimatedCost();
+        $this->assertSame(12, $loop->getTotalInputTokens());
+        $this->assertSame(12, $loop->getLastTurnInputTokens());
+        $this->assertSame(0, $loop->getTotalOutputTokens());
+        $this->assertSame(0, $loop->getCacheCreationTokens());
+        $this->assertSame(0, $loop->getCacheReadTokens());
+        $this->assertGreaterThan(0.0, $costAfterFirst);
+
+        $loop->run('second request');
+
+        $this->assertSame(12, $loop->getTotalInputTokens());
+        $this->assertSame(0, $loop->getLastTurnInputTokens());
+        $this->assertSame($costAfterFirst, $loop->getEstimatedCost());
     }
 
     // ─── onTurnStart increments turn number ───────────────────────────────

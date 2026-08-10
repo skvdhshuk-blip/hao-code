@@ -21,6 +21,7 @@ final class AgentRunSnapshotBuilder
         ?array $activeSkillAllowedTools,
         ?string $activeSkillModelOverride,
         string $activeSkillContext,
+        ?string $baseModel,
         float $estimatedCost,
         int $totalInputTokens,
         int $totalOutputTokens,
@@ -37,6 +38,10 @@ final class AgentRunSnapshotBuilder
             'managed_worktree' => $runContext?->managedWorktree ?? false,
             'background_owner_agent_id' => $runContext?->backgroundOwnerAgentId,
             'model' => $runContext?->settings->getModel(),
+            // Inline Skill model overrides are scoped to the current user turn.
+            // Keep the parent separately so a resumed Conversation can restore
+            // it before its next user message after the interrupted turn ends.
+            'base_model' => $baseModel,
             'system_prompt' => $runContext?->settings->getSystemPrompt(),
             'append_system_prompt' => $runContext?->settings->getAppendSystemPrompt(),
             'omit_project_instructions' => $runContext?->omitProjectInstructions ?? false,

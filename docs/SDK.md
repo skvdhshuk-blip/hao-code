@@ -2,7 +2,7 @@
 
 Use hao-code as a framework-free PHP library to embed an AI coding agent in your application.
 
-This document describes the `v1.18.60` source line. Published package versions
+This document describes the `v1.19.0` source line. Published package versions
 are identified by Git tags and Packagist.
 
 ```bash
@@ -281,8 +281,10 @@ The handle keeps message history in memory for its lifetime. Set
 storage. Tools remain disabled unless listed in `allowedTools`.
 `Conversation::loadSession()` reconstructs the requested session first, then
 atomically replaces any existing in-memory history and switches the handle to
-the loaded session. Prefer `HaoCode::resume()` when creating a new handle for a
-durable session.
+the loaded session. It is treated as an existing session, so initial workspace
+context and `SessionStart` hooks are not replayed; durable tool-result storage
+is rebound to the canonical session id. Prefer `HaoCode::resume()` when
+creating a new handle for a durable session.
 
 ### resume() / continueLatest()
 
@@ -375,7 +377,10 @@ interrupt never stays permanently in `resolving`.
 When you resume via a long-lived `Conversation` handle, the conversation rebuilds
 its loop after the interrupt and restores the working directory from (in order)
 the live run context, the session transcript canonical cwd, then `RunOptions`
-cwd — so a later `send()` does not fall back to the process `getcwd()`.
+cwd — so a later `send()` does not fall back to the process `getcwd()`. The
+rebuild carries the final resumed usage before delivering a terminal streaming
+`result`, so after releasing that stream the next `send()` continues with the
+same cumulative accounting and transcript.
 
 ```text
 HaoCode::resumeInterrupt(string $sessionId, string $interruptId, array $decisions, ?HaoCodeConfig $config = null): QueryResult|StructuredResult
@@ -981,7 +986,9 @@ durable HITL snapshot resume rebuilds the agent loop, both token counters and
 cost remain cumulative so they stay in the same statistical scope. When the
 provider reports prompt-cache telemetry, `usage['cache_read_tokens']` contains
 the cached portion and `usage['cache_creation_tokens']` contains explicit cache
-writes (Anthropic).
+writes (Anthropic). `usage['last_turn_input_tokens']` is the full prompt input
+of the most recent model request and is the appropriate value for current
+context-window occupancy.
 
 ---
 

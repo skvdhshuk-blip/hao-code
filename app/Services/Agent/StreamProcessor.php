@@ -346,6 +346,7 @@ class StreamProcessor
         $this->accumulatedText = '';
         $this->accumulatedThinking = '';
         $this->messageId = null;
+        $this->model = null;
     }
 
     /**

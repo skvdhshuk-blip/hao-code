@@ -275,6 +275,18 @@ class StreamProcessorExtendedTest extends TestCase
         $this->assertNull($processor->getMessageId());
     }
 
+    public function test_reset_clears_model(): void
+    {
+        $processor = $this->makeProcessor();
+        $processor->processEvent(new StreamEvent('message_start', [
+            'message' => ['id' => 'msg_123', 'model' => 'claude-test', 'usage' => []],
+        ]));
+
+        $processor->reset();
+
+        $this->assertNull($processor->getModel());
+    }
+
     public function test_reset_allows_reuse_for_new_stream(): void
     {
         $processor = $this->makeProcessor();

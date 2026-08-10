@@ -215,6 +215,7 @@ class Runner
             'output_tokens' => $loop->getTotalOutputTokens(),
             'cache_creation_tokens' => $loop->getCacheCreationTokens(),
             'cache_read_tokens' => $loop->getCacheReadTokens(),
+            'last_turn_input_tokens' => $loop->getLastTurnInputTokens(),
             'cost_available' => $loop->isCostEstimateAvailable(),
         ];
     }

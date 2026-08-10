@@ -1479,6 +1479,79 @@ class ToolOrchestratorTest extends TestCase
         $this->assertSame(ToolOutcome::Aborted, $completed[1][1]->outcome());
     }
 
+    public function test_parallel_completion_callback_is_not_delayed_until_the_batch_settles(): void
+    {
+        if (! function_exists('pcntl_fork')) {
+            $this->markTestSkipped('pcntl is required for parallel completion lifecycle coverage.');
+        }
+
+        $markerPrefix = sys_get_temp_dir().'/haocode-parallel-completion-'.bin2hex(random_bytes(8));
+        $slowMarker = $markerPrefix.'-slow';
+        $fastMarker = $markerPrefix.'-fast';
+
+        $registry = new ToolRegistry;
+        $registry->register($this->makeTool(
+            'CompletionProbeRead',
+            static function (array $input, ToolUseContext $context): ToolResult {
+                if (isset($input['wait_for_marker'])) {
+                    $deadline = microtime(true) + 1.0;
+                    while (! is_file((string) $input['wait_for_marker']) && microtime(true) < $deadline) {
+                        usleep(1_000);
+                    }
+                }
+                $delay = (int) ($input['delay_us'] ?? 0);
+                if ($delay > 0) {
+                    usleep($delay);
+                }
+                if (isset($input['marker'])) {
+                    file_put_contents((string) $input['marker'], 'finished', LOCK_EX);
+                }
+
+                return ToolResult::success((string) $input['label']);
+            },
+            true,
+        ));
+
+        $fastObservedSlowFinished = null;
+        try {
+            $results = $this->makeOrchestrator($registry)->executeTools(
+                toolUseBlocks: [
+                    [
+                        'id' => 'slow-1',
+                        'name' => 'CompletionProbeRead',
+                        'input' => [
+                            'label' => 'slow',
+                            'wait_for_marker' => $fastMarker,
+                            'delay_us' => 500_000,
+                            'marker' => $slowMarker,
+                        ],
+                    ],
+                    [
+                        'id' => 'fast-1',
+                        'name' => 'CompletionProbeRead',
+                        'input' => ['label' => 'fast', 'marker' => $fastMarker],
+                    ],
+                ],
+                context: new ToolUseContext('/tmp', 'parallel-completion-lifecycle'),
+                onToolComplete: static function (string $_toolName, ToolResult $result) use (&$fastObservedSlowFinished, $slowMarker): void {
+                    if ($result->output === 'fast') {
+                        $fastObservedSlowFinished = is_file($slowMarker);
+                    }
+                },
+            );
+        } finally {
+            @unlink($slowMarker);
+            @unlink($fastMarker);
+        }
+
+        $this->assertSame(['slow', 'fast'], array_column($results, 'content'));
+        $this->assertNotNull($fastObservedSlowFinished);
+        $this->assertFalse(
+            $fastObservedSlowFinished,
+            'The fast tool completion must be observed before the slow child finishes; callback order itself is intentionally unspecified.',
+        );
+    }
+
     public function test_parallel_tool_rejects_oversized_ipc_payloads(): void
     {
         if (! function_exists('pcntl_fork')) {
