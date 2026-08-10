@@ -2,7 +2,7 @@
 
 Use hao-code as a framework-free PHP library to embed an AI coding agent in your application.
 
-This document describes the `v1.19.3` source line. Published package versions
+This document describes the `v1.19.5` source line. Published package versions
 are identified by Git tags and Packagist.
 
 ```bash
@@ -383,14 +383,16 @@ A claim-then-crash path records `interrupt_failed` with `error`,
 Post-claim setup/tool failures are always written as `interrupt_failed` so the
 interrupt never stays permanently in `resolving`.
 
-When you resume via a long-lived `Conversation` handle, the conversation rebuilds
-its loop after the interrupt and restores the working directory from (in order)
-the live run context, the session transcript canonical cwd, then `RunOptions`
-cwd — so a later `send()` does not fall back to the process `getcwd()`. The
-rebuild carries the final resumed usage before delivering a terminal streaming
-`result` and releases the conversation operation before that yield, so the next
-`send()` continues immediately with the same cumulative accounting and
-transcript even if the caller retains the completed Generator.
+When you resume via a long-lived `Conversation` handle — including one created
+by `HaoCode::resume()` in a later process — the pending checkpoint's sandbox
+lease is authoritative. The conversation rebuilds its loop after the interrupt
+and restores the working directory from (in order) the live run context, the
+session transcript canonical cwd, then `RunOptions` cwd — so a later `send()`
+does not fall back to the process `getcwd()` or a fresh sandbox. The rebuild
+carries the final resumed usage before delivering a terminal streaming `result`
+and releases the conversation operation before that yield, so the next `send()`
+continues immediately with the same cumulative accounting and transcript even
+if the caller retains the completed Generator.
 
 The static `HaoCode::streamResumeInterrupt()` facade creates a temporary
 restored Conversation for one resume operation. It closes that temporary run
@@ -735,9 +737,10 @@ a lease **identity** (root path, resolved AgentRun sandbox ID, Tokimo vmDir);
 credentials (API keys, tokens) are never written to session JSONL. On
 `resumeInterrupt()`, identity is reattached while security **policy** (mode,
 network, cleanup) comes from the caller's current config and may only tighten.
-For a long-lived `Conversation`, the temporary resume run hands that same lease
-to the rebuilt handle before cleanup, so later tool calls retain files created
-before the interrupt. Sandbox tool names (`Read`/`Write`/`Glob`/`Grep`/`Bash`)
+For a long-lived `Conversation`, including a handle loaded by
+`HaoCode::resume()`, the temporary resume run hands that same lease to the
+rebuilt handle before cleanup, so later tool calls retain files created before
+the interrupt. Sandbox tool names (`Read`/`Write`/`Glob`/`Grep`/`Bash`)
 are reserved while sandbox mode is active and cannot be overridden by custom or
 MCP tools. Final completion still honors the configured `cleanup` policy.
 

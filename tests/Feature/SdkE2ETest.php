@@ -2370,6 +2370,163 @@ JSON),
         $this->assertDirectoryDoesNotExist($sandboxRoot);
     }
 
+    public function test_resumed_conversation_reattaches_interrupt_sandbox_for_follow_up(): void
+    {
+        $this->bootWithMock([
+            MockAnthropicSse::toolUseResponse('resumed-conversation-write', 'Write', [
+                'file_path' => 'before-interrupt.txt',
+                'content' => 'resumed conversation sandbox state',
+            ]),
+            MockAnthropicSse::toolUseResponse('resumed-conversation-ask', 'AskUserQuestion', [
+                'questions' => [[
+                    'question' => 'Continue?',
+                    'type' => 'multiple_choice',
+                    'options' => ['yes', 'no'],
+                    'required' => true,
+                ]],
+            ]),
+            MockAnthropicSse::textResponse('Resumed conversation completed.'),
+            MockAnthropicSse::toolUseResponse('resumed-conversation-read', 'Read', [
+                'file_path' => 'before-interrupt.txt',
+            ]),
+            function (array $payload): MockResponse {
+                $this->assertStringContainsString(
+                    'resumed conversation sandbox state',
+                    (string) MockAnthropicSse::lastToolResultText($payload),
+                );
+
+                return MockAnthropicSse::textResponse('Resumed conversation follow-up completed.');
+            },
+        ]);
+        chdir($this->projectDir);
+        $config = new HaoCodeConfig(
+            allowedTools: ['Write', 'Read', 'AskUserQuestion'],
+            permissionMode: 'bypass_permissions',
+            ephemeral: false,
+            enableAskUser: true,
+            sandbox: SandboxConfig::local(cleanup: 'always'),
+        );
+
+        try {
+            HaoCode::query('Write a file, then ask whether to continue.', $config);
+            $this->fail('Expected a durable interrupt.');
+        } catch (HumanInterruptException $e) {
+            $interrupt = $e->interrupt;
+        }
+
+        $state = \HaoCode\Support\Runtime\SdkRuntime::app(
+            \HaoCode\Services\Session\SessionManager::class,
+        )->getInterruptState($interrupt->sessionId, $interrupt->id);
+        $sandboxRoot = $state['checkpoint']['run_snapshot']['sandbox_lease']['identity']['root']
+            ?? $state['checkpoint']['run_snapshot']['sandbox_lease']['root']
+            ?? null;
+        $this->assertIsString($sandboxRoot);
+
+        $conversation = HaoCode::resume($interrupt->sessionId, $config);
+        try {
+            $resumed = $conversation->resumeInterrupt(
+                $interrupt->id,
+                [HumanDecision::respond('resumed-conversation-ask', [
+                    'status' => 'answered',
+                    'answers' => ['yes'],
+                ])],
+            );
+            $followUp = $conversation->send('Read the file written before the interrupt.');
+            $conversation->close();
+
+            $this->assertSame('Resumed conversation completed.', $resumed->text);
+            $this->assertSame('Resumed conversation follow-up completed.', $followUp->text);
+            $this->assertDirectoryDoesNotExist($sandboxRoot);
+        } finally {
+            $conversation->close();
+            if (is_dir($sandboxRoot)) {
+                $this->removeDirectory($sandboxRoot);
+            }
+        }
+    }
+
+    public function test_resumed_conversation_stream_reattaches_interrupt_sandbox_for_follow_up(): void
+    {
+        $this->bootWithMock([
+            MockAnthropicSse::toolUseResponse('resumed-conversation-stream-write', 'Write', [
+                'file_path' => 'before-stream-interrupt.txt',
+                'content' => 'resumed conversation stream sandbox state',
+            ]),
+            MockAnthropicSse::toolUseResponse('resumed-conversation-stream-ask', 'AskUserQuestion', [
+                'questions' => [[
+                    'question' => 'Continue?',
+                    'type' => 'multiple_choice',
+                    'options' => ['yes', 'no'],
+                    'required' => true,
+                ]],
+            ]),
+            MockAnthropicSse::textResponse('Resumed conversation stream completed.'),
+            MockAnthropicSse::toolUseResponse('resumed-conversation-stream-read', 'Read', [
+                'file_path' => 'before-stream-interrupt.txt',
+            ]),
+            function (array $payload): MockResponse {
+                $this->assertStringContainsString(
+                    'resumed conversation stream sandbox state',
+                    (string) MockAnthropicSse::lastToolResultText($payload),
+                );
+
+                return MockAnthropicSse::textResponse('Resumed conversation stream follow-up completed.');
+            },
+        ]);
+        chdir($this->projectDir);
+        $config = new HaoCodeConfig(
+            allowedTools: ['Write', 'Read', 'AskUserQuestion'],
+            permissionMode: 'bypass_permissions',
+            ephemeral: false,
+            enableAskUser: true,
+            sandbox: SandboxConfig::local(cleanup: 'always'),
+        );
+
+        try {
+            HaoCode::query('Write a file, then ask whether to continue.', $config);
+            $this->fail('Expected a durable interrupt.');
+        } catch (HumanInterruptException $e) {
+            $interrupt = $e->interrupt;
+        }
+
+        $state = \HaoCode\Support\Runtime\SdkRuntime::app(
+            \HaoCode\Services\Session\SessionManager::class,
+        )->getInterruptState($interrupt->sessionId, $interrupt->id);
+        $sandboxRoot = $state['checkpoint']['run_snapshot']['sandbox_lease']['identity']['root']
+            ?? $state['checkpoint']['run_snapshot']['sandbox_lease']['root']
+            ?? null;
+        $this->assertIsString($sandboxRoot);
+
+        $conversation = HaoCode::resume($interrupt->sessionId, $config);
+        try {
+            $messages = iterator_to_array($conversation->streamResumeInterrupt(
+                $interrupt->id,
+                [HumanDecision::respond('resumed-conversation-stream-ask', [
+                    'status' => 'answered',
+                    'answers' => ['yes'],
+                ])],
+            ));
+            $results = array_values(array_filter(
+                $messages,
+                static fn (Message $message): bool => $message->isResult(),
+            ));
+            $followUp = $conversation->send('Read the file written before the interrupt.');
+            $conversation->close();
+
+            $this->assertCount(1, $results);
+            $this->assertSame('Resumed conversation stream completed.', $results[0]->text);
+            $this->assertSame('Resumed conversation stream follow-up completed.', $followUp->text);
+            $this->assertDirectoryDoesNotExist($sandboxRoot);
+        } finally {
+            unset($messages);
+            gc_collect_cycles();
+            $conversation->close();
+            if (is_dir($sandboxRoot)) {
+                $this->removeDirectory($sandboxRoot);
+            }
+        }
+    }
+
     public function test_background_owner_completes_only_after_parent_interrupt_chain_finishes(): void
     {
         $backgroundAgents = null;

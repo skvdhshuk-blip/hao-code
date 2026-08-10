@@ -292,7 +292,8 @@ class Conversation
         try {
             if (! $this->snapshotRestored) {
                 $sessionId = $this->loop->getSessionManager()->getSessionId();
-                $sandboxLease = $this->run->getSandboxLease();
+                $sandboxLease = $this->interruptSandboxLease($sessionId, $interruptId)
+                    ?? $this->run->getSandboxLease();
                 $result = HaoCode::resumeInterrupt(
                     $sessionId,
                     $interruptId,
@@ -361,7 +362,8 @@ class Conversation
         try {
             if (! $this->snapshotRestored) {
                 $sessionId = $this->loop->getSessionManager()->getSessionId();
-                $sandboxLease = $this->run->getSandboxLease();
+                $sandboxLease = $this->interruptSandboxLease($sessionId, $interruptId)
+                    ?? $this->run->getSandboxLease();
                 foreach (HaoCode::streamResumeInterrupt(
                     $sessionId,
                     $interruptId,
@@ -576,6 +578,23 @@ class Conversation
         $this->loop->restoreRunSnapshot($priorUsage);
         $this->snapshotRestored = false;
         $this->loadSessionInternal($sessionId);
+    }
+
+    /**
+     * A Conversation loaded through HaoCode::resume() owns a fresh runtime
+     * sandbox. The pending interrupt checkpoint remains authoritative for the
+     * resumed operation and any follow-up on this handle.
+     *
+     * @return array<string, mixed>|null
+     */
+    private function interruptSandboxLease(string $sessionId, string $interruptId): ?array
+    {
+        $state = $this->loop->getSessionManager()->getInterruptState($sessionId, $interruptId);
+        $checkpoint = is_array($state['checkpoint'] ?? null) ? $state['checkpoint'] : [];
+        $runSnapshot = is_array($checkpoint['run_snapshot'] ?? null) ? $checkpoint['run_snapshot'] : [];
+        $lease = $runSnapshot['sandbox_lease'] ?? null;
+
+        return is_array($lease) ? $lease : null;
     }
 
     /**

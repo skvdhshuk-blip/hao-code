@@ -485,6 +485,11 @@ serializable interrupt, and the host resumes it in a later HTTP request or worke
 job. Pass the original `HaoCodeConfig` back to `resumeInterrupt()` so the SDK can
 restore the same tool and sandbox boundary.
 
+If a later process first creates a handle with `HaoCode::resume($sessionId, $config)`,
+then calls `$conversation->resumeInterrupt(...)`, the checkpoint sandbox is
+reattached to that rebuilt handle too. A follow-up `send()` or
+`streamResumeInterrupt()` therefore sees files created before the interrupt.
+
 ```php
 use HaoCode\Sdk\HaoCode;
 use HaoCode\Sdk\HaoCodeConfig;
@@ -881,7 +886,12 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.19.4`. Notable changes since `v1.10.0`:
+is based on `v1.19.5`. Notable changes since `v1.10.0`:
+
+- `v1.19.5` — A `Conversation` loaded with `HaoCode::resume()` now reclaims
+  the durable interrupt checkpoint's sandbox lease before rebuilding after
+  `resumeInterrupt()` or `streamResumeInterrupt()`. Follow-up tool calls keep
+  seeing pre-interrupt files instead of a fresh sandbox.
 
 - `v1.19.4` — Cancellation now has one consistent lifecycle boundary across
   ordinary, parent/child, event-pump, and tool-turn-limit finalization paths.
