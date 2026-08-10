@@ -3,6 +3,7 @@
 namespace Tests\Unit;
 
 use HaoCode\Services\Agent\AgentLoop;
+use HaoCode\Services\Agent\CancellationToken;
 use HaoCode\Services\Agent\ContextBuilder;
 use HaoCode\Services\Agent\MessageHistory;
 use HaoCode\Services\Agent\QueryEngine;
@@ -125,6 +126,7 @@ class AgentLoopTest extends TestCase
         ?SessionManager $sessionManager = null,
         ?ContextBuilder $contextBuilder = null,
         ?HookExecutor $hookExecutor = null,
+        ?CancellationToken $cancellationToken = null,
     ): AgentLoop
     {
         if ($contextBuilder === null) {
@@ -162,6 +164,7 @@ class AgentLoopTest extends TestCase
             costTracker: new CostTracker(999.0, 9999.0),
             toolRegistry: $registry ?? new ToolRegistry,
             hookExecutor: $hookExecutor,
+            cancellationToken: $cancellationToken,
         );
     }
 
@@ -693,6 +696,53 @@ class AgentLoopTest extends TestCase
         $this->assertTrue($capturedShouldAbort());
     }
 
+    public function test_run_stops_when_parent_cancellation_token_is_cancelled_during_query(): void
+    {
+        $parentToken = new CancellationToken;
+
+        try {
+            $qe = $this->createMock(QueryEngine::class);
+            $qe->expects($this->once())
+                ->method('query')
+                ->willReturnCallback(function () use ($parentToken): StreamProcessor {
+                    $parentToken->cancel();
+
+                    return $this->makePlainTextProcessor('response that must be discarded');
+                });
+
+            $hookExecutor = $this->createMock(HookExecutor::class);
+            $hookExecutor->expects($this->once())
+                ->method('execute')
+                ->with('SessionStart', ['session_id' => 'test-session'])
+                ->willReturn(new HookResult(true));
+
+            $loop = $this->makeLoop(
+                $qe,
+                hookExecutor: $hookExecutor,
+                cancellationToken: $parentToken->fork(),
+            );
+
+            $this->assertSame('(aborted)', $loop->run('please stop'));
+            $this->assertTrue($loop->isAborted());
+            $this->assertCount(1, $loop->getMessageHistory()->getMessages());
+        } finally {
+            $parentToken->close();
+        }
+    }
+
+    public function test_event_pump_abort_prevents_the_next_model_request(): void
+    {
+        $qe = $this->createMock(QueryEngine::class);
+        $qe->expects($this->never())->method('query');
+
+        $loop = $this->makeLoop($qe);
+        $loop->appendEventPump(function () use ($loop): void {
+            $loop->abort();
+        });
+
+        $this->assertSame('(aborted)', $loop->run('stop before model request'));
+    }
+
     // ─── isAborted starts false ────────────────────────────────────────────
 
     public function test_is_aborted_starts_false(): void
@@ -813,6 +863,62 @@ class AgentLoopTest extends TestCase
 
         $result = $loop->run('hi');
         $this->assertSame('response', $result);
+    }
+
+    public function test_max_turn_finalization_emits_stop_hook(): void
+    {
+        $qe = $this->createMock(QueryEngine::class);
+        $qe->expects($this->once())
+            ->method('query')
+            ->willReturn($this->makePlainTextProcessor('response'));
+
+        $hookExecutor = $this->createMock(HookExecutor::class);
+        $events = [];
+        $hookExecutor->expects($this->exactly(2))
+            ->method('execute')
+            ->willReturnCallback(function (string $event, array $context) use (&$events): HookResult {
+                $events[] = [$event, $context];
+
+                return new HookResult(true);
+            });
+
+        $loop = $this->makeLoop($qe, hookExecutor: $hookExecutor);
+        $ref = new \ReflectionProperty(AgentLoop::class, 'maxTurns');
+        $ref->setAccessible(true);
+        $ref->setValue($loop, 0);
+
+        $this->assertSame('response', $loop->run('hi'));
+        $this->assertSame([
+            ['SessionStart', ['session_id' => 'test-session']],
+            ['Stop', ['session_id' => 'test-session', 'turn' => 0]],
+        ], $events);
+    }
+
+    public function test_max_turn_finalization_honors_abort_during_final_request(): void
+    {
+        $loop = null;
+        $qe = $this->createMock(QueryEngine::class);
+        $qe->expects($this->once())
+            ->method('query')
+            ->willReturnCallback(function () use (&$loop): StreamProcessor {
+                $loop->abort();
+
+                return $this->makePlainTextProcessor('response that must be discarded');
+            });
+
+        $hookExecutor = $this->createMock(HookExecutor::class);
+        $hookExecutor->expects($this->once())
+            ->method('execute')
+            ->with('SessionStart', ['session_id' => 'test-session'])
+            ->willReturn(new HookResult(true));
+
+        $loop = $this->makeLoop($qe, hookExecutor: $hookExecutor);
+        $ref = new \ReflectionProperty(AgentLoop::class, 'maxTurns');
+        $ref->setAccessible(true);
+        $ref->setValue($loop, 0);
+
+        $this->assertSame('(aborted)', $loop->run('hi'));
+        $this->assertCount(1, $loop->getMessageHistory()->getMessages());
     }
 
     public function test_set_max_turns_rejects_zero_or_negative_values(): void

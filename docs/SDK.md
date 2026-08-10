@@ -1863,6 +1863,11 @@ $conv->send('Long running task...');
 // $abort->abort() will stop the agent mid-execution
 ```
 
+Cancellation is checked again after every provider request. If it races with an
+otherwise completed response, including the no-tool final answer used after the
+tool-turn limit, the operation returns `(aborted)` and does not add that
+assistant response to the conversation history.
+
 ---
 
 ## Cost Tracking

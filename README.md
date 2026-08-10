@@ -814,6 +814,11 @@ $config = new HaoCodeConfig(
 );
 ```
 
+Cancellation is checked again after each provider request. If it wins the race
+with an otherwise completed response, including the no-tool final answer after
+the tool-turn limit, the operation returns `(aborted)` without persisting that
+assistant response.
+
 ## Storage And Memory
 
 Runtime data is stored under `~/.haocode/storage` by default when installed
@@ -876,7 +881,12 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.19.3`. Notable changes since `v1.10.0`:
+is based on `v1.19.4`. Notable changes since `v1.10.0`:
+
+- `v1.19.4` — Cancellation now has one consistent lifecycle boundary across
+  ordinary, parent/child, event-pump, and tool-turn-limit finalization paths.
+  A response that completes after cancellation is not persisted or reported as
+  a completed agent run.
 
 - `v1.19.3` — Tool scheduling now preserves stateful execution barriers: a
   later read-only call cannot run ahead of a preceding mutation, including in

@@ -238,7 +238,12 @@ class AgentLoop
 
     public function isAborted(): bool
     {
-        return $this->aborted;
+        return $this->isCancellationRequested();
+    }
+
+    private function isCancellationRequested(): bool
+    {
+        return $this->aborted || $this->cancellationToken->isCancelled();
     }
 
     /**
@@ -495,6 +500,9 @@ class AgentLoop
 
             return '(aborted)';
         }
+        if ($this->isCancellationRequested()) {
+            return '(aborted)';
+        }
         if ($this->costTracker->shouldStop()) {
             return '(Cost limit reached: '.$this->costTracker->getSummary().')';
         }
@@ -535,9 +543,12 @@ class AgentLoop
         $finalizationReason = null;
         $systemPrompt = $this->systemPrompt ??= $this->contextBuilder->buildSystemPrompt();
 
-        while ($turnCount < $this->maxTurns && ! $this->aborted) {
+        while ($turnCount < $this->maxTurns && ! $this->isCancellationRequested()) {
             if ($this->eventPump !== null) {
                 ($this->eventPump)();
+            }
+            if ($this->isCancellationRequested()) {
+                return '(aborted)';
             }
             if ($this->costTracker->shouldStop()) {
                 return '(Cost limit reached: '.$this->costTracker->getSummary().')';
@@ -620,13 +631,13 @@ class AgentLoop
                     systemPrompt: $systemPrompt,
                     messages: $messages,
                     onTextDelta: $onTextDelta,
-                    onToolBlockComplete: fn (array $block, int $index) => $this->aborted ? null : $streamingExecutor->onToolBlockReady($block, $index),
+                    onToolBlockComplete: fn (array $block, int $index) => $this->isCancellationRequested() ? null : $streamingExecutor->onToolBlockReady($block, $index),
                     onThinkingDelta: $onThinkingDelta,
                     shouldAbort: fn (): bool => $this->cancellationToken->isCancelled(),
                     toolsOverride: $activeTools,
                 );
 
-                if ($this->aborted) {
+                if ($this->isCancellationRequested()) {
                     $streamingExecutor->cleanup();
 
                     return '(aborted)';
@@ -936,11 +947,11 @@ class AgentLoop
                 // resources silently because completion callbacks suspend the
                 // Fiber to yield messages. Ordinary failures still emit the
                 // terminal aborted tool result before surfacing the error.
-                $streamingExecutor->cleanup(notifyCompletion: ! $this->aborted);
+                $streamingExecutor->cleanup(notifyCompletion: ! $this->isCancellationRequested());
             }
         }
 
-        if ($this->aborted) {
+        if ($this->isCancellationRequested()) {
             return '(aborted)';
         }
 
@@ -1087,6 +1098,10 @@ class AgentLoop
             toolsOverride: [],
         );
 
+        if ($this->isCancellationRequested()) {
+            return '(aborted)';
+        }
+
         $usage = $this->normalizeUsage($processor->getUsage());
         $this->recordUsage($usage);
         if ($processor->getModel() !== null) {
@@ -1102,6 +1117,10 @@ class AgentLoop
         $assistantMessage = $processor->toAssistantMessage();
         $this->messageHistory->addAssistantMessage($assistantMessage);
         $this->persistAssistantTurn($assistantMessage, []);
+        $this->hookExecutor?->execute('Stop', [
+            'session_id' => $this->sessionManager->getSessionId(),
+            'turn' => $this->lastRunTurns,
+        ]);
 
         $answer = trim($processor->getAccumulatedText());
 
