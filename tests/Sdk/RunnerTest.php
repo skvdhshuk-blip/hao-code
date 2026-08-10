@@ -120,6 +120,68 @@ class RunnerTest extends TestCase
         $this->assertSame('fake response', $resultMessage->text);
     }
 
+    public function test_terminal_result_releases_runner_resources_before_yield(): void
+    {
+        $runtime = null;
+        $autoDecisionHandlers = [];
+        $this->loop->method('attachSandboxRuntime')->willReturnCallback(
+            static function (?SandboxRuntime $sandbox) use (&$runtime): void {
+                $runtime = $sandbox;
+            },
+        );
+        $this->loop->method('setAutoDecisionHandler')->willReturnCallback(
+            static function (?callable $handler) use (&$autoDecisionHandlers): void {
+                $autoDecisionHandlers[] = $handler;
+            },
+        );
+        $this->loop->method('run')->willReturn('completed');
+
+        $messages = Runner::stream(new Agent(
+            name: 'terminal-cleanup-agent',
+            apiKey: 'test-key',
+            allowedTools: [],
+            sandbox: SandboxConfig::local(cleanup: 'always'),
+        ), 'Finish immediately');
+        $messages->rewind();
+
+        $this->assertSame('result', $messages->current()->type);
+        $this->assertInstanceOf(SandboxRuntime::class, $runtime);
+        $this->assertDirectoryDoesNotExist($runtime->exportLease()['root']);
+        $this->assertCount(2, $autoDecisionHandlers);
+        $this->assertIsCallable($autoDecisionHandlers[0]);
+        $this->assertNull($autoDecisionHandlers[1]);
+
+        unset($messages);
+        gc_collect_cycles();
+    }
+
+    public function test_terminal_error_releases_runner_resources_before_yield(): void
+    {
+        $runtime = null;
+        $this->loop->method('attachSandboxRuntime')->willReturnCallback(
+            static function (?SandboxRuntime $sandbox) use (&$runtime): void {
+                $runtime = $sandbox;
+            },
+        );
+        $this->loop->method('run')->willThrowException(new \RuntimeException('stream failed'));
+
+        $messages = Runner::stream(new Agent(
+            name: 'failing-cleanup-agent',
+            apiKey: 'test-key',
+            allowedTools: [],
+            sandbox: SandboxConfig::local(cleanup: 'always'),
+        ), 'Fail immediately');
+        $messages->rewind();
+
+        $this->assertSame('error', $messages->current()->type);
+        $this->assertSame('stream failed', $messages->current()->error);
+        $this->assertInstanceOf(SandboxRuntime::class, $runtime);
+        $this->assertDirectoryDoesNotExist($runtime->exportLease()['root']);
+
+        unset($messages);
+        gc_collect_cycles();
+    }
+
     public function test_abandoned_stream_aborts_without_resuming_and_clears_the_handler(): void
     {
         $streamCallbackReturned = false;

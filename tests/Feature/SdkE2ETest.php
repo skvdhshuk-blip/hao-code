@@ -2069,6 +2069,54 @@ JSON),
         $this->assertSame('Resumed answer.', $results[0]->text);
     }
 
+    public function test_resumed_facade_stream_closes_sandbox_before_terminal_result_is_yielded(): void
+    {
+        $this->bootWithMock([
+            MockAnthropicSse::textResponse('First answer.'),
+            MockAnthropicSse::textResponse('Resumed answer.'),
+        ]);
+        $first = HaoCode::query('First question', new HaoCodeConfig(
+            cwd: $this->projectDir,
+            allowedTools: [],
+            ephemeral: false,
+        ));
+        $this->assertIsString($first->sessionId);
+        $sandboxRoot = sys_get_temp_dir().'/haocode-sandbox-facade-stream-'.bin2hex(random_bytes(4));
+        $stream = HaoCode::stream('Second question', new HaoCodeConfig(
+            cwd: $this->projectDir,
+            allowedTools: [],
+            sessionId: $first->sessionId,
+            sandbox: new SandboxConfig(
+                cleanup: 'always',
+                root: $sandboxRoot,
+                options: ['owns_root' => true],
+            ),
+        ));
+
+        try {
+            $stream->rewind();
+            $this->assertDirectoryExists($sandboxRoot);
+            $result = null;
+            while ($stream->valid()) {
+                if ($stream->current()->isResult()) {
+                    $result = $stream->current();
+                    break;
+                }
+                $stream->next();
+            }
+
+            $this->assertInstanceOf(Message::class, $result);
+            $this->assertSame('Resumed answer.', $result->text);
+            $this->assertDirectoryDoesNotExist($sandboxRoot);
+        } finally {
+            unset($stream);
+            gc_collect_cycles();
+            if (is_dir($sandboxRoot)) {
+                $this->removeDirectory($sandboxRoot);
+            }
+        }
+    }
+
     // ══════════════════════════════════════════════════════════════
     public function test_query_interrupt_can_be_approved_and_resumed_across_a_new_conversation(): void
     {
@@ -2651,6 +2699,187 @@ JSON),
         $this->assertCount(1, $results);
         $this->assertSame('Stream resume completed.', $results[0]->text);
         $this->assertSame(32, $results[0]->usage['last_turn_input_tokens']);
+    }
+
+    public function test_stream_resume_closes_sandbox_before_terminal_result_is_yielded(): void
+    {
+        $this->bootWithMock([
+            MockAnthropicSse::toolUseResponse('terminal-stream-write', 'Write', [
+                'file_path' => 'terminal-stream.txt',
+                'content' => 'ok',
+            ]),
+            MockAnthropicSse::textResponse('Terminal stream resume completed.'),
+        ]);
+        chdir($this->projectDir);
+        $config = new HaoCodeConfig(
+            allowedTools: ['Write'],
+            ephemeral: false,
+            interruptOn: ['Write' => true],
+            hitlMode: 'ask',
+            sandbox: SandboxConfig::local(cleanup: 'always'),
+        );
+        $initial = iterator_to_array(HaoCode::stream('Write the file', $config));
+        $interrupt = array_values(array_filter(
+            $initial,
+            static fn (Message $message): bool => $message->isInterrupt(),
+        ))[0]->interrupt;
+        $state = \HaoCode\Support\Runtime\SdkRuntime::app(
+            \HaoCode\Services\Session\SessionManager::class,
+        )->getInterruptState($interrupt->sessionId, $interrupt->id);
+        $sandboxRoot = $state['checkpoint']['run_snapshot']['sandbox_lease']['identity']['root']
+            ?? $state['checkpoint']['run_snapshot']['sandbox_lease']['root']
+            ?? null;
+        $this->assertIsString($sandboxRoot);
+
+        $resumed = HaoCode::streamResumeInterrupt(
+            $interrupt->sessionId,
+            $interrupt->id,
+            [HumanDecision::approve('terminal-stream-write')],
+            $config,
+        );
+        try {
+            $resumed->rewind();
+            $result = null;
+            while ($resumed->valid()) {
+                if ($resumed->current()->isResult()) {
+                    $result = $resumed->current();
+                    break;
+                }
+                $resumed->next();
+            }
+            $this->assertInstanceOf(Message::class, $result);
+            $this->assertSame('Terminal stream resume completed.', $result->text);
+            $this->assertDirectoryDoesNotExist($sandboxRoot);
+        } finally {
+            unset($resumed);
+            gc_collect_cycles();
+            if (is_dir($sandboxRoot)) {
+                $this->removeDirectory($sandboxRoot);
+            }
+        }
+    }
+
+    public function test_stream_resume_closes_sandbox_before_terminal_error_is_yielded(): void
+    {
+        $this->bootWithMock([
+            MockAnthropicSse::toolUseResponse('terminal-error-write', 'Write', [
+                'file_path' => 'terminal-error.txt',
+                'content' => 'ok',
+            ]),
+            new MockResponse(
+                '{"error":{"type":"invalid_request_error","message":"resume failed"}}',
+                ['http_code' => 400],
+            ),
+        ]);
+        chdir($this->projectDir);
+        $config = new HaoCodeConfig(
+            allowedTools: ['Write'],
+            ephemeral: false,
+            interruptOn: ['Write' => true],
+            hitlMode: 'ask',
+            sandbox: SandboxConfig::local(cleanup: 'always'),
+        );
+        $initial = iterator_to_array(HaoCode::stream('Write the file', $config));
+        $interrupt = array_values(array_filter(
+            $initial,
+            static fn (Message $message): bool => $message->isInterrupt(),
+        ))[0]->interrupt;
+        $state = \HaoCode\Support\Runtime\SdkRuntime::app(
+            \HaoCode\Services\Session\SessionManager::class,
+        )->getInterruptState($interrupt->sessionId, $interrupt->id);
+        $sandboxRoot = $state['checkpoint']['run_snapshot']['sandbox_lease']['identity']['root']
+            ?? $state['checkpoint']['run_snapshot']['sandbox_lease']['root']
+            ?? null;
+        $this->assertIsString($sandboxRoot);
+
+        $resumed = HaoCode::streamResumeInterrupt(
+            $interrupt->sessionId,
+            $interrupt->id,
+            [HumanDecision::approve('terminal-error-write')],
+            $config,
+        );
+        try {
+            $resumed->rewind();
+            $error = null;
+            while ($resumed->valid()) {
+                if ($resumed->current()->isError()) {
+                    $error = $resumed->current();
+                    break;
+                }
+                $resumed->next();
+            }
+            $this->assertInstanceOf(Message::class, $error);
+            $this->assertSame('resume failed', $error->error);
+            $this->assertDirectoryDoesNotExist($sandboxRoot);
+        } finally {
+            unset($resumed);
+            gc_collect_cycles();
+            if (is_dir($sandboxRoot)) {
+                $this->removeDirectory($sandboxRoot);
+            }
+        }
+    }
+
+    public function test_stream_resume_preserves_sandbox_before_a_second_interrupt_is_yielded(): void
+    {
+        $this->bootWithMock([
+            MockAnthropicSse::toolUseResponse('first-stream-write', 'Write', [
+                'file_path' => 'first-stream.txt',
+                'content' => 'first',
+            ]),
+            MockAnthropicSse::toolUseResponse('second-stream-write', 'Write', [
+                'file_path' => 'second-stream.txt',
+                'content' => 'second',
+            ]),
+        ]);
+        chdir($this->projectDir);
+        $config = new HaoCodeConfig(
+            allowedTools: ['Write'],
+            ephemeral: false,
+            interruptOn: ['Write' => true],
+            hitlMode: 'ask',
+            sandbox: SandboxConfig::local(cleanup: 'always'),
+        );
+        $initial = iterator_to_array(HaoCode::stream('Write the first file', $config));
+        $firstInterrupt = array_values(array_filter(
+            $initial,
+            static fn (Message $message): bool => $message->isInterrupt(),
+        ))[0]->interrupt;
+        $state = \HaoCode\Support\Runtime\SdkRuntime::app(
+            \HaoCode\Services\Session\SessionManager::class,
+        )->getInterruptState($firstInterrupt->sessionId, $firstInterrupt->id);
+        $sandboxRoot = $state['checkpoint']['run_snapshot']['sandbox_lease']['identity']['root']
+            ?? $state['checkpoint']['run_snapshot']['sandbox_lease']['root']
+            ?? null;
+        $this->assertIsString($sandboxRoot);
+
+        $resumed = HaoCode::streamResumeInterrupt(
+            $firstInterrupt->sessionId,
+            $firstInterrupt->id,
+            [HumanDecision::approve('first-stream-write')],
+            $config,
+        );
+        try {
+            $resumed->rewind();
+            $secondInterrupt = null;
+            while ($resumed->valid()) {
+                if ($resumed->current()->isInterrupt()) {
+                    $secondInterrupt = $resumed->current();
+                    break;
+                }
+                $resumed->next();
+            }
+
+            $this->assertInstanceOf(Message::class, $secondInterrupt);
+            $this->assertSame('second-stream-write', $secondInterrupt->interrupt?->actions[0]->id);
+            $this->assertDirectoryExists($sandboxRoot);
+        } finally {
+            unset($resumed);
+            gc_collect_cycles();
+            if (is_dir($sandboxRoot)) {
+                $this->removeDirectory($sandboxRoot);
+            }
+        }
     }
 
     public function test_multi_tool_interrupt_executes_unguarded_sibling_once_and_checkpoints_its_result(): void

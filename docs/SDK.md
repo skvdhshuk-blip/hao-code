@@ -245,10 +245,15 @@ or `error` message, it must also release the `Generator` (`unset($stream)` or
 let it leave scope). PHP does not notify a Generator merely because `break` was
 used while another reference is retained; HaoCode rejects overlapping operations
 until that release triggers the stream's abort and cleanup. Abandoning a stream
-never resumes queued model or tool work. A long-lived `Conversation` releases
-its operation lease before yielding a terminal message, so its next `send()` or
-`streamResumeInterrupt()` may begin immediately even when the caller retains
-the completed Generator.
+never resumes queued model or tool work. In contrast, after a one-shot
+`Runner::stream()` or `HaoCode::stream()` has reached a terminal `result`,
+`interrupt`, or `error`, it releases its owned run resources before that message
+is yielded. Retaining the completed Generator therefore does not retain its
+sandbox, MCP connections, or abort subscription. A durable `interrupt` still
+detaches its sandbox lease for the next resume. A long-lived `Conversation`
+releases its operation lease before yielding a terminal message, so its next
+`send()` or `streamResumeInterrupt()` may begin immediately even when the caller
+retains the completed Generator.
 
 Provider-controlled streaming input is bounded: provider SSE lines and
 multiline events over 4 MiB fail with an `ApiErrorException` of type
@@ -386,6 +391,11 @@ rebuild carries the final resumed usage before delivering a terminal streaming
 `result` and releases the conversation operation before that yield, so the next
 `send()` continues immediately with the same cumulative accounting and
 transcript even if the caller retains the completed Generator.
+
+The static `HaoCode::streamResumeInterrupt()` facade creates a temporary
+restored Conversation for one resume operation. It closes that temporary run
+before yielding a terminal `result` or `error`, while a further `interrupt`
+detaches its sandbox lease so a later resume sees the same filesystem.
 
 ```text
 HaoCode::resumeInterrupt(string $sessionId, string $interruptId, array $decisions, ?HaoCodeConfig $config = null): QueryResult|StructuredResult

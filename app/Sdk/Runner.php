@@ -165,16 +165,19 @@ class Runner
 
             if ($thrownException instanceof HumanInterruptException) {
                 $run->preserveSandboxOnClose();
+                self::releaseTerminalStreamResources($run, $loop, $autoDecisionHandlerRegistered);
                 yield Message::interrupt($thrownException->interrupt);
 
                 return;
             }
             if ($thrownException !== null) {
+                self::releaseTerminalStreamResources($run, $loop, $autoDecisionHandlerRegistered);
                 yield Message::error($thrownException->getMessage());
 
                 return;
             }
 
+            self::releaseTerminalStreamResources($run, $loop, $autoDecisionHandlerRegistered);
             yield Message::result(
                 text: $response ?? '',
                 usage: self::extractUsage($loop),
@@ -198,6 +201,24 @@ class Runner
             }
             $run->close();
         }
+    }
+
+    /**
+     * A one-shot stream owns its SDK run. Once it has produced a terminal
+     * message, the run must not remain open merely because the caller retains
+     * the Generator at that final yield.
+     */
+    private static function releaseTerminalStreamResources(
+        SdkRun $run,
+        AgentLoop $loop,
+        bool &$autoDecisionHandlerRegistered,
+    ): void {
+        if ($autoDecisionHandlerRegistered) {
+            $loop->setAutoDecisionHandler(null);
+            $autoDecisionHandlerRegistered = false;
+        }
+
+        $run->close();
     }
 
     private static function createRun(Agent $agent, RunOptions $options): SdkRun

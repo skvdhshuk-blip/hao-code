@@ -439,6 +439,13 @@ the same fail-closed principle. The normalized text and thinking accumulators
 also reject more than 1,000,000 bytes per stream instead of retaining an
 unbounded response in memory.
 
+One-shot streams own their runtime resources. Once `Runner::stream()`,
+`HaoCode::stream()`, or `HaoCode::streamResumeInterrupt()` yields a terminal
+`result` or `error`, its sandbox, MCP connections, and abort subscription have
+already been released; retaining that completed Generator does not keep the run
+alive. A further durable `interrupt` still preserves its sandbox lease for the
+next resume.
+
 ## Conversations
 
 Use a conversation handle when later prompts should keep the same message history and session:
@@ -511,6 +518,9 @@ be overridden. HITL cannot be combined with `ephemeral: true`.
 Streaming hosts resume the same checkpoint with `HaoCode::streamResumeInterrupt()`;
 it yields normal stream messages and exactly one final `result`, unless another
 `interrupt` pauses the run again.
+The facade closes its temporary restored Conversation before yielding a terminal
+`result` or `error`; if it yields another `interrupt`, it detaches rather than
+deletes the checkpoint's sandbox lease.
 Resume preserves the effective inline Skill tool scope and cumulative
 token/cost totals. A synchronous worktree Agent is finalized after its resumed
 run; retained changes are reported in the final text and `usage` metadata.
@@ -864,7 +874,12 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.19.1`. Notable changes since `v1.10.0`:
+is based on `v1.19.2`. Notable changes since `v1.10.0`:
+
+- `v1.19.2` — One-shot Runner and facade streams now release their owned
+  runtime resources before exposing terminal results or errors, so retaining a
+  completed Generator cannot keep a sandbox, MCP connection, or abort listener
+  alive. Re-interrupting streaming resumes preserve the durable sandbox lease.
 
 - `v1.19.1` — Completes compatible OpenAI Chat streams that explicitly end in
   `[DONE]` but omit `finish_reason`, while preserving partial-response recovery

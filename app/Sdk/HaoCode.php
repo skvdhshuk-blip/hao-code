@@ -104,31 +104,13 @@ class HaoCode
         // Redirect to conversation stream if resuming
         if ($config->sessionId !== null) {
             $conversation = self::resume($config->sessionId, $config);
-            try {
-                foreach ($conversation->stream($prompt, $config->images) as $message) {
-                    if ($message->isInterrupt()) {
-                        $conversation->preserveSandboxOnClose();
-                    }
-                    yield $message;
-                }
-            } finally {
-                $conversation->close();
-            }
+            yield from self::streamTemporaryConversation($conversation, $prompt, $config->images);
 
             return;
         }
         if ($config->continueSession) {
             $conversation = self::continueLatest($config->cwd, $config);
-            try {
-                foreach ($conversation->stream($prompt, $config->images) as $message) {
-                    if ($message->isInterrupt()) {
-                        $conversation->preserveSandboxOnClose();
-                    }
-                    yield $message;
-                }
-            } finally {
-                $conversation->close();
-            }
+            yield from self::streamTemporaryConversation($conversation, $prompt, $config->images);
 
             return;
         }
@@ -137,6 +119,38 @@ class HaoCode
         $options = RunOptions::fromConfig($config);
 
         yield from Runner::stream($agent, $prompt, $options);
+    }
+
+    /**
+     * A facade-created Conversation is owned by this one-shot stream. Close it
+     * before exposing a terminal message because callers commonly retain the
+     * Generator at that yield and never advance it again.
+     *
+     * @param array<int, string|array<string, mixed>> $images
+     * @return \Generator<int, Message>
+     */
+    private static function streamTemporaryConversation(
+        Conversation $conversation,
+        string $prompt,
+        array $images,
+    ): \Generator {
+        try {
+            foreach ($conversation->stream($prompt, $images) as $message) {
+                if ($message->isInterrupt()) {
+                    $conversation->preserveSandboxOnClose();
+                }
+                if ($message->isResult() || $message->isInterrupt() || $message->isError()) {
+                    $conversation->close();
+                    yield $message;
+
+                    return;
+                }
+
+                yield $message;
+            }
+        } finally {
+            $conversation->close();
+        }
     }
 
     /**
@@ -370,7 +384,14 @@ class HaoCode
                         \HaoCode\Support\Runtime\SdkRuntime::app(\HaoCode\Services\Agent\BackgroundAgentManager::class)
                             ->markWaitingForInput($pendingInterrupt->sourceAgentId, $message->interrupt);
                     }
+                    $conversation->close();
                     yield $message;
+                    return;
+                }
+                if ($message->isError()) {
+                    $conversation->close();
+                    yield $message;
+
                     return;
                 }
                 if ($message->isResult()) {
@@ -400,7 +421,14 @@ class HaoCode
                             $final->text ?? '',
                             $runSnapshot,
                         );
+                        $conversation->close();
                         yield self::propagateManagedWorktreeMessage($parentMessage, $final);
+
+                        return;
+                    }
+                    if ($parentMessage->isInterrupt() || $parentMessage->isError()) {
+                        $conversation->close();
+                        yield $parentMessage;
 
                         return;
                     }
@@ -413,6 +441,7 @@ class HaoCode
                     ? $checkpoint['response_schema']
                     : ($resumeConfig->responseSchema ?? []);
                 if ($schema === []) {
+                    $conversation->close();
                     yield Message::error(
                         'Structured interrupt resume is missing response_schema in the checkpoint.',
                     );
@@ -434,11 +463,13 @@ class HaoCode
                         seedResult: $seed,
                     );
                 } catch (StructuredResultValidationException $e) {
+                    $conversation->close();
                     yield Message::error($e->getMessage());
 
                     return;
                 }
                 self::completeBackgroundInterruptOwner($pendingInterrupt, $structured->rawText, $runSnapshot);
+                $conversation->close();
                 yield Message::result(
                     text: $structured->rawText,
                     usage: $structured->queryResult?->usage ?? $seed->usage,
@@ -449,6 +480,7 @@ class HaoCode
                 return;
             }
             self::completeBackgroundInterruptOwner($pendingInterrupt, $final->text ?? '', $runSnapshot);
+            $conversation->close();
             yield $final;
         } finally {
             $conversation->close();
