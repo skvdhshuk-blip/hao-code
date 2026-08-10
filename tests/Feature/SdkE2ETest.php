@@ -2527,6 +2527,97 @@ JSON),
         }
     }
 
+    public function test_resumed_conversation_stream_cleans_fresh_sandbox_after_a_second_interrupt(): void
+    {
+        $this->bootWithMock([
+            MockAnthropicSse::toolUseResponse('loaded-stream-first-ask', 'AskUserQuestion', [
+                'questions' => [[
+                    'question' => 'Continue?',
+                    'type' => 'multiple_choice',
+                    'options' => ['yes', 'no'],
+                    'required' => true,
+                ]],
+            ]),
+            MockAnthropicSse::toolUseResponse('loaded-stream-second-ask', 'AskUserQuestion', [
+                'questions' => [[
+                    'question' => 'Continue again?',
+                    'type' => 'multiple_choice',
+                    'options' => ['yes', 'no'],
+                    'required' => true,
+                ]],
+            ]),
+        ]);
+        chdir($this->projectDir);
+        $initialConfig = new HaoCodeConfig(
+            allowedTools: ['AskUserQuestion'],
+            permissionMode: 'bypass_permissions',
+            ephemeral: false,
+            enableAskUser: true,
+            sandbox: SandboxConfig::local(cleanup: 'always'),
+        );
+
+        try {
+            HaoCode::query('Ask whether to continue.', $initialConfig);
+            $this->fail('Expected a durable interrupt.');
+        } catch (HumanInterruptException $e) {
+            $firstInterrupt = $e->interrupt;
+        }
+
+        $state = \HaoCode\Support\Runtime\SdkRuntime::app(
+            \HaoCode\Services\Session\SessionManager::class,
+        )->getInterruptState($firstInterrupt->sessionId, $firstInterrupt->id);
+        $checkpointRoot = $state['checkpoint']['run_snapshot']['sandbox_lease']['identity']['root']
+            ?? $state['checkpoint']['run_snapshot']['sandbox_lease']['root']
+            ?? null;
+        $this->assertIsString($checkpointRoot);
+
+        $freshRoot = sys_get_temp_dir().'/haocode-resumed-stream-'.bin2hex(random_bytes(4));
+        $resumeConfig = new HaoCodeConfig(
+            allowedTools: ['AskUserQuestion'],
+            permissionMode: 'bypass_permissions',
+            ephemeral: false,
+            enableAskUser: true,
+            sandbox: new SandboxConfig(
+                cleanup: 'always',
+                root: $freshRoot,
+                options: ['owns_root' => true],
+            ),
+        );
+        $conversation = HaoCode::resume($firstInterrupt->sessionId, $resumeConfig);
+
+        try {
+            $messages = iterator_to_array($conversation->streamResumeInterrupt(
+                $firstInterrupt->id,
+                [HumanDecision::respond('loaded-stream-first-ask', [
+                    'status' => 'answered',
+                    'answers' => ['yes'],
+                ])],
+            ));
+            $interrupts = array_values(array_filter(
+                $messages,
+                static fn (Message $message): bool => $message->isInterrupt(),
+            ));
+
+            $this->assertCount(1, $interrupts);
+            $this->assertSame('loaded-stream-second-ask', $interrupts[0]->interrupt?->actions[0]->id);
+            $this->assertDirectoryExists($freshRoot);
+            $conversation->close();
+
+            $this->assertDirectoryDoesNotExist($freshRoot);
+            $this->assertDirectoryExists($checkpointRoot);
+        } finally {
+            unset($messages);
+            gc_collect_cycles();
+            $conversation->close();
+            if (is_dir($freshRoot)) {
+                $this->removeDirectory($freshRoot);
+            }
+            if (is_dir($checkpointRoot)) {
+                $this->removeDirectory($checkpointRoot);
+            }
+        }
+    }
+
     public function test_background_owner_completes_only_after_parent_interrupt_chain_finishes(): void
     {
         $backgroundAgents = null;

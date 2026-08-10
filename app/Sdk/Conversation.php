@@ -362,8 +362,13 @@ class Conversation
         try {
             if (! $this->snapshotRestored) {
                 $sessionId = $this->loop->getSessionManager()->getSessionId();
+                $currentSandboxLease = $this->run->getSandboxLease();
                 $sandboxLease = $this->interruptSandboxLease($sessionId, $interruptId)
-                    ?? $this->run->getSandboxLease();
+                    ?? $currentSandboxLease;
+                $preserveCurrentSandboxOnInterrupt = self::sameSandboxLease(
+                    $currentSandboxLease,
+                    $sandboxLease,
+                );
                 foreach (HaoCode::streamResumeInterrupt(
                     $sessionId,
                     $interruptId,
@@ -383,7 +388,9 @@ class Conversation
                         );
                         $this->releaseTerminalStreamOperation($autoDecisionHandlerRegistered, $operationReleased);
                     } elseif ($message->isInterrupt()) {
-                        $this->run->preserveSandboxOnClose();
+                        if ($preserveCurrentSandboxOnInterrupt) {
+                            $this->run->preserveSandboxOnClose();
+                        }
                         $this->releaseTerminalStreamOperation($autoDecisionHandlerRegistered, $operationReleased);
                     } elseif ($message->isError()) {
                         $this->releaseTerminalStreamOperation($autoDecisionHandlerRegistered, $operationReleased);
@@ -595,6 +602,53 @@ class Conversation
         $lease = $runSnapshot['sandbox_lease'] ?? null;
 
         return is_array($lease) ? $lease : null;
+    }
+
+    /**
+     * The outer Conversation owns a sandbox only when it has the durable
+     * checkpoint identity. A handle loaded with HaoCode::resume() has a fresh
+     * sandbox of its own, which must still be cleaned after a re-interrupt.
+     *
+     * @param array<string, mixed>|null $first
+     * @param array<string, mixed>|null $second
+     */
+    private static function sameSandboxLease(?array $first, ?array $second): bool
+    {
+        if ($first === null || $second === null) {
+            return false;
+        }
+
+        $firstProvider = is_string($first['provider'] ?? null) ? $first['provider'] : null;
+        $secondProvider = is_string($second['provider'] ?? null) ? $second['provider'] : null;
+        if ($firstProvider === null
+            || ($secondProvider !== null && $secondProvider !== $firstProvider)) {
+            return false;
+        }
+
+        $identityKey = match ($firstProvider) {
+            'agentrun' => 'sandbox_id',
+            'tokimo' => 'vm_dir',
+            default => 'root',
+        };
+        $legacyOptionKey = match ($firstProvider) {
+            'agentrun' => 'sandboxId',
+            'tokimo' => 'vmDir',
+            default => null,
+        };
+        $firstIdentity = is_array($first['identity'] ?? null) ? $first['identity'] : [];
+        $secondIdentity = is_array($second['identity'] ?? null) ? $second['identity'] : [];
+        $firstOptions = is_array($first['options'] ?? null) ? $first['options'] : [];
+        $secondOptions = is_array($second['options'] ?? null) ? $second['options'] : [];
+        $firstValue = $firstIdentity[$identityKey]
+            ?? $first[$identityKey]
+            ?? ($legacyOptionKey !== null ? $firstOptions[$legacyOptionKey] ?? null : null);
+        $secondValue = $secondIdentity[$identityKey]
+            ?? $second[$identityKey]
+            ?? ($legacyOptionKey !== null ? $secondOptions[$legacyOptionKey] ?? null : null);
+
+        return is_string($firstValue) && $firstValue !== ''
+            && is_string($secondValue) && $secondValue !== ''
+            && $firstValue === $secondValue;
     }
 
     /**

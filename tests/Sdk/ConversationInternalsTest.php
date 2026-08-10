@@ -85,6 +85,45 @@ class ConversationInternalsTest extends TestCase
         $this->assertEquals($config, $roundTripped);
     }
 
+    public function test_sandbox_lease_identity_is_provider_specific(): void
+    {
+        $method = new \ReflectionMethod(Conversation::class, 'sameSandboxLease');
+        $method->setAccessible(true);
+
+        $this->assertTrue($method->invoke(null,
+            ['provider' => 'local', 'identity' => ['root' => '/tmp/one']],
+            ['provider' => 'local', 'identity' => ['root' => '/tmp/one']],
+        ));
+        $this->assertTrue($method->invoke(null,
+            ['provider' => 'local', 'identity' => ['root' => '/tmp/one']],
+            ['root' => '/tmp/one'],
+        ));
+        $this->assertFalse($method->invoke(null,
+            ['provider' => 'agentrun', 'identity' => ['sandbox_id' => 'sandbox-one'], 'root' => '/tmp/shared'],
+            ['provider' => 'agentrun', 'identity' => ['sandbox_id' => 'sandbox-two'], 'root' => '/tmp/shared'],
+        ));
+        $this->assertTrue($method->invoke(null,
+            ['provider' => 'agentrun', 'identity' => ['sandbox_id' => 'sandbox-one']],
+            ['provider' => 'agentrun', 'identity' => ['sandbox_id' => 'sandbox-one']],
+        ));
+        $this->assertTrue($method->invoke(null,
+            ['provider' => 'agentrun', 'identity' => ['sandbox_id' => 'sandbox-one']],
+            ['options' => ['sandboxId' => 'sandbox-one']],
+        ));
+        $this->assertFalse($method->invoke(null,
+            ['provider' => 'tokimo', 'identity' => ['root' => '/tmp/shared', 'vm_dir' => '/tmp/vm-one']],
+            ['provider' => 'tokimo', 'identity' => ['root' => '/tmp/shared', 'vm_dir' => '/tmp/vm-two']],
+        ));
+        $this->assertTrue($method->invoke(null,
+            ['provider' => 'tokimo', 'identity' => ['root' => '/tmp/one', 'vm_dir' => '/tmp/vm-one']],
+            ['provider' => 'tokimo', 'identity' => ['root' => '/tmp/two', 'vm_dir' => '/tmp/vm-one']],
+        ));
+        $this->assertTrue($method->invoke(null,
+            ['provider' => 'tokimo', 'identity' => ['vm_dir' => '/tmp/vm-one']],
+            ['options' => ['vmDir' => '/tmp/vm-one']],
+        ));
+    }
+
     public function test_snapshot_resume_rebuilds_the_parent_model_before_restoring_skill_scope(): void
     {
         $loop = $this->createMock(AgentLoop::class);

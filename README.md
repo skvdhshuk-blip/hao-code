@@ -489,6 +489,9 @@ If a later process first creates a handle with `HaoCode::resume($sessionId, $con
 then calls `$conversation->resumeInterrupt(...)`, the checkpoint sandbox is
 reattached to that rebuilt handle too. A follow-up `send()` or
 `streamResumeInterrupt()` therefore sees files created before the interrupt.
+If that streaming resume pauses again, only that checkpoint lease is retained;
+an unrelated fresh sandbox created for the loaded handle still follows its
+configured cleanup policy when the handle closes.
 
 ```php
 use HaoCode\Sdk\HaoCode;
@@ -886,7 +889,11 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.19.5`. Notable changes since `v1.10.0`:
+is based on `v1.19.6`. Notable changes since `v1.10.0`:
+
+- `v1.19.6` — A `Conversation` loaded through `HaoCode::resume()` now cleans
+  its unrelated fresh sandbox after a streaming resume pauses again, while the
+  durable checkpoint sandbox remains available for the next decision.
 
 - `v1.19.5` — A `Conversation` loaded with `HaoCode::resume()` now reclaims
   the durable interrupt checkpoint's sandbox lease before rebuilding after

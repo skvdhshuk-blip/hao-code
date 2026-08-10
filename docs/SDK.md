@@ -2,7 +2,7 @@
 
 Use hao-code as a framework-free PHP library to embed an AI coding agent in your application.
 
-This document describes the `v1.19.5` source line. Published package versions
+This document describes the `v1.19.6` source line. Published package versions
 are identified by Git tags and Packagist.
 
 ```bash
@@ -393,6 +393,9 @@ carries the final resumed usage before delivering a terminal streaming `result`
 and releases the conversation operation before that yield, so the next `send()`
 continues immediately with the same cumulative accounting and transcript even
 if the caller retains the completed Generator.
+If a later-process `HaoCode::resume()` handle has its own unrelated fresh
+sandbox, another streaming interrupt retains only the checkpoint lease; closing
+the handle still applies its configured cleanup policy to that fresh sandbox.
 
 The static `HaoCode::streamResumeInterrupt()` facade creates a temporary
 restored Conversation for one resume operation. It closes that temporary run
