@@ -2,7 +2,7 @@
 
 Use hao-code as a framework-free PHP library to embed an AI coding agent in your application.
 
-This document describes the `v1.19.0` source line. Published package versions
+This document describes the `v1.19.1` source line. Published package versions
 are identified by Git tags and Packagist.
 
 ```bash
@@ -240,11 +240,15 @@ foreach (HaoCode::stream('Explain dependency injection briefly') as $msg) {
 }
 ```
 
-If a caller stops consuming a stream early, it must also release the
-`Generator` (`unset($stream)` or let it leave scope). PHP does not notify a
-Generator merely because `break` was used while another reference is retained;
-HaoCode rejects overlapping operations until that release triggers the stream's
-abort and cleanup. Abandoning a stream never resumes queued model or tool work.
+If a caller stops consuming a stream *before* a terminal `result`, `interrupt`,
+or `error` message, it must also release the `Generator` (`unset($stream)` or
+let it leave scope). PHP does not notify a Generator merely because `break` was
+used while another reference is retained; HaoCode rejects overlapping operations
+until that release triggers the stream's abort and cleanup. Abandoning a stream
+never resumes queued model or tool work. A long-lived `Conversation` releases
+its operation lease before yielding a terminal message, so its next `send()` or
+`streamResumeInterrupt()` may begin immediately even when the caller retains
+the completed Generator.
 
 Provider-controlled streaming input is bounded: provider SSE lines and
 multiline events over 4 MiB fail with an `ApiErrorException` of type
@@ -379,8 +383,9 @@ its loop after the interrupt and restores the working directory from (in order)
 the live run context, the session transcript canonical cwd, then `RunOptions`
 cwd — so a later `send()` does not fall back to the process `getcwd()`. The
 rebuild carries the final resumed usage before delivering a terminal streaming
-`result`, so after releasing that stream the next `send()` continues with the
-same cumulative accounting and transcript.
+`result` and releases the conversation operation before that yield, so the next
+`send()` continues immediately with the same cumulative accounting and
+transcript even if the caller retains the completed Generator.
 
 ```text
 HaoCode::resumeInterrupt(string $sessionId, string $interruptId, array $decisions, ?HaoCodeConfig $config = null): QueryResult|StructuredResult
@@ -720,9 +725,11 @@ a lease **identity** (root path, resolved AgentRun sandbox ID, Tokimo vmDir);
 credentials (API keys, tokens) are never written to session JSONL. On
 `resumeInterrupt()`, identity is reattached while security **policy** (mode,
 network, cleanup) comes from the caller's current config and may only tighten.
-Sandbox tool names (`Read`/`Write`/`Glob`/`Grep`/`Bash`) are reserved while
-sandbox mode is active and cannot be overridden by custom or MCP tools. Final
-completion still honors the configured `cleanup` policy.
+For a long-lived `Conversation`, the temporary resume run hands that same lease
+to the rebuilt handle before cleanup, so later tool calls retain files created
+before the interrupt. Sandbox tool names (`Read`/`Write`/`Glob`/`Grep`/`Bash`)
+are reserved while sandbox mode is active and cannot be overridden by custom or
+MCP tools. Final completion still honors the configured `cleanup` policy.
 
 ### Local backend
 

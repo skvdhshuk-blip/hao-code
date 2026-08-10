@@ -864,7 +864,15 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.19.0`. Notable changes since `v1.10.0`:
+is based on `v1.19.1`. Notable changes since `v1.10.0`:
+
+- `v1.19.1` — Completes compatible OpenAI Chat streams that explicitly end in
+  `[DONE]` but omit `finish_reason`, while preserving partial-response recovery
+  for bare EOF. Terminal conversation stream messages release their operation
+  lease before they are yielded, so a retained completed Generator cannot block
+  or later corrupt an immediate follow-up or interrupt resume. Durable
+  `Conversation` resumes also transfer the reattached sandbox lease to their
+  rebuilt handle, preserving pre-interrupt files for the next tool call.
 
 - `v1.19.0` — Hardened existing agent lifecycle contracts: every SDK result
   surface reports current-turn context usage; durable and streaming interrupt

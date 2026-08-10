@@ -376,6 +376,55 @@ class OpenAiChatProviderTest extends TestCase
         $this->assertSame('end_turn', $delta->data['delta']['stop_reason']);
     }
 
+    public function test_stream_synthesizes_terminal_lifecycle_when_gateway_omits_finish_reason(): void
+    {
+        // A few OpenAI-compatible gateways end an otherwise complete stream
+        // with [DONE] but omit choices[0].finish_reason. The normalized stream
+        // must still close its content block and message so AgentLoop does not
+        // charge and retry a completed response as an incomplete one.
+        $sse = $this->buildSseStream([
+            ['id' => 'chatcmpl-no-finish', 'model' => 'gpt-4o-mini', 'choices' => [['delta' => ['role' => 'assistant']]]],
+            ['choices' => [['delta' => ['content' => 'complete']]]],
+        ]);
+
+        $events = $this->collectEvents($sse);
+
+        $this->assertEventTypes([
+            'message_start',
+            'content_block_start',
+            'content_block_delta',
+            'content_block_stop',
+            'message_delta',
+            'message_stop',
+        ], $events);
+        $this->assertSame('end_turn', $events[4]->data['delta']['stop_reason']);
+    }
+
+    public function test_stream_does_not_treat_bare_eof_as_a_missing_finish_reason(): void
+    {
+        // A dropped connection must stay distinguishable from a gateway's
+        // explicit data: [DONE] terminator. The agent's incomplete-response
+        // recovery should handle this partial response rather than accepting it.
+        $body = 'data: ' . json_encode([
+            'id' => 'chatcmpl-truncated',
+            'model' => 'gpt-4o-mini',
+            'choices' => [['delta' => ['role' => 'assistant']]],
+        ], JSON_UNESCAPED_UNICODE) . "\n\n";
+        $body .= 'data: ' . json_encode([
+            'choices' => [['delta' => ['content' => 'partial']]],
+        ], JSON_UNESCAPED_UNICODE) . "\n\n";
+
+        $events = $this->collectEvents(new MockHttpClient([
+            new MockResponse([$body], ['http_code' => 200]),
+        ]));
+
+        $this->assertEventTypes([
+            'message_start',
+            'content_block_start',
+            'content_block_delta',
+        ], $events);
+    }
+
     public function test_stream_surfaces_http_error_body(): void
     {
         $httpClient = new MockHttpClient([

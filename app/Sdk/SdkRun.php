@@ -30,6 +30,18 @@ final class SdkRun
         $this->preserveSandbox = true;
     }
 
+    /**
+     * Return the durable sandbox identity for a Conversation that will rebuild
+     * itself after a facade-based interrupt resume.
+     *
+     * @return array<string, mixed>|null
+     * @internal
+     */
+    public function getSandboxLease(): ?array
+    {
+        return $this->sandboxRuntime?->exportLease();
+    }
+
     public function close(): void
     {
         if ($this->closed) {

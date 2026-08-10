@@ -152,6 +152,7 @@ class Conversation
         $fiber = null;
         $autoDecisionHandlerRegistered = false;
         $thrownException = null;
+        $operationReleased = false;
 
         try {
             $this->turnCount++;
@@ -239,16 +240,19 @@ class Conversation
 
             if ($thrownException instanceof HumanInterruptException) {
                 $this->run->preserveSandboxOnClose();
+                $this->releaseTerminalStreamOperation($autoDecisionHandlerRegistered, $operationReleased);
                 yield Message::interrupt($thrownException->interrupt);
 
                 return;
             }
             if ($thrownException !== null) {
+                $this->releaseTerminalStreamOperation($autoDecisionHandlerRegistered, $operationReleased);
                 yield Message::error($thrownException->getMessage());
 
                 return;
             }
 
+            $this->releaseTerminalStreamOperation($autoDecisionHandlerRegistered, $operationReleased);
             yield Message::result(
                 text: $response ?? '',
                 usage: self::extractUsage($this->loop),
@@ -269,7 +273,9 @@ class Conversation
             if ($autoDecisionHandlerRegistered) {
                 $this->loop->setAutoDecisionHandler(null);
             }
-            $this->endOperation();
+            if (! $operationReleased) {
+                $this->endOperation();
+            }
         }
     }
 
@@ -286,14 +292,25 @@ class Conversation
         try {
             if (! $this->snapshotRestored) {
                 $sessionId = $this->loop->getSessionManager()->getSessionId();
-                $result = HaoCode::resumeInterrupt($sessionId, $interruptId, $decisions, $this->config);
+                $sandboxLease = $this->run->getSandboxLease();
+                $result = HaoCode::resumeInterrupt(
+                    $sessionId,
+                    $interruptId,
+                    $decisions,
+                    $this->configWithSandboxLease($sandboxLease, retainUntilRebuilt: true),
+                );
                 $queryResult = $result instanceof StructuredResult ? $result->queryResult : $result;
                 if (! $queryResult instanceof QueryResult) {
                     throw new \RuntimeException(
                         'Conversation interrupt resume returned a structured result without its query metadata.',
                     );
                 }
-                $this->reloadAfterSnapshotResume($sessionId, $queryResult->usage, $queryResult->cost);
+                $this->reloadAfterSnapshotResume(
+                    $sessionId,
+                    $queryResult->usage,
+                    $queryResult->cost,
+                    $sandboxLease,
+                );
 
                 return $queryResult;
             }
@@ -339,15 +356,17 @@ class Conversation
         $fiber = null;
         $autoDecisionHandlerRegistered = false;
         $thrown = null;
+        $operationReleased = false;
 
         try {
             if (! $this->snapshotRestored) {
                 $sessionId = $this->loop->getSessionManager()->getSessionId();
+                $sandboxLease = $this->run->getSandboxLease();
                 foreach (HaoCode::streamResumeInterrupt(
                     $sessionId,
                     $interruptId,
                     $decisions,
-                    $this->config,
+                    $this->configWithSandboxLease($sandboxLease, retainUntilRebuilt: true),
                 ) as $message) {
                     if ($message->isResult()) {
                         // A caller is allowed to stop consuming as soon as it
@@ -358,9 +377,19 @@ class Conversation
                             $sessionId,
                             $message->usage,
                             $message->cost,
+                            $sandboxLease,
                         );
+                        $this->releaseTerminalStreamOperation($autoDecisionHandlerRegistered, $operationReleased);
+                    } elseif ($message->isInterrupt()) {
+                        $this->run->preserveSandboxOnClose();
+                        $this->releaseTerminalStreamOperation($autoDecisionHandlerRegistered, $operationReleased);
+                    } elseif ($message->isError()) {
+                        $this->releaseTerminalStreamOperation($autoDecisionHandlerRegistered, $operationReleased);
                     }
                     yield $message;
+                    if ($message->isResult() || $message->isInterrupt() || $message->isError()) {
+                        return;
+                    }
                 }
 
                 return;
@@ -426,15 +455,18 @@ class Conversation
             }
             if ($thrown instanceof HumanInterruptException) {
                 $this->run->preserveSandboxOnClose();
+                $this->releaseTerminalStreamOperation($autoDecisionHandlerRegistered, $operationReleased);
                 yield Message::interrupt($thrown->interrupt);
 
                 return;
             }
             if ($thrown !== null) {
+                $this->releaseTerminalStreamOperation($autoDecisionHandlerRegistered, $operationReleased);
                 yield Message::error($thrown->getMessage());
 
                 return;
             }
+            $this->releaseTerminalStreamOperation($autoDecisionHandlerRegistered, $operationReleased);
             yield Message::result(
                 $response ?? '',
                 self::extractUsage($this->loop),
@@ -452,7 +484,9 @@ class Conversation
             if ($autoDecisionHandlerRegistered) {
                 $this->loop->setAutoDecisionHandler(null);
             }
-            $this->endOperation();
+            if (! $operationReleased) {
+                $this->endOperation();
+            }
         }
     }
 
@@ -463,6 +497,7 @@ class Conversation
         string $sessionId,
         ?array $resumedUsage = null,
         ?float $resumedCost = null,
+        ?array $sandboxLease = null,
     ): void
     {
         $budgetLedger = $this->loop->getBudgetLedger();
@@ -528,10 +563,10 @@ class Conversation
             static fn (mixed $value): bool => $value !== null && $value !== '',
         );
 
+        $runConfig = $this->configWithSandboxLease($sandboxLease);
         $this->run->close();
-        $this->run = SdkRunFactory::createFromAgent(
-            $this->agent,
-            $this->options,
+        $this->run = SdkRunFactory::create(
+            $runConfig,
             $this->factory,
             $this->streamingClient,
             resumeSnapshot: $resumeSnapshot === [] ? null : $resumeSnapshot,
@@ -541,6 +576,44 @@ class Conversation
         $this->loop->restoreRunSnapshot($priorUsage);
         $this->snapshotRestored = false;
         $this->loadSessionInternal($sessionId);
+    }
+
+    /**
+     * A facade-based durable resume uses a temporary Conversation. Keep its
+     * reattached sandbox alive until this long-lived handle has claimed the
+     * same lease, then restore the caller's cleanup policy on the replacement
+     * run. Without this handoff, a follow-up after resume starts in a fresh
+     * sandbox and loses files created before the interrupt.
+     *
+     * @param array<string, mixed>|null $sandboxLease
+     */
+    private function configWithSandboxLease(?array $sandboxLease, bool $retainUntilRebuilt = false): HaoCodeConfig
+    {
+        if ($sandboxLease === null) {
+            return $this->config;
+        }
+
+        $sandbox = \HaoCode\Sdk\Sandbox\SandboxRuntime::configFromLease(
+            $sandboxLease,
+            $this->config->sandbox,
+        );
+        if ($retainUntilRebuilt) {
+            $sandbox = new \HaoCode\Sdk\Sandbox\SandboxConfig(
+                provider: $sandbox->provider,
+                mode: $sandbox->mode,
+                remoteCwd: $sandbox->remoteCwd,
+                sync: $sandbox->sync,
+                cleanup: 'never',
+                root: $sandbox->root,
+                exclude: $sandbox->exclude,
+                options: $sandbox->options,
+            );
+        }
+
+        $values = get_object_vars($this->config);
+        $values['sandbox'] = $sandbox;
+
+        return new HaoCodeConfig(...$values);
     }
 
     /** @param array<string, mixed> $usage */
@@ -698,6 +771,29 @@ class Conversation
     private function endOperation(): void
     {
         $this->operationActive = false;
+    }
+
+    /**
+     * A terminal stream message is the end of the underlying operation even
+     * though a Generator remains suspended at yield until its caller advances
+     * or releases it. Clear the stream-only callback and the operation lease
+     * before exposing that terminal message, so a caller can immediately send
+     * a follow-up or resume an interrupt without the old Generator corrupting
+     * the next operation's lifecycle when it is later destroyed.
+     */
+    private function releaseTerminalStreamOperation(
+        bool &$autoDecisionHandlerRegistered,
+        bool &$operationReleased,
+    ): void {
+        if ($autoDecisionHandlerRegistered) {
+            $this->loop->setAutoDecisionHandler(null);
+            $autoDecisionHandlerRegistered = false;
+        }
+
+        if (! $operationReleased) {
+            $this->endOperation();
+            $operationReleased = true;
+        }
     }
 
     /**

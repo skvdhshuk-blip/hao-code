@@ -371,6 +371,91 @@ class ConversationInternalsTest extends TestCase
         $conversation->close();
     }
 
+    public function test_terminal_stream_cleanup_does_not_clear_a_new_stream_operation(): void
+    {
+        $session = $this->createMock(SessionManager::class);
+        $session->method('getSessionId')->willReturn('sess-terminal-stream');
+
+        $runCount = 0;
+        $autoDecisionHandlers = [];
+        $loop = $this->createMock(AgentLoop::class);
+        $loop->method('run')->willReturnCallback(
+            static function (
+                string|array $userInput,
+                ?callable $onTextDelta = null,
+                ?callable $onToolStart = null,
+                ?callable $onToolComplete = null,
+                ?callable $onTurnStart = null,
+                ?callable $onThinkingDelta = null,
+            ) use (&$runCount): string {
+                $runCount++;
+
+                if ($runCount === 2) {
+                    $onTextDelta?->__invoke('immediate follow-up started');
+
+                    return 'immediate follow-up completed';
+                }
+
+                return $runCount === 1
+                    ? 'stream completed'
+                    : 'post-generator follow-up completed';
+            },
+        );
+        $loop->method('setAutoDecisionHandler')->willReturnCallback(
+            static function (?callable $handler) use (&$autoDecisionHandlers): void {
+                $autoDecisionHandlers[] = $handler;
+            },
+        );
+        $loop->method('getSessionManager')->willReturn($session);
+        $loop->method('getTotalInputTokens')->willReturn(1);
+        $loop->method('getTotalOutputTokens')->willReturn(1);
+        $loop->method('getCacheCreationTokens')->willReturn(0);
+        $loop->method('getCacheReadTokens')->willReturn(0);
+        $loop->method('getEstimatedCost')->willReturn(0.0);
+        $loop->method('getLastRunTurns')->willReturn(1);
+        $loop->method('isCostEstimateAvailable')->willReturn(true);
+
+        $factory = $this->createMock(AgentLoopFactory::class);
+        $factory->method('createIsolated')->willReturn($loop);
+        $conversation = new Conversation(
+            new HaoCodeConfig(apiKey: 'k', allowedTools: [], ephemeral: true),
+            $factory,
+        );
+
+        $messages = $conversation->stream('terminal stream');
+        $messages->rewind();
+        $this->assertSame('result', $messages->current()->type);
+
+        // Keep the terminal Generator alive and begin another stream. Its old
+        // finally block must neither clear the new auto-decision handler nor
+        // release the new operation when the caller later advances it.
+        $followUp = $conversation->stream('follow up immediately');
+        $followUp->rewind();
+        $this->assertSame('text', $followUp->current()->type);
+        $this->assertSame('immediate follow-up started', $followUp->current()->text);
+        $this->assertIsCallable($autoDecisionHandlers[0]);
+        $this->assertNull($autoDecisionHandlers[1]);
+        $this->assertIsCallable($autoDecisionHandlers[2]);
+
+        $messages->next();
+        $this->assertFalse($messages->valid());
+        $this->assertCount(3, $autoDecisionHandlers);
+        $this->assertIsCallable($autoDecisionHandlers[2]);
+
+        $followUp->next();
+        $this->assertSame('result', $followUp->current()->type);
+        $this->assertSame('immediate follow-up completed', $followUp->current()->text);
+        $followUp->next();
+        $this->assertFalse($followUp->valid());
+        $this->assertNull($autoDecisionHandlers[3]);
+
+        $this->assertSame(
+            'post-generator follow-up completed',
+            $conversation->send('follow up after generator cleanup')->text,
+        );
+        $conversation->close();
+    }
+
     public function test_load_session_atomically_replaces_non_empty_idle_conversation(): void
     {
         $history = new MessageHistory;

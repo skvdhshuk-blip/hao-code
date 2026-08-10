@@ -535,7 +535,12 @@ class OpenAiChatProvider implements ApiKeyAwareProvider, SettingsAwareProvider
         }
         $raw = trim($raw);
 
-        if ($raw === '' || $raw === '[DONE]') {
+        if ($raw === '') {
+            return [];
+        }
+        if ($raw === '[DONE]') {
+            $state->sawDone = true;
+
             return [];
         }
 
@@ -733,8 +738,26 @@ class OpenAiChatProvider implements ApiKeyAwareProvider, SettingsAwareProvider
      */
     private function finalizeIfNeeded(OpenAiChatTranslatorState $state): array
     {
-        if ($state->pendingFinishReason === null || $state->pendingFinishReasonEmitted) {
+        if ($state->pendingFinishReasonEmitted) {
             return [];
+        }
+
+        if ($state->pendingFinishReason === null) {
+            // Some compatible gateways send a complete content stream followed
+            // directly by [DONE], without choices[0].finish_reason. Once a
+            // visible block or tool call exists, treating that EOF as a normal
+            // terminal response is safer than making AgentLoop retry (and bill
+            // for) an answer that was already fully delivered. Do not invent a
+            // terminal event for an empty stream: the normal incomplete-response
+            // recovery path still handles that case.
+            $hasDeliveredContent = $state->textBlockIndex !== null
+                || $state->thinkingBlockIndex !== null
+                || $state->hasToolCall;
+            if (! $state->sawDone || ! $hasDeliveredContent) {
+                return [];
+            }
+
+            $state->pendingFinishReason = $state->hasToolCall ? 'tool_calls' : 'stop';
         }
 
         $events = [];
@@ -1314,6 +1337,8 @@ class OpenAiChatTranslatorState
     public bool $hasToolCall = false;
     public ?string $pendingFinishReason = null;
     public bool $pendingFinishReasonEmitted = false;
+    /** Whether the provider explicitly ended its SSE stream with data: [DONE]. */
+    public bool $sawDone = false;
     /** @var array<string, mixed> */
     public array $pendingUsage = [];
 }

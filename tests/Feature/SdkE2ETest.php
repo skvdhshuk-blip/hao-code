@@ -2180,8 +2180,15 @@ JSON),
                 'content' => 'approved',
             ], model: $model),
             MockAnthropicSse::textResponse('Conversation stream resume completed.', model: $model),
+            MockAnthropicSse::toolUseResponse('conversation-stream-read', 'Read', [
+                'file_path' => 'conversation-stream-approved.txt',
+            ], model: $model),
             function (array $payload): MockResponse {
                 $this->assertGreaterThanOrEqual(4, MockAnthropicSse::messageCount($payload));
+                $this->assertStringContainsString(
+                    'approved',
+                    (string) MockAnthropicSse::lastToolResultText($payload),
+                );
 
                 return MockAnthropicSse::textResponse(
                     'Conversation stream follow-up completed.',
@@ -2191,11 +2198,12 @@ JSON),
         ], model: $model);
         chdir($this->projectDir);
         $conversation = HaoCode::conversation(new HaoCodeConfig(
-            allowedTools: ['Write'],
+            allowedTools: ['Write', 'Read'],
             ephemeral: false,
             interruptOn: ['Write' => true],
             hitlMode: 'ask',
             maxBudgetUsd: 1.0,
+            sandbox: SandboxConfig::local(cleanup: 'always'),
         ));
 
         $initial = iterator_to_array($conversation->stream('Write the approved conversation stream file'));
@@ -2219,20 +2227,99 @@ JSON),
         }
         $this->assertInstanceOf(Message::class, $result);
         // Do not advance the generator after its terminal message: users often
-        // stop consumption here. The Conversation must already be usable.
+        // stop consumption here while retaining the generator. The Conversation
+        // must already be usable for the next operation.
+        $followUp = $conversation->send('Confirm the streamed previous work');
         unset($resumed);
         gc_collect_cycles();
-        $followUp = $conversation->send('Confirm the streamed previous work');
         $conversation->close();
 
         $this->assertSame('Conversation stream resume completed.', $result->text);
         $this->assertSame(96, $result->usage['input_tokens']);
         $this->assertSame(32, $result->usage['last_turn_input_tokens']);
         $this->assertSame('Conversation stream follow-up completed.', $followUp->text);
-        $this->assertSame(128, $followUp->usage['input_tokens']);
+        $this->assertSame(192, $followUp->usage['input_tokens']);
         $this->assertSame(32, $followUp->usage['last_turn_input_tokens']);
         $this->assertGreaterThan($result->cost, $followUp->cost);
-        $this->assertFileExists($this->projectDir.'/conversation-stream-approved.txt');
+    }
+
+    public function test_conversation_resume_reattaches_sandbox_for_follow_up(): void
+    {
+        $this->bootWithMock([
+            MockAnthropicSse::toolUseResponse('conversation-sandbox-write', 'Write', [
+                'file_path' => 'before-interrupt.txt',
+                'content' => 'conversation sandbox state',
+            ]),
+            MockAnthropicSse::toolUseResponse('conversation-sandbox-ask', 'AskUserQuestion', [
+                'questions' => [[
+                    'question' => 'Continue?',
+                    'type' => 'multiple_choice',
+                    'options' => ['yes', 'no'],
+                    'required' => true,
+                ]],
+            ]),
+            MockAnthropicSse::textResponse('Conversation sandbox resume completed.'),
+            MockAnthropicSse::toolUseResponse('conversation-sandbox-read', 'Read', [
+                'file_path' => 'before-interrupt.txt',
+            ]),
+            function (array $payload): MockResponse {
+                $this->assertStringContainsString(
+                    'conversation sandbox state',
+                    (string) MockAnthropicSse::lastToolResultText($payload),
+                );
+
+                return MockAnthropicSse::textResponse('Conversation sandbox follow-up completed.');
+            },
+        ]);
+        chdir($this->projectDir);
+        $conversation = HaoCode::conversation(new HaoCodeConfig(
+            allowedTools: ['Write', 'Read', 'AskUserQuestion'],
+            permissionMode: 'bypass_permissions',
+            ephemeral: false,
+            enableAskUser: true,
+            sandbox: SandboxConfig::local(cleanup: 'always'),
+        ));
+
+        try {
+            $conversation->send('Write a file, then ask whether to continue.');
+            $this->fail('Expected a durable conversation interrupt.');
+        } catch (HumanInterruptException $e) {
+            $interrupt = $e->interrupt;
+        }
+
+        $state = \HaoCode\Support\Runtime\SdkRuntime::app(
+            \HaoCode\Services\Session\SessionManager::class,
+        )->getInterruptState($interrupt->sessionId, $interrupt->id);
+        $sandboxRoot = $state['checkpoint']['run_snapshot']['sandbox_lease']['identity']['root']
+            ?? $state['checkpoint']['run_snapshot']['sandbox_lease']['root']
+            ?? null;
+        $this->assertIsString($sandboxRoot);
+
+        try {
+            $resumed = $conversation->resumeInterrupt(
+                $interrupt->id,
+                [HumanDecision::respond('conversation-sandbox-ask', [
+                    'status' => 'answered',
+                    'answers' => ['yes'],
+                ])],
+            );
+            $followUp = $conversation->send('Read the file written before the interrupt.');
+            $conversation->close();
+        } catch (\Throwable $e) {
+            try {
+                $conversation->close();
+            } finally {
+                if (is_dir($sandboxRoot)) {
+                    $this->removeDirectory($sandboxRoot);
+                }
+            }
+
+            throw $e;
+        }
+
+        $this->assertSame('Conversation sandbox resume completed.', $resumed->text);
+        $this->assertSame('Conversation sandbox follow-up completed.', $followUp->text);
+        $this->assertDirectoryDoesNotExist($sandboxRoot);
     }
 
     public function test_background_owner_completes_only_after_parent_interrupt_chain_finishes(): void
