@@ -8,7 +8,7 @@ use HaoCode\Services\Api\LlmProvider;
 use HaoCode\Services\Api\OpenAiProvider;
 use Symfony\Component\HttpClient\MockHttpClient;
 
-class OpenAiResponsesMatrixTest extends AbstractMatrixTest
+class OpenAiResponsesMatrixTest extends ProviderMatrixContract
 {
     protected function providerName(): string
     {

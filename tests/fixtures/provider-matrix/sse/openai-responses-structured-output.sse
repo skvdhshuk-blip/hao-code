@@ -1,0 +1,15 @@
+event: response.created
+data: {"type":"response.created","response":{"id":"resp_structured","model":"gpt-4o-mini"}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":0,"item":{"type":"message","id":"msg_structured"}}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","output_index":0,"delta":"{\"status\":\"ok\",\"count\":2}"}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"message"}}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_structured","output":[{"type":"message"}],"usage":{"input_tokens":12,"output_tokens":8}}}
+

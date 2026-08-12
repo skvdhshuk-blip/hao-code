@@ -310,7 +310,10 @@ class MockAnthropicSse
 
         foreach ($events as $event) {
             $chunks[] = 'event: '.$event['event']."\n";
-            $chunks[] = 'data: '.json_encode($event['data'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE)."\n\n";
+            $data = $event['data'] === []
+                ? '{}'
+                : json_encode($event['data'], JSON_UNESCAPED_SLASHES | JSON_UNESCAPED_UNICODE);
+            $chunks[] = 'data: '.$data."\n\n";
         }
 
         return new MockResponse($chunks, ['http_code' => 200]);

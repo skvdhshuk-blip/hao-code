@@ -1,0 +1,24 @@
+event: response.created
+data: {"type":"response.created","response":{"id":"resp_thinking","model":"gpt-5.2"}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":0,"item":{"type":"reasoning","id":"reasoning_01"}}
+
+event: response.reasoning_summary_text.delta
+data: {"type":"response.reasoning_summary_text.delta","output_index":0,"delta":"check the contract"}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":0,"item":{"type":"reasoning"}}
+
+event: response.output_item.added
+data: {"type":"response.output_item.added","output_index":1,"item":{"type":"message","id":"msg_thinking"}}
+
+event: response.output_text.delta
+data: {"type":"response.output_text.delta","output_index":1,"delta":"done"}
+
+event: response.output_item.done
+data: {"type":"response.output_item.done","output_index":1,"item":{"type":"message"}}
+
+event: response.completed
+data: {"type":"response.completed","response":{"id":"resp_thinking","output":[{"type":"reasoning"},{"type":"message"}],"usage":{"input_tokens":11,"output_tokens":5,"output_tokens_details":{"reasoning_tokens":3}}}}
+

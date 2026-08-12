@@ -1,0 +1,1 @@
+{"name":"openai-chat-transport-error","provider":"openai_chat","kind":"transport_error","expected_error_type":"transport_error","expected_message":"connection reset during stream"}

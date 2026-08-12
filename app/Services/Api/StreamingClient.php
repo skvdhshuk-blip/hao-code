@@ -24,6 +24,7 @@ class StreamingClient implements ApiKeyAwareProvider, ForkSafeProvider, Settings
     private AnthropicProvider $anthropic;
     private OpenAiProvider $openai;
     private OpenAiChatProvider $openaiChat;
+    private ProviderRegistry $providerRegistry;
     private ?SettingsManager $settingsManager;
     private string $defaultProviderType;
     private ?LlmProvider $lastUsed = null;
@@ -68,8 +69,11 @@ class StreamingClient implements ApiKeyAwareProvider, ForkSafeProvider, Settings
         ];
         $this->settingsManager = $settingsManager;
         $this->defaultProviderType = \HaoCode\Services\Settings\ProviderType::normalizeRequired($providerType);
+        $isAnthropicSelected = $this->defaultProviderType === 'anthropic';
+        $isOpenAiSelected = $this->defaultProviderType === 'openai';
+        $isOpenAiChatSelected = $this->defaultProviderType === 'openai_chat';
         $this->anthropic = $anthropicProvider ?? new AnthropicProvider(
-            apiKey: $apiKey,
+            apiKey: $isAnthropicSelected ? $apiKey : '',
             model: $model,
             baseUrl: $baseUrl,
             maxTokens: $maxTokens,
@@ -90,9 +94,8 @@ class StreamingClient implements ApiKeyAwareProvider, ForkSafeProvider, Settings
         // custom baseUrl without wiring up settings. In that case we honour
         // the caller's baseUrl on whichever provider they actually selected
         // via $providerType; the unused providers never fire.
-        $isAnthropicSelected = $this->defaultProviderType === 'anthropic';
         $this->openai = $openAiProvider ?? new OpenAiProvider(
-            apiKey: $apiKey,
+            apiKey: $isOpenAiSelected ? $apiKey : '',
             model: $model,
             baseUrl: $isAnthropicSelected ? 'https://api.openai.com' : $baseUrl,
             maxTokens: $maxTokens,
@@ -107,7 +110,7 @@ class StreamingClient implements ApiKeyAwareProvider, ForkSafeProvider, Settings
         );
 
         $this->openaiChat = $openAiChatProvider ?? new OpenAiChatProvider(
-            apiKey: $apiKey,
+            apiKey: $isOpenAiChatSelected ? $apiKey : '',
             model: $model,
             baseUrl: $isAnthropicSelected ? 'https://api.openai.com' : $baseUrl,
             maxTokens: $maxTokens,
@@ -120,6 +123,7 @@ class StreamingClient implements ApiKeyAwareProvider, ForkSafeProvider, Settings
             timeProvider: $timeProvider,
             headers: $this->connectionConfig['headers'],
         );
+        $this->rebuildProviderRegistry();
     }
 
     public function streamMessages(
@@ -147,6 +151,20 @@ class StreamingClient implements ApiKeyAwareProvider, ForkSafeProvider, Settings
     }
 
     /**
+     * Provider buckets for which the constructor supplied a fallback key.
+     * The key itself is intentionally never exposed.
+     *
+     * @return list<string>
+     * @internal
+     */
+    public function configuredCredentialProviderTypes(): array
+    {
+        return trim((string) $this->connectionConfig['apiKey']) === ''
+            ? []
+            : [$this->defaultProviderType];
+    }
+
+    /**
      * Clone the dispatcher and providers for an isolated agent run.
      *
      * Provider transports are preserved, while every dynamic API setting is
@@ -159,6 +177,7 @@ class StreamingClient implements ApiKeyAwareProvider, ForkSafeProvider, Settings
         $client->anthropic = $this->anthropic->withSettingsManager($settingsManager);
         $client->openai = $this->openai->withSettingsManager($settingsManager);
         $client->openaiChat = $this->openaiChat->withSettingsManager($settingsManager);
+        $client->rebuildProviderRegistry();
         $client->lastUsed = null;
 
         return $client;
@@ -169,9 +188,16 @@ class StreamingClient implements ApiKeyAwareProvider, ForkSafeProvider, Settings
         $client = clone $this;
         $client->defaultProviderType = $this->settingsManager?->getProviderType() ?? $this->defaultProviderType;
         $client->settingsManager = null;
-        $client->anthropic = $this->anthropic->withApiKey($apiKey);
-        $client->openai = $this->openai->withApiKey($apiKey);
-        $client->openaiChat = $this->openaiChat->withApiKey($apiKey);
+        // A pooled credential belongs to exactly one provider bucket. Apply it
+        // only to the adapter selected for this request; keeping it out of the
+        // unused adapters prevents a future dispatch bug from crossing vendor
+        // credential boundaries.
+        match ($client->defaultProviderType) {
+            \HaoCode\Services\Settings\ProviderType::ANTHROPIC => $client->anthropic = $this->anthropic->withApiKey($apiKey),
+            \HaoCode\Services\Settings\ProviderType::OPENAI => $client->openai = $this->openai->withApiKey($apiKey),
+            \HaoCode\Services\Settings\ProviderType::OPENAI_CHAT => $client->openaiChat = $this->openaiChat->withApiKey($apiKey),
+        };
+        $client->rebuildProviderRegistry();
         $client->lastUsed = null;
 
         return $client;
@@ -182,7 +208,7 @@ class StreamingClient implements ApiKeyAwareProvider, ForkSafeProvider, Settings
         $config = $this->connectionConfig;
 
         return new self(
-            apiKey: $config['apiKey'],
+            apiKey: $settingsManager?->getApiKey() ?? $config['apiKey'],
             model: $settingsManager?->getModel() ?? $config['model'],
             baseUrl: $settingsManager?->getBaseUrl() ?? $config['baseUrl'],
             maxTokens: $settingsManager?->getMaxTokens() ?? $config['maxTokens'],
@@ -203,10 +229,15 @@ class StreamingClient implements ApiKeyAwareProvider, ForkSafeProvider, Settings
     {
         $type = $this->settingsManager?->getProviderType() ?? $this->defaultProviderType;
 
-        return match ($type) {
-            'openai' => $this->openai,
-            'openai_chat' => $this->openaiChat,
-            default => $this->anthropic,
-        };
+        return $this->providerRegistry->get($type);
+    }
+
+    private function rebuildProviderRegistry(): void
+    {
+        $this->providerRegistry = new ProviderRegistry([
+            \HaoCode\Services\Settings\ProviderType::ANTHROPIC => $this->anthropic,
+            \HaoCode\Services\Settings\ProviderType::OPENAI => $this->openai,
+            \HaoCode\Services\Settings\ProviderType::OPENAI_CHAT => $this->openaiChat,
+        ]);
     }
 }

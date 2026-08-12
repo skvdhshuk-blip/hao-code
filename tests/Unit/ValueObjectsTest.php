@@ -40,16 +40,20 @@ class ValueObjectsTest extends TestCase
         $this->assertSame('text_delta', $event->data['delta']['type']);
     }
 
-    public function test_from_sse_handles_invalid_json(): void
+    public function test_from_sse_rejects_invalid_json(): void
     {
-        $event = StreamEvent::fromSse('unknown', 'not-json');
-        $this->assertNull($event->data);
+        $this->expectException(ApiErrorException::class);
+        $this->expectExceptionMessage('Malformed provider SSE JSON payload');
+
+        StreamEvent::fromSse('unknown', 'not-json');
     }
 
-    public function test_from_sse_handles_empty_string(): void
+    public function test_from_sse_rejects_empty_string(): void
     {
-        $event = StreamEvent::fromSse('ping', '');
-        $this->assertNull($event->data);
+        $this->expectException(ApiErrorException::class);
+        $this->expectExceptionMessage('Malformed provider SSE JSON payload');
+
+        StreamEvent::fromSse('ping', '');
     }
 
     // ─── ApiErrorException ────────────────────────────────────────────────

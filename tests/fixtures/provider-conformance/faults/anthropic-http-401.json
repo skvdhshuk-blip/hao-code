@@ -1,0 +1,1 @@
+{"name":"anthropic-http-401","provider":"anthropic","kind":"http_error","http_status":401,"expected_error_type":"authentication_error","expected_message":"invalid Anthropic credential"}

@@ -655,6 +655,14 @@ YAML);
         $this->assertTrue(($full->toolFilter())('Bash'));
     }
 
+    public function test_sandbox_manager_rejects_unknown_mode_before_backend_creation(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('Unsupported sandbox mode');
+
+        SandboxManager::create(new SandboxConfig(mode: 'unsafe'));
+    }
+
     private function tmpDir(string $prefix): string
     {
         $dir = sys_get_temp_dir().'/'.$prefix.bin2hex(random_bytes(4));

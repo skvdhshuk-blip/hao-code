@@ -1,0 +1,1 @@
+{"name":"openai-http-429","provider":"openai","kind":"http_error","http_status":429,"expected_error_type":"rate_limit_error","expected_message":"OpenAI Responses rate limit"}

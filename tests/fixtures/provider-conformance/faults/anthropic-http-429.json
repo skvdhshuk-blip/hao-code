@@ -1,0 +1,1 @@
+{"name":"anthropic-http-429","provider":"anthropic","kind":"http_error","http_status":429,"expected_error_type":"rate_limit_error","expected_message":"Anthropic rate limit"}

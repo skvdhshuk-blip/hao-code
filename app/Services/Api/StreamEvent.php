@@ -2,6 +2,8 @@
 
 namespace HaoCode\Services\Api;
 
+use JsonException;
+
 class StreamEvent
 {
     public function __construct(
@@ -11,7 +13,41 @@ class StreamEvent
 
     public static function fromSse(string $eventType, string $rawData): self
     {
-        return new self($eventType, json_decode($rawData, true));
+        return new self($eventType, self::decodeSseData($rawData, 'provider'));
+    }
+
+    /**
+     * Decode one SSE JSON payload and reject malformed provider data.
+     *
+     * @return array<string, mixed>
+     */
+    public static function decodeSseData(string $rawData, string $provider): array
+    {
+        if (! str_starts_with(ltrim($rawData), '{')) {
+            throw new ApiErrorException(
+                "Malformed {$provider} SSE JSON payload: expected a JSON object.",
+                'protocol_error',
+            );
+        }
+
+        try {
+            $decoded = json_decode($rawData, true, 512, JSON_THROW_ON_ERROR);
+        } catch (JsonException $exception) {
+            throw new ApiErrorException(
+                "Malformed {$provider} SSE JSON payload: {$exception->getMessage()}",
+                'protocol_error',
+                previous: $exception,
+            );
+        }
+
+        if (! is_array($decoded)) {
+            throw new ApiErrorException(
+                "Malformed {$provider} SSE JSON payload: expected a JSON object.",
+                'protocol_error',
+            );
+        }
+
+        return $decoded;
     }
 
     /**

@@ -7,7 +7,6 @@
     <testsuites>
         <testsuite name="SDK">
             <directory>tests</directory>
-            <exclude>tests/Provider/AbstractMatrixTest.php</exclude>
         </testsuite>
     </testsuites>
     <source>

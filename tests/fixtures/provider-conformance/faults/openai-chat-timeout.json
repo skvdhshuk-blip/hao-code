@@ -1,0 +1,1 @@
+{"name":"openai-chat-timeout","provider":"openai_chat","kind":"timeout","expected_error_type":"stream_timeout","expected_message":"stalled"}

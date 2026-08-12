@@ -105,7 +105,7 @@ class AgentLoop
         private readonly ?HookExecutor $hookExecutor = null,
         private readonly ?PhoenixTracer $tracer = null,
         ?CancellationToken $cancellationToken = null,
-        private readonly int $maxEstimatedInputTokens = ContextBudget::MAX_ESTIMATED_INPUT_TOKENS,
+        private int $maxEstimatedInputTokens = ContextBudget::MAX_ESTIMATED_INPUT_TOKENS,
         private readonly ?AgentRunContext $runContext = null,
         private readonly ?\HaoCode\Services\Api\LlmProvider $provider = null,
     ) {
@@ -553,6 +553,7 @@ class AgentLoop
             if ($this->costTracker->shouldStop()) {
                 return '(Cost limit reached: '.$this->costTracker->getSummary().')';
             }
+            $this->synchronizeRuntimeContextBudget();
             $turnCount++;
 
             if ($turnCount > $this->lastRunTurns) {
@@ -650,7 +651,7 @@ class AgentLoop
                 // 5b. Cost tracking — set model for per-model pricing
                 $responseModel = $processor->getModel();
                 if ($responseModel !== null) {
-                    $this->costTracker->setModel($responseModel);
+                    $this->costTracker->setResponseModel($responseModel);
                 }
                 $this->costTracker->addUsage(
                     $usage['input_tokens'] ?? 0,
@@ -1057,6 +1058,7 @@ class AgentLoop
         ?callable $onThinkingDelta,
         ?string $reason = null,
     ): string {
+        $this->synchronizeRuntimeContextBudget();
         $this->contextCompactor->microCompact($this->messageHistory);
         $messages = $this->messageHistory->getMessagesForApi();
         $messages[] = [
@@ -1105,7 +1107,7 @@ class AgentLoop
         $usage = $this->normalizeUsage($processor->getUsage());
         $this->recordUsage($usage);
         if ($processor->getModel() !== null) {
-            $this->costTracker->setModel($processor->getModel());
+            $this->costTracker->setResponseModel($processor->getModel());
         }
         $this->costTracker->addUsage(
             $usage['input_tokens'] ?? 0,
@@ -1139,6 +1141,29 @@ class AgentLoop
             'The estimate includes system instructions, conversation history, and advertised tools. '.
             'Reduce the user input, project instructions, or advertised tools.',
         );
+    }
+
+    private function synchronizeRuntimeContextBudget(): void
+    {
+        $settings = $this->runContext?->settings;
+        if ($settings === null) {
+            return;
+        }
+
+        $this->maxEstimatedInputTokens = ContextBudget::safeInputLimit(
+            $settings->getContextWindow(),
+            $settings->getMaxTokens(),
+        );
+        $this->contextCompactor->updateLimits(
+            $settings->getContextWindow(),
+            $this->maxEstimatedInputTokens,
+        );
+    }
+
+    /** @internal */
+    public function getMaxEstimatedInputTokens(): int
+    {
+        return $this->maxEstimatedInputTokens;
     }
 
     public function getTotalInputTokens(): int
@@ -1204,6 +1229,15 @@ class AgentLoop
     public function getRunContext(): ?AgentRunContext
     {
         return $this->runContext;
+    }
+
+    /** @return list<string> @internal */
+    public function getRegisteredToolNames(): array
+    {
+        $names = array_keys($this->toolRegistry->getAllTools());
+        sort($names);
+
+        return $names;
     }
 
     public function getCacheCreationTokens(): int

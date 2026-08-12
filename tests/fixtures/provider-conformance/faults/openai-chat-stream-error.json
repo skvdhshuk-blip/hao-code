@@ -1,0 +1,1 @@
+{"name":"openai-chat-stream-error","provider":"openai_chat","kind":"stream_error","expected_error_type":"invalid_request_error","expected_message":"OpenAI Chat stream rejected"}

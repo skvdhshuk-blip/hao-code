@@ -293,8 +293,10 @@ class OpenAiChatProvider implements ApiKeyAwareProvider, SettingsAwareProvider
 
         $fp = @fopen($url, 'r', false, $ctx);
         if ($fp === false) {
-            $err = error_get_last()['message'] ?? 'unknown';
-            throw new ApiErrorException("Failed to open stream to {$url}: {$err}", 'transport_error');
+            throw new ApiErrorException(
+                'Failed to open stream to '.EndpointRedactor::origin($url).'.',
+                'transport_error',
+            );
         }
 
         // 解析响应头拿状态码
@@ -544,10 +546,7 @@ class OpenAiChatProvider implements ApiKeyAwareProvider, SettingsAwareProvider
             return [];
         }
 
-        $data = json_decode($raw, true);
-        if (! is_array($data)) {
-            return [];
-        }
+        $data = StreamEvent::decodeSseData($raw, 'OpenAI Chat Completions');
 
         // Some proxies send errors as data payloads mid-stream.
         if (isset($data['error']) && is_array($data['error'])) {
@@ -1105,7 +1104,14 @@ class OpenAiChatProvider implements ApiKeyAwareProvider, SettingsAwareProvider
 
     private function resolveApiKey(): string
     {
-        return $this->settingsManager?->getApiKey() ?: $this->apiKey;
+        $apiKey = $this->settingsManager?->getApiKey() ?: $this->apiKey;
+        if (trim($apiKey) === '') {
+            throw new \RuntimeException(
+                'API key is required for provider type "openai_chat" before provider request.',
+            );
+        }
+
+        return $apiKey;
     }
 
     private function resolveBaseUrl(): string
@@ -1157,7 +1163,7 @@ class OpenAiChatProvider implements ApiKeyAwareProvider, SettingsAwareProvider
             $response,
             self::MAX_ERROR_BODY_BYTES,
         ));
-        $url = (string) $response->getInfo('url');
+        $url = EndpointRedactor::origin((string) $response->getInfo('url'));
         $message = $body !== '' ? $body : "HTTP {$statusCode} returned for \"{$url}\".";
         $errorType = 'http_error';
 

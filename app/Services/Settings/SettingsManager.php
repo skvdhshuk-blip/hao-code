@@ -14,9 +14,22 @@ class SettingsManager
 
     private const DEFAULT_SANDBOX_MODE = 'workspace-write';
 
+    /** @var list<string> */
+    private const PROVIDER_IDENTITY_OVERRIDES = [
+        'api_key',
+        'model',
+        'provider_type',
+        'api_base_url',
+        'max_tokens',
+        'context_window',
+    ];
+
     private ?array $cachedSettings = null;
 
     private array $runtimeOverrides = [];
+
+    /** @var (\Closure(ResolvedProviderConfig, self): void)|null */
+    private ?\Closure $runtimeConfigurationValidator = null;
 
     private readonly SettingsFileStore $fileStore;
 
@@ -558,22 +571,83 @@ class SettingsManager
             return;
         }
 
-        if ($key === 'active_provider' || $key === 'model_provider') {
-            $this->runtimeOverrides['active_provider'] = $value;
-            $this->runtimeOverrides['model_provider'] = $value;
+        $previousOverrides = $this->runtimeOverrides;
 
+        try {
+            if ($key === 'active_provider' || $key === 'model_provider') {
+                // A named provider owns its complete connection identity. Never
+                // carry credentials, endpoint, model, or token limits from the
+                // previously selected provider across this boundary. Run-level
+                // OAuth/header policy remains explicit and is revalidated.
+                if ($this->normalizeProviderName($value) !== null) {
+                    $this->clearRuntimeProviderIdentity();
+                }
+
+                $this->runtimeOverrides['active_provider'] = $value;
+                $this->runtimeOverrides['model_provider'] = $value;
+                $this->assertRuntimeConfigurationSupported();
+
+                return;
+            }
+
+            if ($key === 'model' && is_string($value)) {
+                $selection = $this->parseQualifiedModel($value, $this->loadProjectSettings());
+                if ($selection['provider'] !== null) {
+                    $this->clearRuntimeProviderIdentity();
+                    $this->runtimeOverrides['active_provider'] = $selection['provider'];
+                    $this->runtimeOverrides['model_provider'] = $selection['provider'];
+                    $this->runtimeOverrides['model'] = $selection['model'];
+                    $this->assertRuntimeConfigurationSupported();
+
+                    return;
+                }
+            }
+
+            if ($key === 'permission_mode') {
+                unset($this->runtimeOverrides['approval_policy'], $this->runtimeOverrides['sandbox_mode']);
+            }
+
+            if ($key === 'approval_policy' || $key === 'sandbox_mode') {
+                unset($this->runtimeOverrides['permission_mode']);
+            }
+
+            $this->runtimeOverrides[$key] = $value;
+            $this->assertRuntimeConfigurationSupported();
+        } catch (\Throwable $exception) {
+            $this->runtimeOverrides = $previousOverrides;
+
+            throw $exception;
+        }
+    }
+
+    /**
+     * Bind the run-level capability and budget guard used by runtime changes
+     * and by the final request boundary.
+     *
+     * @internal
+     */
+    public function setRuntimeConfigurationValidator(?callable $validator): void
+    {
+        $this->runtimeConfigurationValidator = $validator === null
+            ? null
+            : \Closure::fromCallable($validator);
+    }
+
+    /** @internal */
+    public function assertRuntimeConfigurationSupported(): void
+    {
+        if ($this->runtimeConfigurationValidator === null) {
             return;
         }
 
-        if ($key === 'permission_mode') {
-            unset($this->runtimeOverrides['approval_policy'], $this->runtimeOverrides['sandbox_mode']);
-        }
+        ($this->runtimeConfigurationValidator)($this->resolveProviderConfig(), $this);
+    }
 
-        if ($key === 'approval_policy' || $key === 'sandbox_mode') {
-            unset($this->runtimeOverrides['permission_mode']);
+    private function clearRuntimeProviderIdentity(): void
+    {
+        foreach (self::PROVIDER_IDENTITY_OVERRIDES as $providerSetting) {
+            unset($this->runtimeOverrides[$providerSetting]);
         }
-
-        $this->runtimeOverrides[$key] = $value;
     }
 
     /**

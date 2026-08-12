@@ -372,10 +372,7 @@ class OpenAiProvider implements ApiKeyAwareProvider, SettingsAwareProvider
             return [];
         }
 
-        $decoded = json_decode($rawData, true);
-        if (! is_array($decoded)) {
-            return [];
-        }
+        $decoded = StreamEvent::decodeSseData($rawData, 'OpenAI Responses');
 
         $translated = $this->translateOpenAiEvent($eventName, $decoded, $state);
 
@@ -878,7 +875,14 @@ class OpenAiProvider implements ApiKeyAwareProvider, SettingsAwareProvider
 
     private function resolveApiKey(): string
     {
-        return $this->settingsManager?->getApiKey() ?: $this->apiKey;
+        $apiKey = $this->settingsManager?->getApiKey() ?: $this->apiKey;
+        if (trim($apiKey) === '') {
+            throw new \RuntimeException(
+                'API key is required for provider type "openai" before provider request.',
+            );
+        }
+
+        return $apiKey;
     }
 
     private function resolveBaseUrl(): string
@@ -931,7 +935,7 @@ class OpenAiProvider implements ApiKeyAwareProvider, SettingsAwareProvider
             $response,
             self::MAX_ERROR_BODY_BYTES,
         ));
-        $url = (string) $response->getInfo('url');
+        $url = EndpointRedactor::origin((string) $response->getInfo('url'));
         $message = $body !== '' ? $body : "HTTP {$statusCode} returned for \"{$url}\".";
         $errorType = 'http_error';
 

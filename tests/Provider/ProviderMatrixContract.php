@@ -10,7 +10,7 @@ use PHPUnit\Framework\TestCase;
 use Symfony\Component\HttpClient\MockHttpClient;
 use Symfony\Component\HttpClient\Response\MockResponse;
 
-abstract class AbstractMatrixTest extends TestCase
+abstract class ProviderMatrixContract extends TestCase
 {
     abstract protected function providerName(): string;
 
@@ -56,6 +56,20 @@ abstract class AbstractMatrixTest extends TestCase
         }
 
         return $text;
+    }
+
+    /** @param StreamEvent[] $events */
+    protected function extractThinking(array $events): string
+    {
+        $thinking = '';
+        foreach ($events as $event) {
+            if ($event->type === 'content_block_delta'
+                && ($event->data['delta']['type'] ?? '') === 'thinking_delta') {
+                $thinking .= $event->data['delta']['thinking'] ?? '';
+            }
+        }
+
+        return $thinking;
     }
 
     /**
@@ -178,6 +192,30 @@ abstract class AbstractMatrixTest extends TestCase
         $this->assertSame($fixture['expected']['tool_name'], $tools[0]['name']);
     }
 
+    public function test_stream_structured_output_text(): void
+    {
+        $fixture = $this->loadFixture('structured-output');
+        $text = $this->extractText($this->runFixture('structured-output'));
+        $decoded = json_decode($text, true, 512, JSON_THROW_ON_ERROR);
+
+        $this->assertSame($fixture['expected']['json'], $decoded);
+    }
+
+    public function test_stream_thinking(): void
+    {
+        $fixture = $this->loadFixture('thinking');
+        $events = $this->runFixture('thinking');
+
+        $this->assertStringContainsString(
+            $fixture['expected']['thinking_contains'],
+            $this->extractThinking($events),
+        );
+        $this->assertStringContainsString(
+            $fixture['expected']['text_contains'],
+            $this->extractText($events),
+        );
+    }
+
     public function test_cost_usage_non_zero(): void
     {
         $usage = $this->extractUsage($this->runFixture('text-only'));
@@ -190,26 +228,21 @@ abstract class AbstractMatrixTest extends TestCase
     {
         $fixture = $this->loadFixture('text-only');
         $provider = $this->createMockProvider($this->ssePath('text-only'));
+        $completeEventCount = count($this->runFixture('text-only'));
         $yielded = 0;
-        $aborted = false;
 
-        try {
-            foreach ($provider->streamMessages(
-                systemPrompt: [],
-                messages: $fixture['messages'],
-                tools: [],
-                shouldAbort: function () use (&$yielded): bool {
-                    return $yielded >= 1;
-                },
-            ) as $event) {
-                $yielded++;
-            }
-            $aborted = true;
-        } catch (\Throwable $e) {
-            $aborted = true;
+        foreach ($provider->streamMessages(
+            systemPrompt: [],
+            messages: $fixture['messages'],
+            tools: [],
+            shouldAbort: function () use (&$yielded): bool {
+                return $yielded >= 1;
+            },
+        ) as $event) {
+            $yielded++;
         }
 
-        $this->assertTrue($aborted);
-        $this->assertLessThanOrEqual(2, $yielded);
+        $this->assertGreaterThan(0, $yielded);
+        $this->assertLessThan($completeEventCount, $yielded);
     }
 }

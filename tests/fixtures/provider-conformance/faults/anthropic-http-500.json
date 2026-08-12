@@ -1,0 +1,1 @@
+{"name":"anthropic-http-500","provider":"anthropic","kind":"http_error","http_status":500,"expected_error_type":"api_error","expected_message":"Anthropic server error"}

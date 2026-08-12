@@ -1,0 +1,1 @@
+{"name":"openai-stream-error","provider":"openai","kind":"stream_error","expected_error_type":"invalid_request_error","expected_message":"OpenAI Responses stream rejected"}

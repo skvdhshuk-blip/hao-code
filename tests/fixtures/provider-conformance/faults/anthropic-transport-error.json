@@ -1,0 +1,1 @@
+{"name":"anthropic-transport-error","provider":"anthropic","kind":"transport_error","expected_error_type":"transport_error","expected_message":"connection reset during stream"}

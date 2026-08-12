@@ -1,0 +1,1 @@
+{"name":"openai-chat-malformed-json","provider":"openai_chat","kind":"malformed_json","expected_error_type":"protocol_error","expected_message":"Malformed OpenAI Chat Completions SSE JSON"}

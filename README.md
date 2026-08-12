@@ -195,6 +195,26 @@ other non-empty value throws at `HaoCodeConfig` construction — unknown types
 never silently fall back to Anthropic, so an OpenAI key cannot be sent to an
 Anthropic endpoint by typo.
 
+Before it constructs a provider, sandbox, or MCP connection, the SDK preflights
+the requested Agent, provider, model, endpoint, tools, sandbox, and permission
+mode. After `AgentLoopFactory` assembles the run, the same run guard binds to the
+actual `ToolRegistry`; implicit tools such as `AskUserQuestion` therefore cannot
+fall outside the manifest. The guard runs again for every runtime setting
+mutation and immediately before every provider request. Unsupported changes are
+rolled back atomically. Unknown capabilities on new models or custom gateways
+remain allowed for compatibility. `oauthBearer: true` is supported by the
+Anthropic wire adapter only; selecting either OpenAI wire format with that
+option fails before provider I/O.
+
+The runtime `Config` tool treats `active_provider` as one connection identity:
+provider type, key, model, endpoint, and token limits come from the newly
+selected provider rather than leaking across from the old one. Run-level OAuth
+mode and custom headers remain explicit; an incompatible switch is rejected and
+rolled back instead of silently weakening authentication. Credential pools and
+cost tracking also resolve the current provider on each request. Runtime
+`api_base_url` changes may change only the path on the current HTTP(S) origin;
+configure and select a named provider to change hosts.
+
 For `deepseek-v4-flash`, enabling thinking sends DeepSeek's explicit thinking
 contract. A thinking budget of `32000` or more selects maximum reasoning effort,
 and HaoCode preserves `reasoning_content` across multi-turn tool calls.
@@ -236,8 +256,8 @@ Use a sandbox when the agent needs file or shell tools but must not mutate the
 PHP host project directory. Sandbox mode replaces `Read`, `Write`, `Glob`, and
 `Grep` with sandbox-scoped tools. Set `mode: 'full'` to also replace `Bash` with
 a sandbox-scoped shell. Sandbox configuration disables `Edit`, `apply_patch`,
-`NotebookEdit`, worktree tools, `Agent`, and `SendMessage`. Other host-only tools,
-including `LSP` and task/team tools, are not sandbox replacements; use an
+`NotebookEdit`, `Lsp`, worktree tools, `Agent`, and `SendMessage`. Other host-only
+tools, including task/team tools, are not sandbox replacements; use an
 explicit `allowedTools` list as shown below and omit them unless needed. Legacy
 cron tool classes are not registered by the default runtime because no prompt
 execution driver is wired.
@@ -248,8 +268,13 @@ The replacement boundary is fixed by mode:
 | --- | --- | --- | --- |
 | `Read`, `Write`, `Glob`, `Grep` | Sandbox | Sandbox | All file reads/searches use the sandbox backend |
 | `Bash` | Disabled | Sandbox | Only `full` runs shell commands inside the sandbox |
-| `Edit`, `apply_patch`, `NotebookEdit`, worktree, `Agent`, `SendMessage` | Disabled | Disabled | Not sandbox replacements and unavailable while sandboxed |
-| `LSP`, task/team, custom, and MCP tools | Host-side only | Host-side only | Never implicitly moved into the sandbox; allow explicitly only when the host wants them |
+| `Edit`, `apply_patch`, `NotebookEdit`, `Lsp`, worktree, `Agent`, `SendMessage` | Disabled | Disabled | Not sandbox replacements and unavailable while sandboxed |
+| task/team, custom, and MCP tools | Host-side only | Host-side only | Never implicitly moved into the sandbox; allow explicitly only when the host wants them |
+
+An explicit request for a disabled sandbox tool fails before the sandbox is
+created. `allowedTools: ['*']` means all tools available in the selected
+sandbox mode; it does not require unavailable host-only tools or `Bash` in
+`filesystem` mode.
 
 Overwriting an existing sandbox file also requires a complete current `Read`.
 Local, native, and Tokimo backends compare the receipt while publishing the
@@ -279,6 +304,13 @@ apply that bound independently to stdout and stderr; Local uses one shared budge
 across both streams. `outputLimited` uses exit code `1`, timeout uses `124`, and
 abort uses `130`; normal sandbox Bash execution metadata includes all three
 flags.
+
+AgentRun command HTTP bodies and Tokimo runner JSONL responses also have a
+2 MiB transport limit before JSON or base64 decoding. This protects PHP memory;
+it does not raise the 100,000-byte command-output limit. An oversized transport
+response returns the same `outputLimited: true`, exit-code `1` result. Tokimo
+also discards the oversized runner process, then starts a clean one for the next
+command while keeping the sandbox workspace.
 
 For a portable full sandbox, prefer `tokimo()`. It is intentionally not part of
 the default Composer install; run
@@ -377,9 +409,9 @@ filesystem and execution environment. Use it when the PHP server should not touc
 local files or run untrusted commands locally.
 
 ```bash
-export AGENTRUN_ACCOUNT_ID=1887527099427005
-export AGENTRUN_API_KEY=ak_xxx
-export AGENTRUN_TEMPLATE_NAME=sandbox-lagal
+export AGENTRUN_ACCOUNT_ID=your-account-id
+export AGENTRUN_API_KEY=your-api-key
+export AGENTRUN_TEMPLATE_NAME=your-template-name
 export AGENTRUN_REGION=cn-hangzhou
 php scripts/agentrun-verify.php
 ```
@@ -391,9 +423,11 @@ a template ID is not a sandbox instance ID.
 ```php
 $config = new HaoCodeConfig(
     sandbox: SandboxConfig::agentRun(
-        accountId: getenv('AGENTRUN_ACCOUNT_ID'),
-        templateName: getenv('AGENTRUN_TEMPLATE_NAME') ?: 'sandbox-lagal',
-        apiKey: getenv('AGENTRUN_API_KEY'),
+        accountId: getenv('AGENTRUN_ACCOUNT_ID')
+            ?: throw new RuntimeException('Set AGENTRUN_ACCOUNT_ID.'),
+        templateName: getenv('AGENTRUN_TEMPLATE_NAME')
+            ?: throw new RuntimeException('Set AGENTRUN_TEMPLATE_NAME.'),
+        apiKey: getenv('AGENTRUN_API_KEY') ?: null,
         mode: 'full',
         remoteCwd: '/tmp',
     ),
@@ -788,12 +822,16 @@ process-local. They coordinate calls handled by one PHP process only; a
 multi-worker deployment needs an application-owned shared implementation if
 workers must observe each other's rate limits. When a provider supplies no
 `Retry-After`, SDK exponential retries add bounded jitter to avoid synchronized
-retries across clients.
+retries across clients. Pool buckets are selected from the provider type at the
+start of every request, including after a runtime `active_provider` change; a
+credential from the previous provider is never reused for the new wire adapter.
 
 Built-in USD budgets use exact pricing for the Claude models listed by this
 release. Unknown or non-Anthropic models report `cost_available: false`;
 requesting `maxBudgetUsd` for one of those models fails before a request is sent
-instead of applying an unrelated fallback price. The budget is one shared,
+instead of applying an unrelated fallback price. If a priced request returns an
+unknown deployment alias, usage keeps the already validated request-model price
+rather than becoming unpriced after the spend. The budget is one shared,
 process-safe total across the root run, child/Team/background agents, forked
 skills, structured retries, and durable HITL resumes. Enforcement is a
 **shared post-response spending guard** (checked before the next request and
@@ -883,13 +921,20 @@ application-owned store.
 ## Documentation
 
 - [Complete SDK reference](docs/SDK.md)
+- [Product roadmap (中文)](docs/ROADMAP.md)
 - [SDK backward compatibility policy](docs/sdk-bc-policy.md)
 - [SDK example suite](examples/sdk-suite/README.md)
 
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.19.7`. Notable changes since `v1.10.0`:
+is based on `v1.19.8`. Notable changes since `v1.10.0`:
+
+- `v1.19.8` — Runtime provider switching now treats provider type, credentials,
+  model, endpoint, token limits, capability checks, and cost context as one
+  validated identity. The SDK preflights the actual tool and sandbox manifest,
+  rolls rejected setting changes back atomically, and runs all three provider
+  adapters through the same success and fault conformance matrix.
 
 - `v1.19.7` — AgentRun and Tokimo bound command-response transport data before
   JSON decoding. Oversized remote/runner payloads now use the established

@@ -1,0 +1,13 @@
+{
+    "messages": [
+        {
+            "role": "user",
+            "content": "Think briefly, then answer."
+        }
+    ],
+    "tools": [],
+    "expected": {
+        "thinking_contains": "check the contract",
+        "text_contains": "done"
+    }
+}

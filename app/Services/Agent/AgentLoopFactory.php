@@ -252,7 +252,12 @@ class AgentLoopFactory
                 'Agent model override requires a settings-aware provider.',
             );
         }
-        $queryEngine = new QueryEngine($client, $toolRegistry, $tracer, $settings);
+        $costTracker = new CostTracker(
+            budgetLedger: $runContext?->budgetLedger,
+            usageAccumulator: $runContext?->usageAccumulator,
+        );
+        $costTracker->setProviderContext($settings->getProviderType(), $settings->getModel());
+        $queryEngine = new QueryEngine($client, $toolRegistry, $tracer, $settings, $costTracker);
 
         $toolOrchestrator = new ToolOrchestrator(
             toolRegistry: $toolRegistry,
@@ -266,13 +271,6 @@ class AgentLoopFactory
                 ! $ephemeral && $runContext->settings->getPermissionMode() !== \HaoCode\Services\Permissions\PermissionMode::BypassPermissions,
             );
         }
-
-        $costTracker = new CostTracker(
-            budgetLedger: $runContext?->budgetLedger,
-            usageAccumulator: $runContext?->usageAccumulator,
-        );
-        $costTracker->setProviderType($settings->getProviderType());
-        $costTracker->setModel($settings->getModel());
 
         $maxEstimatedInputTokens = ContextBudget::safeInputLimit(
             $settings->getContextWindow(),

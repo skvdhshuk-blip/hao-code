@@ -1,0 +1,1 @@
+{"name":"openai-chat-http-500","provider":"openai_chat","kind":"http_error","http_status":500,"expected_error_type":"server_error","expected_message":"OpenAI Chat server error"}

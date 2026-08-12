@@ -4,6 +4,9 @@ namespace Tests\Unit;
 
 use HaoCode\Services\Api\ApiErrorException;
 use HaoCode\Services\Api\AnthropicProvider;
+use HaoCode\Services\Api\OpenAiChatProvider;
+use HaoCode\Services\Api\OpenAiProvider;
+use HaoCode\Services\Api\StreamEvent;
 use HaoCode\Services\Api\StreamingClient;
 use HaoCode\Services\Settings\SettingsManager;
 use PHPUnit\Framework\TestCase;
@@ -1309,7 +1312,7 @@ class StreamingClientTest extends TestCase
 
     // ─── HTTP error with empty body ───────────────────────────────────────
 
-    public function test_http_error_with_empty_body_includes_url_in_message(): void
+    public function test_http_error_with_empty_body_includes_only_redacted_origin(): void
     {
         $httpClient = new MockHttpClient([
             new MockResponse('', ['http_code' => 502]),
@@ -1318,7 +1321,7 @@ class StreamingClientTest extends TestCase
         $client = new StreamingClient(
             apiKey: 'test-key',
             model: 'kimi-for-coding',
-            baseUrl: 'https://api.example.com',
+            baseUrl: 'https://url-user:url-password@api.example.com/private/path?token=url-token',
             httpClient: $httpClient,
         );
 
@@ -1331,7 +1334,11 @@ class StreamingClientTest extends TestCase
             $this->fail('Expected ApiErrorException');
         } catch (ApiErrorException $e) {
             $this->assertStringContainsString('HTTP 502', $e->getMessage());
-            $this->assertStringContainsString('api.example.com', $e->getMessage());
+            $this->assertStringContainsString('https://api.example.com', $e->getMessage());
+            $this->assertStringNotContainsString('url-user', $e->getMessage());
+            $this->assertStringNotContainsString('url-password', $e->getMessage());
+            $this->assertStringNotContainsString('private/path', $e->getMessage());
+            $this->assertStringNotContainsString('url-token', $e->getMessage());
         }
     }
 
@@ -1397,6 +1404,44 @@ class StreamingClientTest extends TestCase
         $this->assertTrue($capturedOptions['verify_host'] ?? false);
     }
 
+    public function test_dispatcher_reads_the_current_provider_type_on_every_request(): void
+    {
+        $settings = new SettingsManager;
+        $settings->set('provider_type', 'anthropic');
+        $settings->set('api_key', 'test-key');
+        $settings->set('model', 'claude-sonnet-4-6');
+        $anthropic = $this->createMock(AnthropicProvider::class);
+        $anthropic->expects($this->once())
+            ->method('streamMessages')
+            ->willReturnCallback(static function (): \Generator {
+                yield new StreamEvent('anthropic-selected', []);
+            });
+        $openAi = $this->createMock(OpenAiProvider::class);
+        $openAi->expects($this->once())
+            ->method('streamMessages')
+            ->willReturnCallback(static function (): \Generator {
+                yield new StreamEvent('openai-selected', []);
+            });
+        $openAiChat = $this->createMock(OpenAiChatProvider::class);
+        $openAiChat->expects($this->never())->method('streamMessages');
+        $client = new StreamingClient(
+            apiKey: 'test-key',
+            model: 'claude-sonnet-4-6',
+            settingsManager: $settings,
+            anthropicProvider: $anthropic,
+            openAiProvider: $openAi,
+            openAiChatProvider: $openAiChat,
+        );
+
+        $first = iterator_to_array($client->streamMessages([], [], []));
+        $settings->set('provider_type', 'openai');
+        $settings->set('model', 'gpt-5.2');
+        $second = iterator_to_array($client->streamMessages([], [], []));
+
+        $this->assertSame('anthropic-selected', $first[0]->type);
+        $this->assertSame('openai-selected', $second[0]->type);
+    }
+
     public function test_with_api_key_snapshots_run_scoped_provider_settings(): void
     {
         $settings = $this->createMock(SettingsManager::class);
@@ -1425,5 +1470,13 @@ class StreamingClientTest extends TestCase
         $this->assertSame('https://project.example.com', $providerReflection->getProperty('baseUrl')->getValue($openAi));
         $this->assertSame(3210, $providerReflection->getProperty('maxTokens')->getValue($openAi));
         $this->assertNull($providerReflection->getProperty('settingsManager')->getValue($openAi));
+
+        $anthropic = $clientReflection->getProperty('anthropic')->getValue($pooledClient);
+        $anthropicReflection = new \ReflectionObject($anthropic);
+        $this->assertSame(
+            'fallback-key',
+            $anthropicReflection->getProperty('apiKey')->getValue($anthropic),
+            'An OpenAI pool key must not be copied into an unused Anthropic adapter.',
+        );
     }
 }

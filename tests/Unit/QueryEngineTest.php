@@ -6,6 +6,9 @@ use HaoCode\Services\Agent\QueryEngine;
 use HaoCode\Services\Agent\StreamProcessor;
 use HaoCode\Services\Api\StreamEvent;
 use HaoCode\Services\Api\StreamingClient;
+use HaoCode\Services\Cost\BudgetLedger;
+use HaoCode\Services\Cost\CostTracker;
+use HaoCode\Services\Settings\SettingsManager;
 use HaoCode\Tools\ToolRegistry;
 use PHPUnit\Framework\TestCase;
 
@@ -157,6 +160,77 @@ class QueryEngineTest extends TestCase
         $qe = new QueryEngine($this->makeClient([]), $this->makeRegistry());
         $processor = $qe->query([], []);
         $this->assertSame('', $processor->getAccumulatedText());
+    }
+
+    public function test_query_revalidates_runtime_configuration_before_provider_io(): void
+    {
+        $settings = new SettingsManager;
+        $settings->set('api_key', 'test-key');
+        $settings->set('model', 'claude-sonnet-4-6');
+        $settings->setRuntimeConfigurationValidator(
+            static function (): void {
+                throw new \RuntimeException('runtime capability rejected');
+            },
+        );
+        $client = $this->createMock(StreamingClient::class);
+        $client->expects($this->never())->method('streamMessages');
+        $engine = new QueryEngine(
+            $client,
+            $this->makeRegistry(),
+            settings: $settings,
+        );
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('runtime capability rejected');
+
+        $engine->query([], []);
+    }
+
+    public function test_budgeted_query_rejects_unpriced_runtime_provider_before_provider_io(): void
+    {
+        $settings = new SettingsManager;
+        $settings->set('provider_type', 'openai');
+        $settings->set('api_key', 'test-key');
+        $settings->set('model', 'gpt-5.2');
+        $tracker = new CostTracker(budgetLedger: BudgetLedger::create(1.0));
+        $client = $this->createMock(StreamingClient::class);
+        $client->expects($this->never())->method('streamMessages');
+        $engine = new QueryEngine(
+            $client,
+            $this->makeRegistry(),
+            settings: $settings,
+            costTracker: $tracker,
+        );
+
+        $this->expectException(\RuntimeException::class);
+        $this->expectExceptionMessage('Cost budget requires pricing');
+
+        $engine->query([], []);
+    }
+
+    public function test_query_synchronizes_cost_identity_with_the_current_provider(): void
+    {
+        $settings = new SettingsManager;
+        $settings->set('provider_type', 'anthropic');
+        $settings->set('api_key', 'test-key');
+        $settings->set('model', 'claude-sonnet-4-6');
+        $tracker = new CostTracker;
+        $engine = new QueryEngine(
+            $this->makeClient([]),
+            $this->makeRegistry(),
+            settings: $settings,
+            costTracker: $tracker,
+        );
+
+        $engine->query([], []);
+        $this->assertTrue($tracker->isPricingAvailable());
+
+        $settings->set('provider_type', 'openai');
+        $settings->set('model', 'gpt-5.2');
+        $engine->query([], []);
+
+        $this->assertFalse($tracker->isPricingAvailable());
+        $this->assertStringContainsString('(openai)', $tracker->getSummary());
     }
 
     public function test_query_tracks_usage_tokens(): void

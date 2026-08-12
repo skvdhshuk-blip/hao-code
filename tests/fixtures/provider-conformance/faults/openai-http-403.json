@@ -1,0 +1,1 @@
+{"name":"openai-http-403","provider":"openai","kind":"http_error","http_status":403,"expected_error_type":"permission_denied","expected_message":"OpenAI Responses permission denied"}

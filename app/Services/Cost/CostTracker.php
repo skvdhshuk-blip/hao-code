@@ -46,6 +46,42 @@ class CostTracker
     }
 
     /**
+     * Synchronize the complete pricing identity immediately before a provider
+     * request. Budgeted runs fail closed when that identity has no trusted
+     * price instead of silently recording zero cost.
+     *
+     * @internal
+     */
+    public function setProviderContext(string $providerType, string $model): void
+    {
+        if ($this->budgetLedger !== null && ModelCatalog::pricingFor($providerType, $model) === null) {
+            throw new \RuntimeException(
+                "Cost budget requires pricing for model \"{$model}\" "
+                ."on provider type \"{$providerType}\". No trusted pricing is configured.",
+            );
+        }
+
+        $this->providerType = $providerType;
+        $this->currentModel = $model;
+    }
+
+    /** @internal */
+    public function setResponseModel(string $model): void
+    {
+        // Provider responses may report a deployment alias rather than the
+        // requested catalog model. A budgeted request was already validated
+        // against its resolved request identity before I/O; keep that trusted
+        // price when the response alias is unknown instead of dropping usage
+        // accounting or failing only after the external spend occurred.
+        if ($this->budgetLedger !== null
+            && ModelCatalog::pricingFor($this->providerType, $model) === null) {
+            return;
+        }
+
+        $this->currentModel = $model;
+    }
+
+    /**
      * Get pricing for the current model.
      *
      * @return array{input: float, output: float, cache_write: float, cache_read: float}|null

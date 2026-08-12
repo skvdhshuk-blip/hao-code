@@ -6,14 +6,16 @@ use HaoCode\Services\Agent\AgentLoopFactory;
 use HaoCode\Services\Agent\AgentRunContext;
 use HaoCode\Services\Api\LlmProvider;
 use HaoCode\Services\Api\PooledProvider;
+use HaoCode\Services\Api\SettingsAwareProvider;
 use HaoCode\Services\Api\StreamingClient;
 use HaoCode\Services\Cost\BudgetLedger;
 use HaoCode\Services\Cost\UsageAccumulator;
 use HaoCode\Services\Mcp\McpConnectionException;
 use HaoCode\Services\Mcp\McpConnectionManager;
 use HaoCode\Services\Mcp\McpServerConfigManager;
-use HaoCode\Services\Settings\ModelCatalog;
 use HaoCode\Services\Settings\SettingsManager;
+use HaoCode\Sdk\Internal\RunCapabilityGuard;
+use HaoCode\Sdk\Internal\RunCapabilityResolver;
 use HaoCode\Sdk\Sandbox\SandboxManager;
 use HaoCode\Tools\Mcp\ListMcpResourcesTool;
 use HaoCode\Tools\Mcp\McpDynamicTool;
@@ -155,6 +157,21 @@ final class SdkRunFactory
                 $runContext->settings->set('model', $baseModel);
             }
         }
+        $resolvedProvider = $runContext->settings->resolveProviderConfig();
+        $capabilityGuard = new RunCapabilityGuard(
+            $config,
+            RunCapabilityResolver::defaults(),
+            $budgetLimit,
+            requireResolvedCredential: $streamingClient === null || $streamingClient instanceof StreamingClient,
+            injectedCredentialProviderTypes: $streamingClient instanceof StreamingClient
+                ? $streamingClient->configuredCredentialProviderTypes()
+                : [],
+        );
+        if ($streamingClient !== null && ! $streamingClient instanceof SettingsAwareProvider) {
+            $capabilityGuard->lockProviderRuntime($resolvedProvider, $runContext->settings);
+        }
+        $capabilityGuard->assertSupported($resolvedProvider, $runContext->settings);
+
         $provider = $streamingClient
             ?? self::buildStreamingClient(
                 $config,
@@ -164,18 +181,15 @@ final class SdkRunFactory
             )
             ?? \HaoCode\Support\Runtime\SdkRuntime::app(StreamingClient::class)->withSettingsManager($runContext->settings);
 
-        $resolvedProvider = $runContext->settings->resolveProviderConfig();
         $providerType = $resolvedProvider->providerType;
         $resolvedModel = $resolvedProvider->model;
-        if ($budgetLimit !== null
-            && ModelCatalog::pricingFor($providerType, $resolvedModel) === null) {
-            throw new \RuntimeException(
-                "Cost budget requires pricing for model \"{$resolvedModel}\" "
-                ."on provider type \"{$providerType}\". No trusted pricing is configured.",
-            );
-        }
         if ($config->credentialPool !== null) {
-            $provider = new PooledProvider($provider, $config->credentialPool, $providerType);
+            $provider = new PooledProvider(
+                $provider,
+                $config->credentialPool,
+                $providerType,
+                settingsManager: $runContext->settings,
+            );
         }
 
         $sandboxRuntime = $config->sandbox !== null
@@ -225,6 +239,9 @@ final class SdkRunFactory
                 model: self::snapshotString($resumeSnapshot ?? [], 'base_model')
                     ?? self::snapshotString($resumeSnapshot ?? [], 'model'),
             );
+            $capabilityGuard->bindEffectiveTools($loop->getRegisteredToolNames());
+            $runContext->settings->setRuntimeConfigurationValidator([$capabilityGuard, 'assertSupported']);
+            $runContext->settings->assertRuntimeConfigurationSupported();
         } catch (\Throwable $e) {
             $sandboxRuntime?->close();
             $mcpConnectionManager?->disconnectAll();
@@ -242,8 +259,7 @@ final class SdkRunFactory
         }
 
         $costTracker = $loop->getCostTracker();
-        $costTracker->setProviderType($providerType);
-        $costTracker->setModel($resolvedModel);
+        $costTracker->setProviderContext($providerType, $resolvedModel);
         if ($budgetLimit !== null) {
             $loop->getCostTracker()->setThresholds(
                 warn: $budgetLimit * 0.8,
@@ -265,7 +281,13 @@ final class SdkRunFactory
             );
         }
 
-        return new SdkRun($loop, $sandboxRuntime, $mcpConnectionManager, $unsubscribeAbort);
+        return new SdkRun(
+            $loop,
+            $sandboxRuntime,
+            $mcpConnectionManager,
+            $unsubscribeAbort,
+            $capabilityGuard,
+        );
     }
 
     private static function snapshotString(array $snapshot, string $key): ?string

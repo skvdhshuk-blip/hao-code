@@ -1,0 +1,1 @@
+{"name":"openai-malformed-json","provider":"openai","kind":"malformed_json","expected_error_type":"protocol_error","expected_message":"Malformed OpenAI Responses SSE JSON"}

@@ -10,15 +10,30 @@ use HaoCode\Sdk\Sandbox\Backends\TokimoSandboxBackend;
 /** @internal */
 final class SandboxManager
 {
+    /** @var list<string> */
+    private const SUPPORTED_MODES = ['filesystem', 'full'];
+
+    /** @var array<string, class-string<SandboxBackendInterface>> */
+    private const BACKEND_CLASSES = [
+        'local' => LocalSandboxBackend::class,
+        'native' => NativeSandboxBackend::class,
+        'tokimo' => TokimoSandboxBackend::class,
+        'agentrun' => AgentRunSandboxBackend::class,
+    ];
+
     public static function create(SandboxConfig $config, ?string $localCwd = null): SandboxRuntime
     {
-        $backend = match ($config->provider) {
-            'local' => new LocalSandboxBackend($config),
-            'native' => new NativeSandboxBackend($config),
-            'tokimo' => new TokimoSandboxBackend($config),
-            'agentrun' => new AgentRunSandboxBackend($config),
-            default => throw new \InvalidArgumentException("Unsupported sandbox provider: {$config->provider}"),
-        };
+        if (! self::supportsMode($config->mode)) {
+            throw new \InvalidArgumentException(
+                "Unsupported sandbox mode: {$config->mode}. Expected filesystem or full.",
+            );
+        }
+
+        $backendClass = self::BACKEND_CLASSES[$config->provider] ?? null;
+        if ($backendClass === null) {
+            throw new \InvalidArgumentException("Unsupported sandbox provider: {$config->provider}");
+        }
+        $backend = new $backendClass($config);
 
         try {
             if ($config->sync === 'upload-cwd') {
@@ -37,6 +52,18 @@ final class SandboxManager
         }
 
         return new SandboxRuntime($config, $backend);
+    }
+
+    /** @internal */
+    public static function supportsProvider(string $provider): bool
+    {
+        return isset(self::BACKEND_CLASSES[$provider]);
+    }
+
+    /** @internal */
+    public static function supportsMode(string $mode): bool
+    {
+        return in_array($mode, self::SUPPORTED_MODES, true);
     }
 
     /** @param string[] $exclude */

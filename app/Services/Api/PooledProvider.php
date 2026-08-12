@@ -29,6 +29,7 @@ class PooledProvider implements ForkSafeProvider, SettingsAwareProvider
         private readonly string $providerName,
         private readonly ?RateLimitTracker $rateLimitTracker = null,
         private readonly bool $requireScopedSettings = false,
+        private readonly ?SettingsManager $settingsManager = null,
     ) {}
 
     /** @internal */
@@ -40,6 +41,7 @@ class PooledProvider implements ForkSafeProvider, SettingsAwareProvider
             $this->providerName,
             $this->rateLimitTracker,
             true,
+            $this->settingsManager,
         );
     }
 
@@ -50,8 +52,10 @@ class PooledProvider implements ForkSafeProvider, SettingsAwareProvider
         ?callable $onRawEvent = null,
         ?callable $shouldAbort = null,
     ): \Generator {
+        $providerName = $this->settingsManager?->getProviderType() ?? $this->providerName;
+
         // If no credentials registered for this provider, pass through directly
-        if (! $this->pool->hasProvider($this->providerName)) {
+        if (! $this->pool->hasProvider($providerName)) {
             yield from $this->inner->streamMessages($systemPrompt, $messages, $tools, $onRawEvent, $shouldAbort);
             $this->lastRateLimitHeaders = $this->inner->getLastRateLimitHeaders();
 
@@ -61,7 +65,7 @@ class PooledProvider implements ForkSafeProvider, SettingsAwareProvider
         $triedIds = [];
 
         while (true) {
-            $credential = $this->pool->pickNext($this->providerName);
+            $credential = $this->pool->pickNext($providerName);
 
             // pickNext returns null only when pool is empty (no credentials registered)
             if ($credential === null) {
@@ -75,7 +79,7 @@ class PooledProvider implements ForkSafeProvider, SettingsAwareProvider
             $credentialKey = $credential->idHash();
             if (in_array($credentialKey, $triedIds, true)) {
                 throw new NoAvailableCredentialException(
-                    "All credentials for provider '{$this->providerName}' have been tried and failed."
+                    "All credentials for provider '{$providerName}' have been tried and failed."
                 );
             }
             $triedIds[] = $credentialKey;
@@ -146,6 +150,7 @@ class PooledProvider implements ForkSafeProvider, SettingsAwareProvider
             $this->providerName,
             $this->rateLimitTracker,
             $this->requireScopedSettings,
+            $settingsManager ?? $this->settingsManager,
         );
     }
 
@@ -166,6 +171,7 @@ class PooledProvider implements ForkSafeProvider, SettingsAwareProvider
             $this->providerName,
             $this->rateLimitTracker,
             $this->requireScopedSettings,
+            $settingsManager,
         );
     }
 

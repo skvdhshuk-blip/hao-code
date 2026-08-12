@@ -1,0 +1,1 @@
+{"name":"openai-http-400","provider":"openai","kind":"http_error","http_status":400,"expected_error_type":"invalid_request_error","expected_message":"invalid OpenAI Responses request"}

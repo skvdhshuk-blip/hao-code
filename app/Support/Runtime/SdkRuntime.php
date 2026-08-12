@@ -267,6 +267,7 @@ final class SdkRuntime
                 settingsManager: $settings,
                 idleTimeoutSeconds: (int) self::config('haocode.api_stream_idle_timeout', 60),
                 streamPollTimeoutSeconds: (float) self::config('haocode.api_stream_poll_timeout', 1.0),
+                providerType: $settings->getProviderType(),
             );
         });
         $app->singleton(MessageHistory::class);

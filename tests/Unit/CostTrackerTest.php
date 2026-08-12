@@ -8,6 +8,19 @@ use PHPUnit\Framework\TestCase;
 
 class CostTrackerTest extends TestCase
 {
+    public function test_budgeted_tracker_keeps_the_priced_request_model_for_an_unknown_response_alias(): void
+    {
+        $tracker = new CostTracker(
+            budgetLedger: \HaoCode\Services\Cost\BudgetLedger::create(1.0),
+        );
+        $tracker->setProviderContext('anthropic', 'claude-sonnet-4-6');
+        $tracker->setResponseModel('unpriced-provider-alias');
+        $tracker->addUsage(1_000_000, 0);
+
+        $this->assertSame(3.0, $tracker->getTotalCost());
+        $this->assertTrue($tracker->isPricingAvailable());
+    }
+
     public function test_shared_usage_accumulator_exposes_tree_total_and_local_delta(): void
     {
         $usage = new UsageAccumulator;

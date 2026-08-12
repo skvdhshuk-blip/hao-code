@@ -94,21 +94,32 @@ DESC;
                 }
             }
 
-            $settings->set('active_provider', $normalizedValue);
+            try {
+                $settings->set('active_provider', $normalizedValue);
+            } catch (\RuntimeException|\InvalidArgumentException $exception) {
+                return ToolResult::error($exception->getMessage());
+            }
 
             return ToolResult::success('Set active_provider = '.$this->displayValue($normalizedValue));
         }
 
         // Validate and set
         $error = $this->validateValue($key, $value);
+        if ($error === null && $key === 'api_base_url') {
+            $error = $this->validateRuntimeBaseUrl($value, $settings->getBaseUrl());
+        }
         if ($error !== null) {
             return ToolResult::error($error);
         }
 
-        $settings->set(
-            $key,
-            $key === 'output_style' && in_array(strtolower($value), ['off', 'none'], true) ? null : $value,
-        );
+        try {
+            $settings->set(
+                $key,
+                $key === 'output_style' && in_array(strtolower($value), ['off', 'none'], true) ? null : $value,
+            );
+        } catch (\RuntimeException|\InvalidArgumentException $exception) {
+            return ToolResult::error($exception->getMessage());
+        }
 
         return ToolResult::success("Set {$key} = ".$this->displayValue(
             $key === 'output_style' && in_array(strtolower($value), ['off', 'none'], true) ? null : $value,
@@ -120,7 +131,9 @@ DESC;
         return match ($key) {
             'model' => null, // Accept any model string
             'active_provider' => null,
-            'api_base_url' => filter_var($value, FILTER_VALIDATE_URL) ? null : "Invalid URL: {$value}",
+            'api_base_url' => $this->isHttpUrl($value)
+                ? null
+                : 'api_base_url must be an absolute HTTP(S) URL.',
             'max_tokens' => is_numeric($value) && (int) $value > 0 ? null : "max_tokens must be a positive integer",
             'permission_mode' => in_array($value, ['default', 'plan', 'accept_edits', 'bypass_permissions'])
                 ? null
@@ -128,6 +141,47 @@ DESC;
             'output_style' => null,
             default => "Unknown config key: {$key}",
         };
+    }
+
+    private function validateRuntimeBaseUrl(string $value, string $current): ?string
+    {
+        $next = parse_url($value);
+        $active = parse_url($current);
+        if (! is_array($next) || ! is_array($active)) {
+            return 'api_base_url must be an absolute HTTP(S) URL.';
+        }
+        if (isset($next['user']) || isset($next['pass']) || isset($next['query']) || isset($next['fragment'])) {
+            return 'api_base_url cannot contain credentials, a query string, or a fragment.';
+        }
+
+        if ($this->origin($next) !== $this->origin($active)) {
+            return 'api_base_url can only change the path on the active provider origin; select a configured active_provider to change hosts.';
+        }
+
+        return null;
+    }
+
+    private function isHttpUrl(string $value): bool
+    {
+        if (filter_var($value, FILTER_VALIDATE_URL) === false) {
+            return false;
+        }
+
+        $scheme = parse_url($value, PHP_URL_SCHEME);
+
+        return is_string($scheme) && in_array(strtolower($scheme), ['http', 'https'], true);
+    }
+
+    /** @param array<string, mixed> $parts */
+    private function origin(array $parts): string
+    {
+        $scheme = strtolower((string) ($parts['scheme'] ?? ''));
+        $host = strtolower((string) ($parts['host'] ?? ''));
+        $port = isset($parts['port'])
+            ? (int) $parts['port']
+            : ($scheme === 'https' ? 443 : ($scheme === 'http' ? 80 : 0));
+
+        return $scheme.'://'.$host.':'.$port;
     }
 
     private function displayValue(mixed $value): string

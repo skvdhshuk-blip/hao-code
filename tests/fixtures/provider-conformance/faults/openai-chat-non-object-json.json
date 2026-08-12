@@ -1,0 +1,1 @@
+{"name":"openai-chat-non-object-json","provider":"openai_chat","kind":"non_object_json","expected_error_type":"protocol_error","expected_message":"expected a JSON object"}

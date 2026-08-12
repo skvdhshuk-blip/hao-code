@@ -20,6 +20,27 @@ use Tests\TestCase;
 
 class ToolCapabilityIntegrationTest extends TestCase
 {
+    public function test_capability_manifest_reports_the_actual_assembled_tool_registry(): void
+    {
+        $run = $this->createRun(new HaoCodeConfig(
+            apiKey: 'test-key',
+            allowedTools: [],
+            enableAskUser: true,
+            ephemeral: false,
+        ));
+
+        try {
+            $manifest = $run->getCapabilityManifest();
+
+            $this->assertNotNull($manifest);
+            $this->assertSame(['AskUserQuestion'], $manifest->tools['effective']);
+            $this->assertTrue($manifest->tools['uses_tools']);
+            $this->assertSame(['AskUserQuestion'], $run->loop->getRegisteredToolNames());
+        } finally {
+            $run->close();
+        }
+    }
+
     public function test_empty_allowlist_registers_neither_sandbox_nor_custom_tools(): void
     {
         $custom = $this->customTool();

@@ -1,0 +1,1 @@
+{"name":"anthropic-http-403","provider":"anthropic","kind":"http_error","http_status":403,"expected_error_type":"permission_error","expected_message":"Anthropic permission denied"}

@@ -3,6 +3,7 @@
 namespace HaoCode\Services\Agent;
 
 use HaoCode\Services\Api\LlmProvider;
+use HaoCode\Services\Cost\CostTracker;
 use HaoCode\Services\Settings\SettingsManager;
 use HaoCode\Services\Telemetry\PhoenixTracer;
 use HaoCode\Tools\ToolRegistry;
@@ -14,6 +15,7 @@ class QueryEngine
         private readonly ToolRegistry $toolRegistry,
         private readonly ?PhoenixTracer $tracer = null,
         private readonly ?SettingsManager $settings = null,
+        private readonly ?CostTracker $costTracker = null,
     ) {}
 
     /**
@@ -28,6 +30,15 @@ class QueryEngine
         ?callable $shouldAbort = null,
         ?array $toolsOverride = null,
     ): StreamProcessor {
+        if ($this->settings !== null) {
+            $this->settings->assertRuntimeConfigurationSupported();
+            $resolvedProvider = $this->settings->resolveProviderConfig();
+            $this->costTracker?->setProviderContext(
+                $resolvedProvider->providerType,
+                $resolvedProvider->model,
+            );
+        }
+
         $tools = $toolsOverride ?? $this->toolRegistry->toApiTools();
         $processor = new StreamProcessor();
 

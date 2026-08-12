@@ -2,7 +2,7 @@
 
 Use hao-code as a framework-free PHP library to embed an AI coding agent in your application.
 
-This document describes the `v1.19.7` source line. Published package versions
+This document describes the `v1.19.8` source line. Published package versions
 are identified by Git tags and Packagist.
 
 ```bash
@@ -502,6 +502,28 @@ before any HTTP request is built. When `type` is omitted from a named provider
 entry, only a name that is itself a known alias is treated as a type; otherwise
 the historical Anthropic default still applies.
 
+Before constructing a provider, sandbox, or MCP connection, the SDK preflights
+the requested Agent, provider wire format, model, endpoint, tools, sandbox, and
+permission mode. Once `AgentLoopFactory` has assembled the run, the run guard
+binds the manifest to the actual `ToolRegistry`, including implicit tools such
+as `AskUserQuestion`. The same guard revalidates every runtime setting mutation
+and every provider request; a rejected mutation restores all previous settings.
+An unmatched model or custom endpoint remains `unknown` and is allowed, so a
+newly released model is not rejected by a stale catalog. `oauthBearer: true`
+with `openai` or `openai_chat` is explicitly unsupported and fails before
+provider I/O.
+
+The runtime `Config` tool switches `active_provider` as one connection identity.
+Provider type, API key, model, base URL, and token limits are resolved from the
+selected provider entry instead of being carried over from the previous
+provider. Run-level OAuth mode and custom headers remain explicit; if they are
+incompatible with the selected wire format, the whole switch is rejected and
+rolled back. The credential pool and cost tracker resolve the current provider
+at each request boundary. `api_base_url` may be changed at runtime only to
+another path on the current HTTP(S) origin; URLs containing credentials, query
+strings, or fragments are rejected. Configure a named provider and select it
+with `active_provider` when the host must change.
+
 Input budgeting uses the active provider's `context_window` setting. It falls
 back to `HAOCODE_CONTEXT_WINDOW` (200000 by default) and reserves both the
 configured output tokens and a safety margin before sending a request.
@@ -718,10 +740,13 @@ Sandbox modes:
 | `full` | `Read`, `Write`, `Glob`, `Grep`, `Bash` | Shell commands run inside the sandbox backend |
 
 The replacement boundary is otherwise fixed: `Edit`, `apply_patch`,
-`NotebookEdit`, worktree tools, `Agent`, and `SendMessage` are disabled while a
-sandbox is active. `LSP`, task/team, custom, and MCP tools remain host-side and
+`NotebookEdit`, `Lsp`, worktree tools, `Agent`, and `SendMessage` are disabled
+while a sandbox is active. Task/team, custom, and MCP tools remain host-side and
 are never implicitly moved into the sandbox; list them explicitly only when the
-host intends to keep that capability.
+host intends to keep that capability. Explicitly requesting a disabled tool
+fails before the sandbox is created. `allowedTools: ['*']` selects every tool
+available in the chosen mode; it does not require unavailable host-only tools
+or `Bash` in `filesystem` mode.
 
 All sandbox backends bound SDK-captured command output to 100,000 bytes. Native,
 Tokimo, and AgentRun apply that bound independently to stdout and stderr; Local
@@ -730,6 +755,14 @@ terminated for that limit, the result sets `outputLimited: true` and uses exit
 code `1`; timeout and user abort use `124` and `130` respectively. `timedOut`,
 `aborted`, and `outputLimited` are included in normal sandbox Bash execution
 metadata.
+
+AgentRun command HTTP bodies and Tokimo runner JSONL response lines have a
+separate 2 MiB transport limit, enforced before JSON or base64 decoding. This
+bound protects the PHP process from oversized protocol envelopes; decoded
+stdout and stderr remain subject to the 100,000-byte SDK capture contract. A
+transport overflow returns `outputLimited: true` with exit code `1`. Tokimo
+closes the oversized runner process and starts a clean one for the next command
+without discarding the sandbox workspace.
 
 Legacy `CronCreate`/`CronList`/`CronDelete` classes are not registered by the
 default runtime because no prompt execution driver is wired.
@@ -879,9 +912,9 @@ must not write project files or execute agent-generated shell commands locally.
 Verify credentials and template/instance IDs first:
 
 ```bash
-export AGENTRUN_ACCOUNT_ID=1887527099427005
-export AGENTRUN_API_KEY=ak_xxx
-export AGENTRUN_TEMPLATE_NAME=sandbox-lagal
+export AGENTRUN_ACCOUNT_ID=your-account-id
+export AGENTRUN_API_KEY=your-api-key
+export AGENTRUN_TEMPLATE_NAME=your-template-name
 export AGENTRUN_REGION=cn-hangzhou
 php scripts/agentrun-verify.php
 ```
@@ -896,9 +929,10 @@ use HaoCode\Sdk\Sandbox\SandboxConfig;
 
 $config = new HaoCodeConfig(
     sandbox: SandboxConfig::agentRun(
-        accountId: getenv('AGENTRUN_ACCOUNT_ID'),
+        accountId: getenv('AGENTRUN_ACCOUNT_ID')
+            ?: throw new RuntimeException('Set AGENTRUN_ACCOUNT_ID.'),
         sandboxId: getenv('AGENTRUN_SANDBOX_ID') ?: null,
-        templateName: getenv('AGENTRUN_TEMPLATE_NAME') ?: 'sandbox-lagal',
+        templateName: getenv('AGENTRUN_TEMPLATE_NAME') ?: null,
         apiKey: getenv('AGENTRUN_API_KEY') ?: null,
         region: getenv('AGENTRUN_REGION') ?: 'cn-hangzhou',
         mode: 'full',
@@ -1902,7 +1936,9 @@ $result = HaoCode::query('Do a big refactoring', new HaoCodeConfig(
 The built-in estimator has exact pricing for the Claude model IDs in
 `ModelCatalog`. Unknown and non-Anthropic models expose
 `$result->usage['cost_available'] === false`; `maxBudgetUsd` fails before the
-first request when trusted pricing is unavailable. Durable HITL checkpoints
+first request when trusted pricing is unavailable. If the Provider returns an
+unknown deployment alias for a request whose model was already priced, usage
+continues with that validated request-model price. Durable HITL checkpoints
 restore cumulative token and cost totals before continuing (including after
 snapshot rebuilds of the conversation loop). One process-safe ledger is shared
 by the root run, synchronous and background descendants, Team members, forked
@@ -2040,3 +2076,14 @@ for explicitly gated provider tests, or targeted paths such as
 `./vendor/bin/phpunit tests/Feature/ContextBuilderTest.php` while working on
 internal modules. See `tests/Feature/SdkE2ETest.php` for the current end-to-end
 SDK examples.
+
+Provider conformance tests live under `tests/Provider`. The same matrix runs
+against Anthropic, OpenAI Responses, and OpenAI Chat for text, tool calls,
+multi-turn tools, structured text, thinking, usage, and abort. The fault
+catalog under `tests/fixtures/provider-conformance/faults` covers HTTP failures,
+provider stream errors, transport interruptions, malformed JSON, oversized SSE
+lines, non-object JSON payloads, and idle timeout:
+
+```bash
+./vendor/bin/phpunit tests/Provider
+```

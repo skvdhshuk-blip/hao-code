@@ -607,7 +607,7 @@ class HaoCodeConfig
 
         return function (string $toolName): bool {
             if ($this->sandbox !== null) {
-                if (in_array($toolName, self::sandboxLocalOnlyToolsToDisable(), true)) {
+                if (\HaoCode\Sdk\Sandbox\SandboxToolPolicy::isHostOnly($toolName)) {
                     return false;
                 }
                 if ($toolName === 'Bash' && ! $this->sandbox->enablesBash()) {
@@ -640,25 +640,6 @@ class HaoCodeConfig
     public function additionalToolFilter(): ?callable
     {
         return $this->toolFilter();
-    }
-
-    /**
-     * @internal
-     *
-     * @return string[]
-     */
-    private static function sandboxLocalOnlyToolsToDisable(): array
-    {
-        return [
-            'Edit',
-            'apply_patch',
-            'NotebookEdit',
-            'Lsp',
-            'EnterWorktree',
-            'ExitWorktree',
-            'Agent',
-            'SendMessage',
-        ];
     }
 
     /**

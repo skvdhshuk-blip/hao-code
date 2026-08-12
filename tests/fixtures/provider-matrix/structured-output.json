@@ -1,0 +1,15 @@
+{
+    "messages": [
+        {
+            "role": "user",
+            "content": "Return a structured status object."
+        }
+    ],
+    "tools": [],
+    "expected": {
+        "json": {
+            "status": "ok",
+            "count": 2
+        }
+    }
+}

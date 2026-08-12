@@ -76,11 +76,16 @@ class AnthropicProvider implements ApiKeyAwareProvider, SettingsAwareProvider
 
     private function resolveApiKey(): string
     {
-        if ($this->settingsManager) {
-            return $this->settingsManager->getApiKey() ?: $this->apiKey;
+        $apiKey = $this->settingsManager
+            ? ($this->settingsManager->getApiKey() ?: $this->apiKey)
+            : $this->apiKey;
+        if (trim($apiKey) === '') {
+            throw new \RuntimeException(
+                'API key is required for provider type "anthropic" before provider request.',
+            );
         }
 
-        return $this->apiKey;
+        return $apiKey;
     }
 
     private function resolveThinkingEnabled(): bool
@@ -463,7 +468,10 @@ class AnthropicProvider implements ApiKeyAwareProvider, SettingsAwareProvider
             return null;
         }
 
-        $event = StreamEvent::fromSse($currentEvent, implode("\n", $currentDataLines));
+        $event = new StreamEvent(
+            $currentEvent,
+            StreamEvent::decodeSseData(implode("\n", $currentDataLines), 'Anthropic'),
+        );
 
         if ($currentEvent === 'error') {
             $errorMsg = $event->data['error']['message'] ?? 'Unknown API error';
@@ -578,7 +586,7 @@ class AnthropicProvider implements ApiKeyAwareProvider, SettingsAwareProvider
             $response,
             self::MAX_ERROR_BODY_BYTES,
         ));
-        $url = (string) $response->getInfo('url');
+        $url = EndpointRedactor::origin((string) $response->getInfo('url'));
         $message = $body !== '' ? $body : "HTTP {$statusCode} returned for \"{$url}\".";
         $errorType = 'http_error';
 

@@ -1,0 +1,1 @@
+{"name":"anthropic-stream-error","provider":"anthropic","kind":"stream_error","expected_error_type":"invalid_request_error","expected_message":"Anthropic stream rejected"}

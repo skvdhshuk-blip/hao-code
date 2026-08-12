@@ -5,6 +5,7 @@
 *.html diff=html
 *.md diff=markdown
 *.php diff=php
+*.sse whitespace=-blank-at-eof
 
 /.github export-ignore
 /bin/README.md export-ignore

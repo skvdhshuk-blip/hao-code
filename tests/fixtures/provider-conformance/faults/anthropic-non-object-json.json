@@ -1,0 +1,1 @@
+{"name":"anthropic-non-object-json","provider":"anthropic","kind":"non_object_json","expected_error_type":"protocol_error","expected_message":"expected a JSON object"}

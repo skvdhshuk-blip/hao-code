@@ -12,6 +12,7 @@ use HaoCode\Services\Api\LlmProvider;
 use HaoCode\Services\Api\NoAvailableCredentialException;
 use HaoCode\Services\Api\PooledProvider;
 use HaoCode\Services\Api\StreamEvent;
+use HaoCode\Services\Settings\SettingsManager;
 use PHPUnit\Framework\TestCase;
 
 class CredentialPoolTest extends TestCase
@@ -571,6 +572,60 @@ class CredentialPoolTest extends TestCase
         $pool->markError($credential);
 
         $this->assertSame($credential->id, $pool->pickNext('anthropic')->id);
+    }
+
+    public function test_pooled_provider_selects_credentials_from_the_current_provider_type(): void
+    {
+        $pool = new CredentialPool;
+        $pool->add('anthropic', new Credential(apiKey: 'anthropic-pool-key'));
+        $pool->add('openai', new Credential(apiKey: 'openai-pool-key'));
+        $settings = new SettingsManager;
+        $settings->set('provider_type', 'anthropic');
+        $settings->set('model', 'claude-sonnet-4-6');
+        $state = (object) ['keys' => []];
+        $inner = new class($state) implements ApiKeyAwareProvider {
+            public function __construct(
+                private readonly object $state,
+                private string $apiKey = '',
+            ) {}
+
+            public function withApiKey(string $apiKey): LlmProvider
+            {
+                $provider = clone $this;
+                $provider->apiKey = $apiKey;
+
+                return $provider;
+            }
+
+            public function streamMessages(
+                array $systemPrompt,
+                array $messages,
+                array $tools,
+                ?callable $onRawEvent = null,
+                ?callable $shouldAbort = null,
+            ): \Generator {
+                $this->state->keys[] = $this->apiKey;
+                yield new StreamEvent('ping', []);
+            }
+
+            public function getLastRateLimitHeaders(): array
+            {
+                return [];
+            }
+        };
+        $provider = new PooledProvider(
+            $inner,
+            $pool,
+            'anthropic',
+            settingsManager: $settings,
+        );
+
+        iterator_to_array($provider->streamMessages([], [], []));
+        $settings->set('provider_type', 'openai');
+        $settings->set('model', 'gpt-5.2');
+        iterator_to_array($provider->streamMessages([], [], []));
+
+        $this->assertSame(['anthropic-pool-key', 'openai-pool-key'], $state->keys);
     }
 
     // --- HaoCodeConfig BC: credentialPool is optional ---

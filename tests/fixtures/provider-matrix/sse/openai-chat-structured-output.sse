@@ -1,0 +1,8 @@
+data: {"id":"chatcmpl-structured","model":"gpt-4o-mini","choices":[{"delta":{"role":"assistant"}}]}
+
+data: {"choices":[{"delta":{"content":"{\"status\":\"ok\",\"count\":2}"}}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":12,"completion_tokens":8}}
+
+data: [DONE]
+

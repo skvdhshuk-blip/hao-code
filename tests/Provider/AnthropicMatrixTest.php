@@ -10,7 +10,7 @@ use HaoCode\Services\Api\LlmProvider;
 use Symfony\Component\HttpClient\MockHttpClient;
 use Symfony\Component\HttpClient\Response\MockResponse;
 
-class AnthropicMatrixTest extends AbstractMatrixTest
+class AnthropicMatrixTest extends ProviderMatrixContract
 {
     protected function providerName(): string
     {

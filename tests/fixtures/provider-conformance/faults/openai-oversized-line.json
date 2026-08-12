@@ -1,0 +1,1 @@
+{"name":"openai-oversized-line","provider":"openai","kind":"oversized_line","expected_error_type":"protocol_error","expected_message":"SSE line exceeded"}

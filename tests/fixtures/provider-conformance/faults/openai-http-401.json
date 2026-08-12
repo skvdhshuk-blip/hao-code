@@ -1,0 +1,1 @@
+{"name":"openai-http-401","provider":"openai","kind":"http_error","http_status":401,"expected_error_type":"invalid_api_key","expected_message":"invalid OpenAI Responses credential"}

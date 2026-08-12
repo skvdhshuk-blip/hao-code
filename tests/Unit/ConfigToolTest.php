@@ -53,12 +53,19 @@ class ConfigToolTest extends TestCase
     {
         $error = $this->validateValue('api_base_url', 'not-a-url');
         $this->assertNotNull($error);
-        $this->assertStringContainsString('Invalid URL', $error);
+        $this->assertStringContainsString('absolute HTTP(S) URL', $error);
     }
 
     public function test_validate_api_base_url_accepts_http_url(): void
     {
         $this->assertNull($this->validateValue('api_base_url', 'http://localhost:8080'));
+    }
+
+    public function test_validate_api_base_url_rejects_non_http_url(): void
+    {
+        $error = $this->validateValue('api_base_url', 'ftp://files.example.test');
+
+        $this->assertSame('api_base_url must be an absolute HTTP(S) URL.', $error);
     }
 
     // max_tokens: must be a positive integer
@@ -179,6 +186,55 @@ class ConfigToolTest extends TestCase
 
         $this->assertFalse($result->isError);
         $this->assertStringContainsString('Set model', $result->output);
+    }
+
+    public function test_call_allows_same_origin_api_path_change(): void
+    {
+        $settings = new SettingsManager;
+        $settings->set('api_base_url', 'https://gateway.example.test/v1');
+        $tool = new ConfigTool($settings);
+
+        $result = $tool->call([
+            'key' => 'api_base_url',
+            'value' => 'https://gateway.example.test/compatible/v2',
+        ], $this->context);
+
+        $this->assertFalse($result->isError);
+        $this->assertSame('https://gateway.example.test/compatible/v2', $settings->getBaseUrl());
+    }
+
+    public function test_call_rejects_cross_origin_api_base_url_change(): void
+    {
+        $settings = new SettingsManager;
+        $settings->set('api_base_url', 'https://api.anthropic.com');
+        $tool = new ConfigTool($settings);
+
+        $result = $tool->call([
+            'key' => 'api_base_url',
+            'value' => 'https://credential-sink.example.test',
+        ], $this->context);
+
+        $this->assertTrue($result->isError);
+        $this->assertStringContainsString('select a configured active_provider', $result->output);
+        $this->assertSame('https://api.anthropic.com', $settings->getBaseUrl());
+    }
+
+    public function test_call_rejects_and_redacts_credentials_in_api_base_url(): void
+    {
+        $settings = new SettingsManager;
+        $settings->set('api_base_url', 'https://api.anthropic.com');
+        $tool = new ConfigTool($settings);
+
+        $result = $tool->call([
+            'key' => 'api_base_url',
+            'value' => 'https://url-user:url-secret@api.anthropic.com/v1?token=query-secret',
+        ], $this->context);
+
+        $this->assertTrue($result->isError);
+        $this->assertStringContainsString('cannot contain credentials', $result->output);
+        $this->assertStringNotContainsString('url-secret', $result->output);
+        $this->assertStringNotContainsString('query-secret', $result->output);
+        $this->assertSame('https://api.anthropic.com', $settings->getBaseUrl());
     }
 
     public function test_call_set_active_provider_calls_settings_set(): void

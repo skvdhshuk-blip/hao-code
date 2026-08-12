@@ -1,0 +1,10 @@
+data: {"id":"chatcmpl-thinking","model":"deepseek-reasoner","choices":[{"delta":{"role":"assistant"}}]}
+
+data: {"choices":[{"delta":{"reasoning_content":"check the contract"}}]}
+
+data: {"choices":[{"delta":{"content":"done"}}]}
+
+data: {"choices":[{"delta":{},"finish_reason":"stop"}],"usage":{"prompt_tokens":11,"completion_tokens":5,"completion_tokens_details":{"reasoning_tokens":3}}}
+
+data: [DONE]
+

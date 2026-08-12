@@ -54,14 +54,14 @@ class ContextCompactor
      * so user-configured windows (e.g. 128k via SettingsManager) compact at
      * the equivalent point instead of far too late.
      */
-    private readonly int $contextWindow;
+    private int $contextWindow;
 
     /**
      * Safe input budget used by AgentLoop after reserving model output and a
      * safety margin. When present, compaction must fire before this budget,
      * not only before the raw model context window.
      */
-    private readonly ?int $maxEstimatedInputTokens;
+    private ?int $maxEstimatedInputTokens;
 
     public function __construct(
         private readonly QueryEngine $queryEngine,
@@ -69,6 +69,12 @@ class ContextCompactor
         ?int $contextWindow = null,
         ?int $maxEstimatedInputTokens = null,
     ) {
+        $this->updateLimits($contextWindow, $maxEstimatedInputTokens);
+    }
+
+    /** @internal */
+    public function updateLimits(?int $contextWindow, ?int $maxEstimatedInputTokens): void
+    {
         $this->contextWindow = ($contextWindow !== null && $contextWindow > 0)
             ? $contextWindow
             : self::CONTEXT_WINDOW;

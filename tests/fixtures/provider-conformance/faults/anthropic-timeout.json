@@ -1,0 +1,1 @@
+{"name":"anthropic-timeout","provider":"anthropic","kind":"timeout","expected_error_type":"stream_timeout","expected_message":"stalled"}

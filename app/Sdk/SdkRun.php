@@ -4,6 +4,8 @@ namespace HaoCode\Sdk;
 
 use HaoCode\Services\Agent\AgentLoop;
 use HaoCode\Services\Mcp\McpConnectionManager;
+use HaoCode\Sdk\Internal\EffectiveCapabilityManifest;
+use HaoCode\Sdk\Internal\RunCapabilityGuard;
 use HaoCode\Sdk\Sandbox\SandboxRuntime;
 
 /** @internal */
@@ -18,6 +20,7 @@ final class SdkRun
         private readonly ?SandboxRuntime $sandboxRuntime = null,
         private readonly ?McpConnectionManager $mcpConnectionManager = null,
         private ?\Closure $unsubscribeAbort = null,
+        private readonly ?RunCapabilityGuard $capabilityGuard = null,
     ) {
         $this->loop->attachSandboxRuntime($this->sandboxRuntime);
     }
@@ -40,6 +43,16 @@ final class SdkRun
     public function getSandboxLease(): ?array
     {
         return $this->sandboxRuntime?->exportLease();
+    }
+
+    /** @internal */
+    public function getCapabilityManifest(): ?EffectiveCapabilityManifest
+    {
+        $settings = $this->loop->getRunContext()?->settings;
+
+        return $this->capabilityGuard !== null && $settings !== null
+            ? $this->capabilityGuard->manifest($settings)
+            : null;
     }
 
     public function close(): void
