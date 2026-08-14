@@ -4,6 +4,7 @@ namespace HaoCode\Support\Runtime;
 
 use HaoCode\Services\Agent\AgentLoopFactory;
 use HaoCode\Services\Agent\BackgroundAgentManager;
+use HaoCode\Services\Agent\CodingContextPreset;
 use HaoCode\Services\Agent\ContextBuilder;
 use HaoCode\Services\Agent\MessageHistory;
 use HaoCode\Services\Agent\QueryEngine;
@@ -251,7 +252,7 @@ final class SdkRuntime
             toolRegistry: $app->make(ToolRegistry::class),
             memoryStore: $app->make(MemoryStoreInterface::class),
             skillLoader: $app->make(SkillLoader::class),
-            gitContext: $app->make(GitContext::class),
+            codingPreset: new CodingContextPreset($app->make(GitContext::class)),
             outputStyleLoader: $app->make(OutputStyleLoader::class),
         ));
         $app->singleton(StreamingClient::class, function (Container $app) {

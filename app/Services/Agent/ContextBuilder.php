@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace HaoCode\Services\Agent;
 
-use HaoCode\Services\Git\GitContext;
 use HaoCode\Sdk\Memory\MemoryStoreInterface;
 use HaoCode\Services\OutputStyle\OutputStyleLoader;
 use HaoCode\Services\Settings\SettingsManager;
@@ -17,10 +16,6 @@ class ContextBuilder
 
     private const MAX_APPEND_PROMPT_CHARS = 20_000;
 
-    private const MAX_INSTRUCTION_FILE_CHARS = 40_000;
-
-    private const MAX_PROJECT_INSTRUCTIONS_CHARS = 100_000;
-
     private const MAX_LONG_TERM_MEMORY_CHARS = 3_000;
 
     private const MAX_OUTPUT_STYLE_CHARS = 20_000;
@@ -32,12 +27,10 @@ class ContextBuilder
         private readonly ToolRegistry $toolRegistry,
         private readonly MemoryStoreInterface $memoryStore,
         private readonly SkillLoader $skillLoader,
-        private readonly GitContext $gitContext,
+        private readonly CodingContextPreset $codingPreset,
         private readonly ?OutputStyleLoader $outputStyleLoader = null,
-        private readonly ?string $workingDirectory = null,
         private readonly bool $textOnly = false,
         private readonly bool $includeMemoryInTextOnly = false,
-        private readonly bool $omitProjectInstructions = false,
     ) {}
 
     public function buildSystemPrompt(): array
@@ -46,33 +39,30 @@ class ContextBuilder
             return $this->buildTextOnlySystemPrompt();
         }
 
-        $this->gitContext->beginSnapshot();
+        $this->codingPreset->beginSnapshot();
 
         try {
             return $this->buildAgentSystemPrompt();
         } finally {
-            $this->gitContext->endSnapshot();
+            $this->codingPreset->endSnapshot();
         }
     }
 
     private function buildAgentSystemPrompt(): array
     {
-        $prompt = $this->truncateFragment($this->getDefaultSystemPrompt(), self::MAX_BASE_PROMPT_CHARS);
+        $systemPrompt = $this->settings->getSystemPrompt();
+        $basePrompt = is_string($systemPrompt) && trim($systemPrompt) !== ''
+            ? $systemPrompt
+            : $this->codingPreset->defaultSystemPrompt();
+        $prompt = ContextBudget::truncateFragment($basePrompt, self::MAX_BASE_PROMPT_CHARS);
 
         $appendPrompt = $this->settings->getAppendSystemPrompt();
         if ($appendPrompt) {
-            $prompt .= "\n\n" . $this->truncateFragment($appendPrompt, self::MAX_APPEND_PROMPT_CHARS);
+            $prompt .= "\n\n".ContextBudget::truncateFragment($appendPrompt, self::MAX_APPEND_PROMPT_CHARS);
         }
 
-        $prompt .= $this->getEnvironmentContext();
-
-        // Load memory files (HAOCODE.md / CLAUDE.md)
-        if (! $this->omitProjectInstructions) {
-            $memoryContent = $this->loadMemoryFiles();
-            if ($memoryContent) {
-                $prompt .= "\n\n# Project Instructions (from memory files)\n\n" . $memoryContent;
-            }
-        }
+        $prompt .= $this->codingPreset->environmentContext();
+        $prompt .= $this->codingPreset->projectInstructionsContext();
 
         $prompt = $this->appendLongTermMemory($prompt);
 
@@ -86,7 +76,7 @@ class ContextBuilder
                 . "\n\n" . $this->getSkillsHowToUse();
         }
 
-        $prompt .= $this->getHaoCodeConventions();
+        $prompt .= $this->codingPreset->conventionsContext();
 
         // Inject active output style instructions
         $activeStyle = $this->settings->getOutputStyle();
@@ -94,11 +84,11 @@ class ContextBuilder
             $styleContent = $this->outputStyleLoader->getActiveStyleContent($activeStyle);
             if ($styleContent) {
                 $prompt .= "\n\n# Output Style Instructions\n\n"
-                    . $this->truncateFragment($styleContent, self::MAX_OUTPUT_STYLE_CHARS);
+                    .ContextBudget::truncateFragment($styleContent, self::MAX_OUTPUT_STYLE_CHARS);
             }
         }
 
-        $prompt = $this->truncateFragment($prompt, self::MAX_SYSTEM_PROMPT_CHARS);
+        $prompt = ContextBudget::truncateFragment($prompt, self::MAX_SYSTEM_PROMPT_CHARS);
 
         return [['type' => 'text', 'text' => $prompt, 'cache_control' => ['type' => 'ephemeral']]];
     }
@@ -116,18 +106,12 @@ class ContextBuilder
             return '';
         }
 
-        $this->gitContext->beginSnapshot();
+        $this->codingPreset->beginSnapshot();
 
         try {
-            $context = "# Runtime\n- Current date: ".date('Y-m-d');
-            $gitContext = trim($this->gitContext->getDiffContext());
-            if ($gitContext !== '') {
-                $context .= "\n\n{$gitContext}";
-            }
-
-            return $context;
+            return $this->codingPreset->turnContext();
         } finally {
-            $this->gitContext->endSnapshot();
+            $this->codingPreset->endSnapshot();
         }
     }
 
@@ -149,10 +133,10 @@ You have no tools in this request. Do not claim to have read files, run commands
 PROMPT;
         }
 
-        $prompt = $this->truncateFragment($prompt, self::MAX_BASE_PROMPT_CHARS);
+        $prompt = ContextBudget::truncateFragment($prompt, self::MAX_BASE_PROMPT_CHARS);
         $appendPrompt = $this->settings->getAppendSystemPrompt();
         if (is_string($appendPrompt) && trim($appendPrompt) !== '') {
-            $prompt .= "\n\n".$this->truncateFragment($appendPrompt, self::MAX_APPEND_PROMPT_CHARS);
+            $prompt .= "\n\n".ContextBudget::truncateFragment($appendPrompt, self::MAX_APPEND_PROMPT_CHARS);
         }
 
         if ($this->includeMemoryInTextOnly) {
@@ -161,7 +145,7 @@ PROMPT;
 
         return [[
             'type' => 'text',
-            'text' => $this->truncateFragment($prompt, self::MAX_SYSTEM_PROMPT_CHARS),
+            'text' => ContextBudget::truncateFragment($prompt, self::MAX_SYSTEM_PROMPT_CHARS),
             'cache_control' => ['type' => 'ephemeral'],
         ]];
     }
@@ -206,151 +190,6 @@ PROMPT;
         return $prompt;
     }
 
-    private function getDefaultSystemPrompt(): string
-    {
-        $override = $this->settings->getSystemPrompt();
-        if (is_string($override) && trim($override) !== '') {
-            return $override;
-        }
-
-        $path = \HaoCode\Support\Runtime\SdkRuntime::resourcePath('prompts/system.md');
-        if (file_exists($path)) {
-            return file_get_contents($path);
-        }
-        return $this->getFallbackSystemPrompt();
-    }
-
-    private function getFallbackSystemPrompt(): string
-    {
-        return <<<'PROMPT'
-You are Hao Code, an embedded PHP agent SDK powered by a large language model. You help users with software engineering tasks from inside the host application.
-
-# System
-
-- All text you output outside of tool use is displayed to the user.
-- Tools are executed in a user-selected permission mode.
-
-# Doing tasks
-
-- The user will primarily request you to perform software engineering tasks.
-- In general, do not propose changes to code you haven't read.
-- Do not create files unless they're absolutely necessary.
-- Be careful not to introduce security vulnerabilities.
-
-# Tone and style
-
-- Only use emojis if the user explicitly requests it.
-- Your responses should be short and concise.
-- Lead with the answer or action, not the reasoning.
-PROMPT;
-    }
-
-    private function getEnvironmentContext(): string
-    {
-        $cwd = $this->workingDirectory ?? getcwd();
-        $shell = getenv('SHELL') ?: 'unknown';
-
-        $context = "\n\n# Environment\n";
-        $context .= "- Working directory: {$cwd}\n";
-        $context .= "- Shell: {$shell}\n";
-        $context .= "- PHP: " . PHP_VERSION . "\n";
-        $context .= "- OS: " . PHP_OS_FAMILY . ' ' . php_uname('r') . "\n";
-
-        $isGitRepo = $this->gitContext->isGitRepo();
-        $context .= '- Is git repo: ' . ($isGitRepo ? 'true' : 'false') . "\n";
-
-        return $context;
-    }
-
-    /**
-     * Load memory/instruction files from the project hierarchy.
-     * Checks for: HAOCODE.md, CLAUDE.md, .haocode/instructions.md
-     */
-    private function loadMemoryFiles(): string
-    {
-        $content = '';
-        $cwd = $this->workingDirectory ?? getcwd();
-        $home = $_SERVER['HOME'] ?? getenv('HOME') ?: sys_get_temp_dir();
-
-        // Global user instructions
-        $globalPaths = [
-            "{$home}/.haocode/HAOCODE.md",
-            "{$home}/.haocode/CLAUDE.md",
-        ];
-
-        foreach ($globalPaths as $path) {
-            if (file_exists($path) && is_readable($path)) {
-                $content .= "## Global Instructions ({$path})\n";
-                $content .= $this->readInstructionFile($path) . "\n\n";
-            }
-        }
-
-        // Walk parent directories from cwd to root for CLAUDE.md / HAOCODE.md
-        $visited = [];
-        $dir = $cwd;
-        while ($dir !== '' && $dir !== '/' && $dir !== $home) {
-            $realDir = realpath($dir);
-            if ($realDir === false || isset($visited[$realDir])) {
-                break;
-            }
-            $visited[$realDir] = true;
-
-            $label = $realDir === realpath($cwd) ? 'Project' : 'Parent';
-            $candidates = [
-                "{$realDir}/AGENTS.md",
-                "{$realDir}/HAOCODE.md",
-                "{$realDir}/CLAUDE.md",
-                "{$realDir}/.haocode/instructions.md",
-                "{$realDir}/.haocode/HAOCODE.md",
-                "{$realDir}/.haocode/CLAUDE.md",
-                "{$realDir}/.claude/CLAUDE.md",
-            ];
-
-            foreach ($candidates as $path) {
-                if (file_exists($path) && is_readable($path)) {
-                    $content .= "## {$label} Instructions ({$path})\n";
-                    $content .= $this->readInstructionFile($path) . "\n\n";
-                }
-            }
-
-            // Load rule files from .haocode/rules/*.md and .claude/rules/*.md
-            foreach (["{$realDir}/.haocode/rules", "{$realDir}/.claude/rules"] as $rulesDir) {
-                if (is_dir($rulesDir)) {
-                    foreach (glob("{$rulesDir}/*.md") as $ruleFile) {
-                        $content .= "## Rule: " . basename($ruleFile) . " ({$rulesDir})\n";
-                        $content .= $this->readInstructionFile($ruleFile) . "\n\n";
-                    }
-                }
-            }
-
-            $dir = dirname($dir);
-        }
-
-        return trim($this->truncateFragment($content, self::MAX_PROJECT_INSTRUCTIONS_CHARS));
-    }
-
-    /**
-     * 读取单个项目指令文件，并限制其进入模型上下文的最大长度。
-     */
-    private function readInstructionFile(string $path): string
-    {
-        $content = file_get_contents($path, false, null, 0, self::MAX_INSTRUCTION_FILE_CHARS + 1);
-
-        return $this->truncateFragment(is_string($content) ? $content : '', self::MAX_INSTRUCTION_FILE_CHARS);
-    }
-
-    /**
-     * 截断单个上下文片段并附加可观察的省略标记。
-     */
-    private function truncateFragment(string $content, int $maxChars): string
-    {
-        if (mb_strlen($content) <= $maxChars) {
-            return $content;
-        }
-
-        return mb_substr($content, 0, $maxChars)."\n[... context truncated by Hao Code budget ...]";
-    }
-
     /**
      * Progressive-disclosure protocol for skills. Mirrors the structure of
      * codex's SKILLS_HOW_TO_USE so the model treats SKILL.md as a workflow
@@ -378,20 +217,6 @@ PROMPT;
 - Coordination: if multiple skills apply, pick the minimal set and state the order. Announce which skill you're using (one short line). If you skip an obvious skill, say why.
 - Context hygiene: progressive disclosure applies to selecting relevant files, not partially reading a selected instruction file. Avoid deep reference-chasing — open only files directly linked from SKILL.md unless blocked.
 - Safety: if a skill can't be applied cleanly (missing files, unclear instructions), state the issue, pick the next-best approach, and continue.
-TEXT;
-    }
-
-    private function getHaoCodeConventions(): string
-    {
-        return <<<'TEXT'
-
-
-# Hao Code Conventions
-
-- Hao Code-owned files and generated artifacts must use `.haocode`, not `.claude`.
-- Store skills under `~/.haocode/skills/` or `.haocode/skills/`.
-- If imported compatibility instructions mention Claude Code paths like `.claude/...`, translate them to the Hao Code equivalent under `.haocode/...`.
-- Do not create or modify `.claude/` files unless the user explicitly asks for Claude Code compatibility work.
 TEXT;
     }
 }

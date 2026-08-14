@@ -3,6 +3,7 @@
 namespace HaoCode\Tools\FileRead;
 
 use HaoCode\Services\FileEdit\FileRevision;
+use HaoCode\Support\Filesystem\BoundedTextFileReader;
 use HaoCode\Support\Filesystem\FileContentTypeDetector;
 use HaoCode\Tools\BaseTool;
 use HaoCode\Tools\ToolInputSchema;
@@ -11,10 +12,6 @@ use HaoCode\Tools\ToolUseContext;
 
 class FileReadTool extends BaseTool
 {
-    private const MAX_TEXT_LINE_BYTES = 1_000_000;
-    private const MAX_TEXT_OUTPUT_BYTES = 1_000_000;
-    private const MAX_TEXT_OFFSET = 1_000_000;
-    private const MAX_TEXT_LIMIT = 10_000;
     private const MAX_PDF_OUTPUT_BYTES = 100_000;
     private const PDF_TIMEOUT_SECONDS = 10.0;
     private const MAX_NOTEBOOK_BYTES = 8_388_608; // 8 MiB JSON input cap
@@ -164,10 +161,13 @@ DESC;
             return $result;
         }
 
-        $scan = $this->readTextLineWindow($filePath, $offset, $limit, $context->isAborted(...));
-        if ($scan === null) {
-            return ToolResult::error("Failed to read file: {$filePath}");
-        }
+        $scan = BoundedTextFileReader::readPath(
+            $filePath,
+            $filePath,
+            $offset,
+            $limit,
+            $context->isAborted(...),
+        );
         if (($scan['aborted'] ?? false) === true) {
             return ToolResult::aborted();
         }
@@ -205,17 +205,27 @@ DESC;
         $header .= str_repeat('-', 60) . "\n";
 
         $rendered = $header . $output;
-        if (strlen($rendered) > self::MAX_TEXT_OUTPUT_BYTES) {
+        if (strlen($rendered) > BoundedTextFileReader::MAX_OUTPUT_BYTES) {
             return ToolResult::error(
-                'Read output exceeds '.self::MAX_TEXT_OUTPUT_BYTES." bytes in {$filePath}. "
-                .'Use a smaller limit or a later offset.',
+                'Read output exceeds '.BoundedTextFileReader::MAX_OUTPUT_BYTES." bytes in {$filePath}. "
+                    .'Use a smaller limit or a later offset.',
             );
         }
         if ($context->isAborted()) {
             return ToolResult::aborted();
         }
 
-        $context->recordObservedFileRevision($scan['revision'], null, $offset, $limit, $isPartial, $totalLines);
+        $context->recordObservedFileRevision(new FileRevision(
+            canonicalPath: realpath($filePath) ?: $filePath,
+            device: $scan['device'],
+            inode: $scan['inode'],
+            size: $scan['size'],
+            mtime: $scan['mtime'],
+            sha256: $scan['sha256'],
+            complete: true,
+            observedAtMicros: (int) round(microtime(true) * 1_000_000),
+            local: true,
+        ), null, $offset, $limit, $isPartial, $totalLines);
 
         return ToolResult::success($rendered);
     }
@@ -237,12 +247,12 @@ DESC;
         }
 
         $offset = $input['offset'] ?? 1;
-        if (! is_int($offset) || $offset < 1 || $offset > self::MAX_TEXT_OFFSET) {
-            return 'offset must be between 1 and '.self::MAX_TEXT_OFFSET.'.';
+        if (! is_int($offset) || $offset < 1 || $offset > BoundedTextFileReader::MAX_OFFSET) {
+            return 'offset must be between 1 and '.BoundedTextFileReader::MAX_OFFSET.'.';
         }
         $limit = $input['limit'] ?? 2000;
-        if (! is_int($limit) || $limit < 1 || $limit > self::MAX_TEXT_LIMIT) {
-            return 'limit must be between 1 and '.self::MAX_TEXT_LIMIT.'.';
+        if (! is_int($limit) || $limit < 1 || $limit > BoundedTextFileReader::MAX_LIMIT) {
+            return 'limit must be between 1 and '.BoundedTextFileReader::MAX_LIMIT.'.';
         }
 
         if (isset($input['pages']) && trim((string) $input['pages']) !== '') {
@@ -453,124 +463,6 @@ DESC;
         }
 
         return ToolResult::success($output, ['outputLimited' => $outputLimited]);
-    }
-
-    /**
-     * Stream a text file and retain only the requested line window.
-     *
-     * @return array{selectedLines?: string[], totalLines?: int, revision?: FileRevision, error?: string, aborted?: bool}|null
-     */
-    private function readTextLineWindow(
-        string $filePath,
-        int $offset,
-        int $limit,
-        ?callable $shouldAbort = null,
-    ): ?array
-    {
-        $handle = @fopen($filePath, 'rb');
-        if (! is_resource($handle)) {
-            return null;
-        }
-
-        $selected = [];
-        $lineNumber = 0;
-        $buffer = '';
-        $hash = hash_init('sha256');
-        $size = 0;
-        $selectedBytes = 0;
-        $stat = @fstat($handle);
-        if (! is_array($stat)) {
-            fclose($handle);
-
-            return null;
-        }
-
-        try {
-            while (! feof($handle)) {
-                if ($shouldAbort !== null && $shouldAbort()) {
-                    return ['aborted' => true];
-                }
-                $chunk = fread($handle, 64 * 1024);
-                if ($chunk === false) {
-                    return null;
-                }
-                if ($chunk === '') {
-                    continue;
-                }
-
-                hash_update($hash, $chunk);
-                $size += strlen($chunk);
-                $buffer .= $chunk;
-                if (strlen($buffer) > self::MAX_TEXT_LINE_BYTES
-                    && preg_match('/\r\n|\n|\r/', $buffer) !== 1) {
-                    return [
-                        'error' => 'Line exceeds '.self::MAX_TEXT_LINE_BYTES." bytes in {$filePath}. "
-                            .'Use a more specialized byte-range workflow for extremely long lines.',
-                    ];
-                }
-                while (preg_match('/\r\n|\n|\r/', $buffer, $match, PREG_OFFSET_CAPTURE) === 1) {
-                    $line = substr($buffer, 0, (int) $match[0][1]);
-                    if (strlen($line) > self::MAX_TEXT_LINE_BYTES) {
-                        return [
-                            'error' => 'Line exceeds '.self::MAX_TEXT_LINE_BYTES." bytes in {$filePath}. "
-                                .'Use a more specialized byte-range workflow for extremely long lines.',
-                        ];
-                    }
-                    $lineNumber++;
-                    if ($lineNumber >= $offset && count($selected) < $limit) {
-                        $nextSelectedBytes = $selectedBytes + strlen($line) + 64;
-                        if ($nextSelectedBytes > self::MAX_TEXT_OUTPUT_BYTES) {
-                            return [
-                                'error' => 'Read output exceeds '.self::MAX_TEXT_OUTPUT_BYTES." bytes in {$filePath}. "
-                                    .'Use a smaller limit or a later offset.',
-                            ];
-                        }
-                        $selected[] = $line;
-                        $selectedBytes = $nextSelectedBytes;
-                    }
-                    $buffer = substr($buffer, (int) $match[0][1] + strlen($match[0][0]));
-                }
-            }
-
-            if ($buffer !== '') {
-                if (strlen($buffer) > self::MAX_TEXT_LINE_BYTES) {
-                    return [
-                        'error' => 'Line exceeds '.self::MAX_TEXT_LINE_BYTES." bytes in {$filePath}. "
-                            .'Use a more specialized byte-range workflow for extremely long lines.',
-                    ];
-                }
-                $lineNumber++;
-                if ($lineNumber >= $offset && count($selected) < $limit) {
-                    $nextSelectedBytes = $selectedBytes + strlen($buffer) + 64;
-                    if ($nextSelectedBytes > self::MAX_TEXT_OUTPUT_BYTES) {
-                        return [
-                            'error' => 'Read output exceeds '.self::MAX_TEXT_OUTPUT_BYTES." bytes in {$filePath}. "
-                                .'Use a smaller limit or a later offset.',
-                        ];
-                    }
-                    $selected[] = $buffer;
-                    $selectedBytes = $nextSelectedBytes;
-                }
-            }
-        } finally {
-            fclose($handle);
-        }
-
-        return [
-            'selectedLines' => $selected,
-            'totalLines' => $lineNumber,
-            'revision' => new FileRevision(
-                canonicalPath: realpath($filePath) ?: $filePath,
-                device: (int) ($stat['dev'] ?? 0),
-                inode: (int) ($stat['ino'] ?? 0),
-                size: $size,
-                mtime: (int) ($stat['mtime'] ?? 0),
-                sha256: hash_final($hash),
-                complete: true,
-                observedAtMicros: (int) round(microtime(true) * 1_000_000),
-                local: true,
-            ),
-        ];
     }
 
     private function findExecutable(string $name): ?string

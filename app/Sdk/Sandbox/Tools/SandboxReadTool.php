@@ -3,6 +3,7 @@
 namespace HaoCode\Sdk\Sandbox\Tools;
 
 use HaoCode\Sdk\Sandbox\Backends\LocalSandboxBackend;
+use HaoCode\Support\Filesystem\BoundedTextFileReader;
 use HaoCode\Support\Filesystem\FileContentTypeDetector;
 use HaoCode\Tools\ToolInputSchema;
 use HaoCode\Tools\ToolResult;
@@ -10,8 +11,6 @@ use HaoCode\Tools\ToolUseContext;
 
 final class SandboxReadTool extends SandboxTool
 {
-    private const MAX_TEXT_LINE_BYTES = 1_000_000;
-
     public function name(): string { return 'Read'; }
 
     public function description(): string
@@ -73,27 +72,20 @@ final class SandboxReadTool extends SandboxTool
             );
         }
 
-        $lines = preg_split('/\R/', $content) ?: [];
-        $total = count($lines);
-        if ($offset > $total && $total > 0) {
-            return ToolResult::error("Offset {$offset} exceeds file length ({$total} lines).");
-        }
-        $selected = array_slice($lines, max(0, $offset - 1), $limit);
-        $isPartial = $offset > 1 || $limit < $total;
-
-        $output = "File: {$path} ({$total} lines total, sandbox)\n";
-        if ($isPartial) {
-            $end = $offset + count($selected) - 1;
-            $output .= "Lines {$offset}-{$end}\n";
-        }
-        $output .= str_repeat('-', 60)."\n";
-        foreach ($selected as $i => $line) {
-            $output .= sprintf("%6d\t%s\n", $offset + $i, $line);
-        }
-
-        $context->recordVirtualFileRead($path, $content, $offset, $limit, $isPartial);
-
-        return ToolResult::success($output);
+        return $this->renderTextRead(
+            BoundedTextFileReader::readString(
+                $content,
+                $path,
+                $offset,
+                $limit,
+                $context->isAborted(...),
+            ),
+            $path,
+            $offset,
+            $limit,
+            $context,
+            $content,
+        );
     }
 
     private function readLocalSandboxFile(
@@ -144,15 +136,36 @@ final class SandboxReadTool extends SandboxTool
                 );
             }
 
-            $scan = $this->readTextLineWindow($handle, $path, $offset, $limit, $context);
-            if (is_string($scan['error'] ?? null)) {
-                return ToolResult::error($scan['error']);
-            }
-            if (($scan['aborted'] ?? false) === true) {
-                return ToolResult::aborted('Sandbox Read aborted.');
-            }
+            $scan = BoundedTextFileReader::readHandle(
+                $handle,
+                $path,
+                $offset,
+                $limit,
+                $context->isAborted(...),
+            );
         } finally {
             fclose($handle);
+        }
+
+        return $this->renderTextRead($scan, $path, $offset, $limit, $context);
+    }
+
+    /**
+     * @param array{selectedLines?: list<string>, totalLines?: int, size?: int, sha256?: string, error?: string, aborted?: bool} $scan
+     */
+    private function renderTextRead(
+        array $scan,
+        string $path,
+        int $offset,
+        int $limit,
+        ToolUseContext $context,
+        ?string $content = null,
+    ): ToolResult {
+        if (($scan['aborted'] ?? false) === true) {
+            return ToolResult::aborted('Sandbox Read aborted.');
+        }
+        if (is_string($scan['error'] ?? null)) {
+            return ToolResult::error($scan['error']);
         }
 
         $total = $scan['totalLines'];
@@ -173,15 +186,29 @@ final class SandboxReadTool extends SandboxTool
             $output .= sprintf("%6d\t%s\n", $offset + $i, $line);
         }
 
-        $context->recordObservedVirtualFileRevision(
-            $path,
-            $scan['size'],
-            $scan['sha256'],
-            $offset,
-            $limit,
-            $isPartial,
-            $total,
-        );
+        if (strlen($output) > BoundedTextFileReader::MAX_OUTPUT_BYTES) {
+            return ToolResult::error(
+                'Read output exceeds '.BoundedTextFileReader::MAX_OUTPUT_BYTES." bytes in {$path}. "
+                    .'Use a smaller limit or a later offset.',
+            );
+        }
+        if ($context->isAborted()) {
+            return ToolResult::aborted('Sandbox Read aborted.');
+        }
+
+        if ($content !== null) {
+            $context->recordVirtualFileRead($path, $content, $offset, $limit, $isPartial);
+        } else {
+            $context->recordObservedVirtualFileRevision(
+                $path,
+                $scan['size'],
+                $scan['sha256'],
+                $offset,
+                $limit,
+                $isPartial,
+                $total,
+            );
+        }
 
         return ToolResult::success($output);
     }
@@ -222,84 +249,21 @@ final class SandboxReadTool extends SandboxTool
         return $resolved;
     }
 
-    /**
-     * @param resource $handle
-     * @return array{selectedLines?: list<string>, totalLines?: int, size?: int, sha256?: string, aborted?: bool, error?: string}
-     */
-    private function readTextLineWindow($handle, string $path, int $offset, int $limit, ToolUseContext $context): array
-    {
-        $selected = [];
-        $lineNumber = 0;
-        $buffer = '';
-        $hash = hash_init('sha256');
-        $size = 0;
-
-        while (! feof($handle)) {
-            if ($context->isAborted()) {
-                return ['aborted' => true];
-            }
-
-            $chunk = fread($handle, 64 * 1024);
-            if ($chunk === false) {
-                return ['error' => "Failed to read sandbox file: {$path}"];
-            }
-            if ($chunk === '') {
-                continue;
-            }
-
-            hash_update($hash, $chunk);
-            $size += strlen($chunk);
-            $buffer .= $chunk;
-            if (strlen($buffer) > self::MAX_TEXT_LINE_BYTES
-                && preg_match('/\r\n|\n|\r/', $buffer) !== 1) {
-                return [
-                    'error' => 'Line exceeds '.self::MAX_TEXT_LINE_BYTES." bytes in {$path}. "
-                        .'Use a more specialized byte-range workflow for extremely long lines.',
-                ];
-            }
-
-            while (preg_match('/\r\n|\n|\r/', $buffer, $match, PREG_OFFSET_CAPTURE) === 1) {
-                $line = substr($buffer, 0, (int) $match[0][1]);
-                if (strlen($line) > self::MAX_TEXT_LINE_BYTES) {
-                    return [
-                        'error' => 'Line exceeds '.self::MAX_TEXT_LINE_BYTES." bytes in {$path}. "
-                            .'Use a more specialized byte-range workflow for extremely long lines.',
-                    ];
-                }
-                $lineNumber++;
-                if ($lineNumber >= $offset && count($selected) < $limit) {
-                    $selected[] = $line;
-                }
-                $buffer = substr($buffer, (int) $match[0][1] + strlen($match[0][0]));
-            }
-        }
-
-        if ($buffer !== '') {
-            if (strlen($buffer) > self::MAX_TEXT_LINE_BYTES) {
-                return [
-                    'error' => 'Line exceeds '.self::MAX_TEXT_LINE_BYTES." bytes in {$path}. "
-                        .'Use a more specialized byte-range workflow for extremely long lines.',
-                ];
-            }
-            $lineNumber++;
-            if ($lineNumber >= $offset && count($selected) < $limit) {
-                $selected[] = $buffer;
-            }
-        }
-
-        return [
-            'selectedLines' => $selected,
-            'totalLines' => $lineNumber,
-            'size' => $size,
-            'sha256' => hash_final($hash),
-        ];
-    }
-
     public function validateInput(array $input, ToolUseContext $context): ?string
     {
         $path = trim((string) ($input['file_path'] ?? ''));
         if ($path === '') return 'file_path must not be empty.';
         if ($this->isBareLineReference($path)) return 'file_path must include an actual path, not only a line reference like ":12".';
+
+        $offset = $input['offset'] ?? 1;
+        if (! is_int($offset) || $offset < 1 || $offset > BoundedTextFileReader::MAX_OFFSET) {
+            return 'offset must be between 1 and '.BoundedTextFileReader::MAX_OFFSET.'.';
+        }
+        $limit = $input['limit'] ?? 2000;
+        if (! is_int($limit) || $limit < 1 || $limit > BoundedTextFileReader::MAX_LIMIT) {
+            return 'limit must be between 1 and '.BoundedTextFileReader::MAX_LIMIT.'.';
+        }
+
         return null;
     }
 

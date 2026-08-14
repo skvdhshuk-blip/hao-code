@@ -7,7 +7,9 @@ use HaoCode\Sdk\HaoCodeConfig;
 use HaoCode\Sdk\Sandbox\Backends\LocalSandboxBackend;
 use HaoCode\Sdk\Sandbox\Backends\NativeSandboxBackend;
 use HaoCode\Sdk\Sandbox\SandboxConfig;
+use HaoCode\Sdk\Sandbox\SandboxBackendInterface;
 use HaoCode\Sdk\Sandbox\SandboxManager;
+use HaoCode\Sdk\Sandbox\SandboxRuntime;
 use HaoCode\Sdk\Sandbox\Tools\SandboxGlobTool;
 use HaoCode\Sdk\Sandbox\Tools\SandboxGrepTool;
 use HaoCode\Sdk\Sandbox\Tools\SandboxReadTool;
@@ -222,7 +224,7 @@ class SandboxTest extends TestCase
         }
     }
 
-    public function test_local_sandbox_read_rejects_extreme_lines_and_reports_abort(): void
+    public function test_local_sandbox_read_enforces_shared_bounds_and_reports_abort(): void
     {
         $runtime = SandboxManager::create(SandboxConfig::local());
         $context = new ToolUseContext('/workspace', 'sandbox-long-line-read');
@@ -240,11 +242,55 @@ class SandboxTest extends TestCase
             $this->assertStringContainsString('Line exceeds', $tooLong->output);
             $this->assertNull($context->getFileRevision('/workspace/long.txt'));
 
+            $runtime->backend->writeFile(
+                '/workspace/wide.txt',
+                str_repeat(str_repeat('x', 2_000)."\n", 600),
+            );
+            $tooWide = $read->call(['file_path' => '/workspace/wide.txt'], $context);
+            $this->assertTrue($tooWide->isError);
+            $this->assertStringContainsString('Read output exceeds', $tooWide->output);
+            $this->assertNull($context->getFileRevision('/workspace/wide.txt'));
+
             $runtime->backend->writeFile('/workspace/a.txt', "hello\n");
             $this->assertSame(ToolOutcome::Aborted, $read->call(['file_path' => '/workspace/a.txt'], $aborted)->outcome());
         } finally {
             $runtime->close();
         }
+    }
+
+    public function test_remote_sandbox_read_uses_shared_line_windows_and_does_not_record_late_aborts(): void
+    {
+        $backend = $this->createMock(SandboxBackendInterface::class);
+        $backend->method('readFile')->willReturn("one\r\ntwo\nthree\r");
+        $runtime = new SandboxRuntime(new SandboxConfig(provider: 'fixture'), $backend);
+        $read = new SandboxReadTool($runtime);
+
+        $context = new ToolUseContext('/workspace', 'remote-line-window');
+        $result = $read->call([
+            'file_path' => '/workspace/input.txt',
+            'offset' => 2,
+            'limit' => 1,
+        ], $context);
+
+        $this->assertFalse($result->isError, $result->output);
+        $this->assertStringContainsString('(3 lines total, sandbox)', $result->output);
+        $this->assertStringContainsString("     2\ttwo", $result->output);
+        $this->assertFalse($context->getFileRevision('/workspace/input.txt')?->complete ?? true);
+
+        $abortChecks = 0;
+        $aborted = new ToolUseContext(
+            '/workspace',
+            'remote-late-abort',
+            shouldAbort: static function () use (&$abortChecks): bool {
+                $abortChecks++;
+
+                return $abortChecks >= 4;
+            },
+        );
+        $abortResult = $read->call(['file_path' => '/workspace/input.txt'], $aborted);
+
+        $this->assertSame(ToolOutcome::Aborted, $abortResult->outcome());
+        $this->assertNull($aborted->getFileRevision('/workspace/input.txt'));
     }
 
     public function test_local_sandbox_glob_grep_and_exec(): void

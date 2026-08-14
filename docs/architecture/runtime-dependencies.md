@@ -36,6 +36,8 @@ Provider dispatch and adapters
 8. `SettingsManager` is the mutable provider-identity source. `StreamingClient`, `PooledProvider`, capability validation, tracing, and cost tracking resolve it at request time rather than caching separate provider identities.
 9. Unknown model or custom endpoint capabilities remain `unknown`. Preflight rejects only capabilities marked `unsupported`.
 10. Tests own the conformance contract. Every registered provider runs the same normal-case matrix and the same fault categories, including transport interruption.
+11. Host and sandbox `Read` implementations share `BoundedTextFileReader` for line counting, window bounds, cancellation, hashing, and output limits. Backends own byte access; tools own path policy, content-type support, receipts, and presentation.
+12. `ContextBuilder` owns generic prompt assembly, memory, Skill disclosure, output style, and the final prompt budget. `CodingContextPreset` owns the coding default prompt, environment, project instruction discovery, Git turn context, and Hao Code coding conventions. Tool-enabled runs keep the Coding Preset until a non-coding selection contract is defined explicitly.
 
 ## Change gate
 

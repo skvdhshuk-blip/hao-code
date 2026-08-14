@@ -2,7 +2,7 @@
 
 Use hao-code as a framework-free PHP library to embed an AI coding agent in your application.
 
-This document describes the `v1.19.8` source line. Published package versions
+This document describes the `v1.19.9` source line. Published package versions
 are identified by Git tags and Packagist.
 
 ```bash
@@ -562,6 +562,12 @@ whitespace such as `'plan '`) throw instead of falling back to the broader
 | `webfetchPrivateAllowList` | `list<string>` | `[]` | Explicit CIDRs that bypass the WebFetch SSRF guard (for example `['127.0.0.1/32', '192.168.0.0/16']`). The default is empty, so loopback is not implicitly reachable. |
 | `webfetchMaxBytes` | `int` | `5_242_880` | Hard cap on decompressed response bytes per WebFetch request. Responses over the cap are cancelled and surfaced as an error (previously the entire body was buffered, risking OOM). |
 
+Runs with enabled tools use the coding context: the default coding prompt,
+environment, project instruction files, Git turn context, and Hao Code path
+conventions. Runs with no tools use the minimal text-only prompt and omit those
+coding-only sections. `systemPrompt` and `appendSystemPrompt` retain their
+documented override behavior in both modes.
+
 ### Tools & Skills
 
 | Parameter | Type | Default | Description |
@@ -583,6 +589,9 @@ explicitly or use `allowedTools: ['*']`.
 The built-in `Read` tool produces text tool results. Images and PDFs without
 extractable text fail explicitly rather than being returned as base64; provide
 images through the SDK image-input APIs described in [Multimodal Input](#multimodal-input).
+Host and sandbox text reads use the same bounded line-window contract: offsets
+must be at most 1,000,000, limits at most 10,000 lines, and a single line or
+rendered result cannot exceed 1,000,000 bytes.
 The read-before-write guard records only complete, successful reads. Failed or
 partial reads do not authorize `Write` or `Edit`, and if the file's external
 revision changes, the caller must complete another full `Read` before mutation.

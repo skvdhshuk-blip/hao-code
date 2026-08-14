@@ -11,6 +11,8 @@ final class ContextBudget
 {
     public const MAX_ESTIMATED_INPUT_TOKENS = 167_000;
 
+    private const TRUNCATION_MARKER = "\n[... context truncated by Hao Code budget ...]";
+
     public static function safeInputLimit(int $contextWindow, int $maxOutputTokens): int
     {
         $contextWindow = max(1, $contextWindow);
@@ -32,5 +34,14 @@ final class ContextBudget
         }
 
         return (int) ceil(mb_strlen($json) / 4);
+    }
+
+    public static function truncateFragment(string $content, int $maxChars): string
+    {
+        if (mb_strlen($content) <= $maxChars) {
+            return $content;
+        }
+
+        return mb_substr($content, 0, $maxChars).self::TRUNCATION_MARKER;
     }
 }

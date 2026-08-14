@@ -19,4 +19,13 @@ class ContextBudgetTest extends TestCase
         $this->assertSame(190000, ContextBudget::safeInputLimit(200000, 0));
         $this->assertSame(1, ContextBudget::safeInputLimit(200000, 300000));
     }
+
+    public function test_fragment_truncation_has_one_shared_observable_marker(): void
+    {
+        $this->assertSame('short', ContextBudget::truncateFragment('short', 5));
+        $this->assertSame(
+            "long\n[... context truncated by Hao Code budget ...]",
+            ContextBudget::truncateFragment('longer', 4),
+        );
+    }
 }

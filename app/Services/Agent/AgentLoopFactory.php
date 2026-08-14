@@ -223,12 +223,14 @@ class AgentLoopFactory
                 toolRegistry: $toolRegistry,
                 memoryStore: $runContext->memoryStore ?? new JsonMemoryStore,
                 skillLoader: $runContext->skillLoader,
-                gitContext: new GitContext($runContext->projectDirectory),
+                codingPreset: new CodingContextPreset(
+                    gitContext: new GitContext($runContext->projectDirectory),
+                    workingDirectory: $runContext->projectDirectory,
+                    omitProjectInstructions: $runContext->omitProjectInstructions,
+                ),
                 outputStyleLoader: new OutputStyleLoader($runContext->projectDirectory),
-                workingDirectory: $runContext->projectDirectory,
                 textOnly: $toolRegistry->getAllTools() === [],
                 includeMemoryInTextOnly: $runContext->includeMemoryInTextOnly,
-                omitProjectInstructions: $runContext->omitProjectInstructions,
             );
         } else {
             $settings = $this->container->make(SettingsManager::class);

@@ -190,6 +190,7 @@ class AgentLoopFactoryTest extends TestCase
         $parentSettings = new SettingsManager($root);
         $parentSettings->set('api_base_url', 'https://api.anthropic.com');
         $parentSettings->set('append_system_prompt', 'Parent append');
+        file_put_contents($root.'/AGENTS.md', 'Project-only instructions must be omitted.');
         $runContext = new AgentRunContext(
             workingDirectory: $root,
             projectDirectory: $root,
@@ -258,9 +259,10 @@ class AgentLoopFactoryTest extends TestCase
             $this->assertSame($childContext->settings, $childProvider->settings);
 
             $builderProperty = new \ReflectionProperty($loop, 'contextBuilder');
+            /** @var ContextBuilder $builder */
             $builder = $builderProperty->getValue($loop);
-            $omitProperty = new \ReflectionProperty($builder, 'omitProjectInstructions');
-            $this->assertTrue($omitProperty->getValue($builder));
+            $prompt = $builder->buildSystemPrompt()[0]['text'];
+            $this->assertStringNotContainsString('Project-only instructions must be omitted.', $prompt);
         } finally {
             $this->removeDirectory($root);
         }

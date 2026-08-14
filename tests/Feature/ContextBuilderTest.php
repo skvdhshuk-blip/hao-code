@@ -3,6 +3,7 @@
 namespace Tests\Feature;
 
 use HaoCode\Services\Agent\ContextBuilder;
+use HaoCode\Services\Agent\CodingContextPreset;
 use HaoCode\Services\Git\GitContext;
 use HaoCode\Services\OutputStyle\OutputStyleLoader;
 use HaoCode\Services\Settings\SettingsManager;
@@ -22,8 +23,15 @@ class ContextBuilderTest extends TestCase
         $skillLoader = $overrides['skillLoader'] ?? $this->makeSkillLoader();
         $gitContext = $overrides['gitContext'] ?? $this->makeGitContext();
         $styleLoader = $overrides['styleLoader'] ?? null;
+        $workingDirectory = $overrides['workingDirectory'] ?? null;
+        $omitProjectInstructions = $overrides['omitProjectInstructions'] ?? false;
+        $codingPreset = $overrides['codingPreset'] ?? new CodingContextPreset(
+            $gitContext,
+            $workingDirectory,
+            $omitProjectInstructions,
+        );
 
-        return new ContextBuilder($settings, $toolRegistry, $sessionMemory, $skillLoader, $gitContext, $styleLoader);
+        return new ContextBuilder($settings, $toolRegistry, $sessionMemory, $skillLoader, $codingPreset, $styleLoader);
     }
 
     private function makeSettings(array $stubs = []): SettingsManager
@@ -121,9 +129,8 @@ class ContextBuilderTest extends TestCase
                 $this->createMock(ToolRegistry::class),
                 $this->makeSessionMemory(),
                 $this->makeSkillLoader(),
-                $this->makeGitContext(),
+                new CodingContextPreset($this->makeGitContext(), $workingDirectory),
                 null,
-                $workingDirectory,
             );
 
             $result = $builder->buildSystemPrompt();
@@ -146,15 +153,32 @@ class ContextBuilderTest extends TestCase
                 $this->createMock(ToolRegistry::class),
                 $this->makeSessionMemory(),
                 $this->makeSkillLoader(),
-                $this->makeGitContext(),
+                new CodingContextPreset($this->makeGitContext(), $workingDirectory),
                 null,
-                $workingDirectory,
             );
 
             $text = $builder->buildSystemPrompt()[0]['text'];
 
             $this->assertStringContainsString('context truncated by Hao Code budget', $text);
             $this->assertLessThanOrEqual(160_100, mb_strlen($text));
+        } finally {
+            unlink($workingDirectory.'/HAOCODE.md');
+            rmdir($workingDirectory);
+        }
+    }
+
+    public function test_multibyte_project_instructions_use_the_character_budget(): void
+    {
+        $workingDirectory = sys_get_temp_dir().'/haocode_multibyte_context_budget_'.uniqid('', true);
+        mkdir($workingDirectory, 0755, true);
+        file_put_contents($workingDirectory.'/HAOCODE.md', str_repeat('中', 40_001));
+
+        try {
+            $text = $this->makeBuilder(['workingDirectory' => $workingDirectory])
+                ->buildSystemPrompt()[0]['text'];
+
+            $this->assertSame(40_000, mb_substr_count($text, '中'));
+            $this->assertStringContainsString('context truncated by Hao Code budget', $text);
         } finally {
             unlink($workingDirectory.'/HAOCODE.md');
             rmdir($workingDirectory);
@@ -173,9 +197,8 @@ class ContextBuilderTest extends TestCase
                 $this->createMock(ToolRegistry::class),
                 $this->makeSessionMemory(),
                 $this->makeSkillLoader(),
-                $this->makeGitContext(),
+                new CodingContextPreset($this->makeGitContext(), $workingDirectory),
                 null,
-                $workingDirectory,
             );
 
             $text = $builder->buildSystemPrompt()[0]['text'];
@@ -200,12 +223,10 @@ class ContextBuilderTest extends TestCase
                 $this->createMock(ToolRegistry::class),
                 $this->makeSessionMemory(),
                 $this->makeSkillLoader(),
-                $this->makeGitContext(),
+                new CodingContextPreset($this->makeGitContext(), $workingDirectory, true),
                 null,
-                $workingDirectory,
                 false,
                 false,
-                true,
             );
 
             $text = $builder->buildSystemPrompt()[0]['text'];
@@ -227,9 +248,11 @@ class ContextBuilderTest extends TestCase
             new ToolRegistry(),
             $this->makeSessionMemory('persistent memory'),
             $this->makeSkillLoader('/review — Review code'),
-            $this->makeGitContext("# Git Status\n- Working tree: dirty"),
+            new CodingContextPreset(
+                $this->makeGitContext("# Git Status\n- Working tree: dirty"),
+                getcwd() ?: '/',
+            ),
             null,
-            getcwd() ?: '/',
             true,
         );
 
@@ -251,9 +274,8 @@ class ContextBuilderTest extends TestCase
             new ToolRegistry(),
             $this->makeSessionMemory('user prefers concise responses'),
             $this->makeSkillLoader(),
-            $this->makeGitContext(),
+            new CodingContextPreset($this->makeGitContext(), getcwd() ?: '/'),
             null,
-            getcwd() ?: '/',
             true,
             true,
         );
@@ -432,9 +454,8 @@ class ContextBuilderTest extends TestCase
             new ToolRegistry(),
             $this->makeSessionMemory(),
             $this->makeSkillLoader(),
-            $gitContext,
+            new CodingContextPreset($gitContext, getcwd() ?: '/'),
             null,
-            getcwd() ?: '/',
             true,
         );
 

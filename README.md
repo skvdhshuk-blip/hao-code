@@ -286,6 +286,10 @@ The read-before-write receipt is committed only when the current model tool
 batch becomes visible to the model. A `Read` and a `Write`/`Edit` in the same
 tool batch cannot authorize one another; issue the mutation in the next batch.
 
+Host and sandbox text reads share the same bounds: offset up to 1,000,000,
+limit up to 10,000 lines, and at most 1,000,000 bytes for one line or the
+rendered result.
+
 AgentRun `Write` results expose `metadata['writeSafety'] === 'recheck_only'`
 and `metadata['conditionalWrite'] === false`. Local, Native, and Tokimo writes
 use the stronger conditional revision-aware path.
@@ -928,7 +932,13 @@ application-owned store.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.19.8`. Notable changes since `v1.10.0`:
+is based on `v1.19.9`. Notable changes since `v1.10.0`:
+
+- `v1.19.9` — Host and sandbox `Read` tools now share one bounded text scanner
+  for line windows, cancellation, hashing, and size failures; failed or aborted
+  reads never create write-authorizing receipts. Coding prompt context is also
+  isolated behind one internal preset while text-only calls keep their minimal
+  no-tools prompt and existing public configuration contract.
 
 - `v1.19.8` — Runtime provider switching now treats provider type, credentials,
   model, endpoint, token limits, capability checks, and cost context as one
