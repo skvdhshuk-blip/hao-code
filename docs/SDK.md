@@ -2,7 +2,7 @@
 
 Use hao-code as a framework-free PHP library to embed an AI coding agent in your application.
 
-This document describes the `v1.19.9` source line. Published package versions
+This document describes the `v1.19.10` source line. Published package versions
 are identified by Git tags and Packagist.
 
 ```bash
@@ -2079,9 +2079,12 @@ OpenAI Chat Completions streaming uses PHP's native stream wrapper, so a
 `MockHttpClient` does not intercept that SSE transport; use a local HTTP fixture
 server or an explicitly gated live test for that provider.
 
-`composer test` first verifies that every ordinary `*Test.php` file is covered
-by `phpunit.xml`, then runs the complete non-live suite. Use `composer test:live`
-for explicitly gated provider tests, or targeted paths such as
+`composer test` first enforces the repository's 500-physical-line limit for
+every Git-tracked PHP file, then verifies that every ordinary `*Test.php` file
+is covered by `phpunit.xml` and runs the complete non-live suite. The file-size
+contract has no legacy allowlist and can be run independently with
+`composer run quality:file-size`; Linux and Windows CI execute the same check.
+Use `composer test:live` for explicitly gated provider tests, or targeted paths such as
 `./vendor/bin/phpunit tests/Feature/ContextBuilderTest.php` while working on
 internal modules. See `tests/Feature/SdkE2ETest.php` for the current end-to-end
 SDK examples.

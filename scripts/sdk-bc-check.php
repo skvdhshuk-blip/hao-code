@@ -117,9 +117,11 @@ function discoverApiClasses(string $sdkDirectory): array
             '\\',
             $relative,
         );
+        if (trait_exists($className)) {
+            continue;
+        }
         if (! class_exists($className)
             && ! interface_exists($className)
-            && ! trait_exists($className)
             && ! enum_exists($className)
         ) {
             throw new RuntimeException(

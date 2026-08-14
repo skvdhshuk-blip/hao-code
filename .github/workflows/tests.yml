@@ -34,6 +34,9 @@ jobs:
       - name: Check PHP syntax
         run: composer run lint
 
+      - name: Enforce PHP file size
+        run: composer run quality:file-size
+
       - name: Run full non-live test suite
         run: composer run test:full
 
@@ -62,6 +65,9 @@ jobs:
 
       - name: Check test discovery
         run: composer run test:discover
+
+      - name: Enforce PHP file size
+        run: composer run quality:file-size
 
       - name: Run focused Windows compatibility tests
         run: >-

@@ -39,8 +39,10 @@
     ],
     "scripts": {
         "test": "@test:full",
+        "quality:file-size": "php scripts/php-file-size-check.php",
         "test:discover": "php scripts/test-discovery-check.php",
         "test:full": [
+            "@quality:file-size",
             "@test:discover",
             "php -d memory_limit=-1 vendor/bin/phpunit --exclude-group live --no-progress"
         ],

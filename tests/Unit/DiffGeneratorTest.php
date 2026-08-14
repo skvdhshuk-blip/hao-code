@@ -3,6 +3,7 @@
 namespace Tests\Unit;
 
 use HaoCode\Tools\FileEdit\DiffGenerator;
+use HaoCode\Tools\FileEdit\FileEditTool;
 use HaoCode\Services\Git\HardenedGitRunner;
 use PHPUnit\Framework\TestCase;
 
@@ -296,7 +297,7 @@ class DiffGeneratorTest extends TestCase
 
     public function test_file_mutation_tools_pass_abort_signal_to_git_diff(): void
     {
-        $editSource = file_get_contents(dirname(__DIR__, 2).'/app/Tools/FileEdit/FileEditTool.php');
+        $editSource = file_get_contents((new \ReflectionMethod(FileEditTool::class, 'call'))->getFileName());
         $writeSource = file_get_contents(dirname(__DIR__, 2).'/app/Tools/FileWrite/FileWriteTool.php');
 
         $this->assertIsString($editSource);

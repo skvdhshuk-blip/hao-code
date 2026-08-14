@@ -929,10 +929,30 @@ application-owned store.
 - [SDK backward compatibility policy](docs/sdk-bc-policy.md)
 - [SDK example suite](examples/sdk-suite/README.md)
 
+## Source Quality Gates
+
+Every Git-tracked PHP file is limited to 500 physical lines. The rule has no
+legacy allowlist and covers production code, tests, examples, and repository
+scripts. Run the standalone check with:
+
+```bash
+composer run quality:file-size
+```
+
+`composer test` runs this check before test-discovery validation and the full
+non-live PHPUnit suite. GitHub Actions enforces the same contract on Linux and
+Windows. Large implementations keep their existing public class as the API and
+split cohesive behavior into same-namespace concern traits.
+
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.19.9`. Notable changes since `v1.10.0`:
+is based on `v1.19.10`. Notable changes since `v1.10.0`:
+
+- `v1.19.10` — Adds a no-waiver 500-line limit for every tracked PHP file,
+  enforced by Composer and Linux/Windows CI. Existing oversized production and
+  test classes are split into responsibility-oriented concerns without changing
+  the SDK public API snapshot or runtime behavior.
 
 - `v1.19.9` — Host and sandbox `Read` tools now share one bounded text scanner
   for line windows, cancellation, hashing, and size failures; failed or aborted

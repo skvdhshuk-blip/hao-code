@@ -336,7 +336,7 @@ class FileEditToolTest extends TestCase
     {
         // Structural: Edit must not call mime_content_type unconditionally
         // (ext-fileinfo is optional; missing it previously fatals).
-        $src = file_get_contents(dirname(__DIR__, 2).'/app/Tools/FileEdit/FileEditTool.php');
+        $src = file_get_contents((new \ReflectionMethod(FileEditTool::class, 'looksBinary'))->getFileName());
         $this->assertNotFalse($src);
         $this->assertStringContainsString("function_exists('mime_content_type')", $src);
         $this->assertMatchesRegularExpression(
