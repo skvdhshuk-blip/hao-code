@@ -73,4 +73,41 @@ class ToolResultTest extends TestCase
         $this->assertSame(['pid' => 42], $restored->metadata);
         $this->assertSame(ToolOutcome::Aborted, $restored->outcome());
     }
+
+    public function test_structured_data_and_safe_error_survive_ipc_round_trip(): void
+    {
+        $result = ToolResult::error(
+            'Order lookup failed.',
+            ['retryable' => true],
+            ['order_id' => 'o-123'],
+        );
+
+        $restored = ToolResult::fromArray($result->toArray());
+
+        $this->assertSame(['order_id' => 'o-123'], $restored->data);
+        $this->assertSame('Order lookup failed.', $restored->safeError);
+        $this->assertSame(['retryable' => true], $restored->metadata);
+    }
+
+    public function test_output_transformations_preserve_outcome_metadata_and_data(): void
+    {
+        $result = ToolResult::aborted('cancelled', ['pid' => 42])
+            ->withMetadata(['pid' => 42, 'retained' => true])
+            ->appendOutput(' after cleanup');
+
+        $this->assertSame(ToolOutcome::Aborted, $result->outcome());
+        $this->assertSame(['pid' => 42, 'retained' => true], $result->metadata);
+        $this->assertSame('cancelled', $result->safeError);
+    }
+
+    public function test_safe_error_remains_separate_from_transformed_model_output(): void
+    {
+        $result = ToolResult::error(
+            'Raw backend detail',
+            safeError: 'Lookup failed.',
+        )->withOutput('Stored output reference');
+
+        $this->assertSame('Stored output reference', $result->output);
+        $this->assertSame('Lookup failed.', $result->safeError);
+    }
 }

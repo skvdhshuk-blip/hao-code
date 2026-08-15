@@ -41,6 +41,7 @@ class AgentLoopFactory
      * @param callable|null $toolFilter If provided, only tools where $toolFilter(toolName) returns true are included
      * @param string|null $workingDirectory Override working directory (e.g., for worktree isolation)
      * @param array<int, \HaoCode\Contracts\ToolInterface> $additionalTools Extra tools to register (e.g., SDK custom tools)
+     * @param array<int, \HaoCode\Contracts\ToolInterface> $replacementTools Framework-owned backend substitutions
      * @param StreamingClient|null $streamingClient Custom API client (e.g., SDK config overrides)
      */
     public function createIsolated(
@@ -58,7 +59,54 @@ class AgentLoopFactory
         ?string $appendSystemPrompt = null,
         bool $omitProjectInstructions = false,
         ?string $agentType = null,
+        array $replacementTools = [],
+        ?AgentRunContext $parentRunContext = null,
+        ?RunLimits $limits = null,
     ): AgentLoop {
+        return $this->createInvocation(new AgentLoopSpec(
+            toolFilter: $toolFilter,
+            workingDirectory: $workingDirectory,
+            additionalTools: $additionalTools,
+            provider: $streamingClient,
+            runContext: $runContext,
+            ephemeral: $ephemeral,
+            afterFork: $afterFork,
+            readOnly: $readOnly,
+            additionalToolFilter: $additionalToolFilter,
+            parentToolRegistry: $parentToolRegistry,
+            parentRunContext: $parentRunContext,
+            model: $model,
+            appendSystemPrompt: $appendSystemPrompt,
+            omitProjectInstructions: $omitProjectInstructions,
+            agentType: $agentType,
+            replacementTools: $replacementTools,
+            limits: $limits,
+        ));
+    }
+
+    /**
+     * Canonical assembly entry for root and nested agent loops.
+     *
+     * @internal
+     */
+    public function createInvocation(AgentLoopSpec $invocation): AgentLoop
+    {
+        $toolFilter = $invocation->toolFilter;
+        $workingDirectory = $invocation->workingDirectory;
+        $additionalTools = $invocation->additionalTools;
+        $streamingClient = $invocation->provider;
+        $runContext = $invocation->runContext;
+        $ephemeral = $invocation->ephemeral;
+        $afterFork = $invocation->afterFork;
+        $readOnly = $invocation->readOnly;
+        $additionalToolFilter = $invocation->additionalToolFilter;
+        $parentToolRegistry = $invocation->parentToolRegistry;
+        $model = $invocation->model;
+        $appendSystemPrompt = $invocation->appendSystemPrompt;
+        $omitProjectInstructions = $invocation->omitProjectInstructions;
+        $agentType = $invocation->agentType;
+        $replacementTools = $invocation->replacementTools;
+
         $requiresScopedContext = $readOnly
             || $model !== null
             || (is_string($appendSystemPrompt) && trim($appendSystemPrompt) !== '')
@@ -111,29 +159,66 @@ class AgentLoopFactory
         // regain tools denied by the SDK run and would replace sandbox tool
         // implementations with their host equivalents.
         $parentRegistry = $parentToolRegistry ?? $this->container->make(ToolRegistry::class);
+        $parentTools = $parentToolRegistry?->getAllTools();
         $toolRegistry = $this->buildToolRegistry(
             $parentRegistry,
             $toolFilter,
-            $additionalTools !== [] || $runContext !== null,
+            $additionalTools !== [] || $replacementTools !== [] || $runContext !== null,
         );
-        // Register additional tools (SDK custom tools, sandbox replacements,
-        // dynamic MCP tools) through the same final capability filter as the
-        // built-in registry. Keep the explicit additionalToolFilter hook for
-        // compatibility, but use toolFilter as the defense-in-depth default
-        // when callers do not provide one.
+        // Framework-owned backend substitutions are the only registrations
+        // allowed to replace an existing capability identity.
         $additionalFilter = $additionalToolFilter ?? $toolFilter ?? static fn (string $name): bool => true;
         if ($toolFilter !== null && $additionalToolFilter !== null) {
             $additionalFilter = static function (string $name) use ($toolFilter, $additionalToolFilter): bool {
                 return $toolFilter($name) && $additionalToolFilter($name);
             };
         }
+        foreach ($replacementTools as $tool) {
+            if ($additionalFilter($tool->name())) {
+                if ($parentTools !== null) {
+                    $parentTool = $parentTools[$tool->name()] ?? null;
+                    if ($parentTool === null) {
+                        throw new \LogicException(
+                            "Nested agent cannot add replacement capability '{$tool->name()}' absent from its parent.",
+                        );
+                    }
+                    if ($parentTool::class !== $tool::class) {
+                        throw new \LogicException(
+                            "Nested agent cannot replace parent capability '{$tool->name()}' with another implementation.",
+                        );
+                    }
+
+                    continue;
+                }
+                $toolRegistry->replace($tool);
+            }
+        }
+
+        // Register additional SDK/MCP tools through the same final capability filter as the
+        // built-in registry. Keep the explicit additionalToolFilter hook for
+        // compatibility, but use toolFilter as the defense-in-depth default
+        // when callers do not provide one.
         foreach ($additionalTools as $tool) {
             if ($additionalFilter($tool->name())) {
+                if ($parentTools !== null) {
+                    $parentTool = $parentTools[$tool->name()] ?? null;
+                    if ($parentTool === null) {
+                        throw new \LogicException(
+                            "Nested agent cannot add capability '{$tool->name()}' absent from its parent.",
+                        );
+                    }
+                    if ($parentTool::class !== $tool::class) {
+                        throw new \LogicException(
+                            "Nested agent cannot replace parent capability '{$tool->name()}' with another implementation.",
+                        );
+                    }
+
+                    continue;
+                }
                 $toolRegistry->register($tool);
             }
         }
 
-        $parentTools = $parentToolRegistry?->getAllTools();
         $parentAllows = static fn (string $name): bool => $parentTools === null || isset($parentTools[$name]);
 
         if ($runContext !== null) {
@@ -155,7 +240,12 @@ class AgentLoopFactory
         }
 
         if ($runContext?->enableAskUser && $parentAllows('AskUserQuestion')) {
-            $toolRegistry->register(new AskUserQuestionTool);
+            // A nested registry may already contain the parent's AskUser
+            // capability. Keep that exact implementation instead of treating
+            // inherited authority as a new registration.
+            if (! $toolRegistry->has('AskUserQuestion')) {
+                $toolRegistry->register(new AskUserQuestionTool);
+            }
         }
 
         if ($runContext !== null) {
@@ -163,7 +253,7 @@ class AgentLoopFactory
             $permissionChecker = new PermissionChecker($settings, new DenialTracker());
             $hookExecutor = new HookExecutor($runContext->projectDirectory);
             if ($parentAllows('Skill') && ($toolFilter === null || $toolFilter('Skill'))) {
-                $toolRegistry->register(new SkillTool(
+                $skillTool = new SkillTool(
                     skillLoader: $runContext->skillLoader,
                     forkRunner: function (string $prompt, SkillDefinition $skill, ToolUseContext $context): string {
                         if ($context->runContext === null) {
@@ -203,31 +293,44 @@ class AgentLoopFactory
                             ephemeral: ! ($childContext->interruptOn !== [] || $childContext->enableAskUser),
                             afterFork: true,
                             parentToolRegistry: $context->toolRegistry,
+                            parentRunContext: $context->runContext,
+                            limits: RunLimits::turns(20),
                         );
-                        $loop->setMaxTurns(20);
                         // Enforce patterned capability rules for the whole child
                         // run (toolFilter only sees names, not Bash commands).
                         if ($capabilitySpecs !== []) {
                             $loop->setBaseSkillScope($capabilitySpecs);
                         }
 
-                        return $loop->run($prompt);
+                        return (new AgentInvocation($prompt))->invoke($loop)->text;
                     },
-                ));
+                );
+                if ($toolRegistry->has('Skill')) {
+                    $toolRegistry->replace($skillTool);
+                } else {
+                    $toolRegistry->register($skillTool);
+                }
             }
             if ($parentAllows('Config') && ($toolFilter === null || $toolFilter('Config'))) {
-                $toolRegistry->register(new ConfigTool($settings));
+                $configTool = new ConfigTool($settings);
+                if ($toolRegistry->has('Config')) {
+                    $toolRegistry->replace($configTool);
+                } else {
+                    $toolRegistry->register($configTool);
+                }
             }
             $contextBuilder = new ContextBuilder(
                 settings: $settings,
                 toolRegistry: $toolRegistry,
                 memoryStore: $runContext->memoryStore ?? new JsonMemoryStore,
                 skillLoader: $runContext->skillLoader,
-                codingPreset: new CodingContextPreset(
-                    gitContext: new GitContext($runContext->projectDirectory),
-                    workingDirectory: $runContext->projectDirectory,
-                    omitProjectInstructions: $runContext->omitProjectInstructions,
-                ),
+                contextPreset: $runContext->contextPreset === ContextPreset::GENERIC
+                    ? new GenericContextPreset()
+                    : new CodingContextPreset(
+                        gitContext: new GitContext($runContext->projectDirectory),
+                        workingDirectory: $runContext->projectDirectory,
+                        omitProjectInstructions: $runContext->omitProjectInstructions,
+                    ),
                 outputStyleLoader: new OutputStyleLoader($runContext->projectDirectory),
                 textOnly: $toolRegistry->getAllTools() === [],
                 includeMemoryInTextOnly: $runContext->includeMemoryInTextOnly,
@@ -304,6 +407,9 @@ class AgentLoopFactory
 
         if ($workingDirectory !== null) {
             $loop->setWorkingDirectory($workingDirectory);
+        }
+        if ($invocation->limits !== null) {
+            $loop->setMaxTurns($invocation->limits->maxTurns);
         }
 
         return $loop;

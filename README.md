@@ -120,6 +120,20 @@ $agent = new Agent(
 $result = Runner::run($agent, 'Review this file', RunOptions::make(cwd: __DIR__));
 ```
 
+`contextPreset` is explicit. Its default, `'coding'`, preserves the existing
+Git, project-instruction, and coding-convention context. Use `'generic'` for a
+tool-using non-coding agent; tools, skills, memory, output style, permission,
+and provider behavior are unchanged:
+
+```php
+$agent = new Agent(
+    name: 'support-agent',
+    contextPreset: 'generic',
+    allowedTools: ['LookupOrder'],
+    tools: [new LookupOrderTool()],
+);
+```
+
 Agents can be composed: one agent can use another as a tool via `Agent::asTool()`.
 `HaoCode::query()` and `HaoCode::stream()` remain unchanged and are implemented on
 top of `Runner`.
@@ -947,7 +961,14 @@ split cohesive behavior into same-namespace concern traits.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.19.10`. Notable changes since `v1.10.0`:
+is based on `v1.20.0`. Notable changes since `v1.10.0`:
+
+- `v1.20.0` — Completes the existing architecture-convergence queue without
+  adding a workflow DSL: coding and generic context presets are explicit;
+  tool results and registry identities have one validated runtime contract;
+  run limits, agent invocation, message visibility, prompt sensitivity, and
+  provider cache adaptation each have a single internal authority. Existing
+  defaults and provider request shapes remain compatible.
 
 - `v1.19.10` — Adds a no-waiver 500-line limit for every tracked PHP file,
   enforced by Composer and Linux/Windows CI. Existing oversized production and

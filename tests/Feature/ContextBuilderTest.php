@@ -25,13 +25,13 @@ class ContextBuilderTest extends TestCase
         $styleLoader = $overrides['styleLoader'] ?? null;
         $workingDirectory = $overrides['workingDirectory'] ?? null;
         $omitProjectInstructions = $overrides['omitProjectInstructions'] ?? false;
-        $codingPreset = $overrides['codingPreset'] ?? new CodingContextPreset(
+        $contextPreset = $overrides['contextPreset'] ?? new CodingContextPreset(
             $gitContext,
             $workingDirectory,
             $omitProjectInstructions,
         );
 
-        return new ContextBuilder($settings, $toolRegistry, $sessionMemory, $skillLoader, $codingPreset, $styleLoader);
+        return new ContextBuilder($settings, $toolRegistry, $sessionMemory, $skillLoader, $contextPreset, $styleLoader);
     }
 
     private function makeSettings(array $stubs = []): SettingsManager

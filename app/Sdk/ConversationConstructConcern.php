@@ -4,6 +4,7 @@ namespace HaoCode\Sdk;
 
 use HaoCode\Services\Agent\AgentLoop;
 use HaoCode\Services\Agent\AgentLoopFactory;
+use HaoCode\Services\Agent\AgentInvocation;
 use HaoCode\Services\Agent\MessageHistory;
 use HaoCode\Services\Api\StreamingClient;
 use HaoCode\Services\Session\SessionManager;
@@ -70,14 +71,14 @@ trait ConversationConstructConcern
                 $this->loop->forceNoTools(true);
             }
             try {
-                $response = $this->loop->run(
-                    userInput: $userInput,
+                $result = (new AgentInvocation(
+                    input: $userInput,
                     onTextDelta: $this->options->onText,
                     onToolStart: $this->options->onToolStart,
                     onToolComplete: $this->options->onToolComplete,
                     onTurnStart: $this->options->onTurnStart,
                     onThinkingDelta: $this->options->onThinking,
-                );
+                ))->invoke($this->loop);
             } catch (HumanInterruptException $exception) {
                 $this->run->preserveSandboxOnClose();
 
@@ -89,12 +90,12 @@ trait ConversationConstructConcern
             }
 
             return new QueryResult(
-                text: $response,
-                usage: self::extractUsage($this->loop),
-                cost: $this->loop->getEstimatedCost(),
-                sessionId: $this->options->ephemeral ? null : $this->loop->getSessionManager()->getSessionId(),
+                text: $result->text,
+                usage: $result->usage,
+                cost: $result->cost,
+                sessionId: $this->options->ephemeral ? null : $result->sessionId,
                 // Per-operation Agent loop turns (not cumulative conversation sends).
-                turnsUsed: $this->loop->getLastRunTurns(),
+                turnsUsed: $result->turnsUsed,
             );
         } finally {
             $this->endOperation();
@@ -171,18 +172,18 @@ trait ConversationConstructConcern
             });
             $autoDecisionHandlerRegistered = true;
 
-            $response = null;
+            $invocationResult = null;
 
-            $fiber = new \Fiber(function () use ($userInput, $onText, $onToolStart, $onToolComplete, $onTurnStart, &$response, &$thrownException): void {
+            $fiber = new \Fiber(function () use ($userInput, $onText, $onToolStart, $onToolComplete, $onTurnStart, &$invocationResult, &$thrownException): void {
                 try {
-                    $response = $this->loop->run(
-                        userInput: $userInput,
+                    $invocationResult = (new AgentInvocation(
+                        input: $userInput,
                         onTextDelta: $onText,
                         onToolStart: $onToolStart,
                         onToolComplete: $onToolComplete,
                         onTurnStart: $onTurnStart,
                         onThinkingDelta: $this->options->onThinking,
-                    );
+                    ))->invoke($this->loop);
                 } catch (\Throwable $e) {
                     $thrownException = $e;
                 }
@@ -220,10 +221,10 @@ trait ConversationConstructConcern
 
             $this->releaseTerminalStreamOperation($autoDecisionHandlerRegistered, $operationReleased);
             yield Message::result(
-                text: $response ?? '',
-                usage: self::extractUsage($this->loop),
-                cost: $this->loop->getEstimatedCost(),
-                sessionId: $this->options->ephemeral ? null : $this->loop->getSessionManager()->getSessionId(),
+                text: $invocationResult?->text ?? '',
+                usage: $invocationResult?->usage ?? [],
+                cost: $invocationResult?->cost ?? 0.0,
+                sessionId: $this->options->ephemeral ? null : $invocationResult?->sessionId,
             );
         } finally {
             if ($fiber instanceof \Fiber && $fiber->isStarted() && ! $fiber->isTerminated()) {

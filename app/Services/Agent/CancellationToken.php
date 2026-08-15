@@ -26,6 +26,20 @@ final class CancellationToken
         return new self($this);
     }
 
+    /** @internal */
+    public function isDescendantOf(self $ancestor): bool
+    {
+        $current = $this->parent;
+        while ($current !== null) {
+            if ($current === $ancestor) {
+                return true;
+            }
+            $current = $current->parent;
+        }
+
+        return false;
+    }
+
     public function cancel(): void
     {
         if ($this->cancelled) {

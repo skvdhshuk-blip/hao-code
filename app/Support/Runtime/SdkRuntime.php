@@ -252,7 +252,7 @@ final class SdkRuntime
             toolRegistry: $app->make(ToolRegistry::class),
             memoryStore: $app->make(MemoryStoreInterface::class),
             skillLoader: $app->make(SkillLoader::class),
-            codingPreset: new CodingContextPreset($app->make(GitContext::class)),
+            contextPreset: new CodingContextPreset($app->make(GitContext::class)),
             outputStyleLoader: $app->make(OutputStyleLoader::class),
         ));
         $app->singleton(StreamingClient::class, function (Container $app) {

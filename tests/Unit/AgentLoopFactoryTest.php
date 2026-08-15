@@ -159,10 +159,13 @@ class AgentLoopFactoryTest extends TestCase
     {
         $allowed = $this->createMock(\HaoCode\Contracts\ToolInterface::class);
         $allowed->method('name')->willReturn('AllowedTool');
+        $allowed->method('inputSchema')->willReturn(\HaoCode\Tools\ToolInputSchema::make(['type' => 'object']));
         $notWhitelisted = $this->createMock(\HaoCode\Contracts\ToolInterface::class);
         $notWhitelisted->method('name')->willReturn('NotWhitelistedTool');
+        $notWhitelisted->method('inputSchema')->willReturn(\HaoCode\Tools\ToolInputSchema::make(['type' => 'object']));
         $hookDenied = $this->createMock(\HaoCode\Contracts\ToolInterface::class);
         $hookDenied->method('name')->willReturn('HookDeniedTool');
+        $hookDenied->method('inputSchema')->willReturn(\HaoCode\Tools\ToolInputSchema::make(['type' => 'object']));
 
         $toolFilter = static fn (string $name): bool => in_array($name, ['AllowedTool', 'HookDeniedTool'], true);
         $additionalToolFilter = static fn (string $name): bool => $name !== 'HookDeniedTool';
@@ -181,6 +184,78 @@ class AgentLoopFactoryTest extends TestCase
         $this->assertNotNull($registry->getTool('AllowedTool'));
         $this->assertNull($registry->getTool('NotWhitelistedTool'));
         $this->assertNull($registry->getTool('HookDeniedTool'));
+    }
+
+    public function test_nested_agent_cannot_add_a_tool_absent_from_the_parent_registry(): void
+    {
+        $tool = new class extends SdkTool {
+            public function name(): string { return 'ChildOnly'; }
+            public function description(): string { return 'Child-only probe'; }
+            public function parameters(): array { return []; }
+            public function handle(array $input): string { return 'child'; }
+        };
+        $parent = new ToolRegistry();
+        $factory = new AgentLoopFactory(container: $this->buildContainer($parent));
+
+        $this->expectException(\LogicException::class);
+        $this->expectExceptionMessage("cannot add capability 'ChildOnly' absent from its parent");
+
+        $factory->createIsolated(
+            additionalTools: [$tool],
+            streamingClient: $this->createMock(StreamingClient::class),
+            parentToolRegistry: $parent,
+        );
+    }
+
+    public function test_nested_agent_keeps_parent_tool_state_for_same_implementation(): void
+    {
+        $makeTool = static fn (string $value): SdkTool => new class($value) extends SdkTool {
+            public function __construct(private readonly string $value) {}
+            public function name(): string { return 'ScopedProbe'; }
+            public function description(): string { return 'Scoped capability probe'; }
+            public function parameters(): array { return []; }
+            public function handle(array $input): string { return $this->value; }
+        };
+        $parent = new ToolRegistry();
+        $parent->register($makeTool('parent'));
+        $factory = new AgentLoopFactory(container: $this->buildContainer($parent));
+
+        $loop = $factory->createIsolated(
+            additionalTools: [$makeTool('child')],
+            streamingClient: $this->createMock(StreamingClient::class),
+            parentToolRegistry: $parent,
+        );
+        $property = new \ReflectionProperty($loop, 'toolRegistry');
+        /** @var ToolRegistry $childRegistry */
+        $childRegistry = $property->getValue($loop);
+        /** @var SdkTool $childTool */
+        $childTool = $childRegistry->getTool('ScopedProbe');
+
+        $this->assertSame('parent', $childTool->handle([]));
+    }
+
+    public function test_nested_agent_reuses_inherited_ask_user_capability(): void
+    {
+        $parent = new ToolRegistry();
+        $parent->register(new \HaoCode\Tools\AskUserQuestion\AskUserQuestionTool());
+        $settings = new SettingsManager(sys_get_temp_dir());
+        $runContext = new AgentRunContext(
+            workingDirectory: sys_get_temp_dir(),
+            projectDirectory: sys_get_temp_dir(),
+            settings: $settings,
+            skillLoader: new SkillLoader(sys_get_temp_dir()),
+            cancellationToken: new CancellationToken(),
+            enableAskUser: true,
+        );
+        $factory = new AgentLoopFactory(container: $this->buildContainer($parent));
+
+        $loop = $factory->createIsolated(
+            streamingClient: $this->createMock(StreamingClient::class),
+            runContext: $runContext,
+            parentToolRegistry: $parent,
+        );
+
+        $this->assertSame(['AskUserQuestion'], $loop->getRegisteredToolNames());
     }
 
     public function test_agent_overrides_are_scoped_to_child_settings_and_provider(): void

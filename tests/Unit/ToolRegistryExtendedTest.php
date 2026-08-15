@@ -95,13 +95,61 @@ class ToolRegistryExtendedTest extends TestCase
         $this->assertSame('ReadFile', $apiTools[0]['name']);
     }
 
-    public function test_registering_same_name_overwrites_previous(): void
+    public function test_manifest_is_validated_and_uses_stable_registration_identity(): void
+    {
+        $registry = new ToolRegistry;
+        $tool = $this->makeTool('LookupOrder');
+        $registry->register($tool);
+
+        $manifest = $registry->manifest();
+
+        $this->assertSame('LookupOrder', $manifest['LookupOrder']['name']);
+        $this->assertSame('runtime', $manifest['LookupOrder']['effect']);
+        $this->assertStringStartsWith('anonymous:', $manifest['LookupOrder']['implementation']);
+        $this->assertStringNotContainsString(__FILE__, $manifest['LookupOrder']['implementation']);
+        $this->assertSame('object', $manifest['LookupOrder']['input_schema']['type']);
+    }
+
+    public function test_invalid_schema_is_rejected_during_registration(): void
+    {
+        $tool = $this->createMock(ToolInterface::class);
+        $tool->method('name')->willReturn('BrokenTool');
+        $tool->method('inputSchema')->willReturn(ToolInputSchema::make(['type' => 'string']));
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('type=object');
+        (new ToolRegistry)->register($tool);
+    }
+
+    public function test_schema_required_entries_must_reference_declared_properties(): void
+    {
+        $tool = $this->createMock(ToolInterface::class);
+        $tool->method('name')->willReturn('InvalidRequired');
+        $tool->method('inputSchema')->willReturn(ToolInputSchema::make([
+            'type' => 'object',
+            'properties' => [],
+            'required' => ['missing'],
+        ]));
+
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('required entries must name declared properties');
+        (new ToolRegistry)->register($tool);
+    }
+
+    public function test_duplicate_registration_requires_explicit_replacement(): void
     {
         $registry = new ToolRegistry;
         $registry->register($this->makeTool('MyTool'));
 
         $second = $this->makeTool('MyTool');
-        $registry->register($second);
+        try {
+            $registry->register($second);
+            $this->fail('Duplicate registration must fail closed.');
+        } catch (\LogicException $e) {
+            $this->assertStringContainsString('use replace()', $e->getMessage());
+        }
+
+        $registry->replace($second);
 
         $this->assertSame($second, $registry->getTool('MyTool'));
     }
@@ -166,7 +214,7 @@ class ToolRegistryExtendedTest extends TestCase
         $this->assertSame([], $registry->toApiTools());
         $tool->enabled = true;
         $this->assertSame(['DynamicTool'], array_column($registry->toApiTools(), 'name'));
-        $this->assertSame(2, $tool->schemaCalls);
+        $this->assertSame(3, $tool->schemaCalls);
     }
 
     public function test_schema_cache_does_not_freeze_sdk_tool_parameters(): void
@@ -213,7 +261,7 @@ class ToolRegistryExtendedTest extends TestCase
         $firstSchema = $registry->toApiTools()[0]['input_schema'];
 
         $replacement = $this->makeSchemaTool('Sleep', 'integer');
-        $registry->register($replacement);
+        $registry->replace($replacement);
         $secondSchema = $registry->toApiTools()[0]['input_schema'];
 
         $this->assertSame($replacement, $registry->getTool('Sleep'));
@@ -255,17 +303,34 @@ class ToolRegistryExtendedTest extends TestCase
         $registry->register($tool);
         $registry->toApiTools();
 
-        $tool->currentName = 'UpdatedSdkTool';
         $tool->currentDescription = 'Updated description';
         $tool->parameterType = 'integer';
         $apiTool = $registry->toApiTools()[0];
 
-        $this->assertSame('UpdatedSdkTool', $apiTool['name']);
+        $this->assertSame('OriginalSdkTool', $apiTool['name']);
         $this->assertSame('Updated description', $apiTool['description']);
         $this->assertSame('integer', $apiTool['input_schema']['properties']['value']['type']);
-        // Registration lookup remains tied to the name used at registration, as before caching.
         $this->assertSame($tool, $registry->getTool('OriginalSdkTool'));
-        $this->assertNull($registry->getTool('UpdatedSdkTool'));
+    }
+
+    public function test_registered_tool_identity_cannot_drift(): void
+    {
+        $tool = new class extends SdkTool
+        {
+            public string $currentName = 'StableTool';
+            public function name(): string { return $this->currentName; }
+            public function description(): string { return 'Stable tool'; }
+            public function parameters(): array { return []; }
+            public function handle(array $input): string { return 'ok'; }
+        };
+
+        $registry = new ToolRegistry;
+        $registry->register($tool);
+        $tool->currentName = 'DriftedTool';
+
+        $this->expectException(\LogicException::class);
+        $this->expectExceptionMessage("Registered tool identity 'StableTool' changed");
+        $registry->toApiTools();
     }
 
     public function test_external_base_tool_dynamic_schema_is_not_cached(): void
@@ -334,7 +399,7 @@ class ToolRegistryExtendedTest extends TestCase
 
         $clone = clone $registry;
         $replacement = $this->makeSchemaTool('Sleep', 'integer');
-        $clone->register($replacement);
+        $clone->replace($replacement);
 
         $this->assertSame('number', $registry->toApiTools()[0]['input_schema']['properties']['seconds']['type']);
         $this->assertSame('integer', $clone->toApiTools()[0]['input_schema']['properties']['value']['type']);

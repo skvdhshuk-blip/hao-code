@@ -6,6 +6,10 @@ use HaoCode\Sdk\AgentRunContextFactory;
 use HaoCode\Sdk\HaoCodeConfig;
 use HaoCode\Sdk\Memory\JsonMemoryStore;
 use HaoCode\Sdk\SdkSkill;
+use HaoCode\Services\Agent\AgentLoopFactory;
+use HaoCode\Services\Agent\ContextPreset;
+use HaoCode\Sdk\SdkRunFactory;
+use HaoCode\Support\Runtime\SdkRuntime;
 use Tests\TestCase;
 
 class AgentRunContextFactoryTest extends TestCase
@@ -85,6 +89,30 @@ class AgentRunContextFactoryTest extends TestCase
 
         $this->assertSame('parent-explicit-key', $context->settings->getApiKey());
         $this->assertSame('parent-explicit-key', $child->settings->getApiKey());
+    }
+
+    public function test_context_preset_is_explicit_inherited_and_restored_from_snapshot(): void
+    {
+        $context = AgentRunContextFactory::make(new HaoCodeConfig(
+            apiKey: 'test-key',
+            contextPreset: ContextPreset::GENERIC,
+        ));
+
+        $this->assertSame(ContextPreset::GENERIC, $context->contextPreset);
+        $this->assertSame(ContextPreset::GENERIC, $context->fork()->contextPreset);
+
+        $run = SdkRunFactory::create(
+            new HaoCodeConfig(apiKey: 'test-key'),
+            SdkRuntime::app(AgentLoopFactory::class),
+            resumeSnapshot: ['context_preset' => ContextPreset::GENERIC],
+        );
+        try {
+            $property = new \ReflectionProperty($run->loop, 'runContext');
+            $restored = $property->getValue($run->loop);
+            $this->assertSame(ContextPreset::GENERIC, $restored->contextPreset);
+        } finally {
+            $run->close();
+        }
     }
 
     public function test_hitl_configuration_is_inherited_and_can_be_fully_overridden(): void

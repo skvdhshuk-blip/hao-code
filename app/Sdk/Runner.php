@@ -4,6 +4,7 @@ namespace HaoCode\Sdk;
 
 use HaoCode\Services\Agent\AgentLoop;
 use HaoCode\Services\Agent\AgentLoopFactory;
+use HaoCode\Services\Agent\AgentInvocation;
 use HaoCode\Sdk\AbortController;
 use HaoCode\Sdk\Agent;
 use HaoCode\Sdk\RunOptions;
@@ -45,21 +46,21 @@ class Runner
                 ? ImageContentBlock::buildUserContent($prompt, $options->images, $options->cwd)
                 : $prompt;
 
-            $response = $loop->run(
-                userInput: $userInput,
+            $result = (new AgentInvocation(
+                input: $userInput,
                 onTextDelta: $options->onText,
                 onToolStart: $options->onToolStart,
                 onToolComplete: $options->onToolComplete,
                 onTurnStart: $options->onTurnStart,
                 onThinkingDelta: $options->onThinking,
-            );
+            ))->invoke($loop);
 
             return new QueryResult(
-                text: $response,
-                usage: self::extractUsage($loop),
-                cost: $loop->getEstimatedCost(),
-                sessionId: $ephemeral ? null : $loop->getSessionManager()->getSessionId(),
-                turnsUsed: $loop->getLastRunTurns(),
+                text: $result->text,
+                usage: $result->usage,
+                cost: $result->cost,
+                sessionId: $ephemeral ? null : $result->sessionId,
+                turnsUsed: $result->turnsUsed,
             );
         } catch (HumanInterruptException $e) {
             $run->preserveSandboxOnClose();
@@ -131,18 +132,18 @@ class Runner
             });
             $autoDecisionHandlerRegistered = true;
 
-            $response = null;
+            $invocationResult = null;
 
-            $fiber = new \Fiber(function () use ($loop, $userInput, $onText, $onToolStart, $onToolComplete, $onTurnStart, $options, &$response, &$thrownException): void {
+            $fiber = new \Fiber(function () use ($loop, $userInput, $onText, $onToolStart, $onToolComplete, $onTurnStart, $options, &$invocationResult, &$thrownException): void {
                 try {
-                    $response = $loop->run(
-                        userInput: $userInput,
+                    $invocationResult = (new AgentInvocation(
+                        input: $userInput,
                         onTextDelta: $onText,
                         onToolStart: $onToolStart,
                         onToolComplete: $onToolComplete,
                         onTurnStart: $onTurnStart,
                         onThinkingDelta: $options->onThinking,
-                    );
+                    ))->invoke($loop);
                 } catch (\Throwable $e) {
                     $thrownException = $e;
                 }
@@ -179,10 +180,10 @@ class Runner
 
             self::releaseTerminalStreamResources($run, $loop, $autoDecisionHandlerRegistered);
             yield Message::result(
-                text: $response ?? '',
-                usage: self::extractUsage($loop),
-                cost: $loop->getEstimatedCost(),
-                sessionId: $ephemeral ? null : $loop->getSessionManager()->getSessionId(),
+                text: $invocationResult?->text ?? '',
+                usage: $invocationResult?->usage ?? [],
+                cost: $invocationResult?->cost ?? 0.0,
+                sessionId: $ephemeral ? null : $invocationResult?->sessionId,
             );
         } finally {
             if ($fiber instanceof \Fiber && $fiber->isStarted() && ! $fiber->isTerminated()) {
@@ -227,18 +228,6 @@ class Runner
         $factory = \HaoCode\Support\Runtime\SdkRuntime::app(AgentLoopFactory::class);
 
         return SdkRunFactory::createFromAgent($agent, $options, $factory);
-    }
-
-    private static function extractUsage(AgentLoop $loop): array
-    {
-        return [
-            'input_tokens' => $loop->getTotalInputTokens(),
-            'output_tokens' => $loop->getTotalOutputTokens(),
-            'cache_creation_tokens' => $loop->getCacheCreationTokens(),
-            'cache_read_tokens' => $loop->getCacheReadTokens(),
-            'last_turn_input_tokens' => $loop->getLastTurnInputTokens(),
-            'cost_available' => $loop->isCostEstimateAvailable(),
-        ];
     }
 
 }

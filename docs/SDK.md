@@ -2,7 +2,7 @@
 
 Use hao-code as a framework-free PHP library to embed an AI coding agent in your application.
 
-This document describes the `v1.19.10` source line. Published package versions
+This document describes the `v1.20.0` source line. Published package versions
 are identified by Git tags and Packagist.
 
 ```bash
@@ -121,6 +121,13 @@ foreach (Runner::stream($agent, 'Stream the review', new RunOptions(
     // Message::text / toolStart / toolResult / turn / result
 }
 ```
+
+The default `contextPreset: 'coding'` preserves the existing coding-agent
+prompt context. A tool-using domain agent can select `contextPreset: 'generic'`
+to omit Git status, project instruction files, and Hao Code coding conventions
+while retaining its configured tools, skills, memory, output style, provider,
+and permission policy. The selection is stored in durable run snapshots so an
+interrupt resume cannot silently switch presets.
 
 `Agent` is immutable: `withTool()`, `withTools()`, `withModel()`,
 `withSystemPrompt()`, `withMaxTurns()`, and `withPermissionMode()` each return
@@ -556,17 +563,19 @@ whitespace such as `'plan '`) throw instead of falling back to the broader
 |-----------|------|---------|-------------|
 | `systemPrompt` | `?string` | `null` | Replace the default system prompt entirely |
 | `appendSystemPrompt` | `?string` | `null` | Append text to the default system prompt |
+| `contextPreset` | `string` | `'coding'` | `'coding'` adds Git/project/coding context; `'generic'` omits those coding-only fragments while keeping tools, skills, memory, and output style |
 | `responseSchema` | `?array` | `null` | Override the schema used by `structured()` |
 | `structuredMaxRetries` | `int` | `1` | Number of times `structured()` retries after JSON parse or schema validation failures. Retries always reuse one in-memory conversation (even when `ephemeral: true`) so prior tool results remain visible; correction turns ask for fixed JSON only. `0` fails fast with `StructuredResultValidationException`. |
 | `webfetchAllowPrivateNetworks` | `bool` | `false` | Allow WebFetch to reach private-like RFC1918, loopback, link-local, and IPv6 ULA ranges. Special-use, multicast, documentation, benchmark, and reserved ranges remain blocked; use an explicit CIDR allowlist for a deliberate exception. |
 | `webfetchPrivateAllowList` | `list<string>` | `[]` | Explicit CIDRs that bypass the WebFetch SSRF guard (for example `['127.0.0.1/32', '192.168.0.0/16']`). The default is empty, so loopback is not implicitly reachable. |
 | `webfetchMaxBytes` | `int` | `5_242_880` | Hard cap on decompressed response bytes per WebFetch request. Responses over the cap are cancelled and surfaced as an error (previously the entire body was buffered, risking OOM). |
 
-Runs with enabled tools use the coding context: the default coding prompt,
-environment, project instruction files, Git turn context, and Hao Code path
-conventions. Runs with no tools use the minimal text-only prompt and omit those
-coding-only sections. `systemPrompt` and `appendSystemPrompt` retain their
-documented override behavior in both modes.
+Tool-enabled runs use the explicitly selected context preset. `'coding'` is the
+backward-compatible default and includes the default coding prompt, environment,
+project instruction files, Git turn context, and Hao Code path conventions.
+`'generic'` omits those coding-only sections. Runs with no tools use the minimal
+text-only prompt in either preset. `systemPrompt` and `appendSystemPrompt` retain
+their documented override behavior in every mode.
 
 ### Tools & Skills
 
@@ -585,6 +594,13 @@ setting `apiKey`, `model`, or another connection option does not change them.
 Custom tools and sandbox replacement tools use the same exact-name
 `allowedTools`/`disallowedTools` filters as built-in tools; list each name
 explicitly or use `allowedTools: ['*']`.
+
+Tool names are stable capability identities. Registration now fails on a
+duplicate name instead of silently letting a later custom or MCP tool replace
+the assembled implementation. SDK consumers should give custom tools unique
+names; sandbox and run-policy replacements are selected internally through an
+explicit replacement path. Dynamic input schemas remain supported and are
+revalidated before provider use.
 
 The built-in `Read` tool produces text tool results. Images and PDFs without
 extractable text fail explicitly rather than being returned as base64; provide

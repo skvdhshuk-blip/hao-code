@@ -29,6 +29,8 @@ class QueryEngine
         ?callable $onThinkingDelta = null,
         ?callable $shouldAbort = null,
         ?array $toolsOverride = null,
+        ?array $telemetrySystemPrompt = null,
+        ?array $telemetryMessages = null,
     ): StreamProcessor {
         if ($this->settings !== null) {
             $this->settings->assertRuntimeConfigurationSupported();
@@ -52,7 +54,11 @@ class QueryEngine
         $llmSpan = $this->tracer?->startSpan(
             name: 'llm.chat',
             openInferenceKind: PhoenixTracer::KIND_LLM,
-            attributes: $this->buildLlmSpanAttributes($systemPrompt, $messages, $tools),
+            attributes: $this->buildLlmSpanAttributes(
+                $telemetrySystemPrompt ?? $systemPrompt,
+                $telemetryMessages ?? $messages,
+                $tools,
+            ),
         );
         $llmScope = $llmSpan?->activate();
 

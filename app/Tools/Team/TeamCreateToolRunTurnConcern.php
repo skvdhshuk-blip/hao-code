@@ -3,6 +3,8 @@
 namespace HaoCode\Tools\Team;
 
 use HaoCode\Services\Agent\AgentLoopFactory;
+use HaoCode\Services\Agent\AgentLoop;
+use HaoCode\Services\Agent\AgentInvocation;
 use HaoCode\Services\Agent\BackgroundAgentManager;
 use HaoCode\Services\Agent\TeamManager;
 use HaoCode\Services\Task\TaskManager;
@@ -17,11 +19,11 @@ use HaoCode\Tools\ToolUseContext;
 trait TeamCreateToolRunTurnConcern
 {
 
-    private function runTurn(object $subLoop, string $agentId, string $prompt): ?string
+    private function runTurn(AgentLoop $subLoop, string $agentId, string $prompt): ?string
     {
         $this->backgroundAgentManager->markRunning($agentId);
         try {
-            $response = $subLoop->run(userInput: $prompt, onTextDelta: null);
+            $response = (new AgentInvocation($prompt))->invoke($subLoop)->text;
         } catch (\HaoCode\Sdk\HumanInterruptException $e) {
             $this->backgroundAgentManager->markWaitingForInput($agentId, $e->interrupt);
             $this->taskManager->update($agentId, 'in_progress', 'Waiting for human input.');

@@ -2,8 +2,11 @@
 
 namespace HaoCode\Services\Agent;
 
+use HaoCode\Services\Api\ProviderMessageAdapter;
+
 class MessageHistory
 {
+    /** @var list<MessageEnvelope> */
     private array $messages = [];
 
     /**
@@ -15,12 +18,18 @@ class MessageHistory
      */
     public function addUserMessage(string|array $content): void
     {
-        $this->messages[] = ['role' => 'user', 'content' => $content];
+        $this->messages[] = MessageEnvelope::user($content);
     }
 
     public function addAssistantMessage(array $message): void
     {
-        $this->messages[] = $message;
+        $this->messages[] = MessageEnvelope::fromMessage($message);
+    }
+
+    /** @internal */
+    public function addEnvelope(MessageEnvelope $envelope): void
+    {
+        $this->messages[] = $envelope;
     }
 
     /**
@@ -45,7 +54,7 @@ class MessageHistory
             ];
         }
 
-        $this->messages[] = ['role' => 'user', 'content' => $content];
+        $this->messages[] = MessageEnvelope::user($content);
     }
 
     /**
@@ -54,61 +63,20 @@ class MessageHistory
      */
     public function getMessagesForApi(): array
     {
-        $messages = $this->normalizeToolCallPairs($this->messages);
-        $count = count($messages);
+        $envelopes = array_values(array_filter(
+            $this->messages,
+            static fn (MessageEnvelope $message): bool => $message->isModelVisible(),
+        ));
+        $messages = $this->normalizeToolCallPairs(array_map(
+            static fn (MessageEnvelope $message): array => $message->message(),
+            $envelopes,
+        ));
+        $penultimate = count($envelopes) >= 3 ? $envelopes[count($envelopes) - 2] : null;
 
-        // Add cache_control breakpoint on the penultimate message (the one before the last user message).
-        // This allows the conversation prefix to be cached while keeping the latest exchange fresh.
-        if ($count >= 3) {
-            $cacheIdx = $count - 2;
-            $messages[$cacheIdx] = $this->addCacheControl($messages[$cacheIdx]);
-        }
-
-        return array_map(
-            fn (array $message): array => $this->normalizeMessageForApi($message),
+        return (new ProviderMessageAdapter)->adapt(
             $messages,
+            $penultimate?->cacheStability === MessageEnvelope::CACHE_STABLE,
         );
-    }
-
-    /**
-     * Add cache_control to the last content block of a message.
-     */
-    private function addCacheControl(array $message): array
-    {
-        if (is_string($message['content'])) {
-            // Simple text message: convert to content block format
-            $message['content'] = [
-                ['type' => 'text', 'text' => $message['content'], 'cache_control' => ['type' => 'ephemeral']],
-            ];
-            return $message;
-        }
-
-        if (is_array($message['content']) && !empty($message['content'])) {
-            // Content blocks: add cache_control to the last block
-            $lastIdx = count($message['content']) - 1;
-            $message['content'][$lastIdx]['cache_control'] = ['type' => 'ephemeral'];
-        }
-
-        return $message;
-    }
-
-    private function normalizeMessageForApi(array $message): array
-    {
-        if (! is_array($message['content'] ?? null)) {
-            return $message;
-        }
-
-        foreach ($message['content'] as $index => $block) {
-            if (($block['type'] ?? null) !== 'tool_use') {
-                continue;
-            }
-
-            if (($block['input'] ?? null) === []) {
-                $message['content'][$index]['input'] = (object) [];
-            }
-        }
-
-        return $message;
     }
 
     /**
@@ -289,18 +257,73 @@ class MessageHistory
      */
     public function replaceMessages(array $messages): void
     {
-        $this->messages = array_values($messages);
+        $this->messages = array_map(
+            static fn (array $message): MessageEnvelope => MessageEnvelope::fromMessage($message),
+            array_values($messages),
+        );
     }
 
     public function getMessages(): array
     {
+        return array_map(
+            static fn (MessageEnvelope $message): array => $message->message(),
+            $this->messages,
+        );
+    }
+
+    /** @return list<MessageEnvelope> */
+    public function getEnvelopes(): array
+    {
         return $this->messages;
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    public function getPersistableMessages(): array
+    {
+        return array_values(array_map(
+            static fn (MessageEnvelope $message): array => $message->message(),
+            array_filter(
+                $this->messages,
+                static fn (MessageEnvelope $message): bool => $message->shouldPersist(),
+            ),
+        ));
+    }
+
+    /** @return array<int, array<string, mixed>> */
+    public function getTelemetryMessages(): array
+    {
+        return array_map(
+            static fn (MessageEnvelope $message): array => $message->telemetryMessage(),
+            $this->messages,
+        );
+    }
+
+    /**
+     * Model-visible, provider-shaped messages with sensitive content removed.
+     *
+     * @return array<int, array<string, mixed>>
+     * @internal
+     */
+    public function getTelemetryMessagesForApi(): array
+    {
+        $messages = array_values(array_map(
+            static fn (MessageEnvelope $message): array => $message->telemetryMessage(),
+            array_filter(
+                $this->messages,
+                static fn (MessageEnvelope $message): bool => $message->isModelVisible(),
+            ),
+        ));
+
+        return (new ProviderMessageAdapter)->adapt(
+            $this->normalizeToolCallPairs($messages),
+            cachePenultimate: false,
+        );
     }
 
     public function getLastAssistantText(): ?string
     {
         for ($i = count($this->messages) - 1; $i >= 0; $i--) {
-            $msg = $this->messages[$i];
+            $msg = $this->messages[$i]->message();
             if ($msg['role'] === 'assistant') {
                 // Handle string content (simple text messages)
                 if (is_string($msg['content'])) {

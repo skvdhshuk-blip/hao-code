@@ -12,7 +12,7 @@ use HaoCode\Support\Runtime\SdkRuntime;
  *
  * @internal
  */
-final class CodingContextPreset
+final class CodingContextPreset implements ContextPresetInterface
 {
     private const MAX_INSTRUCTION_FILE_CHARS = 40_000;
 

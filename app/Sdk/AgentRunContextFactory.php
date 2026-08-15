@@ -4,6 +4,7 @@ namespace HaoCode\Sdk;
 
 use HaoCode\Services\Agent\AgentRunContext;
 use HaoCode\Services\Agent\CancellationToken;
+use HaoCode\Services\Agent\ContextPreset;
 use HaoCode\Services\Settings\SettingsManager;
 use HaoCode\Sdk\Memory\JsonMemoryStore;
 use HaoCode\Tools\Skill\SkillLoader;
@@ -134,6 +135,94 @@ final class AgentRunContextFactory
             backgroundOwnerAgentId: null,
             budgetLedger: null,
             usageAccumulator: new \HaoCode\Services\Cost\UsageAccumulator,
+            contextPreset: $config->contextPreset,
         );
+    }
+
+    /**
+     * Derive an Agent-as-Tool context without rebuilding credentials, storage,
+     * sandbox, cancellation, or other parent-owned resources.
+     *
+     * @internal
+     */
+    public static function makeChild(
+        HaoCodeConfig $config,
+        AgentRunContext $parent,
+        string $workingDirectory,
+    ): AgentRunContext {
+        if ($config->credentialPool !== null) {
+            throw new \LogicException(
+                'Nested agents inherit the parent provider connection and cannot attach a credential pool.',
+            );
+        }
+        $contextPreset = $parent->contextPreset === ContextPreset::GENERIC
+            || $config->contextPreset === ContextPreset::GENERIC
+            ? ContextPreset::GENERIC
+            : ContextPreset::CODING;
+        $interruptOn = array_replace($config->interruptOn, $parent->interruptOn);
+        $context = $parent->fork(
+            workingDirectory: $workingDirectory,
+            readOnly: $parent->readOnly || $config->permissionMode === 'plan',
+            interruptOn: $interruptOn,
+            contextPreset: $contextPreset,
+        );
+        $settings = $context->settings;
+        $parentProvider = $parent->settings->resolveProviderConfig();
+
+        $settings->set(
+            'permission_mode',
+            self::stricterPermissionMode(
+                $parent->settings->getPermissionMode()->value,
+                $config->permissionMode,
+            ),
+        );
+        if ($config->model !== null) {
+            $settings->set('model', $config->model);
+        }
+        if ($config->maxTokens !== null) {
+            $settings->set('max_tokens', min($parentProvider->maxTokens, $config->maxTokens));
+        }
+        $settings->set(
+            'thinking_enabled',
+            $parent->settings->isThinkingEnabled() && $config->thinkingEnabled,
+        );
+        $settings->set(
+            'thinking_budget',
+            min($parent->settings->getThinkingBudget(), $config->thinkingBudget),
+        );
+        $childPrompt = trim(implode("\n\n", array_filter([
+            $config->systemPrompt,
+            $config->appendSystemPrompt,
+        ], static fn (mixed $value): bool => is_string($value) && trim($value) !== '')));
+        if ($childPrompt !== '') {
+            $existing = trim((string) $settings->getAppendSystemPrompt());
+            $settings->set(
+                'append_system_prompt',
+                $existing === '' ? $childPrompt : $existing."\n\n".$childPrompt,
+            );
+        }
+
+        $childProvider = $settings->resolveProviderConfig();
+        if ($childProvider->providerType !== $parentProvider->providerType
+            || $childProvider->baseUrl !== $parentProvider->baseUrl
+            || $childProvider->apiKey !== $parentProvider->apiKey) {
+            throw new \LogicException(
+                'Nested agents may select a model only within the inherited provider connection.',
+            );
+        }
+
+        return $context;
+    }
+
+    private static function stricterPermissionMode(string $parent, string $child): string
+    {
+        $rank = [
+            'plan' => 0,
+            'default' => 1,
+            'accept_edits' => 2,
+            'bypass_permissions' => 3,
+        ];
+
+        return ($rank[$child] ?? -1) < ($rank[$parent] ?? -1) ? $child : $parent;
     }
 }

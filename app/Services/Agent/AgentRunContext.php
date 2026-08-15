@@ -42,7 +42,10 @@ final class AgentRunContext
         public readonly ?string $backgroundOwnerAgentId = null,
         public readonly ?BudgetLedger $budgetLedger = null,
         public readonly ?UsageAccumulator $usageAccumulator = null,
-    ) {}
+        public readonly string $contextPreset = ContextPreset::CODING,
+    ) {
+        ContextPreset::assertValid($this->contextPreset);
+    }
 
     public function fork(
         ?string $workingDirectory = null,
@@ -59,6 +62,7 @@ final class AgentRunContext
         ?string $backgroundOwnerAgentId = null,
         ?BudgetLedger $budgetLedger = null,
         bool $inheritAgentId = true,
+        ?string $contextPreset = null,
     ): self
     {
         $readOnly ??= $this->readOnly;
@@ -99,6 +103,7 @@ final class AgentRunContext
             $budgetLedger ?? $this->budgetLedger,
             // Share the same accumulator so nested agents contribute tokens.
             $this->usageAccumulator,
+            $contextPreset ?? $this->contextPreset,
         );
     }
 
@@ -136,6 +141,43 @@ final class AgentRunContext
             $this->backgroundOwnerAgentId,
             $this->budgetLedger,
             $usageAccumulator,
+            $this->contextPreset,
         );
+    }
+
+    /**
+     * Verify the non-expandable resource identity shared by a nested run.
+     *
+     * @internal
+     */
+    public function isChildOf(self $parent): bool
+    {
+        if (! $this->cancellationToken->isDescendantOf($parent->cancellationToken)) {
+            return false;
+        }
+        if ($this->sandbox !== $parent->sandbox
+            || $this->memoryStore !== $parent->memoryStore
+            || $this->budgetLedger !== $parent->budgetLedger
+            || $this->usageAccumulator !== $parent->usageAccumulator) {
+            return false;
+        }
+        if ($parent->contextPreset === ContextPreset::GENERIC
+            && $this->contextPreset !== ContextPreset::GENERIC) {
+            return false;
+        }
+
+        return self::permissionRank($this->settings->getPermissionMode()->value)
+            <= self::permissionRank($parent->settings->getPermissionMode()->value);
+    }
+
+    private static function permissionRank(string $mode): int
+    {
+        return match ($mode) {
+            'plan' => 0,
+            'default' => 1,
+            'accept_edits' => 2,
+            'bypass_permissions' => 3,
+            default => -1,
+        };
     }
 }

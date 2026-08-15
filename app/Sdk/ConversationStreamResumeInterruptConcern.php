@@ -234,6 +234,7 @@ trait ConversationStreamResumeInterruptConcern
                 'background_owner_agent_id' => $this->loop->getRunContext()?->backgroundOwnerAgentId,
                 'omit_project_instructions' => $this->loop->getRunContext()?->omitProjectInstructions ?? false,
                 'agent_type' => $this->loop->getRunContext()?->agentType,
+                'context_preset' => $this->loop->getRunContext()?->contextPreset,
                 'read_only' => $this->loop->getRunContext()?->readOnly ?? false,
             ],
             static fn (mixed $value): bool => $value !== null && $value !== '',

@@ -226,10 +226,8 @@ final class ParallelToolExecutor
                 unset($pids[$idx]);
                 if ($onComplete) {
                     $toolName = $blocks[$idx]['name'];
-                    $result = $completedResults[$idx] ?? new ToolResult(
-                        output: (string) ($results[$idx]['content'] ?? ''),
-                        isError: (bool) ($results[$idx]['is_error'] ?? false),
-                    );
+                    $result = $completedResults[$idx]
+                        ?? ToolResult::fromApiFormat($results[$idx]);
                     $onComplete($toolName, $result);
                 }
             };

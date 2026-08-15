@@ -155,6 +155,8 @@ trait AgentLoopBuildRunSnapshotConcern
             onThinkingDelta: $onThinkingDelta,
             shouldAbort: fn (): bool => $this->cancellationToken->isCancelled(),
             toolsOverride: [],
+            telemetrySystemPrompt: $this->contextBuilder->getTelemetrySystemPrompt(),
+            telemetryMessages: $this->messageHistory->getTelemetryMessagesForApi(),
         );
 
         if ($this->isCancellationRequested()) {
@@ -295,6 +297,12 @@ trait AgentLoopBuildRunSnapshotConcern
         sort($names);
 
         return $names;
+    }
+
+    /** @return array<string, array<string, mixed>> @internal */
+    public function getToolManifest(): array
+    {
+        return $this->toolRegistry->manifest();
     }
 
     public function getCacheCreationTokens(): int

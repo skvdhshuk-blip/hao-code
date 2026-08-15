@@ -162,11 +162,7 @@ trait ToolOrchestratorExecuteSingleToolInnerConcern
                 if ($context->isAborted()) {
                     $result = ToolResult::aborted();
                 } elseif ($postHookResult->output) {
-                    $result = new ToolResult(
-                        output: $result->output . "\n[Hook] " . $postHookResult->output,
-                        isError: $result->isError,
-                        metadata: $result->metadata,
-                    );
+                    $result = $result->appendOutput("\n[Hook] ".$postHookResult->output);
                 }
             }
         } catch (\HaoCode\Sdk\HumanInterruptException $e) {
@@ -187,11 +183,7 @@ trait ToolOrchestratorExecuteSingleToolInnerConcern
                 if ($context->isAborted()) {
                     $result = ToolResult::aborted();
                 } elseif ($failHookResult->output) {
-                    $result = new ToolResult(
-                        output: $result->output . "\n[Hook] " . $failHookResult->output,
-                        isError: true,
-                        metadata: $result->metadata,
-                    );
+                    $result = $result->appendOutput("\n[Hook] ".$failHookResult->output);
                 }
             }
         }
@@ -216,11 +208,7 @@ trait ToolOrchestratorExecuteSingleToolInnerConcern
             if ($toolMaxChars < PHP_INT_MAX && $this->toolResultStorage !== null) {
                 $persisted = $this->toolResultStorage->persist($toolUseId, $result->output);
                 if ($persisted !== null) {
-                    $result = new ToolResult(
-                        output: $persisted['message'],
-                        isError: $result->isError,
-                        metadata: $result->metadata,
-                    );
+                    $result = $result->withOutput($persisted['message']);
                     $resultWasCompacted = true;
                 }
             }
@@ -229,10 +217,8 @@ trait ToolOrchestratorExecuteSingleToolInnerConcern
                 $storage = $this->toolResultStorage ?? new ToolResultStorage();
                 $preview = $storage->generatePreview($result->output, ToolResultStorage::PREVIEW_SIZE_BYTES);
                 $sizeLabel = round(mb_strlen($result->output) / 1024, 1) . 'K chars';
-                $result = new ToolResult(
-                    output: "<persisted-output>\nOutput too large ({$sizeLabel}). Showing first 2KB preview:\n\n{$preview}\n...(truncated)\n</persisted-output>",
-                    isError: $result->isError,
-                    metadata: $result->metadata,
+                $result = $result->withOutput(
+                    "<persisted-output>\nOutput too large ({$sizeLabel}). Showing first 2KB preview:\n\n{$preview}\n...(truncated)\n</persisted-output>",
                 );
                 $resultWasCompacted = true;
             }
@@ -433,10 +419,6 @@ trait ToolOrchestratorExecuteSingleToolInnerConcern
               . 'If you are paginating a large file that is fine, but otherwise prefer reusing the content '
               . 'you already have in memory rather than re-reading.';
 
-        return new ToolResult(
-            output: $result->output . $hint,
-            isError: false,
-            metadata: $result->metadata,
-        );
+        return $result->appendOutput($hint);
     }
 }

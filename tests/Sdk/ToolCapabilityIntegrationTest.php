@@ -35,6 +35,14 @@ class ToolCapabilityIntegrationTest extends TestCase
             $this->assertNotNull($manifest);
             $this->assertSame(['AskUserQuestion'], $manifest->tools['effective']);
             $this->assertTrue($manifest->tools['uses_tools']);
+            $this->assertSame(
+                'runtime',
+                $manifest->tools['manifest']['AskUserQuestion']['effect'],
+            );
+            $this->assertSame(
+                \HaoCode\Tools\AskUserQuestion\AskUserQuestionTool::class,
+                $manifest->tools['manifest']['AskUserQuestion']['implementation'],
+            );
             $this->assertSame(['AskUserQuestion'], $run->loop->getRegisteredToolNames());
         } finally {
             $run->close();
@@ -238,6 +246,22 @@ class ToolCapabilityIntegrationTest extends TestCase
         } finally {
             $run->close();
         }
+    }
+
+    public function test_nested_sdk_run_cannot_create_an_independent_sandbox(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('inherit the parent resource boundary');
+
+        SdkRunFactory::create(
+            new HaoCodeConfig(
+                apiKey: 'test-key',
+                allowedTools: ['Read'],
+                sandbox: $this->sandbox(),
+            ),
+            SdkRuntime::app(AgentLoopFactory::class),
+            parentToolRegistry: new ToolRegistry(),
+        );
     }
 
     private function createRun(HaoCodeConfig $config): SdkRun

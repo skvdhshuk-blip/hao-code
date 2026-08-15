@@ -69,6 +69,24 @@ class AgentAsToolTest extends TestCase
         new HaoCodeConfig(hitlMode: 'aks');
     }
 
+    public function test_invalid_context_preset_throws(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('contextPreset');
+        new Agent(contextPreset: 'auto');
+    }
+
+    public function test_agent_config_round_trip_preserves_context_preset(): void
+    {
+        $agent = new Agent(name: 'support', contextPreset: 'generic');
+
+        $config = $agent->toConfig();
+        $restored = Agent::fromConfig($config, 'support');
+
+        $this->assertSame('generic', $config->contextPreset);
+        $this->assertSame('generic', $restored->contextPreset);
+    }
+
     public function test_agent_as_tool_appends_abort_pump_without_clobbering_existing(): void
     {
         $mcpCalls = 0;

@@ -5,6 +5,7 @@ declare(strict_types=1);
 namespace HaoCode\Services\Agent;
 
 use HaoCode\Sdk\Memory\MemoryStoreInterface;
+use HaoCode\Services\Api\ProviderPromptAdapter;
 use HaoCode\Services\OutputStyle\OutputStyleLoader;
 use HaoCode\Services\Settings\SettingsManager;
 use HaoCode\Tools\Skill\SkillLoader;
@@ -12,6 +13,9 @@ use HaoCode\Tools\ToolRegistry;
 
 class ContextBuilder
 {
+    /** @var list<PromptFragment> */
+    private array $lastSystemPromptFragments = [];
+
     private const MAX_BASE_PROMPT_CHARS = 60_000;
 
     private const MAX_APPEND_PROMPT_CHARS = 20_000;
@@ -27,7 +31,7 @@ class ContextBuilder
         private readonly ToolRegistry $toolRegistry,
         private readonly MemoryStoreInterface $memoryStore,
         private readonly SkillLoader $skillLoader,
-        private readonly CodingContextPreset $codingPreset,
+        private readonly ContextPresetInterface $contextPreset,
         private readonly ?OutputStyleLoader $outputStyleLoader = null,
         private readonly bool $textOnly = false,
         private readonly bool $includeMemoryInTextOnly = false,
@@ -35,36 +39,87 @@ class ContextBuilder
 
     public function buildSystemPrompt(): array
     {
+        $this->lastSystemPromptFragments = $this->buildSystemPromptFragments();
+
+        return (new ProviderPromptAdapter)->adapt($this->lastSystemPromptFragments);
+    }
+
+    /**
+     * Provider-shaped prompt with sensitive fragment content removed for spans.
+     *
+     * @return array<int, array<string, mixed>>
+     * @internal
+     */
+    public function getTelemetrySystemPrompt(): array
+    {
+        $fragments = array_map(
+            static fn (PromptFragment $fragment): PromptFragment => new PromptFragment(
+                $fragment->source,
+                $fragment->telemetryContent(),
+                $fragment->stability,
+                $fragment->sensitivity,
+            ),
+            $this->lastSystemPromptFragments,
+        );
+
+        return (new ProviderPromptAdapter)->adapt($fragments);
+    }
+
+    /**
+     * @return list<PromptFragment>
+     * @internal
+     */
+    public function buildSystemPromptFragments(): array
+    {
         if ($this->textOnly) {
-            return $this->buildTextOnlySystemPrompt();
+            return $this->buildTextOnlySystemPromptFragments();
         }
 
-        $this->codingPreset->beginSnapshot();
+        $this->contextPreset->beginSnapshot();
 
         try {
-            return $this->buildAgentSystemPrompt();
+            return $this->buildAgentSystemPromptFragments();
         } finally {
-            $this->codingPreset->endSnapshot();
+            $this->contextPreset->endSnapshot();
         }
     }
 
-    private function buildAgentSystemPrompt(): array
+    /** @return list<PromptFragment> */
+    private function buildAgentSystemPromptFragments(): array
     {
+        $fragments = [];
         $systemPrompt = $this->settings->getSystemPrompt();
         $basePrompt = is_string($systemPrompt) && trim($systemPrompt) !== ''
             ? $systemPrompt
-            : $this->codingPreset->defaultSystemPrompt();
-        $prompt = ContextBudget::truncateFragment($basePrompt, self::MAX_BASE_PROMPT_CHARS);
+            : $this->contextPreset->defaultSystemPrompt();
+        $fragments[] = $this->fragment(
+            'base_system_prompt',
+            ContextBudget::truncateFragment($basePrompt, self::MAX_BASE_PROMPT_CHARS),
+        );
 
         $appendPrompt = $this->settings->getAppendSystemPrompt();
         if ($appendPrompt) {
-            $prompt .= "\n\n".ContextBudget::truncateFragment($appendPrompt, self::MAX_APPEND_PROMPT_CHARS);
+            $fragments[] = $this->fragment(
+                'append_system_prompt',
+                "\n\n".ContextBudget::truncateFragment($appendPrompt, self::MAX_APPEND_PROMPT_CHARS),
+            );
         }
 
-        $prompt .= $this->codingPreset->environmentContext();
-        $prompt .= $this->codingPreset->projectInstructionsContext();
+        $fragments[] = $this->fragment('environment', $this->contextPreset->environmentContext());
+        $fragments[] = $this->fragment(
+            'project_instructions',
+            $this->contextPreset->projectInstructionsContext(),
+            PromptFragment::SENSITIVITY_SENSITIVE,
+        );
 
-        $prompt = $this->appendLongTermMemory($prompt);
+        $memory = $this->appendLongTermMemory('');
+        if ($memory !== '') {
+            $fragments[] = $this->fragment(
+                'long_term_memory',
+                $memory,
+                PromptFragment::SENSITIVITY_SENSITIVE,
+            );
+        }
 
         // Load available skills + the progressive-disclosure protocol that
         // tells the model how to consume them. The listing alone is not enough:
@@ -72,25 +127,28 @@ class ContextBuilder
         // or bulk-load every reference/script in a skill directory.
         $skillDescs = $this->skillLoader->getSkillDescriptions();
         if ($skillDescs) {
-            $prompt .= "\n\n# Skills\n\n" . $skillDescs
-                . "\n\n" . $this->getSkillsHowToUse();
+            $fragments[] = $this->fragment(
+                'skills',
+                "\n\n# Skills\n\n".$skillDescs."\n\n".$this->getSkillsHowToUse(),
+            );
         }
 
-        $prompt .= $this->codingPreset->conventionsContext();
+        $fragments[] = $this->fragment('conventions', $this->contextPreset->conventionsContext());
 
         // Inject active output style instructions
         $activeStyle = $this->settings->getOutputStyle();
         if ($activeStyle && $this->outputStyleLoader) {
             $styleContent = $this->outputStyleLoader->getActiveStyleContent($activeStyle);
             if ($styleContent) {
-                $prompt .= "\n\n# Output Style Instructions\n\n"
-                    .ContextBudget::truncateFragment($styleContent, self::MAX_OUTPUT_STYLE_CHARS);
+                $fragments[] = $this->fragment(
+                    'output_style',
+                    "\n\n# Output Style Instructions\n\n"
+                        .ContextBudget::truncateFragment($styleContent, self::MAX_OUTPUT_STYLE_CHARS),
+                );
             }
         }
 
-        $prompt = ContextBudget::truncateFragment($prompt, self::MAX_SYSTEM_PROMPT_CHARS);
-
-        return [['type' => 'text', 'text' => $prompt, 'cache_control' => ['type' => 'ephemeral']]];
+        return $this->truncateFragments($fragments, self::MAX_SYSTEM_PROMPT_CHARS);
     }
 
     /**
@@ -102,16 +160,27 @@ class ContextBuilder
      */
     public function buildTurnContext(): string
     {
+        return $this->buildTurnContextFragment()->content;
+    }
+
+    /** @internal */
+    public function buildTurnContextFragment(): PromptFragment
+    {
         if ($this->textOnly) {
-            return '';
+            return new PromptFragment('turn_context', '', PromptFragment::STABILITY_TURN);
         }
 
-        $this->codingPreset->beginSnapshot();
+        $this->contextPreset->beginSnapshot();
 
         try {
-            return $this->codingPreset->turnContext();
+            return new PromptFragment(
+                'turn_context',
+                $this->contextPreset->turnContext(),
+                PromptFragment::STABILITY_TURN,
+                PromptFragment::SENSITIVITY_SENSITIVE,
+            );
         } finally {
-            $this->codingPreset->endSnapshot();
+            $this->contextPreset->endSnapshot();
         }
     }
 
@@ -121,7 +190,8 @@ class ContextBuilder
      * 该提示保留用户显式传入的 systemPrompt 和 appendSystemPrompt，
      * 但不注入工具、Skill、Git、项目文件或持久记忆等 coding-agent 上下文。
      */
-    private function buildTextOnlySystemPrompt(): array
+    /** @return list<PromptFragment> */
+    private function buildTextOnlySystemPromptFragments(): array
     {
         // 基础调用使用的最小默认提示，明确模型没有工具可调用。
         $prompt = $this->settings->getSystemPrompt();
@@ -133,21 +203,64 @@ You have no tools in this request. Do not claim to have read files, run commands
 PROMPT;
         }
 
-        $prompt = ContextBudget::truncateFragment($prompt, self::MAX_BASE_PROMPT_CHARS);
+        $fragments = [$this->fragment(
+            'base_system_prompt',
+            ContextBudget::truncateFragment($prompt, self::MAX_BASE_PROMPT_CHARS),
+        )];
         $appendPrompt = $this->settings->getAppendSystemPrompt();
         if (is_string($appendPrompt) && trim($appendPrompt) !== '') {
-            $prompt .= "\n\n".ContextBudget::truncateFragment($appendPrompt, self::MAX_APPEND_PROMPT_CHARS);
+            $fragments[] = $this->fragment(
+                'append_system_prompt',
+                "\n\n".ContextBudget::truncateFragment($appendPrompt, self::MAX_APPEND_PROMPT_CHARS),
+            );
         }
 
         if ($this->includeMemoryInTextOnly) {
-            $prompt = $this->appendLongTermMemory($prompt);
+            $memory = $this->appendLongTermMemory('');
+            if ($memory !== '') {
+                $fragments[] = $this->fragment(
+                    'long_term_memory',
+                    $memory,
+                    PromptFragment::SENSITIVITY_SENSITIVE,
+                );
+            }
         }
 
-        return [[
-            'type' => 'text',
-            'text' => ContextBudget::truncateFragment($prompt, self::MAX_SYSTEM_PROMPT_CHARS),
-            'cache_control' => ['type' => 'ephemeral'],
-        ]];
+        return $this->truncateFragments($fragments, self::MAX_SYSTEM_PROMPT_CHARS);
+    }
+
+    private function fragment(
+        string $source,
+        string $content,
+        string $sensitivity = PromptFragment::SENSITIVITY_INTERNAL,
+    ): PromptFragment {
+        return new PromptFragment($source, $content, PromptFragment::STABILITY_RUN, $sensitivity);
+    }
+
+    /**
+     * @param list<PromptFragment> $fragments
+     * @return list<PromptFragment>
+     */
+    private function truncateFragments(array $fragments, int $maxChars): array
+    {
+        $total = array_sum(array_map(
+            static fn (PromptFragment $fragment): int => mb_strlen($fragment->content),
+            $fragments,
+        ));
+        if ($total <= $maxChars) {
+            return $fragments;
+        }
+
+        $combined = implode('', array_map(
+            static fn (PromptFragment $fragment): string => $fragment->content,
+            $fragments,
+        ));
+
+        return [$this->fragment(
+            'budgeted_system_prompt',
+            ContextBudget::truncateFragment($combined, $maxChars),
+            PromptFragment::SENSITIVITY_SENSITIVE,
+        )];
     }
 
     private function appendLongTermMemory(string $prompt): string

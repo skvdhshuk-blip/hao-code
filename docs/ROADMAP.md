@@ -1,7 +1,7 @@
 # Hao Code 产品路线图
 
 - 状态：执行中（P0 代码验收完成；外部 Provider 实测单独记录）
-- 更新日期：2026-08-14
+- 更新日期：2026-08-16
 - 规划周期：从路线图启动起计算 12 个月
 
 本文说明 Hao Code 未来一年的产品方向、架构边界和验收门槛。它不承诺具体版本号或发布日期。每个阶段只有通过验收，才能进入下一阶段。
@@ -123,15 +123,25 @@ Checkpoint 只写在安全边界。系统要区分已提交结果、可以重试
 | 编号 | 当前问题 | 目标不变量 | 验收门槛 | 状态 |
 | --- | --- | --- | --- | --- |
 | C1 文本读取 | Host、Local Sandbox、Remote Sandbox 各自处理行扫描、限制和错误 | 三条文本读取路径共用一套有界扫描规则；Backend 只提供字节，Tool 负责路径、内容类型、展示和读取凭证 | 三条路径的行数、窗口、换行、超长行、超大输出和取消语义一致；失败或取消不能留下读取凭证 | 已完成：纳入 v1.19.9 发布基线 |
-| C2 通用 Agent 与 Coding Preset | `ContextBuilder` 同时承担通用运行上下文和 Git、`AGENTS.md`、Skill、编码规则注入 | Agent Kernel 只处理通用上下文；Coding Preset 负责编码场景信息 | 现有 Coding Agent 提示词保持兼容；非编码 Agent 不再自动携带编码规则；Provider 请求结构不变 | 第一切片完成：Coding Preset 责任已独立并纳入 v1.19.9；新的非编码选择入口待独立契约确认 |
-| C3 Tool 结果 | `SdkTool::handle(): string` 与内部结构化结果、错误、取消和元数据并存 | 内部执行链只认 `ToolResult`；`handle(): string` 仅在 SDK 兼容边界适配 | 文本、错误、取消、元数据、截断和读取凭证都保真；自定义 `SdkTool` 无需改代码 | 待开始 |
-| C4 Run 配置 | `Agent`、`RunOptions`、`HaoCodeConfig` 重复表达模型、预算、超时和工具范围 | 内部只有一个 Canonical RunSpec；Run Limits 只有一个归一化入口 | 同一输入在所有入口得到相同有效配置；默认值和覆盖顺序有矩阵测试；公共构造函数不变 | 待开始 |
-| C5 Agent 调用与资源范围 | Root Agent、子 Agent、`AgentAsTool` 的预算、取消、结果和生命周期分散在多条链路 | 内部调用契约统一表达输入、生命周期和结果；子调用的权限、预算、目录、沙箱和 Provider 能力只取父子交集 | Root、子 Agent、`AgentAsTool` 和 Team 跑同一组能力收缩测试；任何子调用都不能扩大父级资源 | 待 C4 完成后开始 |
-| C6 消息与提示片段 | Anthropic-shaped 消息数组同时承担模型输入、界面显示、持久化、追踪和缓存标记 | 内部 Message Envelope 明确可见范围和持久化语义；Prompt Fragment 明确来源、稳定范围、敏感级别和内容 | Provider 适配层仍接收统一的 Anthropic-shaped 契约；缓存、脱敏、持久化和回放各有故障测试 | 待 C3、C4 稳定后开始 |
-| C7 Tool Registry 身份 | 同名注册会覆盖旧工具，动态 `name()` 可能与注册键不一致 | 先固定并测试现有行为，再决定注册身份和显式替换规则；不能顺带改变运行时组装语义 | 覆盖重复注册、Sandbox 替换、子 Registry 克隆、动态 Schema 和动态名称；若改变行为，必须写兼容说明 | 延后，独立切片处理；不属于 C1 当前改动 |
-| C8 Glob/Grep 文件能力 | Host 与 Sandbox 的搜索工具仍有相似规则，但 Backend 能力和输出格式并不完全相同 | 先列出差异，只统一已有的路径、边界和错误规则；没有重复不变量时不建通用 Filesystem 接口 | Host、Local、AgentRun、Tokimo 的现有能力矩阵完整；不能为了统一而降低任一 Backend 能力 | 待 C1 发布后评估，不自动启动 |
+| C2 通用 Agent 与 Coding Preset | `ContextBuilder` 同时承担通用运行上下文和 Git、`AGENTS.md`、Skill、编码规则注入 | Agent Kernel 只处理通用上下文；Coding Preset 负责编码场景信息 | 现有 Coding Agent 提示词保持兼容；非编码 Agent 不再自动携带编码规则；Provider 请求结构不变 | 已完成：默认 `coding` 保持兼容；显式 `generic` 选择、fork 和快照恢复已形成同一契约 |
+| C3 Tool 结果 | `SdkTool::handle(): string` 与内部结构化结果、错误、取消和元数据并存 | 内部执行链只认 `ToolResult`；`handle(): string` 仅在 SDK 兼容边界适配 | 文本、错误、取消、元数据、截断和读取凭证都保真；自定义 `SdkTool` 无需改代码 | 已完成：结构化 data、安全错误、终态和 IPC 保真；Hook、截断、持久化和后台装饰不再降级为字符串重建 |
+| C4 Run 配置 | `Agent`、`RunOptions`、`HaoCodeConfig` 重复表达模型、预算、超时和工具范围 | 内部只有一个 Canonical RunSpec；Run Limits 只有一个归一化入口 | 同一输入在所有入口得到相同有效配置；默认值和覆盖顺序有矩阵测试；公共构造函数不变 | 已完成：`Agent + RunOptions` 通过 `RunSpec` 生成唯一运行配置；旧 `HaoCodeConfig` 只在入口适配；轮次、Token、思考和金额预算由 `RunLimits` 归一化，恢复只能收紧 |
+| C5 Agent 调用与资源范围 | Root Agent、子 Agent、`AgentAsTool` 的预算、取消、结果和生命周期分散在多条链路 | 内部调用契约统一表达输入、生命周期和结果；子调用的权限、预算、目录、沙箱和 Provider 能力只取父子交集 | Root、子 Agent、`AgentAsTool` 和 Team 跑同一组能力收缩测试；任何子调用都不能扩大父级资源 | 已完成：`AgentLoopSpec` 统一组装，`AgentInvocation` 统一输入/回调/结果；父 Context 派生保证 Provider 连接、权限、预算、取消、Sandbox、Memory、Preset 和 Tool Registry 只能继承或收紧 |
+| C6 消息与提示片段 | Anthropic-shaped 消息数组同时承担模型输入、界面显示、持久化、追踪和缓存标记 | 内部 Message Envelope 明确可见范围和持久化语义；Prompt Fragment 明确来源、稳定范围、敏感级别和内容 | Provider 适配层仍接收统一的 Anthropic-shaped 契约；缓存、脱敏、持久化和回放各有故障测试 | 已完成：Message Envelope 分离模型/UI 可见性、持久化、敏感级别和缓存稳定性；Prompt Fragment 保留来源元数据；Provider Adapter 在请求边界生成原有消息形状和缓存标记 |
+| C7 Tool Registry 身份 | 同名注册会覆盖旧工具，动态 `name()` 可能与注册键不一致 | 先固定并测试现有行为，再决定注册身份和显式替换规则；不能顺带改变运行时组装语义 | 覆盖重复注册、Sandbox 替换、子 Registry 克隆、动态 Schema 和动态名称；若改变行为，必须写兼容说明 | 已完成：稳定名称/Schema 注册校验、重复项显式替换、匿名实现脱敏和组装后 manifest 已形成唯一边界 |
+| C8 Glob/Grep 文件能力 | Host 与 Sandbox 的搜索工具仍有相似规则，但 Backend 能力和输出格式并不完全相同 | 先列出差异，只统一已有的路径、边界和错误规则；没有重复不变量时不建通用 Filesystem 接口 | Host、Local、AgentRun、Tokimo 的现有能力矩阵完整；不能为了统一而降低任一 Backend 能力 | 评估完成：能力矩阵已固化；仅保留共享 Read 边界，不创建虚假的通用 Filesystem 接口 |
 
-推荐顺序是先完成 C1，再处理 C2 和 C3。C4、C5 负责收口运行配置与调用生命周期。C6 只有在工具结果和运行配置稳定后才开始。C7、C8 都要先补行为刻画测试，不能直接从抽象设计起步。
+C1-C8 的现有能力收口已完成。本队列不再继续扩展抽象；后续只根据真实故障补回归证据，或按 P1 的版本化事件/状态边界推进。
+
+### C4-C6 契约事实源
+
+| 边界 | 唯一写入/决策者 | 兼容适配入口 | 运行时消费者 | 已删除的并行规则 |
+| --- | --- | --- | --- | --- |
+| Run 配置 | `RunSpec` + `RunLimits` | `Agent::toConfig()`、`RunOptions::toConfig()`、`SdkRunFactory::create(HaoCodeConfig)` | `SdkRunFactory`、`AgentLoopFactory`、预算恢复 | Agent 与 RunOptions 各自拼接配置；Factory 内手写恢复预算/轮次优先级 |
+| Agent 调用 | `AgentLoopSpec`（资源组装）+ `AgentInvocation`（输入/结果） | `AgentLoopFactory::createIsolated()` | Root、Conversation、Agent-as-Tool、Agent、Skill、Team | 各入口直接调用 Loop 并各自重新统计 usage/cost；Agent-as-Tool 重建父级 Provider/资源上下文 |
+| 消息与提示 | `MessageEnvelope` + `PromptFragment` | 原数组消息由 `replaceMessages()` 包装；Provider Adapter 输出旧形状 | MessageHistory、ContextBuilder、Provider、Session/Telemetry 视图 | MessageHistory 直接写 Provider `cache_control`；ContextBuilder 直接携带 Provider 缓存格式 |
+
+Tool/Backend 专属 timeout 没有并入 `RunLimits`：它们使用不同计时边界，当前不存在可安全合并的公共不变量。
 
 ## 12 个月路线图
 

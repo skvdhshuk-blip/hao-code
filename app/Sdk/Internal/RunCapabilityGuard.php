@@ -19,6 +19,9 @@ final class RunCapabilityGuard
     /** @var list<string>|null */
     private ?array $effectiveToolNames = null;
 
+    /** @var array<string, array<string, mixed>>|null */
+    private ?array $effectiveToolManifest = null;
+
     /** @var array<string, mixed>|null */
     private ?array $fixedProviderRuntime = null;
 
@@ -55,6 +58,34 @@ final class RunCapabilityGuard
 
         $this->effectiveToolNames = array_keys($names);
         sort($this->effectiveToolNames);
+        $this->effectiveToolManifest = null;
+    }
+
+    /**
+     * Bind the validated registry manifest assembled for this exact run.
+     *
+     * @param array<string, array<string, mixed>> $manifest
+     */
+    public function bindEffectiveManifest(array $manifest): void
+    {
+        $names = [];
+        foreach ($manifest as $key => $entry) {
+            $name = is_array($entry) ? ($entry['name'] ?? null) : null;
+            if (! is_string($key) || ! is_string($name) || $key !== $name) {
+                throw new \InvalidArgumentException('Effective tool manifest keys must match stable tool names.');
+            }
+            if (! is_array($entry['input_schema'] ?? null)
+                || ! is_string($entry['effect'] ?? null)
+                || ! is_string($entry['implementation'] ?? null)) {
+                throw new \InvalidArgumentException("Effective tool manifest entry '{$name}' is incomplete.");
+            }
+            $names[] = $name;
+        }
+
+        sort($names);
+        ksort($manifest);
+        $this->effectiveToolNames = $names;
+        $this->effectiveToolManifest = $manifest;
     }
 
     public function manifest(
@@ -71,6 +102,7 @@ final class RunCapabilityGuard
                 \HaoCode\Services\Api\Capability\ProviderCapabilityRegistry::OAUTH_BEARER => $settings->isOauthBearer(),
                 \HaoCode\Services\Api\Capability\ProviderCapabilityRegistry::CUSTOM_HEADERS => $settings->getHeaders() !== [],
             ],
+            $this->effectiveToolManifest,
         );
     }
 

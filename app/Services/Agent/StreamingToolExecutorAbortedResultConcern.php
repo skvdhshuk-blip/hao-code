@@ -31,9 +31,6 @@ trait StreamingToolExecutorAbortedResultConcern
 
     private function resultArrayToToolResult(array $result): ToolResult
     {
-        return new ToolResult(
-            output: (string) ($result['content'] ?? ''),
-            isError: (bool) ($result['is_error'] ?? false),
-        );
+        return ToolResult::fromApiFormat($result);
     }
 }

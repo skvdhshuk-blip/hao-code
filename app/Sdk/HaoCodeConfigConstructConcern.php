@@ -2,6 +2,7 @@
 
 namespace HaoCode\Sdk;
 
+use HaoCode\Services\Agent\ContextPreset;
 use HaoCode\Services\Permissions\PermissionMode;
 
 trait HaoCodeConfigConstructConcern
@@ -400,12 +401,21 @@ trait HaoCodeConfigConstructConcern
          * @api
          */
         public readonly bool $allowCwdOverride = false,
+        /**
+         * Context injected around the system prompt. 'coding' preserves the
+         * existing Git/project/coding context; 'generic' omits coding-only data
+         * while retaining configured tools, skills, memory, and output style.
+         *
+         * @api
+         */
+        public readonly string $contextPreset = ContextPreset::CODING,
     ) {
         if (PermissionMode::tryFrom($this->permissionMode) === null) {
             throw new \InvalidArgumentException(
                 "permissionMode must be 'default', 'plan', 'accept_edits', or 'bypass_permissions'; got '{$this->permissionMode}'.",
             );
         }
+        ContextPreset::assertValid($this->contextPreset);
         if ($hitlMode === null) {
             $this->hitlMode = null;
         } elseif (is_string($hitlMode) && in_array($hitlMode, ['ask', 'smart', 'auto'], true)) {

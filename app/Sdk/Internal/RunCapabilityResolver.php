@@ -35,9 +35,10 @@ final class RunCapabilityResolver
         ?array $effectiveToolNames = null,
         ?PermissionMode $permissionMode = null,
         ?array $runtimeAgentCapabilities = null,
+        ?array $effectiveToolManifest = null,
     ): EffectiveCapabilityManifest {
         $provider = $this->providers->resolve($resolvedProvider);
-        $tools = $this->resolveTools($config, $effectiveToolNames);
+        $tools = $this->resolveTools($config, $effectiveToolNames, $effectiveToolManifest);
         $agent = [
             ProviderCapabilityRegistry::TEXT => true,
             ProviderCapabilityRegistry::STREAMING => true,
@@ -107,7 +108,11 @@ final class RunCapabilityResolver
      * @param list<string>|null $effectiveToolNames
      * @return array<string, mixed>
      */
-    private function resolveTools(HaoCodeConfig $config, ?array $effectiveToolNames): array
+    private function resolveTools(
+        HaoCodeConfig $config,
+        ?array $effectiveToolNames,
+        ?array $effectiveToolManifest,
+    ): array
     {
         $allowed = $this->normalizeNames($config->allowedTools);
         $disallowed = $this->normalizeNames($config->disallowedTools);
@@ -173,6 +178,7 @@ final class RunCapabilityResolver
             'disallowed' => $disallowed,
             'effective_requested' => $effectiveNames,
             'effective' => $actualNames,
+            'manifest' => $effectiveToolManifest,
             'custom' => $custom,
             'uses_tools' => $actualNames === null
                 ? ($wildcard || $effectiveNames !== [] || $config->enableAskUser)

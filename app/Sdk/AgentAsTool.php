@@ -3,6 +3,7 @@
 namespace HaoCode\Sdk;
 
 use HaoCode\Services\Agent\AgentLoopFactory;
+use HaoCode\Services\Agent\AgentInvocation;
 use HaoCode\Services\Api\LlmProvider;
 use HaoCode\Tools\ToolResult;
 use HaoCode\Tools\ToolUseContext;
@@ -82,6 +83,7 @@ final class AgentAsTool extends SdkTool
                 // so the child cannot rebuild host tools from the process registry.
                 parentToolRegistry: $context->toolRegistry,
                 usageAccumulator: $context->runContext?->usageAccumulator,
+                parentRunContext: $context->runContext,
             );
             $loop = $run->loop;
 
@@ -99,13 +101,13 @@ final class AgentAsTool extends SdkTool
                 });
             }
 
-            $text = $loop->run(userInput: $task);
+            $result = (new AgentInvocation($task))->invoke($loop);
 
-            return ToolResult::success($text, [
-                'inputTokens' => $loop->getLocalInputTokens(),
-                'outputTokens' => $loop->getLocalOutputTokens(),
-                'cost' => $loop->getLocalEstimatedCost(),
-                'sessionId' => $this->agent->ephemeral ? null : $loop->getSessionManager()->getSessionId(),
+            return ToolResult::success($result->text, [
+                'inputTokens' => $result->localUsage['inputTokens'],
+                'outputTokens' => $result->localUsage['outputTokens'],
+                'cost' => $result->localCost,
+                'sessionId' => $this->agent->ephemeral ? null : $result->sessionId,
             ]);
         } catch (HumanInterruptException $e) {
             $run?->preserveSandboxOnClose();

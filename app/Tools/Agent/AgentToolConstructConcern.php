@@ -4,6 +4,7 @@ namespace HaoCode\Tools\Agent;
 
 use HaoCode\Services\Agent\BackgroundAgentManager;
 use HaoCode\Services\Agent\AgentLoopFactory;
+use HaoCode\Services\Agent\AgentInvocation;
 use HaoCode\Services\Git\HardenedGitRunner;
 use HaoCode\Services\Task\TaskManager;
 use HaoCode\Tools\BaseTool;
@@ -191,24 +192,20 @@ DESC;
                 ),
                 readOnly: $agentDef->readOnly,
                 parentToolRegistry: $context->toolRegistry,
+                parentRunContext: $context->runContext,
                 model: $model,
                 appendSystemPrompt: $agentDef->systemPrompt,
                 omitProjectInstructions: $agentDef->omitClaudeMd,
                 agentType: $agentDef->agentType,
-            );
-            if ($agentDef->maxTurns !== null) {
-                $subLoop->setMaxTurns($agentDef->maxTurns);
-            }
-
-            $result = $subLoop->run(
-                userInput: $prompt,
-                onTextDelta: null,
+                limits: \HaoCode\Services\Agent\RunLimits::turns($agentDef->maxTurns ?? 50),
             );
 
-            return ToolResult::success($result, [
-                'inputTokens' => $subLoop->getLocalInputTokens(),
-                'outputTokens' => $subLoop->getLocalOutputTokens(),
-                'cost' => $subLoop->getLocalEstimatedCost(),
+            $invocationResult = (new AgentInvocation($prompt))->invoke($subLoop);
+
+            return ToolResult::success($invocationResult->text, [
+                'inputTokens' => $invocationResult->localUsage['inputTokens'],
+                'outputTokens' => $invocationResult->localUsage['outputTokens'],
+                'cost' => $invocationResult->localCost,
             ]);
         } catch (\HaoCode\Sdk\HumanInterruptException $e) {
             throw $e;

@@ -22,6 +22,7 @@ class AgentLoop
 {
     use AgentLoopConstructConcern;
     use AgentLoopRunInternalConcern;
+    use AgentLoopMessageEnvelopeConcern;
     use AgentLoopBuildRunSnapshotConcern;
     use AgentLoopMarkSessionResumedConcern;
 

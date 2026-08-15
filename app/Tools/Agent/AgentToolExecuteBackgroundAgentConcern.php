@@ -4,6 +4,7 @@ namespace HaoCode\Tools\Agent;
 
 use HaoCode\Services\Agent\BackgroundAgentManager;
 use HaoCode\Services\Agent\AgentLoopFactory;
+use HaoCode\Services\Agent\AgentInvocation;
 use HaoCode\Services\Git\HardenedGitRunner;
 use HaoCode\Services\Task\TaskManager;
 use HaoCode\Tools\BaseTool;
@@ -37,14 +38,13 @@ trait AgentToolExecuteBackgroundAgentConcern
             afterFork: true,
             readOnly: $agentDef->readOnly,
             parentToolRegistry: $context->toolRegistry,
+            parentRunContext: $context->runContext,
             model: $model,
             appendSystemPrompt: $agentDef->systemPrompt,
             omitProjectInstructions: $agentDef->omitClaudeMd,
             agentType: $agentDef->agentType,
+            limits: \HaoCode\Services\Agent\RunLimits::turns($agentDef->maxTurns ?? 50),
         );
-        if ($agentDef->maxTurns !== null) {
-            $subLoop->setMaxTurns($agentDef->maxTurns);
-        }
 
         $this->backgroundAgents()->markRunning($taskId);
         $this->tasks()->transition(
@@ -107,7 +107,7 @@ trait AgentToolExecuteBackgroundAgentConcern
     {
         $this->backgroundAgents()->markRunning($taskId);
         try {
-            $response = $subLoop->run(userInput: $prompt, onTextDelta: null);
+            $response = (new AgentInvocation($prompt))->invoke($subLoop)->text;
         } catch (\HaoCode\Sdk\HumanInterruptException $e) {
             $this->backgroundAgents()->markWaitingForInput($taskId, $e->interrupt);
             $this->tasks()->update($taskId, 'in_progress', 'Waiting for human input.');
@@ -201,15 +201,13 @@ trait AgentToolExecuteBackgroundAgentConcern
         $notice = $outcome['notice']
             ?? "Warning: {$outcome['error']} {$worktreePath} (branch: {$worktreeBranch}).";
 
-        return new ToolResult(
-            $result->output."\n\n".$notice,
-            $result->isError,
-            ($result->metadata ?? []) + [
+        return $result
+            ->appendOutput("\n\n".$notice)
+            ->withMetadata(($result->metadata ?? []) + [
                 'worktreePath' => $worktreePath,
                 'worktreeBranch' => $worktreeBranch,
                 'worktreeRetained' => true,
-            ],
-        );
+            ]);
     }
 
     private function finalizeBackgroundWorktree(string $taskId): void

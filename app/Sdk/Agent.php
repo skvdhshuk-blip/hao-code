@@ -2,6 +2,7 @@
 
 namespace HaoCode\Sdk;
 
+use HaoCode\Services\Agent\ContextPreset;
 use HaoCode\Services\Permissions\PermissionMode;
 use HaoCode\Sdk\Memory\MemoryStoreInterface;
 use HaoCode\Sdk\Sandbox\SandboxConfig;
@@ -219,12 +220,21 @@ class Agent
          *             property is scheduled for removal in v2.
          */
         public readonly int $structuredMaxRetries = 1,
+
+        /**
+         * Context injected around the agent prompt. 'coding' preserves Git,
+         * project instructions, and coding conventions; 'generic' omits them.
+         *
+         * @api
+         */
+        public readonly string $contextPreset = ContextPreset::CODING,
     ) {
         if (PermissionMode::tryFrom($this->permissionMode) === null) {
             throw new \InvalidArgumentException(
                 "permissionMode must be 'default', 'plan', 'accept_edits', or 'bypass_permissions'; got '{$this->permissionMode}'.",
             );
         }
+        ContextPreset::assertValid($this->contextPreset);
     }
 
     /**
@@ -297,44 +307,7 @@ class Agent
      */
     public function toConfig(): HaoCodeConfig
     {
-        return new HaoCodeConfig(
-            apiKey: $this->apiKey,
-            model: $this->model,
-            baseUrl: $this->baseUrl,
-            providerType: $this->providerType,
-            maxTokens: $this->maxTokens,
-            maxTurns: $this->maxTurns,
-            permissionMode: $this->permissionMode,
-            allowedTools: $this->allowedTools,
-            disallowedTools: $this->disallowedTools,
-            systemPrompt: $this->systemPrompt,
-            appendSystemPrompt: $this->appendSystemPrompt,
-            thinkingEnabled: $this->thinkingEnabled,
-            thinkingBudget: $this->thinkingBudget,
-            tools: $this->tools,
-            skills: $this->skills,
-            sandbox: $this->sandbox,
-            credentialPool: $this->credentialPool,
-            oauthBearer: $this->oauthBearer,
-            memorySummaryLevel: $this->memorySummaryLevel,
-            memoryStoragePath: $this->memoryStoragePath,
-            skillDirectories: $this->skillDirectories,
-            recursiveSkillDiscovery: $this->recursiveSkillDiscovery,
-            interruptOn: $this->interruptOn,
-            enableAskUser: $this->enableAskUser,
-            memoryStore: $this->memoryStore,
-            hitlMode: $this->hitlMode,
-            hitlReviewModel: $this->hitlReviewModel,
-            hitlAllowlistPath: $this->hitlAllowlistPath,
-            ephemeral: $this->ephemeral,
-            headers: $this->headers,
-            webfetchAllowPrivateNetworks: $this->webfetchAllowPrivateNetworks,
-            webfetchPrivateAllowList: $this->webfetchPrivateAllowList,
-            webfetchMaxBytes: $this->webfetchMaxBytes,
-            sessionId: $this->sessionId,
-            continueSession: $this->continueSession,
-            structuredMaxRetries: $this->structuredMaxRetries,
-        );
+        return \HaoCode\Sdk\Internal\RunSpec::fromAgent($this)->config;
     }
 
     /**
@@ -382,6 +355,7 @@ class Agent
             sessionId: $config->sessionId,
             continueSession: $config->continueSession,
             structuredMaxRetries: $config->structuredMaxRetries,
+            contextPreset: $config->contextPreset,
         );
     }
 
@@ -441,6 +415,7 @@ class Agent
             'sessionId' => $this->sessionId,
             'continueSession' => $this->continueSession,
             'structuredMaxRetries' => $this->structuredMaxRetries,
+            'contextPreset' => $this->contextPreset,
         ];
     }
 }

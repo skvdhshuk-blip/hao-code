@@ -16,6 +16,7 @@ use HaoCode\Services\Mcp\McpServerConfigManager;
 use HaoCode\Services\Settings\SettingsManager;
 use HaoCode\Sdk\Internal\RunCapabilityGuard;
 use HaoCode\Sdk\Internal\RunCapabilityResolver;
+use HaoCode\Sdk\Internal\RunSpec;
 use HaoCode\Sdk\Sandbox\SandboxManager;
 use HaoCode\Tools\Mcp\ListMcpResourcesTool;
 use HaoCode\Tools\Mcp\McpDynamicTool;
@@ -71,15 +72,17 @@ trait SdkRunFactoryStageResumeSnapshotConcern
         ?BudgetLedger $budgetLedger = null,
         ?ToolRegistry $parentToolRegistry = null,
         ?UsageAccumulator $usageAccumulator = null,
+        ?AgentRunContext $parentRunContext = null,
     ): SdkRun {
-        return self::create(
-            ($options ?? new RunOptions)->toConfig($agent),
+        return self::createSpec(
+            RunSpec::fromAgent($agent, $options),
             $factory,
             $streamingClient,
             $resumeSnapshot,
             $budgetLedger,
             $parentToolRegistry,
             $usageAccumulator,
+            $parentRunContext,
         );
     }
 
@@ -91,27 +94,48 @@ trait SdkRunFactoryStageResumeSnapshotConcern
         ?BudgetLedger $budgetLedger = null,
         ?ToolRegistry $parentToolRegistry = null,
         ?UsageAccumulator $usageAccumulator = null,
+        ?AgentRunContext $parentRunContext = null,
     ): SdkRun {
+        return self::createSpec(
+            RunSpec::fromConfig($config),
+            $factory,
+            $streamingClient,
+            $resumeSnapshot,
+            $budgetLedger,
+            $parentToolRegistry,
+            $usageAccumulator,
+            $parentRunContext,
+        );
+    }
+
+    private static function createSpec(
+        RunSpec $spec,
+        AgentLoopFactory $factory,
+        ?LlmProvider $streamingClient = null,
+        ?array $resumeSnapshot = null,
+        ?BudgetLedger $budgetLedger = null,
+        ?ToolRegistry $parentToolRegistry = null,
+        ?UsageAccumulator $usageAccumulator = null,
+        ?AgentRunContext $parentRunContext = null,
+    ): SdkRun {
+        $config = $spec->config;
+        $limits = $spec->limits;
         // When a parent LlmProvider is injected (AgentAsTool composition), the
         // child's own apiKey may be empty — credentials live on the provider.
-        $runContext = self::createValidatedRunContext(
-            $config,
-            requireApiKey: $streamingClient === null,
-        );
+        $runContext = $parentRunContext === null
+            ? self::createValidatedRunContext(
+                $config,
+                requireApiKey: $streamingClient === null,
+            )
+            : AgentRunContextFactory::makeChild(
+                $config,
+                $parentRunContext,
+                $config->effectiveWorkingDirectory() ?? $parentRunContext->workingDirectory,
+            );
         if ($usageAccumulator !== null) {
             $runContext = $runContext->withUsageAccumulator($usageAccumulator);
         }
-        $snapshotBudgetLimit = $resumeSnapshot['budget_limit_usd'] ?? null;
-        $snapshotLimit = is_numeric($snapshotBudgetLimit) && (float) $snapshotBudgetLimit >= 0
-            ? (float) $snapshotBudgetLimit
-            : null;
-        // Prefer the stricter of snapshot vs current config so a resume cannot
-        // silently ignore a tighter caller-supplied maxBudgetUsd.
-        if ($snapshotLimit !== null && $config->maxBudgetUsd !== null) {
-            $budgetLimit = min($snapshotLimit, $config->maxBudgetUsd);
-        } else {
-            $budgetLimit = $snapshotLimit ?? $config->maxBudgetUsd;
-        }
+        $budgetLimit = $limits->budgetForResume($resumeSnapshot);
         if ($budgetLedger !== null) {
             if ($budgetLimit === null || abs($budgetLedger->getLimit() - $budgetLimit) > 0.0000001) {
                 throw new \RuntimeException('Shared budget ledger does not match the run budget.');
@@ -137,6 +161,7 @@ trait SdkRunFactoryStageResumeSnapshotConcern
                 readOnly: (bool) ($resumeSnapshot['read_only'] ?? false),
                 omitProjectInstructions: (bool) ($resumeSnapshot['omit_project_instructions'] ?? false),
                 agentType: self::snapshotString($resumeSnapshot, 'agent_type'),
+                contextPreset: self::snapshotString($resumeSnapshot, 'context_preset'),
                 worktreePath: self::snapshotString($resumeSnapshot, 'worktree_path'),
                 worktreeBranch: self::snapshotString($resumeSnapshot, 'worktree_branch'),
                 managedWorktree: (bool) ($resumeSnapshot['managed_worktree'] ?? false),
@@ -189,16 +214,23 @@ trait SdkRunFactoryStageResumeSnapshotConcern
             );
         }
 
-        $sandboxRuntime = $config->sandbox !== null
+        if ($parentToolRegistry !== null && $config->sandbox !== null) {
+            throw new \InvalidArgumentException(
+                'Nested agents inherit the parent resource boundary and cannot create an independent sandbox.',
+            );
+        }
+
+        $sandboxRuntime = $parentToolRegistry === null && $config->sandbox !== null
             ? SandboxManager::create($config->sandbox, $config->cwd)
             : null;
         $mcpConnectionManager = null;
 
         try {
-            [$mcpTools, $mcpConnectionManager] = self::loadMcpTools($config, $runContext->projectDirectory);
+            [$mcpTools, $mcpConnectionManager] = $parentToolRegistry === null
+                ? self::loadMcpTools($config, $runContext->projectDirectory)
+                : [[], null];
             $sandboxTools = $sandboxRuntime?->tools() ?? [];
-            self::assertNoReservedToolConflicts($sandboxTools !== [], $mcpTools, $config->tools);
-            $additionalTools = $sandboxTools;
+            $replacementTools = $sandboxTools;
             // Register a WebFetchTool constructed from the run's WebFetch
             // security policy (private-network toggle + CIDR allowlist + byte
             // cap) only when the run actually allows WebFetch. This keeps the
@@ -206,14 +238,11 @@ trait SdkRunFactoryStageResumeSnapshotConcern
             // still honoring webfetchAllowPrivateNetworks etc. once WebFetch
             // is opted into. User-supplied WebFetch in $config->tools is
             // appended afterwards but must not overwrite sandbox replacements.
-            if (self::allowsWebFetch($config)) {
-                $additionalTools[] = self::buildWebFetchTool($config);
+            if ($parentToolRegistry === null && self::allowsWebFetch($config)) {
+                $replacementTools[] = self::buildWebFetchTool($config);
             }
-            $additionalTools = array_merge(
-                $additionalTools,
-                $mcpTools,
-                $config->tools,
-            );
+            self::assertNoReplacementToolConflicts($replacementTools, $mcpTools, $config->tools);
+            $additionalTools = array_merge($mcpTools, $config->tools);
 
             $toolFilter = $config->toolFilter();
             if (is_array($resumeSnapshot['allowed_tools'] ?? null)) {
@@ -235,8 +264,13 @@ trait SdkRunFactoryStageResumeSnapshotConcern
                 parentToolRegistry: $parentToolRegistry,
                 model: self::snapshotString($resumeSnapshot ?? [], 'base_model')
                     ?? self::snapshotString($resumeSnapshot ?? [], 'model'),
+                replacementTools: $replacementTools,
+                parentRunContext: $parentRunContext,
+                limits: \HaoCode\Services\Agent\RunLimits::turns(
+                    $limits->turnsForResume($resumeSnapshot),
+                ),
             );
-            $capabilityGuard->bindEffectiveTools($loop->getRegisteredToolNames());
+            $capabilityGuard->bindEffectiveManifest($loop->getToolManifest());
             $runContext->settings->setRuntimeConfigurationValidator([$capabilityGuard, 'assertSupported']);
             $runContext->settings->assertRuntimeConfigurationSupported();
         } catch (\Throwable $e) {
@@ -246,8 +280,6 @@ trait SdkRunFactoryStageResumeSnapshotConcern
             throw $e;
         }
 
-        $remainingTurns = $resumeSnapshot['max_turns_remaining'] ?? null;
-        $loop->setMaxTurns(is_int($remainingTurns) && $remainingTurns > 0 ? $remainingTurns : $config->maxTurns);
         $loop->restoreRunSnapshot($resumeSnapshot ?? []);
         if ($mcpConnectionManager !== null) {
             $loop->setEventPump(static function () use ($mcpConnectionManager): void {
@@ -301,12 +333,17 @@ trait SdkRunFactoryStageResumeSnapshotConcern
      * @param  list<object>  $mcpTools
      * @param  list<object>  $userTools
      */
-    private static function assertNoReservedToolConflicts(bool $sandboxActive, array $mcpTools, array $userTools): void
+    private static function assertNoReplacementToolConflicts(array $replacementTools, array $mcpTools, array $userTools): void
     {
-        if (! $sandboxActive) {
+        if ($replacementTools === []) {
             return;
         }
-        $reserved = array_fill_keys(\HaoCode\Sdk\Sandbox\SandboxRuntime::RESERVED_TOOL_NAMES, true);
+        $reserved = [];
+        foreach ($replacementTools as $tool) {
+            if (is_object($tool) && method_exists($tool, 'name')) {
+                $reserved[(string) $tool->name()] = true;
+            }
+        }
         foreach (array_merge($mcpTools, $userTools) as $tool) {
             if (! is_object($tool) || ! method_exists($tool, 'name')) {
                 continue;
@@ -314,7 +351,7 @@ trait SdkRunFactoryStageResumeSnapshotConcern
             $name = (string) $tool->name();
             if (isset($reserved[$name])) {
                 throw new \InvalidArgumentException(
-                    "Tool name '{$name}' is reserved while sandbox mode is active and cannot be "
+                    "Tool name '{$name}' is owned by the active runtime policy and cannot be "
                     .'overridden by custom or MCP tools.',
                 );
             }

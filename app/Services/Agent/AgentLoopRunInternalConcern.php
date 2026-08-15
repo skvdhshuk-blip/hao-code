@@ -57,11 +57,7 @@ trait AgentLoopRunInternalConcern
             $modelInput = $isSessionStart
                 ? $this->withInitialTurnContext($userInput)
                 : $userInput;
-            $this->sessionManager->recordEntry([
-                'type' => 'user_message',
-                'content' => $userInput,
-            ]);
-            $this->messageHistory->addUserMessage($modelInput);
+            $this->recordUserInputEnvelope($userInput, $modelInput, $isSessionStart);
         }
         // Fire SessionStart hook on the very first user turn
         if ($isSessionStart) {
@@ -168,6 +164,8 @@ trait AgentLoopRunInternalConcern
                     onThinkingDelta: $onThinkingDelta,
                     shouldAbort: fn (): bool => $this->cancellationToken->isCancelled(),
                     toolsOverride: $activeTools,
+                    telemetrySystemPrompt: $this->contextBuilder->getTelemetrySystemPrompt(),
+                    telemetryMessages: $this->messageHistory->getTelemetryMessagesForApi(),
                 );
 
                 if ($this->isCancellationRequested()) {

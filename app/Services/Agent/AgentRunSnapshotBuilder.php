@@ -46,6 +46,7 @@ final class AgentRunSnapshotBuilder
             'append_system_prompt' => $runContext?->settings->getAppendSystemPrompt(),
             'omit_project_instructions' => $runContext?->omitProjectInstructions ?? false,
             'agent_type' => $runContext?->agentType,
+            'context_preset' => $runContext?->contextPreset,
             'read_only' => $runContext?->readOnly ?? false,
             'max_turns_remaining' => max(1, $maxTurns - $turnCount),
             'allowed_tools' => $allowedTools,

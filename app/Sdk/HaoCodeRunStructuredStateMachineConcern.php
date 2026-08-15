@@ -3,6 +3,7 @@
 namespace HaoCode\Sdk;
 
 use HaoCode\Services\Agent\AgentLoop;
+use HaoCode\Services\Agent\AgentInvocation;
 use HaoCode\Services\Agent\AgentLoopFactory;
 use HaoCode\Services\Agent\HumanInterruptCoordinator;
 use HaoCode\Services\Api\StreamingClient;
@@ -267,21 +268,21 @@ trait HaoCodeRunStructuredStateMachineConcern
             : $prompt;
 
         try {
-            $response = $loop->run(
-                userInput: $userInput,
+            $result = (new AgentInvocation(
+                input: $userInput,
                 onTextDelta: $config->onText,
                 onToolStart: $config->onToolStart,
                 onToolComplete: $config->onToolComplete,
                 onTurnStart: $config->onTurnStart,
                 onThinkingDelta: $config->onThinking,
-            );
+            ))->invoke($loop);
 
             return new QueryResult(
-                text: $response,
-                usage: self::extractUsage($loop),
-                cost: $loop->getEstimatedCost(),
-                sessionId: $config->ephemeral ? null : $loop->getSessionManager()->getSessionId(),
-                turnsUsed: $loop->getLastRunTurns(),
+                text: $result->text,
+                usage: $result->usage,
+                cost: $result->cost,
+                sessionId: $config->ephemeral ? null : $result->sessionId,
+                turnsUsed: $result->turnsUsed,
             );
         } finally {
             $run->close();

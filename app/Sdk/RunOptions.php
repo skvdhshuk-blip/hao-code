@@ -191,20 +191,7 @@ class RunOptions
      */
     public function toConfig(Agent $agent): HaoCodeConfig
     {
-        return $agent->toConfig()->withOverrides(
-            onText: $this->onText,
-            onThinking: $this->onThinking,
-            onToolStart: $this->onToolStart,
-            onToolComplete: $this->onToolComplete,
-            onTurnStart: $this->onTurnStart,
-            images: $this->images,
-            // null keeps the Agent's ephemeral setting.
-            ephemeral: $this->ephemeral,
-            responseSchema: $this->responseSchema,
-            abortController: $this->abortController,
-            cwd: $this->cwd,
-            maxBudgetUsd: $this->maxBudgetUsd,
-        );
+        return \HaoCode\Sdk\Internal\RunSpec::fromAgent($agent, $this)->config;
     }
 
     /**

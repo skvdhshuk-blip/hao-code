@@ -407,15 +407,15 @@ PREAMBLE;
             afterFork: true,
             readOnly: $readOnly || $agentDef->readOnly,
             parentToolRegistry: $context->toolRegistry,
+            parentRunContext: $context->runContext,
             model: $model,
             appendSystemPrompt: $agentDef->systemPrompt,
             omitProjectInstructions: $agentDef->omitClaudeMd,
             agentType: $agentDef->agentType,
+            limits: \HaoCode\Services\Agent\RunLimits::turns(
+                $maxTurns ?? $agentDef->maxTurns ?? 50,
+            ),
         );
-        $effectiveMaxTurns = $maxTurns ?? $agentDef->maxTurns;
-        if ($effectiveMaxTurns !== null) {
-            $subLoop->setMaxTurns($effectiveMaxTurns);
-        }
 
         $this->backgroundAgentManager->markRunning($agentId);
         $this->taskManager->transition(
