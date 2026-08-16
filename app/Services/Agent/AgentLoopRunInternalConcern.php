@@ -137,7 +137,8 @@ trait AgentLoopRunInternalConcern
                 toolOrchestrator: $this->toolOrchestrator,
                 toolRegistry: $this->toolRegistry,
                 cancellationToken: $this->cancellationToken,
-                disableEarlyExecution: $this->toolOrchestrator->hasHumanInterruptsConfigured(),
+                disableEarlyExecution: $this->toolOrchestrator->hasHumanInterruptsConfigured()
+                    || $this->toolOrchestrator->requiresSequentialToolExecution(),
             );
             $context = $this->toolUseContext ??= new ToolUseContext(
                 workingDirectory: $this->workingDirectory ?? getcwd(),

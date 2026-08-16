@@ -7,6 +7,7 @@ use HaoCode\Sdk\HumanActionRequest;
 use HaoCode\Sdk\HumanInterrupt;
 use HaoCode\Sdk\HumanInterruptException;
 use HaoCode\Services\Session\SessionManager;
+use HaoCode\Services\Run\ToolExecutionState;
 use HaoCode\Tools\ToolUseContext;
 
 /** @internal */
@@ -27,6 +28,7 @@ final class HumanInterruptCoordinator
         ToolUseContext $context,
         ?callable $onToolStart = null,
         ?callable $onToolComplete = null,
+        ?callable $onClaimed = null,
     ): array {
         $serialized = self::serializeDecisions($decisions);
         $pending = $this->sessions->getInterruptState($this->sessions->getSessionId(), $interruptId);
@@ -51,6 +53,9 @@ final class HumanInterruptCoordinator
             $interrupt = HumanInterrupt::fromArray($claim['interrupt'] ?? []);
             $checkpoint = is_array($claim['checkpoint'] ?? null) ? $claim['checkpoint'] : [];
             $this->restoreCheckpointPolicy($checkpoint);
+            if ($onClaimed !== null) {
+                $onClaimed();
+            }
 
             $blocks = is_array($checkpoint['blocks'] ?? null) ? $checkpoint['blocks'] : [];
             $results = is_array($checkpoint['results'] ?? null) ? $checkpoint['results'] : [];
@@ -79,6 +84,11 @@ final class HumanInterruptCoordinator
                             'content' => 'Rejected by human'.($decision->message !== null ? ': '.$decision->message : ''),
                             'is_error' => true,
                         ];
+                    $this->tools->settlePreparedToolBlock(
+                        $block,
+                        ToolExecutionState::Cancelled,
+                        $results[$index],
+                    );
                     continue;
                 }
                 if ($decision->type === 'respond') {
@@ -86,6 +96,11 @@ final class HumanInterruptCoordinator
                         ? $decision->response
                         : (json_encode($decision->response, JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES) ?: 'null');
                     $results[$index] = ['tool_use_id' => $id, 'content' => $content, 'is_error' => false];
+                    $this->tools->settlePreparedToolBlock(
+                        $block,
+                        ToolExecutionState::Completed,
+                        $results[$index],
+                    );
                     continue;
                 }
                 if ($decision->type === 'edit') {

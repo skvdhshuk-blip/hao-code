@@ -530,6 +530,17 @@ config `cwd` that differs from that directory, resume fails unless you set
 `allowCwdOverride: true`. `HaoCode::continueLatest($cwd)` injects the lookup
 `$cwd` into the resume config automatically.
 
+Durable sessions also append versioned, provider-neutral run events and
+incremental checkpoints to the existing session JSONL. Legacy session records
+remain readable and are still the transcript authority. For hosts that need
+transactional tool recovery across workers, set `HAOCODE_RUN_STORE=sqlite` and
+optionally `HAOCODE_RUN_DATABASE_PATH=/protected/path/run-state.sqlite` (PDO
+SQLite is required). SQLite mode adds idempotency claims, leases and fencing;
+an uncertain mutating tool becomes `unknown` and is never retried automatically.
+It deliberately executes tools sequentially so a forked process cannot reuse a
+database connection across the transaction boundary. This is at-least-once
+recovery with fail-closed mutations, not an exactly-once guarantee.
+
 ## Human approval
 
 Human-in-the-loop runs are durable and non-blocking: the SDK pauses, returns a

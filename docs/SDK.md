@@ -1751,6 +1751,30 @@ If the PHP process cwd differs from the session's recorded project root,
 different config `cwd` throws unless `allowCwdOverride: true`. See
 [resume() / continueLatest()](#resume--continuelatest).
 
+### Internal run state storage
+
+Non-ephemeral runs record schema-versioned `run_event` and incremental
+`run_checkpoint` entries alongside the existing JSONL transcript. These
+provider-neutral records power read-only export/replay internally; they do not
+replace `SessionManager` as the transcript authority, and existing JSONL
+sessions remain readable. Branching copies settled conversation history but
+does not copy execution events or checkpoints into the new run.
+
+The default is `HAOCODE_RUN_STORE=jsonl`. Set
+`HAOCODE_RUN_STORE=sqlite` to enable the transactional P2 recovery protocol,
+and optionally set `HAOCODE_RUN_DATABASE_PATH` (the default is
+`storage/app/haocode/run-state.sqlite`). SQLite mode requires `ext-pdo_sqlite`
+and records tool idempotency keys, claims, leases and fencing tokens. Claims
+are committed before lifecycle hooks/tool code; terminal results and the
+post-result checkpoint are committed together. A mutating call that was
+started but whose result cannot be confirmed becomes `unknown` and is not
+automatically retried. Read-only calls may be reclaimed after lease expiry.
+
+This protocol is at-least-once, not exactly-once. SQLite mode disables parallel
+tool forks to preserve one process/connection transaction ownership; JSONL mode
+keeps the existing parallel execution behavior. Worker daemon and queue adapter
+productization are outside this SDK boundary.
+
 ---
 
 ## Structured Output

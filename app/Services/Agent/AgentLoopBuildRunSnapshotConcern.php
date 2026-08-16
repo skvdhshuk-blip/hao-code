@@ -28,7 +28,7 @@ trait AgentLoopBuildRunSnapshotConcern
      */
     private function buildRunSnapshot(int $turnCount): array
     {
-        return AgentRunSnapshotBuilder::build(
+        $snapshot = AgentRunSnapshotBuilder::build(
             turnCount: $turnCount,
             maxTurns: $this->maxTurns,
             cwd: $this->getCurrentWorkingDirectory(),
@@ -46,6 +46,11 @@ trait AgentLoopBuildRunSnapshotConcern
             lastTurnInputTokens: $this->lastTurnInputTokens,
             sandboxRuntime: $this->sandboxRuntime,
         );
+        if ($this->runJournal?->invocationId() !== null) {
+            $snapshot['run_invocation_id'] = $this->runJournal->invocationId();
+        }
+
+        return $snapshot;
     }
 
     /** @param array<string, mixed> $checkpoint */
@@ -403,6 +408,10 @@ trait AgentLoopBuildRunSnapshotConcern
     /** @internal */
     public function restoreRunSnapshot(array $snapshot): void
     {
+        if (is_string($snapshot['run_invocation_id'] ?? null)
+            && trim($snapshot['run_invocation_id']) !== '') {
+            $this->runJournal?->restoreInvocation($snapshot['run_invocation_id']);
+        }
         if (is_array($snapshot['allowed_tools'] ?? null)) {
             $this->toolOrchestrator->setResumeAllowedTools($snapshot['allowed_tools']);
         }

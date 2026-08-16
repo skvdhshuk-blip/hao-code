@@ -222,6 +222,8 @@ trait SessionManagerTestTestRecordTurnStoresAssistantMessageConcern
         $manager->setTitle('Feature Work');
         $manager->recordUserMessage('Implement the new command');
         $manager->recordTurn(['role' => 'assistant', 'content' => 'Working on it'], []);
+        $manager->recordEntry(['type' => 'run_event', 'event' => ['run_id' => $manager->getSessionId()]]);
+        $manager->recordEntry(['type' => 'run_checkpoint', 'checkpoint' => ['status' => 'completed']]);
 
         $branch = $manager->branchSession();
 
@@ -235,6 +237,8 @@ trait SessionManagerTestTestRecordTurnStoresAssistantMessageConcern
         $this->assertSame('session_title', $entries[0]['type']);
         $this->assertSame('session_branch', $entries[1]['type']);
         $this->assertSame($branch['source_session_id'], $entries[1]['source_session_id']);
+        $this->assertNotContains('run_event', array_column($entries, 'type'));
+        $this->assertNotContains('run_checkpoint', array_column($entries, 'type'));
     }
 
     public function test_branch_session_derives_title_from_multimodal_text_blocks(): void

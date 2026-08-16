@@ -142,6 +142,8 @@ trait SessionManagerConstructConcern
             'interrupt_resolving',
             'interrupt_failed',
             'interrupt_parent',
+            'run_event',
+            'run_checkpoint',
         ];
         foreach ($sourceEntries as $entry) {
             if (in_array($entry['type'] ?? null, $skipTypes, true)) {

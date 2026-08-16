@@ -177,6 +177,8 @@ Tool/Backend 专属 timeout 没有并入 `RunLimits`：它们使用不同计时�
 
 ### P1：2 至 4 个月，建立事件与状态基础
 
+状态：已完成（2026-08-16）。
+
 交付内容：
 
 - 定义内部版本化 `RunEvent`，包含 `run_id`、序号、因果关系、阶段、去重键和 Schema Version。
@@ -192,7 +194,16 @@ Tool/Backend 专属 timeout 没有并入 `RunLimits`：它们使用不同计时�
 - 至少两个事件消费者无需修改核心即可接入。
 - 老 Session 数据仍然可读。
 
+验收记录（2026-08-16）：
+
+- `RunEvent` v1、`RunJournal`、JSONL/SQLite Store Adapter、增量 Checkpoint、只读 Export 和离线 `RunReplayer` 已接入 `AgentLoop`、`QueryEngine`、`ToolOrchestrator` 与 HITL。
+- Transcript 仍由 `SessionManager` 写入；Run Event、Checkpoint、Memory、Artifact 的唯一写入方和兼容边界记录在 `docs/architecture/run-state-contracts.md`。分支 Session 不复制执行事件和 Checkpoint。
+- 录制 Provider 事件可以离线重建消息、文本、Tool 结果、Usage 和 Run 终态；Export 与 Replay 是两个只读消费者，均不持有 Provider 或 ToolRegistry，因此不会执行副作用。
+- JSONL 旧记录继续由原 Session Loader 读取，新 `run_event` / `run_checkpoint` 记录对旧 Transcript 重建透明。
+
 ### P2：4 至 7 个月，支持安全恢复
+
+状态：已完成（2026-08-16）。
 
 交付内容：
 
@@ -209,6 +220,15 @@ Tool/Backend 专属 timeout 没有并入 `RunLimits`：它们使用不同计时�
 - 两个 Worker 可以安全竞争同一个 Run。
 - 无法确认外部副作用时进入 `unknown`，不能自动重试。
 - HITL 恢复继续兼容当前公共 API。
+
+验收记录（2026-08-16）：
+
+- 显式 `HAOCODE_RUN_STORE=sqlite` 启用 SQLite Claim Store；工具调用具备稳定幂等键、Lease、Fencing Token，以及 `completed`、`failed`、`interrupted`、`cancelled`、`unknown` 状态。
+- Claim 与副作用前 Checkpoint、结果与终态事件及结果后 Checkpoint 分别在单一 `BEGIN IMMEDIATE` 事务中提交。PreToolUse Hook 也位于 Claim 之后；无法确认的非只读执行进入 `unknown`，不会被 Worker 自动认领。
+- Model、Tool、HITL 三个边界各完成 100 轮 Kill/Retry 注入；提交后的变更工具不会再次执行，过期只读调用以更高 Fencing Token 恢复，两个独立 SQLite 连接安全竞争同一 Run。
+- 公共 HITL/AskUser/子 Agent 恢复套件在默认 JSONL 与显式 SQLite 两种模式均通过，公共 `HaoCodeConfig`、`resumeInterrupt()` 和 Stream API 签名不变。
+- 外部协议验证采用录制 Provider Fixture；数据库边界使用真实 PDO SQLite/WAL/`synchronous=FULL`。未把 Mock 声明为实时 Provider 网络验证。
+- 默认 JSONL 保留原并行读取性能；事件索引只扫描持锁后的新增尾部，本机 200 次事件追加由约 737ms 降至约 23ms。SQLite 恢复模式为保证事务所有权而串行执行 Tool。Durable Worker 守护进程和 Queue Adapter 仍属于 P4，不在本轮扩成新产品功能。
 
 ### P3：7 至 9 个月，安全组合不同 Agent
 

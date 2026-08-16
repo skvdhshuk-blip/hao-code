@@ -4,6 +4,9 @@ namespace HaoCode\Services\Agent;
 
 use HaoCode\Services\Api\LlmProvider;
 use HaoCode\Services\Cost\CostTracker;
+use HaoCode\Services\Run\RunEventPhase;
+use HaoCode\Services\Run\RunJournal;
+use HaoCode\Services\Run\RunStatus;
 use HaoCode\Services\Settings\SettingsManager;
 use HaoCode\Services\Telemetry\PhoenixTracer;
 use HaoCode\Tools\ToolRegistry;
@@ -16,6 +19,7 @@ class QueryEngine
         private readonly ?PhoenixTracer $tracer = null,
         private readonly ?SettingsManager $settings = null,
         private readonly ?CostTracker $costTracker = null,
+        private readonly ?RunJournal $runJournal = null,
     ) {}
 
     /**
@@ -43,6 +47,19 @@ class QueryEngine
 
         $tools = $toolsOverride ?? $this->toolRegistry->toApiTools();
         $processor = new StreamProcessor();
+        $modelAttemptId = 'model_'.bin2hex(random_bytes(12));
+        $requestedEvent = $this->runJournal?->record(
+            RunEventPhase::Model,
+            'model.requested',
+            [
+                'attempt_id' => $modelAttemptId,
+                'provider' => $this->settings?->getProviderType(),
+                'model' => $this->settings?->getModel(),
+                'message_count' => count($messages),
+                'tool_count' => count($tools),
+            ],
+            ($this->runJournal?->invocationId() ?? 'invocation').':'.$modelAttemptId.':requested',
+        );
 
         if ($onToolBlockComplete) {
             $processor->setOnToolBlockComplete($onToolBlockComplete);
@@ -89,15 +106,62 @@ class QueryEngine
             if ($llmSpan !== null) {
                 $this->annotateLlmSpanWithResult($llmSpan, $processor);
             }
+            if ($this->runJournal !== null) {
+                $completedEvent = $this->runJournal->record(
+                    RunEventPhase::Model,
+                    'model.completed',
+                    [
+                        'attempt_id' => $modelAttemptId,
+                        'message' => $processor->toAssistantMessage(),
+                        'text' => $processor->getAccumulatedText(),
+                        'usage' => $this->runEventUsage($processor->getUsage()),
+                        'model' => $processor->getModel(),
+                        'stop_reason' => $processor->getStopReason(),
+                    ],
+                    ($this->runJournal->invocationId() ?? 'invocation').':'.$modelAttemptId.':completed',
+                    $requestedEvent?->eventId,
+                );
+                $this->runJournal->checkpoint($completedEvent, RunStatus::Running, [
+                    'model_attempt_id' => $modelAttemptId,
+                    'stop_reason' => $processor->getStopReason(),
+                ]);
+            }
 
             return $processor;
         } catch (\Throwable $e) {
+            if ($this->runJournal !== null) {
+                $failedEvent = $this->runJournal->record(
+                    RunEventPhase::Model,
+                    'model.failed',
+                    [
+                        'attempt_id' => $modelAttemptId,
+                        'error_class' => $e::class,
+                        'error' => $e->getMessage(),
+                    ],
+                    ($this->runJournal->invocationId() ?? 'invocation').':'.$modelAttemptId.':failed',
+                    $requestedEvent?->eventId,
+                );
+                $this->runJournal->checkpoint($failedEvent, RunStatus::Failed, [
+                    'model_attempt_id' => $modelAttemptId,
+                ]);
+            }
             $this->tracer?->recordException($llmSpan, $e);
             throw $e;
         } finally {
             $llmScope?->detach();
             $llmSpan?->end();
         }
+    }
+
+    /** @return array{input_tokens: int, output_tokens: int, cache_creation_tokens: int, cache_read_tokens: int} */
+    private function runEventUsage(array $usage): array
+    {
+        return [
+            'input_tokens' => max(0, (int) ($usage['context_input_tokens'] ?? $usage['input_tokens'] ?? 0)),
+            'output_tokens' => max(0, (int) ($usage['output_tokens'] ?? 0)),
+            'cache_creation_tokens' => max(0, (int) ($usage['cache_creation_input_tokens'] ?? 0)),
+            'cache_read_tokens' => max(0, (int) ($usage['cache_read_input_tokens'] ?? 0)),
+        ];
     }
 
     /**

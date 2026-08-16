@@ -243,12 +243,26 @@ trait ToolOrchestratorExecuteSingleToolInnerConcern
         $toolName = (string) ($block['name'] ?? '');
         $input = is_array($block['input'] ?? null) ? $block['input'] : [];
         $tool = $this->toolRegistry->getTool($toolName);
+        $runStateAttempt = null;
 
-        $error = static fn (string $message): array => ['result' => [
-            'tool_use_id' => $toolUseId,
-            'content' => $message,
-            'is_error' => true,
-        ]];
+        $error = function (string $message) use (&$runStateAttempt, $toolUseId): array {
+            $result = [
+                'type' => 'tool_result',
+                'tool_use_id' => $toolUseId,
+                'content' => $message,
+                'is_error' => true,
+            ];
+            if ($runStateAttempt !== null && $runStateAttempt->execute) {
+                $this->durableToolCoordinator?->finish(
+                    $runStateAttempt,
+                    \HaoCode\Services\Run\ToolExecutionState::Failed,
+                    $result,
+                );
+                $runStateAttempt = null;
+            }
+
+            return ['result' => $result];
+        };
 
         if ($context->isAborted()) {
             return $error('Tool execution aborted');
@@ -263,6 +277,29 @@ trait ToolOrchestratorExecuteSingleToolInnerConcern
             return $error($preparedInput['error']);
         }
         $input = $preparedInput['input'];
+        $identityInput = is_array($block['_haocode_run_identity_input'] ?? null)
+            ? $block['_haocode_run_identity_input']
+            : $input;
+
+        if ($this->durableToolCoordinator !== null) {
+            // Hooks are allowed to mutate external state. Claim and checkpoint
+            // before invoking them, conservatively treating the boundary as a
+            // side effect even when the underlying tool is read-only.
+            $runStateAttempt = $this->durableToolCoordinator->begin(
+                $toolUseId,
+                $tool,
+                $input,
+                isset($block['_haocode_run_identity_input']),
+                $identityInput,
+                is_bool($block['_haocode_run_read_only'] ?? null)
+                    ? $block['_haocode_run_read_only']
+                    : false,
+            );
+            if (! $runStateAttempt->execute) {
+                return ['result' => $runStateAttempt->cachedResult
+                    ?? $error('Tool execution is unavailable.')['result']];
+            }
+        }
 
         $hookResult = $this->hookExecutor->execute(
             'PreToolUse',
@@ -301,8 +338,14 @@ trait ToolOrchestratorExecuteSingleToolInnerConcern
 
         $preparedBlock = $block;
         $preparedBlock['input'] = $input;
+        if ($runStateAttempt !== null && $runStateAttempt->execute) {
+            $preparedBlock['_haocode_run_identity_input'] = $identityInput;
+            $preparedBlock['_haocode_run_read_only'] = false;
+        }
 
         if (! $shouldInterrupt) {
+            $this->pausePreparedToolRunState($runStateAttempt, $toolUseId);
+
             return ['block' => $preparedBlock];
         }
 
@@ -323,6 +366,7 @@ trait ToolOrchestratorExecuteSingleToolInnerConcern
         if ($allowed === []) {
             return $error("No valid human decisions configured for {$toolName}.");
         }
+        $this->pausePreparedToolRunState($runStateAttempt, $toolUseId);
 
         return [
             'block' => $preparedBlock,

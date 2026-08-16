@@ -25,6 +25,7 @@ class AgentLoop
     use AgentLoopMessageEnvelopeConcern;
     use AgentLoopBuildRunSnapshotConcern;
     use AgentLoopMarkSessionResumedConcern;
+    use AgentLoopRunStateConcern;
 
     private const MAX_IDENTICAL_TOOL_ERROR_BATCHES = 3;
 

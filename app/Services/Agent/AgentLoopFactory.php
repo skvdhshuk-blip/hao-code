@@ -15,6 +15,10 @@ use HaoCode\Services\OutputStyle\OutputStyleLoader;
 use HaoCode\Sdk\Memory\JsonMemoryStore;
 use HaoCode\Services\Permissions\DenialTracker;
 use HaoCode\Services\Permissions\PermissionChecker;
+use HaoCode\Services\Run\DurableToolExecutionCoordinator;
+use HaoCode\Services\Run\RunJournal;
+use HaoCode\Services\Run\RunStateStoreFactory;
+use HaoCode\Services\Run\ToolExecutionStoreInterface;
 use HaoCode\Services\Session\SessionManager;
 use HaoCode\Services\Settings\SettingsManager;
 use HaoCode\Services\Telemetry\PhoenixTracer;
@@ -28,6 +32,7 @@ use HaoCode\Tools\Skill\SkillLoader;
 use HaoCode\Tools\Skill\SkillTool;
 use HaoCode\Tools\ToolRegistry;
 use HaoCode\Tools\ToolUseContext;
+use HaoCode\Support\Runtime\SdkRuntime;
 
 class AgentLoopFactory
 {
@@ -343,6 +348,37 @@ class AgentLoopFactory
         }
 
         $tracer = $this->container->make(PhoenixTracer::class);
+        $sessionManager = new SessionManager(persistenceEnabled: ! $ephemeral);
+        $runJournal = null;
+        $durableToolCoordinator = null;
+        if (! $ephemeral) {
+            $sessionPath = SdkRuntime::config(
+                'haocode.session_path',
+                SdkRuntime::storagePath('app/haocode/sessions'),
+            );
+            if (! is_string($sessionPath) || trim($sessionPath) === '') {
+                throw new \RuntimeException('Session storage path must be a non-empty string.');
+            }
+            $runStore = RunStateStoreFactory::make(
+                (string) SdkRuntime::config('haocode.run_store', 'jsonl'),
+                $sessionPath,
+                is_string($databasePath = SdkRuntime::config('haocode.run_database_path'))
+                    ? $databasePath
+                    : null,
+            );
+            $runJournal = new RunJournal(
+                $runStore,
+                $runStore,
+                fn (): string => $sessionManager->getSessionId(),
+            );
+            if ($runStore instanceof ToolExecutionStoreInterface) {
+                $durableToolCoordinator = new DurableToolExecutionCoordinator(
+                    $runStore,
+                    $runJournal,
+                    'worker_'.getmypid().'_'.bin2hex(random_bytes(8)),
+                );
+            }
+        }
 
         $client = $streamingClient ?? $this->container->make(StreamingClient::class);
         if ($model !== null && $client instanceof PooledProvider) {
@@ -362,13 +398,15 @@ class AgentLoopFactory
             usageAccumulator: $runContext?->usageAccumulator,
         );
         $costTracker->setProviderContext($settings->getProviderType(), $settings->getModel());
-        $queryEngine = new QueryEngine($client, $toolRegistry, $tracer, $settings, $costTracker);
+        $queryEngine = new QueryEngine($client, $toolRegistry, $tracer, $settings, $costTracker, $runJournal);
 
         $toolOrchestrator = new ToolOrchestrator(
             toolRegistry: $toolRegistry,
             permissionChecker: $permissionChecker,
             hookExecutor: $hookExecutor,
             tracer: $tracer,
+            runJournal: $runJournal,
+            durableToolCoordinator: $durableToolCoordinator,
         );
         if ($runContext !== null) {
             $toolOrchestrator->configureHumanInterrupts($runContext->interruptOn, $runContext->enableAskUser);
@@ -388,7 +426,7 @@ class AgentLoopFactory
             contextBuilder: $contextBuilder,
             messageHistory: new MessageHistory(),
             permissionChecker: $permissionChecker,
-            sessionManager: new SessionManager(persistenceEnabled: ! $ephemeral),
+            sessionManager: $sessionManager,
             contextCompactor: new ContextCompactor(
                 $queryEngine,
                 $hookExecutor,
@@ -403,6 +441,7 @@ class AgentLoopFactory
             maxEstimatedInputTokens: $maxEstimatedInputTokens,
             runContext: $runContext,
             provider: $client,
+            runJournal: $runJournal,
         );
 
         if ($workingDirectory !== null) {

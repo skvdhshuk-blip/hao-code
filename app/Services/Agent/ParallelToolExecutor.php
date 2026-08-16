@@ -90,6 +90,14 @@ final class ParallelToolExecutor
                 $onComplete($blocks[$idx]['name'], $result);
             }
         };
+        $recordOversizedId = function (int $idx) use (&$results, &$completedResults, $blocks, $onComplete): void {
+            $result = ToolResult::error('Tool result exceeded IPC size limit.');
+            $results[$idx] = $result->toApiFormat($this->boundedToolUseId($blocks[$idx]));
+            $completedResults[$idx] = $result;
+            if ($onComplete) {
+                $onComplete($blocks[$idx]['name'], $result);
+            }
+        };
 
         $cleanupParallel = function () use (&$pids, &$tempFiles): void {
             foreach ($pids as $pid) {
@@ -117,6 +125,10 @@ final class ParallelToolExecutor
                 // concurrent signal) has cancelled the batch.
                 if ($context->isAborted()) {
                     $recordAborted($idx);
+                    continue;
+                }
+                if ($this->toolUseIdExceedsIpcPayload($block)) {
+                    $recordOversizedId($idx);
                     continue;
                 }
 
@@ -360,6 +372,14 @@ final class ParallelToolExecutor
         }
 
         return substr((string) $id, 0, self::MAX_IPC_TOOL_ID_BYTES);
+    }
+
+    /** @param array<string, mixed> $block */
+    private function toolUseIdExceedsIpcPayload(array $block): bool
+    {
+        $id = $block['id'] ?? '';
+
+        return is_scalar($id) && strlen((string) $id) >= self::MAX_IPC_PAYLOAD_BYTES;
     }
 
     private function readIpcPayload(string $tempFile): string|false

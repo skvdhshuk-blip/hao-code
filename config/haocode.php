@@ -93,6 +93,20 @@ return [
 
     /*
     |--------------------------------------------------------------------------
+    | Internal Run State Store
+    |--------------------------------------------------------------------------
+    | JSONL preserves the existing zero-dependency session behavior. SQLite is
+    | opt-in and enables transactional tool claims, leases and fencing.
+    | Supported: jsonl, sqlite
+    */
+    'run_store' => $environment('HAOCODE_RUN_STORE', 'jsonl'),
+    'run_database_path' => $environment(
+        'HAOCODE_RUN_DATABASE_PATH',
+        dirname($defaultSessionPath).'/run-state.sqlite',
+    ),
+
+    /*
+    |--------------------------------------------------------------------------
     | Settings Paths
     |--------------------------------------------------------------------------
     */

@@ -5,6 +5,8 @@ namespace HaoCode\Services\Agent;
 use HaoCode\Contracts\ToolInterface;
 use HaoCode\Services\Hooks\HookExecutor;
 use HaoCode\Services\Permissions\PermissionChecker;
+use HaoCode\Services\Run\DurableToolExecutionCoordinator;
+use HaoCode\Services\Run\RunJournal;
 use HaoCode\Services\Telemetry\PhoenixTracer;
 use HaoCode\Services\ToolResult\ToolResultStorage;
 use HaoCode\Sdk\HumanActionRequest;
@@ -22,6 +24,8 @@ trait ToolOrchestratorConstructConcern
         private readonly HookExecutor $hookExecutor,
         private readonly ?PhoenixTracer $tracer = null,
         private readonly float $parallelToolTimeoutSeconds = self::DEFAULT_PARALLEL_TOOL_TIMEOUT_SECONDS,
+        private readonly ?RunJournal $runJournal = null,
+        private readonly ?DurableToolExecutionCoordinator $durableToolCoordinator = null,
     ) {
         $this->skillScope = new SkillScopeState();
         if (! is_finite($this->parallelToolTimeoutSeconds) || $this->parallelToolTimeoutSeconds <= 0) {
@@ -272,6 +276,15 @@ trait ToolOrchestratorConstructConcern
         ?callable $onToolStart = null,
         ?callable $onToolComplete = null,
     ): array {
+        if ($this->requiresSequentialToolExecution()) {
+            $results = [];
+            foreach ($toolUseBlocks as $block) {
+                $results[] = $this->executeSingleTool($block, $context, $onToolStart, $onToolComplete);
+            }
+
+            return $results;
+        }
+
         if ($context->isAborted()) {
             $results = [];
             foreach ($toolUseBlocks as $block) {
@@ -387,49 +400,4 @@ trait ToolOrchestratorConstructConcern
         return $executor->execute($blocks, $context, $onStart, $onComplete);
     }
 
-    private function executeSingleTool(
-        array $block,
-        ToolUseContext $context,
-        ?callable $onStart,
-        ?callable $onComplete,
-    ): array {
-        $toolUseId = $block['id'];
-        $toolName = $block['name'];
-        $input = $block['input'] ?? [];
-
-        $toolSpan = $this->tracer?->startSpan(
-            name: "tool.{$toolName}",
-            openInferenceKind: PhoenixTracer::KIND_TOOL,
-            attributes: [
-                'tool.name' => $toolName,
-                'tool.call_id' => (string) $toolUseId,
-                'input.value' => json_encode($input, JSON_UNESCAPED_UNICODE) ?: '',
-                'input.mime_type' => 'application/json',
-            ],
-        );
-        $toolScope = $toolSpan?->activate();
-
-        try {
-            $apiResult = $this->executeSingleToolInner($block, $context, $onStart, $onComplete);
-
-            if ($toolSpan !== null) {
-                // Route through PhoenixTracer::setAttribute so tool output is
-                // masked when redact_messages is on. A direct setAttribute
-                // here used to leak file contents / Bash output / MCP payloads
-                // regardless of the redaction flag.
-                $this->tracer?->setAttribute($toolSpan, 'output.value', (string) ($apiResult['content'] ?? ''));
-                $this->tracer?->setAttribute($toolSpan, 'tool.is_error', (bool) ($apiResult['is_error'] ?? false));
-            }
-
-            return $apiResult;
-        } catch (\HaoCode\Sdk\HumanInterruptException $e) {
-            throw $e;
-        } catch (\Throwable $e) {
-            $this->tracer?->recordException($toolSpan, $e);
-            throw $e;
-        } finally {
-            $toolScope?->detach();
-            $toolSpan?->end();
-        }
-    }
 }
