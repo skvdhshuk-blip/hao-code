@@ -976,7 +976,11 @@ split cohesive behavior into same-namespace concern traits.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.20.1`. Notable changes since `v1.10.0`:
+is based on `v1.20.2`. Notable changes since `v1.10.0`:
+
+- `v1.20.2` — Keeps RunEvent Store contract tests compatible with PHP 8.1 by
+  consuming the declared `iterable` return type without assuming a
+  `Traversable`; runtime behavior and the public SDK API are unchanged.
 
 - `v1.20.1` — Adds the internal versioned RunEvent/Checkpoint contract and
   SQLite Claim/Lease/Fencing recovery path without changing the public SDK API.

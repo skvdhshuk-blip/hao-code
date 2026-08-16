@@ -95,7 +95,7 @@ final class RunStateIntegrationTest extends TestCase
             tracer: $tracer,
             runJournal: $journal,
         ))->query([], [['role' => 'user', 'content' => 'go']]);
-        $events = iterator_to_array($store->read('run-1'));
+        $events = [...$store->read('run-1')];
         $replay = (new RunReplayer($store))->replay('run-1');
 
         self::assertSame('done', $processor->getAccumulatedText());
@@ -183,7 +183,7 @@ final class RunStateIntegrationTest extends TestCase
         self::assertArrayHasKey('haocode.event_id', $spans[0]['attributes']);
         self::assertContains(
             $spans[0]['attributes']['haocode.event_id'],
-            array_map(static fn ($event): string => $event->eventId, iterator_to_array($store->read('run-1'))),
+            array_map(static fn ($event): string => $event->eventId, [...$store->read('run-1')]),
         );
         self::assertArrayNotHasKey('haocode.event_id', $spans[1]['attributes']);
 
@@ -265,7 +265,7 @@ final class RunStateIntegrationTest extends TestCase
         );
 
         $result = $loop->run('question');
-        $events = iterator_to_array($store->read('run-1'));
+        $events = [...$store->read('run-1')];
         $replay = (new RunReplayer($store))->replay('run-1');
 
         self::assertSame('answer', $result);

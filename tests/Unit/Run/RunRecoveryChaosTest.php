@@ -54,7 +54,7 @@ final class RunRecoveryChaosTest extends TestCase
             $store->append($completed);
 
             self::assertSame($first->eventId, $retry->eventId);
-            self::assertCount(2, iterator_to_array($store->read($runId)));
+            self::assertCount(2, [...$store->read($runId)]);
         }
     }
 

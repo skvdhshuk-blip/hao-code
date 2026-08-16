@@ -57,7 +57,7 @@ final class RunStateStoreTest extends TestCase
         self::assertSame(1, $first->sequence);
         self::assertSame($first->eventId, $same->eventId);
         self::assertSame(2, $next->sequence);
-        self::assertCount(2, iterator_to_array($store->read('run-1')));
+        self::assertCount(2, [...$store->read('run-1')]);
     }
 
     public function test_jsonl_adapter_rejects_conflicting_dedupe_fact(): void
@@ -94,7 +94,7 @@ final class RunStateStoreTest extends TestCase
         self::assertSame($first->eventId, $same->eventId);
         self::assertSame(2, $second->sequence);
         self::assertSame(3, $third->sequence);
-        self::assertCount(3, iterator_to_array($left->read('run-1')));
+        self::assertCount(3, [...$left->read('run-1')]);
     }
 
     public function test_jsonl_incremental_index_fails_closed_on_corrupt_tail(): void

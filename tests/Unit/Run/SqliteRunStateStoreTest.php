@@ -158,7 +158,7 @@ final class SqliteRunStateStoreTest extends TestCase
 
         self::assertFalse($duplicate->execute);
         self::assertSame(ToolExecutionState::Started, $duplicate->record->state);
-        self::assertCount(1, iterator_to_array($store->read('run-1')));
+        self::assertCount(1, [...$store->read('run-1')]);
     }
 
     public function test_current_fence_can_commit_after_lease_expiry_without_takeover(): void
