@@ -5,15 +5,16 @@ declare(strict_types=1);
 namespace HaoCode\Services\Agent;
 
 use HaoCode\Sdk\HumanInterruptException;
+use HaoCode\Services\Run\RunEvent;
 use HaoCode\Services\Run\RunEventPhase;
 use HaoCode\Services\Run\RunStatus;
 
 trait AgentLoopRunStateConcern
 {
-    private function beginRunState(string|array $userInput): void
+    private function beginRunState(string|array $userInput): ?RunEvent
     {
         if ($this->runJournal === null) {
-            return;
+            return null;
         }
         $invocationId = $this->runJournal->beginInvocation();
         $started = $this->runJournal->record(
@@ -23,7 +24,7 @@ trait AgentLoopRunStateConcern
             $invocationId.':run.started',
         );
         $message = ['role' => 'user', 'content' => $userInput];
-        $this->runJournal->record(
+        return $this->runJournal->record(
             RunEventPhase::Run,
             'run.input_recorded',
             ['message' => $message],

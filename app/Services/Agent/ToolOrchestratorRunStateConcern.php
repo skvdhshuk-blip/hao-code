@@ -11,6 +11,7 @@ use HaoCode\Services\Run\RunStatus;
 use HaoCode\Services\Run\ToolExecutionAttempt;
 use HaoCode\Services\Run\ToolExecutionState;
 use HaoCode\Services\Telemetry\PhoenixTracer;
+use HaoCode\Services\Telemetry\RunTraceContext;
 use HaoCode\Tools\ToolUseContext;
 
 trait ToolOrchestratorRunStateConcern
@@ -61,18 +62,26 @@ trait ToolOrchestratorRunStateConcern
         $toolSpan = $this->tracer?->startSpan(
             name: "tool.{$toolName}",
             openInferenceKind: PhoenixTracer::KIND_TOOL,
-            attributes: [
+            attributes: array_merge([
                 'tool.name' => $toolName,
                 'tool.call_id' => $toolUseId,
                 'input.value' => json_encode($input, JSON_UNESCAPED_UNICODE) ?: '',
                 'input.mime_type' => 'application/json',
-            ],
+            ], RunTraceContext::attributes($this->runJournal)),
         );
         $toolScope = $toolSpan?->activate();
 
         try {
             if ($tool !== null && $tool->isEnabled()) {
+                $previousEventId = $this->runJournal?->causationId();
                 $attempt = $this->beginToolRunState($block, $tool, $input);
+                $toolEventId = $this->runJournal?->causationId();
+                RunTraceContext::annotate(
+                    $this->tracer,
+                    $toolSpan,
+                    $this->runJournal,
+                    $toolEventId !== $previousEventId ? $toolEventId : null,
+                );
                 if ($attempt !== null && ! $attempt->execute) {
                     return $attempt->cachedResult ?? $this->runStateError($toolUseId, 'Tool execution is unavailable.');
                 }

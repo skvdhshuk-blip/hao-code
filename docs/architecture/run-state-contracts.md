@@ -8,7 +8,7 @@ public SDK API and it does not claim exactly-once execution.
 | Capability | Authoritative writer | Persistence | Delivery / adapter | Consumers | Compatibility path | Invariant |
 | --- | --- | --- | --- | --- | --- | --- |
 | Transcript | `SessionManager` | Existing session JSONL | `MessageHistory` / session loader | Conversation resume, summaries, UI | Existing record types remain readable | Transcript records model-visible conversation; it is not an execution claim ledger |
-| Run events | `RunJournal` | `RunEventStoreInterface` | JSONL or SQLite store | Export, replay, telemetry/eval adapters | JSONL events coexist with legacy session records | Sequence is monotonic per run; a dedupe key identifies one logical fact |
+| Run events | `RunJournal` | `RunEventStoreInterface` | JSONL or SQLite store | Export, replay, telemetry correlation/eval adapters | JSONL events coexist with legacy session records | Sequence is monotonic per run; a dedupe key identifies one logical fact |
 | Checkpoints | `RunCheckpointStoreInterface` | Incremental state delta plus event cursor | JSONL or SQLite store | HITL and worker recovery | Existing embedded HITL checkpoint remains readable | A checkpoint never copies the complete transcript |
 | Tool execution | `ToolExecutionStoreInterface` | SQLite claim ledger | `DurableToolExecutionCoordinator` | Recovery worker | Disabled when no durable store is configured | A non-read-only execution that may have escaped becomes `unknown` and is never auto-retried |
 | Memory | `MemoryStoreInterface` | Existing memory backend | Memory tools / prompt builder | Agent runs | Unchanged | Checkpoints and events do not become long-term memory |
@@ -39,6 +39,28 @@ The run id is the durable session id. A normal conversation send creates a new
 invocation id; resuming an interrupt restores the checkpointed invocation id.
 Nested agents own their own run id. `causation_id` is deliberately run-local;
 existing agent/session metadata remains the cross-run parent-link authority.
+
+`RunJournal` is also the only authority for telemetry correlation identities.
+`RunTraceContext` maps its `run_id`, `invocation_id` and the event that opened an
+Agent, Model or Tool boundary onto Phoenix/OTel spans; it never creates an
+independent identity. A cached Tool result with no newly recorded event carries
+the Run and Invocation ids but does not claim an unrelated `event_id`.
+
+## Replay, export and privacy views
+
+The event store is an internal fact ledger. It retains user messages, model
+output, tool results and raw errors when those facts are needed for replay.
+`RunReplayer` reads that raw view and cannot execute Provider or Tool code.
+Hosts must therefore protect the JSONL/SQLite files as sensitive application
+data; export redaction is not encryption or retention management.
+
+`RunEventExporter` has no raw fallback. It always passes events through
+`SensitiveDataRedactor` and exposes only an allowlisted operational view such
+as ids, counters, hashes, state and token usage. Message, text, result, error
+and unknown future payload fields are masked by default. Phoenix uses the same
+content-key policy when its existing `redact_messages` option is enabled, so
+the redaction rules have one owner without changing that option's compatibility
+semantics.
 
 ## Durable tool state machine
 
@@ -80,6 +102,14 @@ explicit durable-store mode and requires PDO SQLite. JSONL remains the default
 session/event adapter so existing installations and public constructors do not
 gain a new hard dependency. Durable Worker productization remains a later
 roadmap item.
+
+The recovery protocol is exercised with two independent PHP processes and
+real PDO SQLite/WAL state. The owner is sent `SIGKILL` after Claim, after a
+separately persisted external-effect counter changes, and after result commit.
+The recovering process obtains higher fencing tokens where appropriate;
+committed work is reused and an escaped mutation without a committed result
+remains `unknown`. This is evidence for the Store protocol, not a claim that a
+public Worker daemon or Queue adapter exists.
 
 SQLite mode executes tool batches sequentially. Default JSONL runs retain the
 existing fork-based parallel read path; a PDO connection is never shared with a

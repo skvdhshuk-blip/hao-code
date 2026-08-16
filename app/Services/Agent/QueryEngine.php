@@ -9,6 +9,7 @@ use HaoCode\Services\Run\RunJournal;
 use HaoCode\Services\Run\RunStatus;
 use HaoCode\Services\Settings\SettingsManager;
 use HaoCode\Services\Telemetry\PhoenixTracer;
+use HaoCode\Services\Telemetry\RunTraceContext;
 use HaoCode\Tools\ToolRegistry;
 
 class QueryEngine
@@ -71,11 +72,11 @@ class QueryEngine
         $llmSpan = $this->tracer?->startSpan(
             name: 'llm.chat',
             openInferenceKind: PhoenixTracer::KIND_LLM,
-            attributes: $this->buildLlmSpanAttributes(
+            attributes: array_merge($this->buildLlmSpanAttributes(
                 $telemetrySystemPrompt ?? $systemPrompt,
                 $telemetryMessages ?? $messages,
                 $tools,
-            ),
+            ), RunTraceContext::attributes($this->runJournal, $requestedEvent?->eventId)),
         );
         $llmScope = $llmSpan?->activate();
 

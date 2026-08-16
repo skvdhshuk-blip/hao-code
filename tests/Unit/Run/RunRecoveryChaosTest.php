@@ -58,7 +58,7 @@ final class RunRecoveryChaosTest extends TestCase
         }
     }
 
-    public function test_tool_boundary_survives_one_hundred_kill_and_retry_cycles_without_duplicate_commit(): void
+    public function test_tool_boundary_survives_one_hundred_state_and_retry_cycles_without_duplicate_commit(): void
     {
         $store = new SqliteRunStateStore($this->database);
         for ($index = 0; $index < 100; $index++) {

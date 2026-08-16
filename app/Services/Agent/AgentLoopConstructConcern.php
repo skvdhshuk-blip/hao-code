@@ -15,6 +15,7 @@ use HaoCode\Services\Permissions\PermissionChecker;
 use HaoCode\Services\Run\RunJournal;
 use HaoCode\Services\Session\SessionManager;
 use HaoCode\Services\Telemetry\PhoenixTracer;
+use HaoCode\Services\Telemetry\RunTraceContext;
 use HaoCode\Services\ToolResult\ToolResultStorage;
 use HaoCode\Tools\ToolRegistry;
 use HaoCode\Tools\ToolUseContext;
@@ -192,18 +193,18 @@ trait AgentLoopConstructConcern
         ?callable $onThinkingDelta = null,
     ): string {
         $this->assertDurableConversationUsable();
-        $this->beginRunState($userInput);
+        $inputEvent = $this->beginRunState($userInput);
         $originalModel = $this->runContext?->settings->getModel();
         $this->runBaseModel = $originalModel;
         $this->toolOrchestrator->resetSkillScope();
         $agentSpan = $this->tracer?->startSpan(
             name: 'agent.run',
             openInferenceKind: PhoenixTracer::KIND_AGENT,
-            attributes: [
+            attributes: array_merge([
                 'input.value' => is_string($userInput) ? $userInput : json_encode($userInput, JSON_UNESCAPED_UNICODE),
                 'input.mime_type' => is_string($userInput) ? 'text/plain' : 'application/json',
                 'session.id' => $this->sessionManager->getSessionId(),
-            ],
+            ], RunTraceContext::attributes($this->runJournal, $inputEvent?->eventId)),
         );
         $agentScope = $agentSpan?->activate();
 

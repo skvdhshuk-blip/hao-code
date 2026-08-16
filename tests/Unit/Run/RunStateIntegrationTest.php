@@ -25,11 +25,14 @@ use HaoCode\Services\Run\SqliteRunStateStore;
 use HaoCode\Services\Run\ToolExecutionState;
 use HaoCode\Services\Run\RunStatus;
 use HaoCode\Services\Session\SessionManager;
+use HaoCode\Services\Telemetry\PhoenixTracer;
 use HaoCode\Tools\BaseTool;
 use HaoCode\Tools\ToolInputSchema;
 use HaoCode\Tools\ToolRegistry;
 use HaoCode\Tools\ToolResult;
 use HaoCode\Tools\ToolUseContext;
+use OpenTelemetry\API\Trace\SpanInterface;
+use OpenTelemetry\Context\ScopeInterface;
 use PHPUnit\Framework\TestCase;
 
 final class RunStateIntegrationTest extends TestCase
@@ -83,10 +86,13 @@ final class RunStateIntegrationTest extends TestCase
                 return [];
             }
         };
+        $spans = [];
+        $tracer = $this->capturingTracer($spans);
 
         $processor = (new QueryEngine(
             $provider,
             new ToolRegistry(),
+            tracer: $tracer,
             runJournal: $journal,
         ))->query([], [['role' => 'user', 'content' => 'go']]);
         $events = iterator_to_array($store->read('run-1'));
@@ -101,6 +107,9 @@ final class RunStateIntegrationTest extends TestCase
         self::assertSame(3, $replay->usage['input_tokens']);
         self::assertSame(1, $replay->usage['output_tokens']);
         self::assertSame(2, $store->latestCheckpoint('run-1')?->eventSequence);
+        self::assertSame('run-1', $spans[0]['attributes']['haocode.run_id']);
+        self::assertSame('inv-1', $spans[0]['attributes']['haocode.invocation_id']);
+        self::assertSame($events[0]->eventId, $spans[0]['attributes']['haocode.event_id']);
     }
 
     public function test_durable_tool_claim_precedes_hooks_and_committed_result_is_not_reexecuted(): void
@@ -144,10 +153,12 @@ final class RunStateIntegrationTest extends TestCase
                 return new HookResult(true);
             },
         );
+        $spans = [];
         $orchestrator = new ToolOrchestrator(
             $registry,
             $permission,
             $hooks,
+            tracer: $this->capturingTracer($spans),
             runJournal: $journal,
             durableToolCoordinator: $coordinator,
         );
@@ -167,6 +178,14 @@ final class RunStateIntegrationTest extends TestCase
         self::assertSame(2, $hookCalls, 'Only the first execution may run pre/post hooks.');
         self::assertSame(ToolExecutionState::Completed, $store->getToolExecution($key)?->state);
         self::assertSame('completed', $store->latestCheckpoint('run-1')?->stateDelta['state']);
+        self::assertSame('run-1', $spans[0]['attributes']['haocode.run_id']);
+        self::assertSame('inv-1', $spans[0]['attributes']['haocode.invocation_id']);
+        self::assertArrayHasKey('haocode.event_id', $spans[0]['attributes']);
+        self::assertContains(
+            $spans[0]['attributes']['haocode.event_id'],
+            array_map(static fn ($event): string => $event->eventId, iterator_to_array($store->read('run-1'))),
+        );
+        self::assertArrayNotHasKey('haocode.event_id', $spans[1]['attributes']);
 
         $rejected = ['id' => 'call-2', 'name' => 'Mutate', 'input' => []];
         $activeKey = 'tool_'.hash('sha256', "run-1\0inv-1\0call-2");
@@ -229,6 +248,7 @@ final class RunStateIntegrationTest extends TestCase
         $permission = $this->createMock(PermissionChecker::class);
         $hooks = $this->createMock(HookExecutor::class);
         $hooks->method('execute')->willReturn(new HookResult(true));
+        $spans = [];
         $loop = new AgentLoop(
             $query,
             $orchestrator,
@@ -240,6 +260,7 @@ final class RunStateIntegrationTest extends TestCase
             new CostTracker(),
             new ToolRegistry(),
             $hooks,
+            tracer: $this->capturingTracer($spans),
             runJournal: $journal,
         );
 
@@ -255,6 +276,35 @@ final class RunStateIntegrationTest extends TestCase
         self::assertSame(RunStatus::Completed, $replay->status);
         self::assertSame('answer', $replay->text);
         self::assertSame('question', $replay->messages[0]['content']);
+        self::assertSame('run-1', $spans[0]['attributes']['haocode.run_id']);
+        self::assertSame($events[0]->invocationId, $spans[0]['attributes']['haocode.invocation_id']);
+        self::assertSame($events[1]->eventId, $spans[0]['attributes']['haocode.event_id']);
+    }
+
+    /** @param array<int, array{name: string, kind: string, attributes: array<string, mixed>}> $spans */
+    private function capturingTracer(array &$spans): PhoenixTracer
+    {
+        $scope = $this->createStub(ScopeInterface::class);
+        $span = $this->createStub(SpanInterface::class);
+        $span->method('activate')->willReturn($scope);
+        $tracer = $this->createMock(PhoenixTracer::class);
+        $tracer->method('startSpan')->willReturnCallback(
+            static function (string $name, string $kind, array $attributes) use (&$spans, $span): SpanInterface {
+                $spans[] = compact('name', 'kind', 'attributes');
+
+                return $span;
+            },
+        );
+        $tracer->method('setAttribute')->willReturnCallback(
+            static function (?SpanInterface $target, string $key, mixed $value) use (&$spans): void {
+                $index = array_key_last($spans);
+                if ($index !== null) {
+                    $spans[$index]['attributes'][$key] = $value;
+                }
+            },
+        );
+
+        return $tracer;
     }
 
     private function textProcessor(string $text): StreamProcessor

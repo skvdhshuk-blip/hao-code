@@ -2,7 +2,7 @@
 
 Use hao-code as a framework-free PHP library to embed an AI coding agent in your application.
 
-This document describes the `v1.20.0` source line. Published package versions
+This document describes the `v1.20.1` source line. Published package versions
 are identified by Git tags and Packagist.
 
 ```bash
@@ -1760,6 +1760,13 @@ replace `SessionManager` as the transcript authority, and existing JSONL
 sessions remain readable. Branching copies settled conversation history but
 does not copy execution events or checkpoints into the new run.
 
+The internal export view is always redacted: message bodies, model text, tool
+results, raw errors, and unknown future content fields are masked while
+operational ids, states, hashes, counters, and token usage remain available.
+Replay still reads the raw internal facts. Run-state JSONL/SQLite files can
+therefore contain sensitive application data and belong in a host-protected
+directory with an appropriate retention policy.
+
 The default is `HAOCODE_RUN_STORE=jsonl`. Set
 `HAOCODE_RUN_STORE=sqlite` to enable the transactional P2 recovery protocol,
 and optionally set `HAOCODE_RUN_DATABASE_PATH` (the default is
@@ -1769,6 +1776,10 @@ are committed before lifecycle hooks/tool code; terminal results and the
 post-result checkpoint are committed together. A mutating call that was
 started but whose result cannot be confirmed becomes `unknown` and is not
 automatically retried. Read-only calls may be reclaimed after lease expiry.
+The protocol is regression-tested with independent PHP processes receiving a
+real `SIGKILL` before execution, after a separately persisted external effect,
+and after result commit. This validates the Store contract; it does not provide
+a Worker daemon or Queue adapter.
 
 This protocol is at-least-once, not exactly-once. SQLite mode disables parallel
 tool forks to preserve one process/connection transaction ownership; JSONL mode

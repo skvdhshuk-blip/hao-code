@@ -1,10 +1,18 @@
 # Hao Code 产品路线图
 
-- 状态：执行中（P0 代码验收完成；外部 Provider 实测单独记录）
+- 状态：执行中（P0/P1/P2 代码契约与独立进程恢复验收完成；外部 Provider 实测、Durable Worker 产品化、数据治理、Eval、Handoff 未验收）
 - 更新日期：2026-08-16
 - 规划周期：从路线图启动起计算 12 个月
 
 本文说明 Hao Code 未来一年的产品方向、架构边界和验收门槛。它不承诺具体版本号或发布日期。每个阶段只有通过验收，才能进入下一阶段。
+
+阶段编号表示依赖顺序，不表示实际已经消耗的月份。路线图中的完成状态统一按以下证据等级记录：
+
+1. 设计完成：责任边界、失败语义和兼容策略已经写清。
+2. 代码契约完成：实现和定向测试已经落库，公共兼容检查通过。
+3. 单进程回归通过：真实存储和故障注入在一个 PHP 进程内稳定通过。
+4. 多进程或真实基础设施验证通过：独立进程、真实 Provider 或真实 Queue 等外部边界完成验收。
+5. 稳定发布：发布门槛、文档和线上证据全部闭环。
 
 ## 愿景
 
@@ -31,7 +39,7 @@ Hao Code 已经具备以下生产基础：
 - 默认非只读的工具权限模型，以及对子 Agent 能力扩大的限制。
 - Session 锁、损坏检测、资源清理和 SDK 公共 API 快照检查。
 
-当前运行时仍以固定 Agent Loop 为核心。它适合单 Agent、Agent-as-tool 和现有 Team 场景，但还缺少支持多种执行语义所需的统一事件、状态、恢复和能力协商基础。
+当前运行时仍以固定 `AgentLoop` 为核心，已经具备 `RunEvent`、JSONL/SQLite Run Store、增量 Checkpoint、Tool Claim/Lease/Fencing、离线 Replay 和运行前能力校验。独立 PHP 进程的崩溃恢复协议已有真实 `SIGKILL` 验收；现阶段的主要缺口不再是“有没有状态契约”，而是 Durable Worker/Queue 产品化、真实 Provider、长期数据增长和 Eval 闭环中的生产证据。
 
 ## 框架对比结论
 
@@ -57,6 +65,8 @@ Hao Code 已经具备以下生产基础：
 完整仓库清单见文末。
 
 ## 目标架构
+
+下图是目标概念图，不代表所有节点都已有对应类。当前实现以 `Agent + RunOptions -> RunSpec/RunLimits` 形成运行描述，以 `AgentLoopSpec + AgentInvocation` 组装调用，以 `AgentLoop` 执行，以 `RunJournal + RunStateStoreInterface` 持久化运行状态；安全边界由现有 Capability Guard、Permission、Sandbox Policy、Hook 和 HITL 共同承担。
 
 「支持不同 Agent」不等于建立 `CodingAgent`、`DataAgent`、`WorkflowAgent` 等继承树。Agent 应当通过以下维度组合：
 
@@ -91,7 +101,7 @@ flowchart TD
     Events --> Ops["OTel / Replay / Eval"]
 ```
 
-`ExecutionStrategy` 初期只作为内部接口。现有 Agent Loop 仍是默认实现。在三类真实业务无法用现有组合方式表达之前，不冻结公共 Workflow API。
+`ExecutionStrategy`、Router、Handoff、Workflow 和通用 `Run Kernel` 目前只是候选概念，不是已落地公共能力。只有出现第二种确实不同的执行语义，并且至少三类真实业务无法用现有 `AgentLoop`、`AgentAsTool` 和 Team 表达时，才创建相应内部接口；在此之前不冻结公共 Workflow API。
 
 ## 战略主线
 
@@ -145,9 +155,9 @@ Tool/Backend 专属 timeout 没有并入 `RunLimits`：它们使用不同计时�
 
 ## 12 个月路线图
 
-### P0：0 至 2 个月，建立生产契约
+### P0：建立生产契约
 
-状态：代码验收完成（2026-08-12）。Mock/fixture 结果不作为外部 Provider 实测证明。
+状态：代码契约完成（2026-08-12）。Mock/fixture 结果不作为外部 Provider 实测证明。
 
 内部依赖方向见 [Runtime dependency rules](architecture/runtime-dependencies.md)。
 
@@ -175,9 +185,9 @@ Tool/Backend 专属 timeout 没有并入 `RunLimits`：它们使用不同计时�
 - `php scripts/sdk-bc-check.php --verify` 通过，没有修改公共构造函数或破坏 SDK API 快照。
 - `./vendor/bin/phpunit tests/Provider`、P0 专项测试和 `composer test` 必须同时通过；外部 Provider 实测仍按凭据和网络条件单独执行，不能用 Mock Fixture 代替发布声明。
 
-### P1：2 至 4 个月，建立事件与状态基础
+### P1：建立事件与状态基础
 
-状态：已完成（2026-08-16）。
+状态：代码契约完成（2026-08-16）。
 
 交付内容：
 
@@ -196,14 +206,14 @@ Tool/Backend 专属 timeout 没有并入 `RunLimits`：它们使用不同计时�
 
 验收记录（2026-08-16）：
 
-- `RunEvent` v1、`RunJournal`、JSONL/SQLite Store Adapter、增量 Checkpoint、只读 Export 和离线 `RunReplayer` 已接入 `AgentLoop`、`QueryEngine`、`ToolOrchestrator` 与 HITL。
+- `RunEvent` v1、`RunJournal`、JSONL/SQLite Store Adapter、增量 Checkpoint、默认脱敏的只读 Export 和离线 `RunReplayer` 已接入 `AgentLoop`、`QueryEngine`、`ToolOrchestrator` 与 HITL。
 - Transcript 仍由 `SessionManager` 写入；Run Event、Checkpoint、Memory、Artifact 的唯一写入方和兼容边界记录在 `docs/architecture/run-state-contracts.md`。分支 Session 不复制执行事件和 Checkpoint。
-- 录制 Provider 事件可以离线重建消息、文本、Tool 结果、Usage 和 Run 终态；Export 与 Replay 是两个只读消费者，均不持有 Provider 或 ToolRegistry，因此不会执行副作用。
+- 录制 Provider 事件可以离线重建消息、文本、Tool 结果、Usage 和 Run 终态；Export 与 Replay 是两个只读消费者，均不持有 Provider 或 ToolRegistry，因此不会执行副作用。Replay 保留原始事实，Export 只输出默认拒绝式脱敏视图。
 - JSONL 旧记录继续由原 Session Loader 读取，新 `run_event` / `run_checkpoint` 记录对旧 Transcript 重建透明。
 
-### P2：4 至 7 个月，支持安全恢复
+### P2：支持安全恢复
 
-状态：已完成（2026-08-16）。
+状态：恢复协议、单进程故障注入和独立进程崩溃恢复验收完成（2026-08-16）；公共 Worker/Queue 适配器仍未产品化。
 
 交付内容：
 
@@ -215,9 +225,9 @@ Tool/Backend 专属 timeout 没有并入 `RunLimits`：它们使用不同计时�
 
 验收门槛：
 
-- 在模型、Tool、HITL 边界注入 100 次 Kill/Retry。
+- 在模型、Tool、HITL 边界各执行 100 轮确定性状态转换和重试故障注入。
 - 已提交的有副作用工具不重复执行。
-- 两个 Worker 可以安全竞争同一个 Run。
+- 两个独立 SQLite 连接可以安全竞争同一个 Run。
 - 无法确认外部副作用时进入 `unknown`，不能自动重试。
 - HITL 恢复继续兼容当前公共 API。
 
@@ -225,47 +235,80 @@ Tool/Backend 专属 timeout 没有并入 `RunLimits`：它们使用不同计时�
 
 - 显式 `HAOCODE_RUN_STORE=sqlite` 启用 SQLite Claim Store；工具调用具备稳定幂等键、Lease、Fencing Token，以及 `completed`、`failed`、`interrupted`、`cancelled`、`unknown` 状态。
 - Claim 与副作用前 Checkpoint、结果与终态事件及结果后 Checkpoint 分别在单一 `BEGIN IMMEDIATE` 事务中提交。PreToolUse Hook 也位于 Claim 之后；无法确认的非只读执行进入 `unknown`，不会被 Worker 自动认领。
-- Model、Tool、HITL 三个边界各完成 100 轮 Kill/Retry 注入；提交后的变更工具不会再次执行，过期只读调用以更高 Fencing Token 恢复，两个独立 SQLite 连接安全竞争同一 Run。
+- Model、Tool、HITL 三个边界各完成 100 轮单进程故障注入；提交后的变更工具不会再次执行，过期只读调用以更高 Fencing Token 恢复，两个独立 SQLite 连接安全竞争同一 Run。
+- 两个独立 PHP 进程使用真实 PDO SQLite/WAL，在 Claim 后、外部副作用后和结果提交后三个边界接受真实 `SIGKILL`。第二进程用更高 Run/Tool Fencing Token 恢复；独立 SQLite 副作用计数器证明三种边界均未静默重复执行，副作用已发生但结果未提交时保持 `unknown`。
 - 公共 HITL/AskUser/子 Agent 恢复套件在默认 JSONL 与显式 SQLite 两种模式均通过，公共 `HaoCodeConfig`、`resumeInterrupt()` 和 Stream API 签名不变。
 - 外部协议验证采用录制 Provider Fixture；数据库边界使用真实 PDO SQLite/WAL/`synchronous=FULL`。未把 Mock 声明为实时 Provider 网络验证。
-- 默认 JSONL 保留原并行读取性能；事件索引只扫描持锁后的新增尾部，本机 200 次事件追加由约 737ms 降至约 23ms。SQLite 恢复模式为保证事务所有权而串行执行 Tool。Durable Worker 守护进程和 Queue Adapter 仍属于 P4，不在本轮扩成新产品功能。
+- 默认 JSONL 保留原并行读取性能；事件索引只扫描持锁后的新增尾部。本机 200 次顺序追加的微基准曾记录 JSONL 约 23 至 30ms、SQLite 约 41 至 61ms；这不是并发容量或 p95 SLO。SQLite 恢复模式为保证事务所有权而串行执行 Tool。Durable Worker 守护进程和 Queue Adapter 仍未实现。
 
-### P3：7 至 9 个月，安全组合不同 Agent
+### P2.5：补齐生产证据与运行数据治理
 
-交付内容：
-
-- 引入内部 `ExecutionStrategy`，现有 Loop 作为默认实现。
-- 定义 `HandoffRequest` 和 Router，明确区别于 `AgentAsTool`。
-- 为输入、模型输出、工具调用和 Handoff 提供 Guardrail。
-- 分开不可绕过的安全门与可配置业务 Guardrail。
-- Handoff 继承 Trace 和 Cancel，但权限、预算、沙箱和 Provider 能力只取交集。
-
-验收门槛：
-
-- Handoff 不能扩大工具权限、预算、Provider 能力或沙箱范围。
-- `AgentAsTool` 和现有 Team API 保持兼容。
-- Router Agent、Coding Agent 和长会话 Agent 共用一个 Run Kernel。
-
-### P4：9 至 12 个月，形成质量飞轮与生态接入
+状态：部分完成（2026-08-16）。独立进程恢复、默认脱敏 Export 和 Trace 身份关联已完成；持久化数据治理、Schema Migration 与容量基线待完成。
 
 交付内容：
 
-- 打通 Trace、Replay 和 Eval。
-- 从真实失败中沉淀不少于 20 个回归数据集。
-- 以薄适配器方式接入 Laravel Queue 和 Symfony Messenger。
-- 从 MCP、A2A、AG-UI 中选择一个完成实验性端到端适配。
-- 建立 Durable Worker Chaos Prototype。
+- 建立独立进程故障测试，在 Claim、执行开始、外部副作用发生和结果提交等边界注入 `SIGKILL`，并用独立持久化计数器验证副作用次数。
+- 明确 Run Event 的敏感级别、持久化和导出脱敏规则，避免用户输入、模型输出和原始错误被无条件写入或导出。
+- 为 SQLite Run Store 建立 Schema Migration、备份、回滚和 N-1 兼容验证；不能只在版本不一致时终止运行。
+- 为 JSONL/SQLite 建立增长、保留、压缩和恢复性能基线，记录事件数、文件大小、并发写入、p95 追加和 p95 Replay。
 
 验收门槛：
 
-- Eval 在发布前捕获至少一次真实退化。
-- 至少两个第三方适配器无需修改核心即可实现。
-- Worker 只有在 Lease、Fencing、幂等和 `unknown` 副作用测试全部通过后，才能标记稳定。
+- 至少两个独立 PHP 进程可以竞争、崩溃并恢复同一个 Run，且变更型工具不会因恢复而静默重复执行。
+- `unknown`、过期 Lease 和 Fencing Token 在进程重启后保持原语义。
+- 导出和 Telemetry 对敏感事件使用同一份已测试策略，默认不会泄漏被标记的内容。
+- SQLite 升级、降级失败和备份恢复都有自动化证据；默认 JSONL 行为和现有公共 API 保持兼容。
+- 性能阈值必须先由目标工作负载确定，再据此验收；单次本机微基准不能代替容量结论。
+
+验收记录（2026-08-16）：
+
+- 独立进程恢复已覆盖三个真实 `SIGKILL` 边界，使用独立持久化计数器验证副作用次数；这证明 Store/恢复协议，不代表公共 Worker 守护进程或 Queue Adapter 已完成。
+- `SensitiveDataRedactor` 是 Event Export 与 Phoenix 内容键识别的同一策略事实源。`RunEventExporter` 始终输出默认拒绝式脱敏视图，未知未来内容字段也会被遮蔽；Phoenix 为兼容既有观测行为，仍只在现有 `redact_messages` 开关启用时遮蔽内容。
+- Agent、Model、Tool Span 通过 `RunTraceContext` 复用 `RunJournal` 的 `run_id`、`invocation_id` 和对应 `event_id`；Telemetry 不生成第二套运行身份。
+- 原始 Event Store 仍保存 Replay 所需的消息、模型输出、工具结果和错误；保留/压缩/删除策略及静态数据保护尚未完成，因此 P2.5 不能标记完成。
+
+### P3：安全组合现有 Agent（条件阶段）
+
+状态：未开始。优先复用现有 `AgentLoopSpec`、`AgentInvocation`、`AgentAsTool` 和 Team；没有真实缺口时不新增抽象。
+
+交付内容：
+
+- 统一 Root、`AgentAsTool`、Skill Fork 和 Team 的事件、Trace、取消、预算与能力收缩证据，不另建平行调用链。
+- 先把 `RunCapabilityGuard`、Permission、Sandbox Policy、Hook 和 HITL 的责任边界画清，再判断是否确有通用 Guardrail 缺口。
+- 只有出现第二种不同于当前 Loop 的执行语义时，才引入内部 `ExecutionStrategy`。
+- 只有现有 `AgentAsTool` 和 Team 无法满足已记录用例时，才定义 `HandoffRequest` 或 Router，并明确它们与现有组合方式的差异。
+
+验收门槛：
+
+- 现有组合路径都不能扩大工具权限、预算、Provider 能力、工作目录或沙箱范围。
+- `Agent`、`Runner`、`AgentAsTool` 和 Team 公共 API 保持兼容。
+- 至少三个真实应用证明现有组合方式不足后，才公开 Handoff、Router 或 Workflow 契约。
+
+### P4：形成质量飞轮与生产适配
+
+状态：部分完成（仅 Trace 身份关联完成；Replay 数据集与 Eval 闭环未开始）。
+
+#### P4A：Trace、Replay 与 Eval
+
+- 现有 Phoenix/OTel 的 Agent、Model、Tool Span 已通过 `run_id`、`invocation_id` 和对应 `event_id` 关联；下一步只建立可重复的 Replay/Eval 数据与门禁，不再引入平行 Trace 身份。
+- 从真实失败中沉淀不少于 20 个脱敏回归数据集；P0 已有的 33 个 Provider 故障 Fixture 继续用于协议回归，不能替代真实运行数据集。
+- Eval 必须在发布前捕获至少一次可复现的真实退化，才算形成质量闭环。
+
+#### P4B：Durable Worker 与框架适配
+
+- 在 P2.5 多进程证据通过后，再建立 Durable Worker Chaos Prototype。
+- 以薄适配器验证 Laravel Queue 和 Symfony Messenger 的领取、确认、重试和失败语义，核心不依赖应用框架。
+- 至少两个第三方适配器无需修改核心即可实现；Worker 只有在真实进程下通过 Lease、Fencing、幂等和 `unknown` 副作用测试后，才能标记稳定。
+
+#### P4C：互操作协议实验（条件阶段）
+
+- 现有 MCP Client、Server 和动态 Tool 继续作为已实现能力维护，不重复建设。
+- A2A、AG-UI 或 MCP 缺失协议能力只有在明确的端到端用例出现后才进入实验；协议实验不反向扩大核心公共 API。
 - 如果没有三个真实项目证明现有组合方式不足，不启动通用 Workflow Engine。
 
 ## 参考 Agent 验收集
 
-路线图持续使用五类 Agent 检验公共抽象：
+路线图使用以下五类场景检验公共抽象；前 3 类可由当前能力验证，Router/Handoff 和独立 Worker 场景要等对应阶段实现后才能计入完成证据：
 
 1. Coding Agent：沙箱、文件、Bash、审批和 Abort。
 2. 数据分析 Agent：只读工具、结构化输出和严格预算。
@@ -278,12 +321,12 @@ Tool/Backend 专属 timeout 没有并入 `RunLimits`：它们使用不同计时�
 ## 项目指标
 
 - **兼容**：现有 v1 公共 API 没有破坏性变化。
-- **安全**：Handoff 和子 Agent 不扩大权限。
+- **安全**：现有子调用不能扩大权限；如果未来引入 Handoff，也必须遵守同一能力收缩规则。
 - **恢复**：已提交工具结果不重复执行；不确定副作用全部进入 `unknown`。
-- **验证**：至少有 20 个版本化故障回归 Fixture，发布前自动执行 Replay 和 Eval；真实事故样本必须标明来源和脱敏方式。
+- **验证**：区分 Provider 协议 Fixture 和真实运行 Replay 数据集；P0 的 33 个版本化故障 Fixture 不抵扣 P4 的真实事故样本，后者必须标明来源和脱敏方式。
 - **扩展**：三个外部适配器作者中，至少两人能在不修改核心的情况下完成接入。
-- **状态开销**：Checkpoint 随增量增长，不重复保存完整消息历史。
-- **观察**：模型、工具、审批和 Handoff 都有统一 `run_id` 与因果链。
+- **状态开销**：Checkpoint 随增量增长，不重复保存完整消息历史；按目标工作负载记录事件数、字节数、并发写入、p95 追加和 p95 Replay，阈值在压测前明确。
+- **观察**：当前模型、工具和审批事件使用统一 `run_id` 与因果链；未来 Handoff 只有接入同一事件身份后才可验收。
 
 ## 明确不做
 

@@ -540,6 +540,10 @@ an uncertain mutating tool becomes `unknown` and is never retried automatically.
 It deliberately executes tools sequentially so a forked process cannot reuse a
 database connection across the transaction boundary. This is at-least-once
 recovery with fail-closed mutations, not an exactly-once guarantee.
+The recovery protocol is tested across independent PHP processes and real
+`SIGKILL` boundaries; a Worker daemon/Queue adapter remains host-owned. Internal
+event export is always redacted, but Replay reads raw facts, so protect and
+retain the run-state JSONL/SQLite files as sensitive application data.
 
 ## Human approval
 
@@ -972,7 +976,13 @@ split cohesive behavior into same-namespace concern traits.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.20.0`. Notable changes since `v1.10.0`:
+is based on `v1.20.1`. Notable changes since `v1.10.0`:
+
+- `v1.20.1` — Adds the internal versioned RunEvent/Checkpoint contract and
+  SQLite Claim/Lease/Fencing recovery path without changing the public SDK API.
+  Real `SIGKILL` process tests verify fail-closed mutation recovery; exported
+  events are redacted by default, and Agent/Model/Tool spans reuse canonical
+  RunJournal identities for trace correlation.
 
 - `v1.20.0` — Completes the existing architecture-convergence queue without
   adding a workflow DSL: coding and generic context presets are explicit;

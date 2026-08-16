@@ -146,6 +146,69 @@ final class RunStateStoreTest extends TestCase
         self::assertSame(4, $replay->usage['input_tokens']);
     }
 
+    public function test_export_redacts_content_while_replay_retains_the_recorded_facts(): void
+    {
+        $store = new JsonlRunStateStore($this->directory);
+        $started = $store->append(RunEvent::draft(
+            'run-secret', 'inv-1', RunEventPhase::Run, 'run.started', 'started',
+        ));
+        $input = $store->append(RunEvent::draft(
+            'run-secret',
+            'inv-1',
+            RunEventPhase::Run,
+            'run.input_recorded',
+            'input',
+            ['message' => ['role' => 'user', 'content' => 'user-secret']],
+            $started->eventId,
+        ));
+        $model = $store->append(RunEvent::draft(
+            'run-secret',
+            'inv-1',
+            RunEventPhase::Model,
+            'model.completed',
+            'model',
+            [
+                'attempt_id' => 'model-1',
+                'message' => ['role' => 'assistant', 'content' => 'model-secret'],
+                'text' => 'model-secret',
+                'usage' => ['input_tokens' => 7, 'output_tokens' => 3, 'future_metric' => 'metric-secret'],
+                'result' => ['content' => 'tool-secret'],
+                'error' => 'error-secret',
+                'future_content' => 'future-secret',
+            ],
+            $input->eventId,
+        ));
+        $store->append(RunEvent::draft(
+            'run-secret',
+            'inv-1',
+            RunEventPhase::Run,
+            'run.completed',
+            'completed',
+            ['text' => 'model-secret', 'turns' => 1],
+            $model->eventId,
+        ));
+
+        $export = (new RunEventExporter($store))->export('run-secret');
+        $replay = (new RunReplayer($store))->replay('run-secret');
+
+        self::assertStringNotContainsString('user-secret', $export);
+        self::assertStringNotContainsString('model-secret', $export);
+        self::assertStringNotContainsString('tool-secret', $export);
+        self::assertStringNotContainsString('error-secret', $export);
+        self::assertStringNotContainsString('future-secret', $export);
+        self::assertStringNotContainsString('metric-secret', $export);
+        self::assertStringContainsString('"message":"[redacted]"', $export);
+        self::assertStringContainsString('"text":"[redacted]"', $export);
+        self::assertStringContainsString('"result":"[redacted]"', $export);
+        self::assertStringContainsString('"error":"[redacted]"', $export);
+        self::assertStringContainsString('"future_content":"[redacted]"', $export);
+        self::assertStringContainsString('"attempt_id":"model-1"', $export);
+        self::assertStringContainsString('"input_tokens":7', $export);
+        self::assertStringContainsString('"future_metric":"[redacted]"', $export);
+        self::assertSame('user-secret', $replay->messages[0]['content']);
+        self::assertSame('model-secret', $replay->text);
+    }
+
     public function test_replay_reports_the_latest_invocation_as_running(): void
     {
         $store = new JsonlRunStateStore($this->directory);
