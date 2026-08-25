@@ -18,6 +18,9 @@ final class McpConnectionManager
     /** @var array<string, McpConnectionException> Failed connections by server name */
     private array $failures = [];
 
+    /** @var list<array{code: string, tool: string}> */
+    private array $toolDiagnostics = [];
+
     /** @var bool Whether initial connection has been performed */
     private bool $initialized = false;
 
@@ -30,6 +33,7 @@ final class McpConnectionManager
     public function __construct(
         private readonly McpServerConfigManager $configManager,
         private readonly ?PhoenixTracer $tracer = null,
+        private readonly string $clientVersion = 'dev',
     ) {}
 
     /**
@@ -202,6 +206,21 @@ final class McpConnectionManager
         return $this->failures;
     }
 
+    /** @return list<array{code: string, tool: string}> */
+    public function getToolDiagnostics(): array
+    {
+        return $this->toolDiagnostics;
+    }
+
+    /** @internal */
+    public function recordInvalidToolSchema(string $qualifiedName): void
+    {
+        $this->toolDiagnostics[] = [
+            'code' => 'invalid_tool_schema',
+            'tool' => $qualifiedName,
+        ];
+    }
+
     /**
      * Cooperatively process pending server-initiated MCP messages.
      *
@@ -350,6 +369,7 @@ final class McpConnectionManager
         }
         $this->clients = [];
         $this->failures = [];
+        $this->toolDiagnostics = [];
         $this->initialized = false;
     }
 
@@ -400,7 +420,7 @@ final class McpConnectionManager
     private function connectServer(array $serverConfig): McpClient
     {
         $transport = McpTransport::fromConfig($serverConfig);
-        $client = new McpClient($transport, $serverConfig['name'], $this->tracer);
+        $client = new McpClient($transport, $serverConfig['name'], $this->tracer, $this->clientVersion);
         $client->connect();
 
         return $client;

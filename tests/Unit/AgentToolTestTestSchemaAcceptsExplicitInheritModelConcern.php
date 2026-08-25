@@ -41,7 +41,9 @@ trait AgentToolTestTestSchemaAcceptsExplicitInheritModelConcern
     private function makeLoop(string $result = 'result'): AgentLoop
     {
         $loop = $this->createMock(AgentLoop::class);
-        $loop->method('run')->willReturn($result);
+        $loop->method('runOutcome')->willReturn(
+            \HaoCode\Services\Agent\AgentRunOutcome::normal($result),
+        );
         $loop->method('getLocalInputTokens')->willReturn(0);
         $loop->method('getLocalOutputTokens')->willReturn(0);
         $loop->method('getLocalEstimatedCost')->willReturn(0.0);
@@ -64,7 +66,7 @@ trait AgentToolTestTestSchemaAcceptsExplicitInheritModelConcern
     public function test_sub_agent_exception_returns_error(): void
     {
         $loop = $this->createMock(AgentLoop::class);
-        $loop->method('run')->willThrowException(new \RuntimeException('sub crashed'));
+        $loop->method('runOutcome')->willThrowException(new \RuntimeException('sub crashed'));
 
         $tool = new AgentTool($this->makeFactory($loop));
         $result = $tool->call(['prompt' => 'Do something'], $this->context());
@@ -91,6 +93,7 @@ trait AgentToolTestTestSchemaAcceptsExplicitInheritModelConcern
             'Replacement task',
             null,
             null,
+            'test-owner-run',
         );
 
         $this->assertInstanceOf(\HaoCode\Tools\ToolResult::class, $result);
@@ -130,7 +133,9 @@ trait AgentToolTestTestSchemaAcceptsExplicitInheritModelConcern
     public function test_metadata_contains_token_counts_and_cost(): void
     {
         $loop = $this->createMock(AgentLoop::class);
-        $loop->method('run')->willReturn('ok');
+        $loop->method('runOutcome')->willReturn(
+            \HaoCode\Services\Agent\AgentRunOutcome::normal('ok'),
+        );
         $loop->method('getLocalInputTokens')->willReturn(100);
         $loop->method('getLocalOutputTokens')->willReturn(50);
         $loop->method('getLocalEstimatedCost')->willReturn(0.005);
@@ -150,9 +155,9 @@ trait AgentToolTestTestSchemaAcceptsExplicitInheritModelConcern
         $loop->method('getLocalEstimatedCost')->willReturn(0.0);
 
         $promptPassed = '';
-        $loop->method('run')->willReturnCallback(function (string $p) use (&$promptPassed) {
+        $loop->method('runOutcome')->willReturnCallback(function (string $p) use (&$promptPassed) {
             $promptPassed = $p;
-            return 'done';
+            return \HaoCode\Services\Agent\AgentRunOutcome::normal('done');
         });
 
         $tool = new AgentTool($this->makeFactory($loop));
@@ -178,9 +183,9 @@ trait AgentToolTestTestSchemaAcceptsExplicitInheritModelConcern
     {
         $subLoop = $this->createMock(AgentLoop::class);
         $subLoop->expects($this->once())
-            ->method('run')
-            ->with('Explore this repository')
-            ->willReturn('sub-agent result');
+            ->method('runOutcome')
+            ->with('Explore this repository', null, null, null, null, null)
+            ->willReturn(\HaoCode\Services\Agent\AgentRunOutcome::normal('sub-agent result'));
         $subLoop->method('getLocalInputTokens')->willReturn(123);
         $subLoop->method('getLocalOutputTokens')->willReturn(45);
         $subLoop->method('getLocalEstimatedCost')->willReturn(0.0123);
@@ -304,7 +309,11 @@ MD);
         chmod($hook, 0700);
 
         try {
-            $tool = new AgentTool($this->makeFactory($this->makeLoop('done')));
+            $tool = new AgentTool(
+                $this->makeFactory($this->makeLoop('done')),
+                new BackgroundAgentManager($root.'/agent-state'),
+                new TaskManager($root.'/task-state'),
+            );
             $result = $tool->call([
                 'prompt' => 'Inspect the repository',
                 'isolation' => 'worktree',
@@ -329,7 +338,11 @@ MD);
         symlink($outside, $root.'/.claude');
 
         try {
-            $tool = new AgentTool($this->makeFactory($this->makeLoop('done')));
+            $tool = new AgentTool(
+                $this->makeFactory($this->makeLoop('done')),
+                new BackgroundAgentManager($root.'/agent-state'),
+                new TaskManager($root.'/task-state'),
+            );
             $result = $tool->call([
                 'prompt' => 'Inspect the repository',
                 'isolation' => 'worktree',
@@ -349,7 +362,11 @@ MD);
     {
         $root = $this->makeGitRepository();
         try {
-            $tool = new AgentTool($this->makeFactory($this->makeLoop('done')));
+            $tool = new AgentTool(
+                $this->makeFactory($this->makeLoop('done')),
+                new BackgroundAgentManager($root.'/agent-state'),
+                new TaskManager($root.'/task-state'),
+            );
             $result = $tool->call([
                 'prompt' => 'Inspect the repository',
                 'isolation' => 'worktree',
@@ -398,7 +415,11 @@ MD);
                     return $loop;
                 });
 
-            $result = (new AgentTool($factory))->call([
+            $result = (new AgentTool(
+                $factory,
+                new BackgroundAgentManager($root.'/agent-state'),
+                new TaskManager($root.'/task-state'),
+            ))->call([
                 'prompt' => 'Inspect the repository',
                 'isolation' => 'worktree',
             ], new ToolUseContext(
@@ -421,7 +442,7 @@ MD);
         $branch = null;
         try {
             $loop = $this->createMock(AgentLoop::class);
-            $loop->method('run')->willThrowException(new \RuntimeException('sub crashed'));
+            $loop->method('runOutcome')->willThrowException(new \RuntimeException('sub crashed'));
             $factory = $this->createMock(AgentLoopFactory::class);
             $factory->method('createIsolated')
                 ->willReturnCallback(function (...$arguments) use ($loop, &$worktreePath): AgentLoop {
@@ -431,7 +452,11 @@ MD);
                     return $loop;
                 });
 
-            $result = (new AgentTool($factory))->call([
+            $result = (new AgentTool(
+                $factory,
+                new BackgroundAgentManager($root.'/agent-state'),
+                new TaskManager($root.'/task-state'),
+            ))->call([
                 'prompt' => 'Change the repository',
                 'isolation' => 'worktree',
             ], new ToolUseContext($root, 'session-1'));

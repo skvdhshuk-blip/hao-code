@@ -307,7 +307,7 @@ class Agent
      */
     public function toConfig(): HaoCodeConfig
     {
-        return \HaoCode\Sdk\Internal\RunSpec::fromAgent($this)->config;
+        return \HaoCode\Sdk\Internal\LegacyHaoCodeConfigAdapter::toConfig($this);
     }
 
     /**
@@ -317,46 +317,7 @@ class Agent
      */
     public static function fromConfig(HaoCodeConfig $config, string $name = 'default'): self
     {
-        return new self(
-            name: $name,
-            apiKey: $config->apiKey,
-            model: $config->model,
-            baseUrl: $config->baseUrl,
-            providerType: $config->providerType,
-            maxTokens: $config->maxTokens,
-            maxTurns: $config->maxTurns,
-            permissionMode: $config->permissionMode,
-            allowedTools: $config->allowedTools,
-            disallowedTools: $config->disallowedTools,
-            systemPrompt: $config->systemPrompt,
-            appendSystemPrompt: $config->appendSystemPrompt,
-            thinkingEnabled: $config->thinkingEnabled,
-            thinkingBudget: $config->thinkingBudget,
-            tools: $config->tools,
-            skills: $config->skills,
-            sandbox: $config->sandbox,
-            credentialPool: $config->credentialPool,
-            oauthBearer: $config->oauthBearer,
-            memorySummaryLevel: $config->memorySummaryLevel,
-            memoryStoragePath: $config->memoryStoragePath,
-            skillDirectories: $config->skillDirectories,
-            recursiveSkillDiscovery: $config->recursiveSkillDiscovery,
-            interruptOn: $config->interruptOn,
-            enableAskUser: $config->enableAskUser,
-            memoryStore: $config->memoryStore,
-            hitlMode: $config->hitlMode,
-            hitlReviewModel: $config->hitlReviewModel,
-            hitlAllowlistPath: $config->hitlAllowlistPath,
-            ephemeral: $config->ephemeral,
-            headers: $config->headers,
-            webfetchAllowPrivateNetworks: $config->webfetchAllowPrivateNetworks,
-            webfetchPrivateAllowList: $config->webfetchPrivateAllowList,
-            webfetchMaxBytes: $config->webfetchMaxBytes,
-            sessionId: $config->sessionId,
-            continueSession: $config->continueSession,
-            structuredMaxRetries: $config->structuredMaxRetries,
-            contextPreset: $config->contextPreset,
-        );
+        return \HaoCode\Sdk\Internal\LegacyHaoCodeConfigAdapter::toAgent($config, $name);
     }
 
     /**

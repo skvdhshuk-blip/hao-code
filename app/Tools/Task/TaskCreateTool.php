@@ -10,6 +10,8 @@ use HaoCode\Tools\ToolUseContext;
 
 class TaskCreateTool extends BaseTool
 {
+    public function __construct(private readonly TaskManager $taskManager) {}
+
     public function name(): string { return 'TaskCreate'; }
 
     public function description(): string
@@ -27,17 +29,12 @@ class TaskCreateTool extends BaseTool
                 'description' => ['type' => 'string', 'description' => 'Detailed description'],
             ],
             'required' => ['subject', 'activeForm'],
-        ], [
-            'subject' => 'required|string',
-            'activeForm' => 'required|string',
-            'description' => 'nullable|string',
         ]);
     }
 
     public function call(array $input, ToolUseContext $context): ToolResult
     {
-        $manager = \HaoCode\Support\Runtime\SdkRuntime::app(TaskManager::class);
-        $task = $manager->create(
+        $task = $this->taskManager->create(
             subject: $input['subject'],
             activeForm: $input['activeForm'],
             description: $input['description'] ?? null,

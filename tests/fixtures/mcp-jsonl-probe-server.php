@@ -29,16 +29,27 @@ while (($line = fgets(STDIN)) !== false) {
             ],
         ],
         'tools/list' => [
-            'tools' => [[
+            'tools' => array_values(array_filter([[
                 'name' => 'echo-value',
                 'description' => 'Echoes the supplied value.',
+                'inputSchema' => getenv('HAOCODE_MCP_INVALID_SCHEMA') === '1'
+                    ? ['type' => 'object', '$ref' => '#/$defs/missing']
+                    : [
+                        'type' => 'object',
+                        'properties' => ['value' => ['type' => 'string']],
+                        'required' => ['value'],
+                    ],
+                'annotations' => ['readOnlyHint' => true],
+            ], getenv('HAOCODE_MCP_INVALID_SCHEMA') === '1' ? [
+                'name' => 'healthy-value',
+                'description' => 'A healthy tool beside an invalid schema.',
                 'inputSchema' => [
                     'type' => 'object',
                     'properties' => ['value' => ['type' => 'string']],
                     'required' => ['value'],
                 ],
                 'annotations' => ['readOnlyHint' => true],
-            ]],
+            ] : null])),
         ],
         'tools/call' => [
             'content' => [[

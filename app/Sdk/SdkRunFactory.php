@@ -29,6 +29,4 @@ final class SdkRunFactory
     use SdkRunFactoryStageResumeSnapshotConcern;
     use SdkRunFactoryLoadMcpToolsConcern;
 
-    /** @var array<int, array<string, mixed>> */
-    private static array $stagedResumeSnapshots = [];
 }

@@ -69,6 +69,7 @@ DESC;
             'properties' => [
                 'url' => [
                     'type' => 'string',
+                    'format' => 'uri',
                     'description' => 'The URL to fetch',
                 ],
                 'prompt' => [
@@ -82,10 +83,6 @@ DESC;
                 ],
             ],
             'required' => ['url'],
-        ], [
-            'url' => 'required|url',
-            'prompt' => 'nullable|string',
-            'format' => 'nullable|string|in:text,markdown',
         ]);
     }
 

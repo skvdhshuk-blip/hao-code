@@ -55,9 +55,6 @@ DESC;
                 ],
             ],
             'required' => ['pattern'],
-        ], [
-            'pattern' => 'required|string',
-            'path' => 'nullable|string',
         ]);
     }
 

@@ -9,8 +9,19 @@ trait SettingsManagerConstructConcern
 
     public function __construct(
         private readonly ?string $workingDirectory = null,
+        array $runtimeDefaults = [],
     ) {
-        $this->fileStore = new SettingsFileStore($workingDirectory);
+        $this->runtimeDefaults = $runtimeDefaults;
+        $globalSettingsPath = $runtimeDefaults['global_settings_path'] ?? null;
+        $this->fileStore = new SettingsFileStore(
+            $workingDirectory,
+            is_string($globalSettingsPath) && trim($globalSettingsPath) !== '' ? $globalSettingsPath : null,
+        );
+    }
+
+    private function runtimeDefault(string $key, mixed $default = null): mixed
+    {
+        return $this->runtimeDefaults[$key] ?? $default;
     }
 
     public function getApiKey(): string
@@ -62,7 +73,7 @@ trait SettingsManagerConstructConcern
             : ($this->firstNonEmptyString(
                 $providerConfig['api_key'] ?? null,
                 $legacyAllowed ? ($settings['api_key'] ?? null) : null,
-                $legacyAllowed ? \HaoCode\Support\Runtime\SdkRuntime::config('haocode.api_key') : null,
+                $legacyAllowed ? $this->runtimeDefault('api_key') : null,
                 $providerType === 'anthropic'
                     ? (getenv('ANTHROPIC_API_KEY') ?: null)
                     : (getenv('OPENAI_API_KEY') ?: null),
@@ -85,7 +96,7 @@ trait SettingsManagerConstructConcern
         }
         if ($model === null) {
             $model = $this->firstNonEmptyString(
-                \HaoCode\Support\Runtime\SdkRuntime::config('haocode.model', ModelCatalog::SONNET),
+                $this->runtimeDefault('model', ModelCatalog::SONNET),
             ) ?? ModelCatalog::SONNET;
         }
 
@@ -96,20 +107,20 @@ trait SettingsManagerConstructConcern
             $this->runtimeOverrides['api_base_url'] ?? null,
             $providerConfig['api_base_url'] ?? null,
             $legacyAllowed ? ($settings['api_base_url'] ?? null) : null,
-            $legacyAllowed ? \HaoCode\Support\Runtime\SdkRuntime::config('haocode.api_base_url') : null,
+            $legacyAllowed ? $this->runtimeDefault('api_base_url') : null,
         ) ?? $defaultBaseUrl;
 
         $maxTokens = $this->firstNumericValue(
             $this->runtimeOverrides['max_tokens'] ?? null,
             $providerConfig['max_tokens'] ?? null,
             $legacyAllowed ? ($settings['max_tokens'] ?? null) : null,
-            $legacyAllowed ? \HaoCode\Support\Runtime\SdkRuntime::config('haocode.max_tokens') : null,
+            $legacyAllowed ? $this->runtimeDefault('max_tokens') : null,
         ) ?? self::DEFAULT_MAX_TOKENS;
         $contextWindow = $this->firstNumericValue(
             $this->runtimeOverrides['context_window'] ?? null,
             $providerConfig['context_window'] ?? null,
             $legacyAllowed ? ($settings['context_window'] ?? null) : null,
-            \HaoCode\Support\Runtime\SdkRuntime::config('haocode.context_window'),
+            $this->runtimeDefault('context_window'),
         );
         if ($contextWindow === null || $contextWindow <= 0) {
             $contextWindow = 200000;
@@ -338,8 +349,8 @@ trait SettingsManagerConstructConcern
             );
         }
 
-        $configApprovalPolicy = \HaoCode\Support\Runtime\SdkRuntime::config('haocode.approval_policy');
-        $configSandboxMode = \HaoCode\Support\Runtime\SdkRuntime::config('haocode.sandbox_mode');
+        $configApprovalPolicy = $this->runtimeDefault('approval_policy');
+        $configSandboxMode = $this->runtimeDefault('sandbox_mode');
         if ($configApprovalPolicy !== null || $configSandboxMode !== null) {
             return $this->permissionModeFromModernConfig(
                 $configApprovalPolicy === null
@@ -352,7 +363,7 @@ trait SettingsManagerConstructConcern
         }
 
         return $this->normalizePermissionModeValue(
-            \HaoCode\Support\Runtime\SdkRuntime::config('haocode.permission_mode', PermissionMode::Default->value),
+            $this->runtimeDefault('permission_mode', PermissionMode::Default->value),
         );
     }
 
@@ -380,7 +391,7 @@ trait SettingsManagerConstructConcern
             return $this->approvalPolicyFromPermissionMode($this->getPermissionMode());
         }
 
-        $configApprovalPolicy = \HaoCode\Support\Runtime\SdkRuntime::config('haocode.approval_policy');
+        $configApprovalPolicy = $this->runtimeDefault('approval_policy');
         if ($configApprovalPolicy !== null) {
             return $this->normalizeApprovalPolicyValue($configApprovalPolicy);
         }
@@ -412,7 +423,7 @@ trait SettingsManagerConstructConcern
             return $this->sandboxModeFromPermissionMode($this->getPermissionMode());
         }
 
-        $configSandboxMode = \HaoCode\Support\Runtime\SdkRuntime::config('haocode.sandbox_mode');
+        $configSandboxMode = $this->runtimeDefault('sandbox_mode');
         if ($configSandboxMode !== null) {
             return $this->normalizeSandboxModeValue($configSandboxMode);
         }

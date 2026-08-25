@@ -2,6 +2,7 @@
 
 namespace HaoCode\Tools\Agent;
 
+use HaoCode\Contracts\RunTerminationReason;
 use HaoCode\Services\Agent\BackgroundAgentManager;
 use HaoCode\Services\Agent\AgentLoopFactory;
 use HaoCode\Services\Agent\AgentInvocation;
@@ -56,8 +57,8 @@ trait AgentToolExecuteBackgroundAgentConcern
 
         $lastResponse = $this->runBackgroundTurn($subLoop, $taskId, $prompt);
         $idleSince = time();
-        $idleTimeout = max(30, (int) \HaoCode\Support\Runtime\SdkRuntime::config('haocode.background_agent_idle_timeout', 300));
-        $pollMicros = max(100_000, ((int) \HaoCode\Support\Runtime\SdkRuntime::config('haocode.background_agent_poll_interval_ms', 250)) * 1000);
+        $idleTimeout = max(30, $this->backgroundIdleTimeoutSeconds);
+        $pollMicros = max(100_000, $this->backgroundPollIntervalMs * 1000);
 
         while (true) {
             if ($this->backgroundAgents()->isStopRequested($taskId)) {
@@ -107,16 +108,18 @@ trait AgentToolExecuteBackgroundAgentConcern
     {
         $this->backgroundAgents()->markRunning($taskId);
         try {
-            $response = (new AgentInvocation($prompt))->invoke($subLoop)->text;
+            $result = (new AgentInvocation($prompt))->invoke($subLoop);
         } catch (\HaoCode\Sdk\HumanInterruptException $e) {
             $this->backgroundAgents()->markWaitingForInput($taskId, $e->interrupt);
             $this->tasks()->update($taskId, 'in_progress', 'Waiting for human input.');
             throw $e;
         }
 
-        if ($response === '(aborted)') {
+        if ($result->terminationReason === RunTerminationReason::Cancelled) {
             return null;
         }
+
+        $response = $result->text;
 
         $preview = $this->truncateResult($response, 4000);
         $this->backgroundAgents()->recordResult($taskId, $response);
@@ -217,12 +220,14 @@ trait AgentToolExecuteBackgroundAgentConcern
 
     private function backgroundAgents(): BackgroundAgentManager
     {
-        return $this->backgroundAgentManager ?? \HaoCode\Support\Runtime\SdkRuntime::app(BackgroundAgentManager::class);
+        return $this->backgroundAgentManager
+            ?? throw new \LogicException('Background Agent execution requires an injected manager.');
     }
 
     private function tasks(): TaskManager
     {
-        return $this->taskManager ?? \HaoCode\Support\Runtime\SdkRuntime::app(TaskManager::class);
+        return $this->taskManager
+            ?? throw new \LogicException('Background Agent execution requires an injected task manager.');
     }
 
     /**

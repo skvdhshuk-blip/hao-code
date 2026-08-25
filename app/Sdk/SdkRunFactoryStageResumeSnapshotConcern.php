@@ -17,6 +17,9 @@ use HaoCode\Services\Settings\SettingsManager;
 use HaoCode\Sdk\Internal\RunCapabilityGuard;
 use HaoCode\Sdk\Internal\RunCapabilityResolver;
 use HaoCode\Sdk\Internal\RunSpec;
+use HaoCode\Sdk\Internal\LegacyHaoCodeConfigAdapter;
+use HaoCode\Sdk\Internal\RunBootstrap;
+use HaoCode\Sdk\Internal\RuntimeDefaults;
 use HaoCode\Sdk\Sandbox\SandboxManager;
 use HaoCode\Tools\Mcp\ListMcpResourcesTool;
 use HaoCode\Tools\Mcp\McpDynamicTool;
@@ -26,28 +29,6 @@ use HaoCode\Tools\WebFetch\WebFetchTool;
 
 trait SdkRunFactoryStageResumeSnapshotConcern
 {
-
-    /** @internal */
-    public static function stageResumeSnapshot(HaoCodeConfig $config, array $snapshot): void
-    {
-        self::$stagedResumeSnapshots[spl_object_id($config)] = $snapshot;
-    }
-
-    /** @internal */
-    public static function consumeResumeSnapshot(HaoCodeConfig $config): ?array
-    {
-        $id = spl_object_id($config);
-        $snapshot = self::$stagedResumeSnapshots[$id] ?? null;
-        unset(self::$stagedResumeSnapshots[$id]);
-
-        return $snapshot;
-    }
-
-    /** @internal */
-    public static function clearResumeSnapshot(HaoCodeConfig $config): void
-    {
-        unset(self::$stagedResumeSnapshots[spl_object_id($config)]);
-    }
 
     /**
      * Internal adaptation point between the modern Agent/RunOptions pair and
@@ -74,16 +55,17 @@ trait SdkRunFactoryStageResumeSnapshotConcern
         ?UsageAccumulator $usageAccumulator = null,
         ?AgentRunContext $parentRunContext = null,
     ): SdkRun {
-        return self::createSpec(
-            RunSpec::fromAgent($agent, $options),
-            $factory,
-            $streamingClient,
-            $resumeSnapshot,
-            $budgetLedger,
-            $parentToolRegistry,
-            $usageAccumulator,
-            $parentRunContext,
-        );
+        return self::createBootstrap(new RunBootstrap(
+            spec: RunSpec::fromAgent($agent, $options),
+            factory: $factory,
+            runtimeDefaults: RuntimeDefaults::capture(),
+            resumeSnapshot: $resumeSnapshot,
+            provider: $streamingClient,
+            budgetLedger: $budgetLedger,
+            parentToolRegistry: $parentToolRegistry,
+            usageAccumulator: $usageAccumulator,
+            parentRunContext: $parentRunContext,
+        ));
     }
 
     public static function create(
@@ -96,29 +78,30 @@ trait SdkRunFactoryStageResumeSnapshotConcern
         ?UsageAccumulator $usageAccumulator = null,
         ?AgentRunContext $parentRunContext = null,
     ): SdkRun {
-        return self::createSpec(
-            RunSpec::fromConfig($config),
-            $factory,
-            $streamingClient,
-            $resumeSnapshot,
-            $budgetLedger,
-            $parentToolRegistry,
-            $usageAccumulator,
-            $parentRunContext,
-        );
+        return self::createBootstrap(new RunBootstrap(
+            spec: RunSpec::fromConfig($config),
+            factory: $factory,
+            runtimeDefaults: RuntimeDefaults::capture(),
+            resumeSnapshot: $resumeSnapshot,
+            provider: $streamingClient,
+            budgetLedger: $budgetLedger,
+            parentToolRegistry: $parentToolRegistry,
+            usageAccumulator: $usageAccumulator,
+            parentRunContext: $parentRunContext,
+        ));
     }
 
-    private static function createSpec(
-        RunSpec $spec,
-        AgentLoopFactory $factory,
-        ?LlmProvider $streamingClient = null,
-        ?array $resumeSnapshot = null,
-        ?BudgetLedger $budgetLedger = null,
-        ?ToolRegistry $parentToolRegistry = null,
-        ?UsageAccumulator $usageAccumulator = null,
-        ?AgentRunContext $parentRunContext = null,
-    ): SdkRun {
-        $config = $spec->config;
+    private static function createBootstrap(RunBootstrap $bootstrap): SdkRun
+    {
+        $spec = $bootstrap->spec;
+        $factory = $bootstrap->factory;
+        $streamingClient = $bootstrap->provider;
+        $resumeSnapshot = $bootstrap->resumeSnapshot;
+        $budgetLedger = $bootstrap->budgetLedger;
+        $parentToolRegistry = $bootstrap->parentToolRegistry;
+        $usageAccumulator = $bootstrap->usageAccumulator;
+        $parentRunContext = $bootstrap->parentRunContext;
+        $config = $spec->options->toConfig($spec->agent);
         $limits = $spec->limits;
         // When a parent LlmProvider is injected (AgentAsTool composition), the
         // child's own apiKey may be empty — credentials live on the provider.
@@ -146,8 +129,13 @@ trait SdkRunFactoryStageResumeSnapshotConcern
                 ? max(0.0, (float) $resumeSnapshot['estimated_cost_usd'])
                 : 0.0;
             $budgetLedger = $ledgerId !== null
-                ? BudgetLedger::resume($ledgerId, $budgetLimit, $minimumSpent)
-                : BudgetLedger::create($budgetLimit);
+                ? BudgetLedger::resume(
+                    $ledgerId,
+                    $budgetLimit,
+                    $bootstrap->runtimeDefaults->budgetDirectory,
+                    $minimumSpent,
+                )
+                : BudgetLedger::create($budgetLimit, $bootstrap->runtimeDefaults->budgetDirectory);
         }
         if ($budgetLedger !== null) {
             $runContext = $runContext->fork(budgetLedger: $budgetLedger);
@@ -200,6 +188,7 @@ trait SdkRunFactoryStageResumeSnapshotConcern
                 $runContext->settings,
                 self::snapshotString($resumeSnapshot ?? [], 'base_model')
                     ?? self::snapshotString($resumeSnapshot ?? [], 'model'),
+                $bootstrap->runtimeDefaults,
             )
             ?? \HaoCode\Support\Runtime\SdkRuntime::app(StreamingClient::class)->withSettingsManager($runContext->settings);
 
@@ -386,6 +375,7 @@ trait SdkRunFactoryStageResumeSnapshotConcern
         HaoCodeConfig $config,
         ?SettingsManager $settings = null,
         ?string $modelOverride = null,
+        ?RuntimeDefaults $runtimeDefaults = null,
     ): ?StreamingClient {
         if ($config->apiKey === null
             && $config->baseUrl === null
@@ -399,6 +389,8 @@ trait SdkRunFactoryStageResumeSnapshotConcern
         $resolvedProvider = $settings->resolveProviderConfig();
         $providerType = $resolvedProvider->providerType;
 
+        $runtimeDefaults ??= RuntimeDefaults::capture();
+
         return new StreamingClient(
             apiKey: $resolvedProvider->apiKey,
             model: $modelOverride ?? $resolvedProvider->model,
@@ -407,8 +399,8 @@ trait SdkRunFactoryStageResumeSnapshotConcern
             thinkingEnabled: $config->thinkingEnabled,
             thinkingBudget: $config->thinkingBudget,
             settingsManager: null,
-            idleTimeoutSeconds: (int) \HaoCode\Support\Runtime\SdkRuntime::config('haocode.api_stream_idle_timeout', 60),
-            streamPollTimeoutSeconds: (float) \HaoCode\Support\Runtime\SdkRuntime::config('haocode.api_stream_poll_timeout', 1.0),
+            idleTimeoutSeconds: $runtimeDefaults->apiStreamIdleTimeoutSeconds,
+            streamPollTimeoutSeconds: $runtimeDefaults->apiStreamPollTimeoutSeconds,
             providerType: $providerType,
             oauthBearer: $config->oauthBearer === true,
             headers: $config->headers,

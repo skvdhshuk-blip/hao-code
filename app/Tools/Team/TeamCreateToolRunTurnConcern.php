@@ -2,6 +2,7 @@
 
 namespace HaoCode\Tools\Team;
 
+use HaoCode\Contracts\RunTerminationReason;
 use HaoCode\Services\Agent\AgentLoopFactory;
 use HaoCode\Services\Agent\AgentLoop;
 use HaoCode\Services\Agent\AgentInvocation;
@@ -23,16 +24,18 @@ trait TeamCreateToolRunTurnConcern
     {
         $this->backgroundAgentManager->markRunning($agentId);
         try {
-            $response = (new AgentInvocation($prompt))->invoke($subLoop)->text;
+            $result = (new AgentInvocation($prompt))->invoke($subLoop);
         } catch (\HaoCode\Sdk\HumanInterruptException $e) {
             $this->backgroundAgentManager->markWaitingForInput($agentId, $e->interrupt);
             $this->taskManager->update($agentId, 'in_progress', 'Waiting for human input.');
             throw $e;
         }
 
-        if ($response === '(aborted)') {
+        if ($result->terminationReason === RunTerminationReason::Cancelled) {
             return null;
         }
+
+        $response = $result->text;
 
         $preview = mb_strlen($response) > 4000
             ? mb_substr($response, 0, 4000) . "\n\n[Truncated]"

@@ -47,10 +47,12 @@ DESC;
                 ],
                 'offset' => [
                     'type' => 'integer',
+                    'minimum' => 1,
                     'description' => 'The line number to start reading from (1-based)',
                 ],
                 'limit' => [
                     'type' => 'integer',
+                    'minimum' => 1,
                     'description' => 'The number of lines to read',
                 ],
                 'pages' => [
@@ -59,11 +61,6 @@ DESC;
                 ],
             ],
             'required' => ['file_path'],
-        ], [
-            'file_path' => 'required|string',
-            'offset' => 'nullable|integer|min:1',
-            'limit' => 'nullable|integer|min:1',
-            'pages' => 'nullable|string',
         ]);
     }
 

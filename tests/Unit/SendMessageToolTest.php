@@ -3,6 +3,7 @@
 namespace Tests\Unit;
 
 use HaoCode\Services\Agent\BackgroundAgentManager;
+use HaoCode\Services\Agent\BackgroundAgentLimits;
 use HaoCode\Sdk\HumanActionRequest;
 use HaoCode\Sdk\HumanInterrupt;
 use HaoCode\Tools\Agent\SendMessageTool;
@@ -108,5 +109,24 @@ class SendMessageToolTest extends TestCase
         $this->assertTrue($result->isError);
         $this->assertStringContainsString('resume the interrupt first', $result->output);
         $this->assertSame(0, $this->manager->get('agent_demo')['pending_messages']);
+    }
+
+    public function test_capacity_rejection_uses_stable_background_busy_error(): void
+    {
+        $manager = new BackgroundAgentManager(
+            $this->tempDir,
+            limits: new BackgroundAgentLimits(messageMaxBytes: 16),
+        );
+        $manager->create('agent_busy', 'Inspect repo', 'Explore', ownerRunId: 'session-main');
+        $result = (new SendMessageTool($manager))->call([
+            'to' => 'agent_busy',
+            'message' => str_repeat('x', 32),
+        ], $this->context);
+
+        $this->assertTrue($result->isError);
+        $this->assertSame('background_busy', $result->safeError);
+        $this->assertSame('background_busy', $result->metadata['code']);
+        $this->assertSame('message_bytes', $result->metadata['resource']);
+        $this->assertSame(0, $manager->get('agent_busy')['pending_messages']);
     }
 }

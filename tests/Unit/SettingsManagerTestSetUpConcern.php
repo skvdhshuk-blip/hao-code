@@ -2,7 +2,6 @@
 
 namespace Tests\Unit;
 
-use HaoCode\Services\Settings\SettingsManager;
 use Tests\TestCase;
 
 trait SettingsManagerTestSetUpConcern
@@ -61,8 +60,7 @@ trait SettingsManagerTestSetUpConcern
     public function test_non_anthropic_provider_uses_its_selected_provider_model(): void
     {
         $settings = new SettingsManager;
-        $reflection = new \ReflectionObject($settings);
-        $reflection->getProperty('cachedSettings')->setValue($settings, [
+        $settings->useCachedSettings([
             'active_provider' => 'openai-main',
             'provider' => [
                 'openai-main' => [
@@ -82,8 +80,7 @@ trait SettingsManagerTestSetUpConcern
 
         try {
             $settings = new SettingsManager;
-            $reflection = new \ReflectionObject($settings);
-            $reflection->getProperty('cachedSettings')->setValue($settings, [
+            $settings->useCachedSettings([
                 'active_provider' => 'anthropic-main',
                 'api_key' => 'legacy-anthropic-key',
                 'provider' => [
@@ -115,8 +112,7 @@ trait SettingsManagerTestSetUpConcern
     public function test_explicit_provider_type_selects_the_only_matching_provider_as_one_unit(): void
     {
         $settings = new SettingsManager;
-        $reflection = new \ReflectionObject($settings);
-        $reflection->getProperty('cachedSettings')->setValue($settings, [
+        $settings->useCachedSettings([
             'active_provider' => 'anthropic-main',
             'provider' => [
                 'anthropic-main' => [
@@ -152,8 +148,7 @@ trait SettingsManagerTestSetUpConcern
     public function test_explicit_provider_switch_uses_the_matching_provider_context_window(): void
     {
         $settings = new SettingsManager;
-        $reflection = new \ReflectionObject($settings);
-        $reflection->getProperty('cachedSettings')->setValue($settings, [
+        $settings->useCachedSettings([
             'active_provider' => 'anthropic-main',
             'provider' => [
                 'anthropic-main' => [
@@ -179,8 +174,7 @@ trait SettingsManagerTestSetUpConcern
     public function test_explicit_connection_does_not_require_selecting_between_matching_providers(): void
     {
         $settings = new SettingsManager;
-        $reflection = new \ReflectionObject($settings);
-        $reflection->getProperty('cachedSettings')->setValue($settings, [
+        $settings->useCachedSettings([
             'provider' => [
                 'openai-primary' => [
                     'type' => 'openai',
@@ -209,8 +203,7 @@ trait SettingsManagerTestSetUpConcern
     public function test_explicit_openai_provider_rejects_active_anthropic_model_fallback(): void
     {
         $settings = new SettingsManager;
-        $reflection = new \ReflectionObject($settings);
-        $reflection->getProperty('cachedSettings')->setValue($settings, [
+        $settings->useCachedSettings([
             'active_provider' => 'anthropic-main',
             'provider' => [
                 'anthropic-main' => [
@@ -231,8 +224,7 @@ trait SettingsManagerTestSetUpConcern
     public function test_active_openai_provider_does_not_reuse_legacy_anthropic_credentials(): void
     {
         $settings = new SettingsManager;
-        $reflection = new \ReflectionObject($settings);
-        $reflection->getProperty('cachedSettings')->setValue($settings, [
+        $settings->useCachedSettings([
             'active_provider' => 'openai-main',
             'api_key' => 'legacy-anthropic-key',
             'model' => 'claude-opus-4-8',
@@ -342,8 +334,7 @@ trait SettingsManagerTestSetUpConcern
     public function test_context_window_can_be_defined_per_provider(): void
     {
         $settings = new SettingsManager;
-        $reflection = new \ReflectionObject($settings);
-        $reflection->getProperty('cachedSettings')->setValue($settings, [
+        $settings->useCachedSettings([
             'active_provider' => 'small-window',
             'provider' => [
                 'small-window' => [
@@ -413,8 +404,7 @@ trait SettingsManagerTestSetUpConcern
     public function test_runtime_legacy_mode_does_not_hide_invalid_project_modern_mode(): void
     {
         $settings = new SettingsManager;
-        $reflection = new \ReflectionObject($settings);
-        $reflection->getProperty('cachedSettings')->setValue($settings, [
+        $settings->useCachedSettings([
             'sandbox_mode' => 'read_only',
         ]);
         $settings->set('permission_mode', 'default');

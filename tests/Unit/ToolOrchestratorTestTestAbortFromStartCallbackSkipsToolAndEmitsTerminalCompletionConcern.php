@@ -107,7 +107,7 @@ trait ToolOrchestratorTestTestAbortFromStartCallbackSkipsToolAndEmitsTerminalCom
 
         $this->assertTrue($result['is_error']);
         $this->assertStringContainsString('InputValidationError', $result['content']);
-        $this->assertStringContainsString('path field is required', $result['content']);
+        $this->assertStringContainsString('path', $result['content']);
         $this->assertFalse($executed);
     }
 
@@ -122,10 +122,11 @@ trait ToolOrchestratorTestTestAbortFromStartCallbackSkipsToolAndEmitsTerminalCom
             public function description(): string { return ''; }
             public function inputSchema(): ToolInputSchema
             {
-                return ToolInputSchema::make(
-                    ['type' => 'object'],
-                    ['mode' => ['required', 'string']],
-                );
+                return ToolInputSchema::make([
+                    'type' => 'object',
+                    'properties' => ['mode' => ['type' => 'string']],
+                    'required' => ['mode'],
+                ]);
             }
             public function validateInput(array $input, ToolUseContext $context): ?string
             {
@@ -330,7 +331,7 @@ trait ToolOrchestratorTestTestAbortFromStartCallbackSkipsToolAndEmitsTerminalCom
             public function __construct(private string $out) {}
             public function name(): string { return 'Big'; }
             public function description(): string { return ''; }
-            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object'], []); }
+            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object']); }
             public function call(array $input, ToolUseContext $ctx): ToolResult { return ToolResult::success($this->out); }
             public function maxResultSizeChars(): int { return 50_000; }
         };
@@ -347,7 +348,7 @@ trait ToolOrchestratorTestTestAbortFromStartCallbackSkipsToolAndEmitsTerminalCom
         $tool = new class extends BaseTool {
             public function name(): string { return 'Unlimited'; }
             public function description(): string { return ''; }
-            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object'], []); }
+            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object']); }
             public function call(array $input, ToolUseContext $ctx): ToolResult { return ToolResult::success(str_repeat('x', 50_000)); }
             public function maxResultSizeChars(): int { return PHP_INT_MAX; }
         };

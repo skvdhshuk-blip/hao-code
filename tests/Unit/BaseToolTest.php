@@ -23,7 +23,7 @@ class BaseToolTest extends TestCase
             public function description(): string { return 'A test tool'; }
             public function inputSchema(): ToolInputSchema
             {
-                return ToolInputSchema::make(['type' => 'object', 'properties' => []], []);
+                return ToolInputSchema::make(['type' => 'object', 'properties' => []]);
             }
             public function call(array $input, ToolUseContext $context): ToolResult
             {
@@ -63,7 +63,7 @@ class BaseToolTest extends TestCase
         $tool = new class extends BaseTool {
             public function name(): string { return 'T'; }
             public function description(): string { return ''; }
-            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make([], []); }
+            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make([]); }
             public function call(array $input, ToolUseContext $ctx): ToolResult { return ToolResult::success(''); }
             public function isReadOnly(array $input): bool { return true; }
         };

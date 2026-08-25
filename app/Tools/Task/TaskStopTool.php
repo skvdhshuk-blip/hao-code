@@ -12,6 +12,12 @@ use HaoCode\Tools\ToolUseContext;
 
 class TaskStopTool extends BaseTool
 {
+    public function __construct(
+        private readonly TaskManager $taskManager,
+        private readonly BackgroundAgentManager $backgroundAgentManager,
+        private readonly SessionManager $sessionManager,
+    ) {}
+
     public function name(): string { return 'TaskStop'; }
 
     public function description(): string
@@ -24,17 +30,16 @@ class TaskStopTool extends BaseTool
         return ToolInputSchema::make([
             'type' => 'object',
             'properties' => [
-                'id' => ['type' => 'string', 'description' => 'The task ID to stop'],
+                'id' => ['type' => 'string', 'pattern' => '^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$', 'description' => 'The task ID to stop'],
             ],
             'required' => ['id'],
-        ], ['id' => 'required|string|regex:/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/']);
+        ]);
     }
 
     public function call(array $input, ToolUseContext $context): ToolResult
     {
-        $backgroundAgentManager = \HaoCode\Support\Runtime\SdkRuntime::app(BackgroundAgentManager::class);
         try {
-            $agent = $backgroundAgentManager->refreshStatus($input['id']);
+            $agent = $this->backgroundAgentManager->refreshStatus($input['id']);
         } catch (\InvalidArgumentException $e) {
             return ToolResult::error($e->getMessage());
         }
@@ -49,7 +54,7 @@ class TaskStopTool extends BaseTool
                 );
             }
             try {
-                \HaoCode\Support\Runtime\SdkRuntime::app(SessionManager::class)->cancelInterrupt(
+                $this->sessionManager->cancelInterrupt(
                     $sessionId,
                     $interruptId,
                     'Background task stopped by user.',
@@ -59,17 +64,16 @@ class TaskStopTool extends BaseTool
             }
 
             $message = 'Stopped by user while waiting for human input.';
-            $backgroundAgentManager->markCompleted($input['id'], $message);
-            $backgroundAgentManager->finalizeStoredWorktree($input['id']);
-            \HaoCode\Support\Runtime\SdkRuntime::app(TaskManager::class)
-                ->update($input['id'], 'completed', $message);
+            $this->backgroundAgentManager->markCompleted($input['id'], $message);
+            $this->backgroundAgentManager->finalizeStoredWorktree($input['id']);
+            $this->taskManager->update($input['id'], 'completed', $message);
 
             return ToolResult::success("Background agent {$input['id']} stopped and its pending interrupt was cancelled.");
         }
 
         if ($agent !== null && !in_array($agent['status'] ?? '', ['completed', 'error', 'dead'], true)) {
-            $backgroundAgentManager->requestStop($input['id']);
-            \HaoCode\Support\Runtime\SdkRuntime::app(TaskManager::class)->transition(
+            $this->backgroundAgentManager->requestStop($input['id']);
+            $this->taskManager->transition(
                 $input['id'],
                 ['pending', 'in_progress'],
                 'in_progress',
@@ -79,8 +83,7 @@ class TaskStopTool extends BaseTool
             return ToolResult::success("Stop requested for background agent {$input['id']}.");
         }
 
-        $manager = \HaoCode\Support\Runtime\SdkRuntime::app(TaskManager::class);
-        $task = $manager->stop($input['id']);
+        $task = $this->taskManager->stop($input['id']);
 
         if (!$task) {
             return ToolResult::error("Task not found: {$input['id']}");

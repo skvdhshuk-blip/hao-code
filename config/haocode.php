@@ -119,6 +119,10 @@ return [
     */
     'background_agent_idle_timeout' => (int) $environment('HAOCODE_BACKGROUND_AGENT_IDLE_TIMEOUT', 300),
     'background_agent_poll_interval_ms' => (int) $environment('HAOCODE_BACKGROUND_AGENT_POLL_INTERVAL_MS', 250),
+    'background_agent_max_active_per_run' => (int) $environment('HAOCODE_BACKGROUND_AGENT_MAX_ACTIVE_PER_RUN', 8),
+    'background_agent_mailbox_max_messages' => (int) $environment('HAOCODE_BACKGROUND_AGENT_MAILBOX_MAX_MESSAGES', 128),
+    'background_agent_message_max_bytes' => (int) $environment('HAOCODE_BACKGROUND_AGENT_MESSAGE_MAX_BYTES', 65_536),
+    'background_agent_mailbox_max_bytes' => (int) $environment('HAOCODE_BACKGROUND_AGENT_MAILBOX_MAX_BYTES', 1_048_576),
 
     /*
     |--------------------------------------------------------------------------

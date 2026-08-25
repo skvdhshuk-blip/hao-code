@@ -4,6 +4,13 @@ namespace HaoCode\Services\Session;
 
 final class SessionStatsService
 {
+    public function __construct(private readonly string $sessionPath)
+    {
+        if (trim($this->sessionPath) === '') {
+            throw new \InvalidArgumentException('Session storage path must be injected.');
+        }
+    }
+
     /**
      * @return array{
      *     sessions_count: int,
@@ -28,10 +35,7 @@ final class SessionStatsService
      */
     public function getOverview(?string $currentSessionId = null): array
     {
-        $sessionPath = \HaoCode\Support\Runtime\SdkRuntime::config(
-            'haocode.session_path',
-            \HaoCode\Support\Runtime\SdkRuntime::storagePath('app/haocode/sessions'),
-        );
+        $sessionPath = $this->sessionPath;
         $today = date('Y-m-d');
 
         if (! is_dir($sessionPath)) {

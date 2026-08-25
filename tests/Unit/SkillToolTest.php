@@ -4,9 +4,20 @@ namespace Tests\Unit;
 
 use HaoCode\Tools\Skill\SkillDefinition;
 use HaoCode\Tools\Skill\SkillLoader;
-use HaoCode\Tools\Skill\SkillTool;
 use HaoCode\Tools\ToolUseContext;
 use PHPUnit\Framework\TestCase;
+
+/** Test fixture that resolves the bound loader before constructing the production tool. */
+class SkillTool extends \HaoCode\Tools\Skill\SkillTool
+{
+    public function __construct(?SkillLoader $skillLoader = null, mixed $forkRunner = null)
+    {
+        parent::__construct(
+            $skillLoader ?? app(SkillLoader::class),
+            $forkRunner,
+        );
+    }
+}
 
 class SkillToolTest extends TestCase
 {

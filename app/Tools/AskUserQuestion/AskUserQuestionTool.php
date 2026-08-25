@@ -27,6 +27,7 @@ final class AskUserQuestionTool extends BaseTool
             'properties' => [
                 'questions' => [
                     'type' => 'array',
+                    'minItems' => 1,
                     'items' => [
                         'type' => 'object',
                         'properties' => [
@@ -41,7 +42,7 @@ final class AskUserQuestionTool extends BaseTool
                 ],
             ],
             'required' => ['questions'],
-        ], ['questions' => ['required', 'array', 'min:1']]);
+        ]);
     }
 
     public function validateInput(array $input, ToolUseContext $context): ?string

@@ -128,7 +128,7 @@ final class RunStateIntegrationTest extends TestCase
             public function description(): string { return 'Mutates once'; }
             public function inputSchema(): ToolInputSchema
             {
-                return ToolInputSchema::make(['type' => 'object'], []);
+                return ToolInputSchema::make(['type' => 'object']);
             }
             public function call(array $input, ToolUseContext $context): ToolResult
             {
@@ -204,7 +204,7 @@ final class RunStateIntegrationTest extends TestCase
         $disabledTool = new class extends BaseTool {
             public function name(): string { return 'Mutate'; }
             public function description(): string { return 'Disabled'; }
-            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object'], []); }
+            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object']); }
             public function isEnabled(): bool { return false; }
             public function call(array $input, ToolUseContext $context): ToolResult { return ToolResult::success('unused'); }
         };
@@ -255,7 +255,10 @@ final class RunStateIntegrationTest extends TestCase
             $context,
             new MessageHistory(),
             $permission,
-            new SessionManager(persistenceEnabled: false),
+            new SessionManager(
+                persistenceEnabled: false,
+                sessionPath: sys_get_temp_dir().'/haocode-run-state-sessions',
+            ),
             $compactor,
             new CostTracker(),
             new ToolRegistry(),

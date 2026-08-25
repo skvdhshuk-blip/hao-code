@@ -38,11 +38,10 @@ DESC;
             'properties' => [
                 'name' => [
                     'type' => 'string',
+                    'pattern' => '^[a-z0-9][a-z0-9_-]{0,31}$',
                     'description' => 'Optional: show details for a specific team',
                 ],
             ],
-        ], [
-            'name' => 'nullable|string|regex:/^[a-z0-9][a-z0-9_-]{0,31}$/',
         ]);
     }
 

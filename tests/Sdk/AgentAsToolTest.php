@@ -100,7 +100,9 @@ class AgentAsToolTest extends TestCase
         $loop->method('getLocalOutputTokens')->willReturn(1);
         $loop->method('getLocalEstimatedCost')->willReturn(0.0);
         $loop->method('setWorkingDirectory');
-        $loop->method('run')->willReturn('ok');
+        $loop->method('runOutcome')->willReturn(
+            \HaoCode\Services\Agent\AgentRunOutcome::normal('ok'),
+        );
 
         // Real AgentLoop is needed to verify appendEventPump composition.
         $realLoop = new \HaoCode\Services\Agent\AgentLoop(
@@ -109,7 +111,10 @@ class AgentAsToolTest extends TestCase
             contextBuilder: $this->createMock(\HaoCode\Services\Agent\ContextBuilder::class),
             messageHistory: new \HaoCode\Services\Agent\MessageHistory,
             permissionChecker: $this->createMock(\HaoCode\Services\Permissions\PermissionChecker::class),
-            sessionManager: new \HaoCode\Services\Session\SessionManager(persistenceEnabled: false),
+            sessionManager: new \HaoCode\Services\Session\SessionManager(
+                persistenceEnabled: false,
+                sessionPath: sys_get_temp_dir().'/haocode-agent-as-tool-sessions',
+            ),
             contextCompactor: $this->createMock(\HaoCode\Services\Compact\ContextCompactor::class),
             costTracker: new \HaoCode\Services\Cost\CostTracker,
             toolRegistry: new \HaoCode\Tools\ToolRegistry,
@@ -177,7 +182,9 @@ class AgentAsToolTest extends TestCase
         $loop->expects($this->once())
             ->method('setWorkingDirectory')
             ->with($parentCwd);
-        $loop->method('run')->willReturn('child-ok');
+        $loop->method('runOutcome')->willReturn(
+            \HaoCode\Services\Agent\AgentRunOutcome::normal('child-ok'),
+        );
 
         $factory = $this->createMock(\HaoCode\Services\Agent\AgentLoopFactory::class);
         $factory->method('createIsolated')->willReturn($loop);

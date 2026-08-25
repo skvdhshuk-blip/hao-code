@@ -14,7 +14,11 @@ class DreamConsolidatorRuntimeTest extends TestCase
         $sessionPath = storage_path('app/custom-haocode/sessions');
         config(['haocode.session_path' => $sessionPath]);
 
-        $consolidator = new DreamConsolidator(new SessionMemory, new ConsolidationLock);
+        $consolidator = new DreamConsolidator(
+            new SessionMemory,
+            new ConsolidationLock,
+            $sessionPath,
+        );
 
         $this->assertSame($sessionPath, $consolidator->getTranscriptDir());
     }

@@ -47,10 +47,12 @@ DESC;
                 ],
                 'line' => [
                     'type' => 'integer',
+                    'minimum' => 0,
                     'description' => 'Line number (1-based)',
                 ],
                 'character' => [
                     'type' => 'integer',
+                    'minimum' => 0,
                     'description' => 'Character offset (1-based)',
                 ],
                 'query' => [
@@ -59,12 +61,6 @@ DESC;
                 ],
             ],
             'required' => ['operation', 'filePath'],
-        ], [
-            'operation' => 'required|string|in:goToDefinition,findReferences,hover,documentSymbol,workspaceSymbol',
-            'filePath' => 'required|string',
-            'line' => 'nullable|integer|min:0',
-            'character' => 'nullable|integer|min:0',
-            'query' => 'nullable|string',
         ]);
     }
 

@@ -29,6 +29,7 @@ class AgentLoopTest extends TestCase
 {
     use AgentLoopTestMakeToolConcern;
     use AgentLoopTestTestRestoreRunSnapshotRestoresCostAndUsageTotalsConcern;
+    use AgentLoopTestTestThinkingOnlyFinalResponseConcern;
     use AgentLoopTestTestRepeatedIdenticalToolErrorsTriggerOneNoToolFinalizationConcern;
     use AgentLoopTestTestItReportsToolInputJsonParseErrorsDuringRetryConcern;
     use AgentLoopTestTestItRetriesTheTurnWhenTheModelReturnsPlaceholderFileReferencesConcern;

@@ -138,6 +138,23 @@ Agents can be composed: one agent can use another as a tool via `Agent::asTool()
 `HaoCode::query()` and `HaoCode::stream()` remain unchanged and are implemented on
 top of `Runner`.
 
+For a less toy-like exercise,
+[`examples/architecture-review-council.php`](examples/architecture-review-council.php)
+defines three read-only architecture specialists and a lead reviewer. It runs
+against this repository, records every delegated tool lifecycle, rejects empty
+specialist reports, and prints aggregate usage plus a council verdict. Provider
+settings come from the normal SDK Runtime; `ARCH_COUNCIL_MODEL` optionally
+overrides the model, `ARCH_COUNCIL_BASE_URL` selects an Anthropic-compatible
+endpoint, and `ARCH_COUNCIL_BUDGET_USD` enables a shared budget only when
+trusted pricing exists for that model.
+
+[`examples/agent-shapes-lab.php`](examples/agent-shapes-lab.php) exercises five
+separate agent contracts against one provider: a custom-tool agent, structured
+output, streaming, multi-turn conversation, and Agent-as-Tool delegation. Run
+the full matrix or select one with `--shape=...`; each shape has its own output
+acceptance gate, so an empty child response cannot be hidden by a successful
+parent report.
+
 ## What It Provides
 
 | Area | Capability |
@@ -483,6 +500,13 @@ foreach (HaoCode::stream('Explain PHP Fibers in three sentences') as $message) {
     }
 }
 ```
+
+Terminal results expose `RunTerminationReason` through
+`QueryResult::$terminationReason` and terminal
+`Message::$terminationReason`. Values are `normal`, `cancelled`,
+`budget_exhausted`, `turn_limit`, and `repeated_tool_failure`. Use this enum for
+control flow; the v1 compatibility strings such as `(aborted)` remain unchanged
+and are not status indicators.
 
 Provider-controlled streaming input is bounded: provider SSE lines and
 multiline events over 4 MiB fail with a `protocol_error`, and provider error
@@ -906,6 +930,15 @@ runtime directory. Background Agent, Team, and Task state is isolated under
 `app/haocode/background-agents`, `app/haocode/teams`, and
 `app/haocode/tasks` inside that runtime directory.
 
+Background admission and mailboxes are bounded per owner run. Defaults are 8
+active agents, 128 queued messages, 65,536 bytes per message, and 1 MiB per
+mailbox. Override them with
+`HAOCODE_BACKGROUND_AGENT_MAX_ACTIVE_PER_RUN`,
+`HAOCODE_BACKGROUND_AGENT_MAILBOX_MAX_MESSAGES`,
+`HAOCODE_BACKGROUND_AGENT_MESSAGE_MAX_BYTES`, and
+`HAOCODE_BACKGROUND_AGENT_MAILBOX_MAX_BYTES`. Every value must be positive;
+invalid configuration fails during runtime startup.
+
 Long-term memory uses compact `l0` summaries in the system prompt by default;
 `l1` provides a larger overview and `l2` injects original content. Supplying
 `memoryStoragePath` explicitly also enables memory injection for text-only runs:
@@ -976,7 +1009,12 @@ split cohesive behavior into same-namespace concern traits.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.20.2`. Notable changes since `v1.10.0`:
+is based on `v1.21.0`. Notable changes since `v1.10.0`:
+
+- `v1.21.0` — Adds typed run termination reasons, fail-closed JSON Schema tool
+  registration, one Fiber-backed streaming lifecycle, bounded background-agent
+  admission/mailboxes, and immutable run bootstrap/config adaptation. Existing
+  v1 response text and provider wire formats remain compatible.
 
 - `v1.20.2` — Keeps RunEvent Store contract tests compatible with PHP 8.1 by
   consuming the declared `iterable` return type without assuming a

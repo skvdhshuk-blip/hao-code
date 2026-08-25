@@ -9,29 +9,16 @@ use HaoCode\Support\StateIdentifier;
 class BackgroundAgentManager
 {
     use BackgroundAgentManagerConstructConcern;
+    use BackgroundAgentCapacityConcern;
     use BackgroundAgentManagerMutateStateConcern;
-    use BackgroundAgentManagerRegisterSignalReaperConcern;
 
     private const RESULT_LIMIT = 100000;
 
-    /** @var array<int, \WeakReference> */
-    private static array $signalReapers = [];
+    private readonly BackgroundAgentLimits $limits;
 
-    private static bool $signalReaperInstalled = false;
+    private readonly BackgroundAgentStateStore $stateStore;
 
-    private static mixed $previousSigchldHandler = null;
-
-    private static ?bool $previousAsyncSignals = null;
-
-    /** @var array<int, array{id: string, token: string}> */
-    private array $ownedProcesses = [];
-
-    /** @var array<int, array{id: string, token: string}> */
-    private array $exitedProcesses = [];
-
-    private bool $reapingProcessHandles = false;
-
-    private bool $reapAgain = false;
+    private readonly BackgroundAgentProcessReaper $processReaper;
 
     private bool $processingExitedChildren = false;
 }

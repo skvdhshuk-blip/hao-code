@@ -15,6 +15,9 @@ use HaoCode\Tools\Skill\SkillLoader;
  */
 final class AgentRunContext
 {
+    /** @var null|\Closure(string, array, \HaoCode\Sdk\HaoCodeConfig): \HaoCode\Sdk\StructuredResult */
+    public readonly ?\Closure $hitlStructuredRunner;
+
     public function __construct(
         public readonly string $workingDirectory,
         public readonly string $projectDirectory,
@@ -43,8 +46,12 @@ final class AgentRunContext
         public readonly ?BudgetLedger $budgetLedger = null,
         public readonly ?UsageAccumulator $usageAccumulator = null,
         public readonly string $contextPreset = ContextPreset::CODING,
+        ?callable $hitlStructuredRunner = null,
     ) {
         ContextPreset::assertValid($this->contextPreset);
+        $this->hitlStructuredRunner = $hitlStructuredRunner !== null
+            ? \Closure::fromCallable($hitlStructuredRunner)
+            : null;
     }
 
     public function fork(
@@ -104,6 +111,7 @@ final class AgentRunContext
             // Share the same accumulator so nested agents contribute tokens.
             $this->usageAccumulator,
             $contextPreset ?? $this->contextPreset,
+            $this->hitlStructuredRunner,
         );
     }
 
@@ -142,6 +150,7 @@ final class AgentRunContext
             $this->budgetLedger,
             $usageAccumulator,
             $this->contextPreset,
+            $this->hitlStructuredRunner,
         );
     }
 

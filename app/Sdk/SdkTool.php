@@ -80,7 +80,6 @@ abstract class SdkTool extends BaseTool
     {
         $properties = [];
         $required = [];
-        $rules = [];
 
         foreach ($this->parameters() as $name => $param) {
             $type = $param['type'] ?? 'string';
@@ -95,29 +94,8 @@ abstract class SdkTool extends BaseTool
 
             $properties[$name] = $prop;
 
-            // JSON Schema types don't all line up 1:1 with validator rule names.
-            $validatorType = match ($type) {
-                'number' => 'numeric',
-                'object' => 'array',
-                default => $type,
-            };
-
-            // SdkTool passes Laravel-style rules, which bypass the swaggest
-            // fallback. Mirror the JSON Schema enum into an `in:` rule so a
-            // model that returns a value outside the declared enum is still
-            // rejected before handle() runs. Note: `in:` is comma-separated,
-            // so enum values must not contain commas (none of the built-in
-            // SdkTool parameters do).
-            $enumRule = '';
-            if (isset($param['enum']) && is_array($param['enum']) && $param['enum'] !== []) {
-                $enumRule = '|in:'.implode(',', $param['enum']);
-            }
-
             if ($param['required'] ?? false) {
                 $required[] = $name;
-                $rules[$name] = 'required|'.$validatorType.$enumRule;
-            } else {
-                $rules[$name] = 'nullable|'.$validatorType.$enumRule;
             }
         }
 
@@ -125,7 +103,7 @@ abstract class SdkTool extends BaseTool
             'type' => 'object',
             'properties' => $properties,
             'required' => $required,
-        ], $rules);
+        ]);
     }
 
     /**

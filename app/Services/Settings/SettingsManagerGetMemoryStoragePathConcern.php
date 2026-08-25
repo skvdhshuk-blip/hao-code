@@ -49,10 +49,11 @@ trait SettingsManagerGetMemoryStoragePathConcern
 
     public function getSessionPath(): string
     {
-        return \HaoCode\Support\Runtime\SdkRuntime::config(
-            'haocode.session_path',
-            \HaoCode\Support\Runtime\SdkRuntime::storagePath('app/haocode/sessions'),
-        );
+        $path = $this->runtimeDefault('session_path', sys_get_temp_dir().'/haocode/sessions');
+
+        return is_string($path) && trim($path) !== ''
+            ? $path
+            : sys_get_temp_dir().'/haocode/sessions';
     }
 
     public function getOutputStyle(): ?string
@@ -384,8 +385,8 @@ trait SettingsManagerGetMemoryStoragePathConcern
             $settingsProvider = $this->normalizeProviderName(
                 $settings['model_provider']
                     ?? $settings['active_provider']
-                    ?? \HaoCode\Support\Runtime\SdkRuntime::config('haocode.model_provider')
-                    ?? \HaoCode\Support\Runtime\SdkRuntime::config('haocode.active_provider')
+                    ?? $this->runtimeDefault('model_provider')
+                    ?? $this->runtimeDefault('active_provider')
                     ?? null,
             );
             if ($settingsProvider !== null && array_key_exists($settingsProvider, $providers)) {

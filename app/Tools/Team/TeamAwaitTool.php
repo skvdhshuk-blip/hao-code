@@ -25,14 +25,10 @@ class TeamAwaitTool extends BaseTool
             'type' => 'object',
             'properties' => [
                 'name' => ['type' => 'string', 'description' => 'Team name'],
-                'timeout_seconds' => ['type' => 'integer', 'description' => 'Maximum wait time (1-600 seconds)'],
-                'poll_interval_ms' => ['type' => 'integer', 'description' => 'Polling interval (100-2000 ms)'],
+                'timeout_seconds' => ['type' => 'integer', 'minimum' => 1, 'maximum' => 600, 'description' => 'Maximum wait time (1-600 seconds)'],
+                'poll_interval_ms' => ['type' => 'integer', 'minimum' => 100, 'maximum' => 2000, 'description' => 'Polling interval (100-2000 ms)'],
             ],
             'required' => ['name'],
-        ], [
-            'name' => 'required|string',
-            'timeout_seconds' => 'nullable|integer|min:1|max:600',
-            'poll_interval_ms' => 'nullable|integer|min:100|max:2000',
         ]);
     }
 

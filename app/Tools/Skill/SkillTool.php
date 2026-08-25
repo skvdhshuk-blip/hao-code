@@ -61,28 +61,24 @@ DESC;
                 ],
                 'page' => [
                     'type' => 'integer',
+                    'minimum' => 1,
                     'description' => '1-based result page for list/search',
                 ],
                 'per_page' => [
                     'type' => 'integer',
+                    'minimum' => 1,
+                    'maximum' => 50,
                     'description' => 'Results per page (1-50, default 25)',
                 ],
             ],
             'required' => [],
-        ], [
-            'skill' => 'nullable|string',
-            'args' => 'nullable|string',
-            'action' => 'nullable|string|in:run,list,search',
-            'query' => 'nullable|string',
-            'page' => 'nullable|integer|min:1',
-            'per_page' => 'nullable|integer|min:1|max:50',
         ]);
     }
 
     public function call(array $input, ToolUseContext $context): ToolResult
     {
         /** @var SkillLoader $loader */
-        $loader = $this->skillLoader ?? \HaoCode\Support\Runtime\SdkRuntime::app(SkillLoader::class);
+        $loader = $this->skillLoader ?? new SkillLoader($context->workingDirectory);
         $skillName = ltrim((string) ($input['skill'] ?? ''), '/');
         $args = $input['args'] ?? '';
         $action = $input['action'] ?? ($skillName === '' ? 'list' : 'run');

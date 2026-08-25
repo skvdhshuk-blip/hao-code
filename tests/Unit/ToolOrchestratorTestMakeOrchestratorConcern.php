@@ -56,7 +56,7 @@ trait ToolOrchestratorTestMakeOrchestratorConcern
             ) {}
             public function name(): string { return $this->n; }
             public function description(): string { return ''; }
-            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object'], []); }
+            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object']); }
             public function call(array $input, ToolUseContext $ctx): ToolResult { return ($this->fn)($input, $ctx); }
             public function isReadOnly(array $input): bool { return $this->ro; }
         };
@@ -70,10 +70,11 @@ trait ToolOrchestratorTestMakeOrchestratorConcern
             public function description(): string { return ''; }
             public function inputSchema(): ToolInputSchema
             {
-                return ToolInputSchema::make(
-                    ['type' => 'object'],
-                    ['path' => ['required', 'string']],
-                );
+                return ToolInputSchema::make([
+                    'type' => 'object',
+                    'properties' => ['path' => ['type' => 'string']],
+                    'required' => ['path'],
+                ]);
             }
             public function backfillObservableInput(array $input, ToolUseContext $context): array
             {
@@ -120,7 +121,7 @@ trait ToolOrchestratorTestMakeOrchestratorConcern
         $disabledTool = new class extends BaseTool {
             public function name(): string { return 'DisabledTool'; }
             public function description(): string { return ''; }
-            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object'], []); }
+            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object']); }
             public function isEnabled(): bool { return false; }
             public function call(array $input, ToolUseContext $ctx): ToolResult { return ToolResult::success('should not execute'); }
         };
@@ -138,21 +139,16 @@ trait ToolOrchestratorTestMakeOrchestratorConcern
     public function test_schema_validation_failure_returns_error(): void
     {
         $registry = new ToolRegistry;
-        // Use a ToolInputSchema that throws InvalidArgumentException without Laravel Validator
         $tool = new class extends BaseTool {
             public function name(): string { return 'Strict'; }
             public function description(): string { return ''; }
             public function inputSchema(): ToolInputSchema
             {
-                $schema = new class extends ToolInputSchema {
-                    public function __construct() {}
-                    public function validate(array $input): array
-                    {
-                        throw new \InvalidArgumentException('Validation failed: required_field is required');
-                    }
-                    public function toJsonSchema(): array { return ['type' => 'object']; }
-                };
-                return $schema;
+                return ToolInputSchema::make([
+                    'type' => 'object',
+                    'properties' => ['required_field' => ['type' => 'string']],
+                    'required' => ['required_field'],
+                ]);
             }
             public function call(array $input, ToolUseContext $ctx): ToolResult { return ToolResult::success('ok'); }
         };
@@ -170,7 +166,7 @@ trait ToolOrchestratorTestMakeOrchestratorConcern
         $tool = new class extends BaseTool {
             public function name(): string { return 'Semantic'; }
             public function description(): string { return ''; }
-            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object'], []); }
+            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object']); }
             public function call(array $input, ToolUseContext $ctx): ToolResult { return ToolResult::success('ok'); }
             public function validateInput(array $input, ToolUseContext $ctx): ?string { return 'file must exist'; }
         };

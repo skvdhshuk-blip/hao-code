@@ -25,16 +25,9 @@ final class SandboxGrepTool extends SandboxTool
                 'glob' => ['type' => 'string', 'description' => 'Optional glob filter.'],
                 'output_mode' => ['type' => 'string', 'enum' => ['content', 'files_with_matches', 'count']],
                 '-i' => ['type' => 'boolean', 'description' => 'Case-insensitive search.'],
-                'head_limit' => ['type' => 'integer', 'description' => 'Maximum results.'],
+                'head_limit' => ['type' => 'integer', 'minimum' => 0, 'description' => 'Maximum results.'],
             ],
             'required' => ['pattern'],
-        ], [
-            'pattern' => 'required|string',
-            'path' => 'nullable|string',
-            'glob' => 'nullable|string',
-            'output_mode' => 'nullable|string|in:content,files_with_matches,count',
-            '-i' => 'nullable|boolean',
-            'head_limit' => 'nullable|integer|min:0',
         ]);
     }
 

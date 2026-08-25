@@ -1,4 +1,46 @@
 {
+    "HaoCode\\Contracts\\RunTerminationReason": {
+        "kind": "enum",
+        "api": true,
+        "internal": false,
+        "methods": {
+            "cases": {
+                "signature": "public static function cases() : array",
+                "api": false,
+                "internal": false
+            },
+            "from": {
+                "signature": "public static function from(string|int $value) : static",
+                "api": false,
+                "internal": false
+            },
+            "tryFrom": {
+                "signature": "public static function tryFrom(string|int $value) : ?static",
+                "api": false,
+                "internal": false
+            }
+        },
+        "properties": {
+            "name": {
+                "signature": "public readonly string $name",
+                "api": false,
+                "internal": false
+            },
+            "value": {
+                "signature": "public readonly string $value",
+                "api": false,
+                "internal": false
+            }
+        },
+        "backing_type": "string",
+        "cases": {
+            "Normal": "normal",
+            "Cancelled": "cancelled",
+            "BudgetExhausted": "budget_exhausted",
+            "TurnLimit": "turn_limit",
+            "RepeatedToolFailure": "repeated_tool_failure"
+        }
+    },
     "HaoCode\\Sdk\\AbortController": {
         "kind": "class",
         "api": true,
@@ -330,7 +372,7 @@
         "internal": false,
         "methods": {
             "__construct": {
-                "signature": "public function __construct(HaoCode\\Sdk\\HaoCodeConfig $config, HaoCode\\Services\\Agent\\AgentLoopFactory $factory, ?HaoCode\\Services\\Api\\StreamingClient $streamingClient = null)",
+                "signature": "public function __construct(HaoCode\\Sdk\\HaoCodeConfig $config, HaoCode\\Services\\Agent\\AgentLoopFactory $factory, ?HaoCode\\Services\\Api\\StreamingClient $streamingClient = null, ?HaoCode\\Sdk\\Internal\\ConversationBootstrap $bootstrap = null)",
                 "api": false,
                 "internal": true
             },
@@ -1170,7 +1212,7 @@
                 "internal": false
             },
             "result": {
-                "signature": "public static function result(string $text, array $usage, float $cost, ?string $sessionId = null) : self",
+                "signature": "public static function result(string $text, array $usage, float $cost, ?string $sessionId = null, HaoCode\\Contracts\\RunTerminationReason $terminationReason = \"normal\") : self",
                 "api": true,
                 "internal": false
             },
@@ -1246,6 +1288,11 @@
                 "api": true,
                 "internal": false
             },
+            "terminationReason": {
+                "signature": "public readonly ?HaoCode\\Contracts\\RunTerminationReason $terminationReason",
+                "api": true,
+                "internal": false
+            },
             "text": {
                 "signature": "public readonly ?string $text",
                 "api": true,
@@ -1294,7 +1341,7 @@
         "internal": false,
         "methods": {
             "__construct": {
-                "signature": "public function __construct(string $text, array $usage, float $cost, ?string $sessionId = null, int $turnsUsed = 0)",
+                "signature": "public function __construct(string $text, array $usage, float $cost, ?string $sessionId = null, int $turnsUsed = 0, HaoCode\\Contracts\\RunTerminationReason $terminationReason = \"normal\")",
                 "api": true,
                 "internal": false
             },
@@ -1322,6 +1369,11 @@
             },
             "sessionId": {
                 "signature": "public readonly ?string $sessionId",
+                "api": true,
+                "internal": false
+            },
+            "terminationReason": {
+                "signature": "public readonly HaoCode\\Contracts\\RunTerminationReason $terminationReason",
                 "api": true,
                 "internal": false
             },
@@ -1428,6 +1480,11 @@
                 "signature": "public static function make(?string $cwd = null, ?bool $ephemeral = null) : self",
                 "api": false,
                 "internal": false
+            },
+            "retainLegacyAllowCwdOverride": {
+                "signature": "public function retainLegacyAllowCwdOverride(bool $allow) : self",
+                "api": false,
+                "internal": true
             },
             "toConfig": {
                 "signature": "public function toConfig(HaoCode\\Sdk\\Agent $agent) : HaoCode\\Sdk\\HaoCodeConfig",

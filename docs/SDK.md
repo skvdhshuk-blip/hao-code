@@ -2,7 +2,7 @@
 
 Use hao-code as a framework-free PHP library to embed an AI coding agent in your application.
 
-This document describes the `v1.20.2` source line. Published package versions
+This document describes the `v1.21.0` source line. Published package versions
 are identified by Git tags and Packagist.
 
 ```bash
@@ -1055,11 +1055,18 @@ $result->usage;                  // array — ['input_tokens' => int, 'output_to
 $result->cost;                   // float — estimated cost in USD
 $result->sessionId;              // ?string — session ID for resume
 $result->turnsUsed;              // int — agent turns consumed
+$result->terminationReason;      // RunTerminationReason — typed terminal reason
 
 // Helpers
 $result->inputTokens();          // int
 $result->outputTokens();         // int
 ```
+
+`terminationReason` is one of `normal`, `cancelled`, `budget_exhausted`,
+`turn_limit`, or `repeated_tool_failure` from
+`HaoCode\Contracts\RunTerminationReason`. Branch on the enum rather than the
+response text. For v1 compatibility, cancellation and budget-limit text such
+as `(aborted)` remains unchanged even though the reason is now unambiguous.
 
 `usage['input_tokens']` is the accumulated provider-reported input usage for
 the conversation/run lifetime (not a single HTTP delta), including nested
@@ -1433,7 +1440,7 @@ through tool permissions, hooks, and skill capability scope.
 | `text` | `$msg->text` | Streaming text delta |
 | `tool_start` | `$msg->toolName`, `$msg->toolInput` | Tool execution began |
 | `tool_result` | `$msg->toolName`, `$msg->toolOutput`, `$msg->toolIsError` | Tool completed |
-| `result` | `$msg->text`, `$msg->usage`, `$msg->cost`, `$msg->sessionId` | Final result |
+| `result` | `$msg->text`, `$msg->usage`, `$msg->cost`, `$msg->sessionId`, `$msg->terminationReason` | Final result with a typed `RunTerminationReason` |
 | `error` | `$msg->error` | An error occurred |
 | `interrupt` | `$msg->interrupt`, `$msg->sessionId` | Generation paused for human input; no `result` follows in that stream |
 | `auto_decision` | `$msg->sessionId`, `$msg->interruptId`, `$msg->actionId`, `$msg->toolName`, `$msg->toolInput`, `$msg->decision`, `$msg->source`, `$msg->riskLevel`, `$msg->reason` | An action was decided automatically by the smart HITL policy |
@@ -1674,6 +1681,22 @@ Agent IDs and team names are restricted to filesystem-safe identifiers and
 cannot overwrite an existing background run. Their manifests, mailboxes, and
 task records are stored below the configured runtime storage path in
 `app/haocode/background-agents`, `app/haocode/teams`, and `app/haocode/tasks`.
+
+Background capacity is admitted atomically per owner run. The states `pending`,
+`running`, `idle`, and `waiting_for_input` all occupy a slot. Existing state
+without `owner_run_id` remains readable and counts against a legacy global
+pool; no file migration is required. Mailbox rejection is atomic and returns
+the stable `background_busy` error without changing the queue or pending count.
+
+| Config key | Environment variable | Default |
+|---|---|---:|
+| `background_agent_max_active_per_run` | `HAOCODE_BACKGROUND_AGENT_MAX_ACTIVE_PER_RUN` | 8 |
+| `background_agent_mailbox_max_messages` | `HAOCODE_BACKGROUND_AGENT_MAILBOX_MAX_MESSAGES` | 128 |
+| `background_agent_message_max_bytes` | `HAOCODE_BACKGROUND_AGENT_MESSAGE_MAX_BYTES` | 65,536 |
+| `background_agent_mailbox_max_bytes` | `HAOCODE_BACKGROUND_AGENT_MAILBOX_MAX_BYTES` | 1,048,576 |
+
+All four values must be positive. Invalid values fail when the SDK runtime is
+assembled rather than being silently clamped.
 
 ---
 

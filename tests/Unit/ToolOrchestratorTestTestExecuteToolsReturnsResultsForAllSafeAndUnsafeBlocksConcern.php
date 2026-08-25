@@ -33,7 +33,7 @@ trait ToolOrchestratorTestTestExecuteToolsReturnsResultsForAllSafeAndUnsafeBlock
         $registry->register(new class extends BaseTool {
             public function name(): string { return 'SafeTool'; }
             public function description(): string { return ''; }
-            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object'], []); }
+            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object']); }
             public function isReadOnly(array $input): bool { return true; }
             public function isConcurrencySafe(array $input): bool { return true; }
             public function call(array $input, ToolUseContext $ctx): ToolResult {
@@ -45,7 +45,7 @@ trait ToolOrchestratorTestTestExecuteToolsReturnsResultsForAllSafeAndUnsafeBlock
         $registry->register(new class extends BaseTool {
             public function name(): string { return 'UnsafeTool'; }
             public function description(): string { return ''; }
-            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object'], []); }
+            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object']); }
             public function isReadOnly(array $input): bool { return false; }
             public function call(array $input, ToolUseContext $ctx): ToolResult {
                 return ToolResult::success('unsafe:' . ($input['label'] ?? ''));
@@ -89,7 +89,7 @@ trait ToolOrchestratorTestTestExecuteToolsReturnsResultsForAllSafeAndUnsafeBlock
             public function __construct(private readonly string $stateFile) {}
             public function name(): string { return 'WriteState'; }
             public function description(): string { return ''; }
-            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object'], []); }
+            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object']); }
             public function isReadOnly(array $input): bool { return false; }
             public function call(array $input, ToolUseContext $context): ToolResult
             {
@@ -102,7 +102,7 @@ trait ToolOrchestratorTestTestExecuteToolsReturnsResultsForAllSafeAndUnsafeBlock
             public function __construct(private readonly string $stateFile) {}
             public function name(): string { return 'ReadState'; }
             public function description(): string { return ''; }
-            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object'], []); }
+            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object']); }
             public function isReadOnly(array $input): bool { return true; }
             public function isConcurrencySafe(array $input): bool { return true; }
             public function call(array $input, ToolUseContext $context): ToolResult
@@ -132,7 +132,7 @@ trait ToolOrchestratorTestTestExecuteToolsReturnsResultsForAllSafeAndUnsafeBlock
         $registry->register(new class extends BaseTool {
             public function name(): string { return 'SafeTool'; }
             public function description(): string { return ''; }
-            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object'], []); }
+            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object']); }
             public function isReadOnly(array $input): bool { return true; }
             public function isConcurrencySafe(array $input): bool { return true; }
             public function call(array $input, ToolUseContext $ctx): ToolResult {
@@ -321,7 +321,7 @@ trait ToolOrchestratorTestTestExecuteToolsReturnsResultsForAllSafeAndUnsafeBlock
         $registry->register(new class extends BaseTool {
             public function name(): string { return 'SafeTool'; }
             public function description(): string { return ''; }
-            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object'], []); }
+            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object']); }
             public function isReadOnly(array $input): bool { return true; }
             public function isConcurrencySafe(array $input): bool { return true; }
             public function call(array $input, ToolUseContext $ctx): ToolResult {
@@ -331,7 +331,7 @@ trait ToolOrchestratorTestTestExecuteToolsReturnsResultsForAllSafeAndUnsafeBlock
         $registry->register(new class extends BaseTool {
             public function name(): string { return 'UnsafeTool'; }
             public function description(): string { return ''; }
-            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object'], []); }
+            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object']); }
             public function isReadOnly(array $input): bool { return false; }
             public function call(array $input, ToolUseContext $ctx): ToolResult {
                 return ToolResult::success('unsafe:' . ($input['label'] ?? ''));

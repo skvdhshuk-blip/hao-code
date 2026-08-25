@@ -38,8 +38,6 @@ class SleepTool extends BaseTool
                 ],
             ],
             'required' => ['seconds'],
-        ], [
-            'seconds' => 'required|integer|min:1|max:300',
         ]);
     }
 

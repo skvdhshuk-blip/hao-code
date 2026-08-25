@@ -59,9 +59,6 @@ DESC;
                 ],
             ],
             'required' => ['key'],
-        ], [
-            'key' => 'required|string',
-            'level' => 'nullable|string|in:l1,l2',
         ]);
     }
 

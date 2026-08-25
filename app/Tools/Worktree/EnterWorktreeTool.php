@@ -36,8 +36,6 @@ class EnterWorktreeTool extends BaseTool
                     'description' => 'Optional name for the worktree. If not provided, a random name is generated.',
                 ],
             ],
-        ], [
-            'name' => 'nullable|string',
         ]);
     }
 

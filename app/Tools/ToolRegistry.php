@@ -131,7 +131,7 @@ class ToolRegistry
 
     private function install(string $name, ToolInterface $tool): void
     {
-        $this->validateSchema($name, $tool->inputSchema()->toJsonSchema());
+        $this->compileSchema($name, $tool->inputSchema());
         $this->tools[$name] = $tool;
         unset($this->apiSchemas[$name]);
         $this->cacheableSchemas[$name] = $this->isSchemaCacheable($tool);
@@ -162,10 +162,31 @@ class ToolRegistry
     /** @return array<string, mixed> */
     private function schemaFor(string $name, ToolInterface $tool): array
     {
-        $schema = ($this->cacheableSchemas[$name] ?? false)
-            ? ($this->apiSchemas[$name] ??= $tool->inputSchema()->toJsonSchema())
-            : $tool->inputSchema()->toJsonSchema();
+        if (($this->cacheableSchemas[$name] ?? false) && isset($this->apiSchemas[$name])) {
+            return $this->apiSchemas[$name];
+        }
+
+        $schema = $this->compileSchema($name, $tool->inputSchema());
+        if ($this->cacheableSchemas[$name] ?? false) {
+            $this->apiSchemas[$name] = $schema;
+        }
+
+        return $schema;
+    }
+
+    /** @return array<string, mixed> */
+    private function compileSchema(string $name, ToolInputSchema $inputSchema): array
+    {
+        $schema = $inputSchema->toJsonSchema();
         $this->validateSchema($name, $schema);
+        try {
+            $inputSchema->assertValidDefinition();
+        } catch (\InvalidArgumentException $exception) {
+            throw new \InvalidArgumentException(
+                "Tool '{$name}' has an invalid input schema: {$exception->getMessage()}",
+                previous: $exception,
+            );
+        }
 
         return $schema;
     }

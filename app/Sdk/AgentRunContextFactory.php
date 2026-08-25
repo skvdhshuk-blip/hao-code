@@ -7,6 +7,7 @@ use HaoCode\Services\Agent\CancellationToken;
 use HaoCode\Services\Agent\ContextPreset;
 use HaoCode\Services\Settings\SettingsManager;
 use HaoCode\Sdk\Memory\JsonMemoryStore;
+use HaoCode\Sdk\Internal\StructuredHitlRunner;
 use HaoCode\Tools\Skill\SkillLoader;
 
 /**
@@ -20,7 +21,10 @@ final class AgentRunContextFactory
     {
         $projectDirectory = ($config->cwd ?? getcwd()) ?: '/';
         $workingDirectory = $config->effectiveWorkingDirectory() ?? $projectDirectory;
-        $settings = new SettingsManager($projectDirectory);
+        $settings = new SettingsManager(
+            $projectDirectory,
+            \HaoCode\Support\Runtime\SdkRuntime::settingsDefaults(),
+        );
         $settings->set('permission_mode', $config->permissionMode);
         $settings->set('thinking_enabled', $config->thinkingEnabled);
         $settings->set('thinking_budget', $config->thinkingBudget);
@@ -136,6 +140,7 @@ final class AgentRunContextFactory
             budgetLedger: null,
             usageAccumulator: new \HaoCode\Services\Cost\UsageAccumulator,
             contextPreset: $config->contextPreset,
+            hitlStructuredRunner: new StructuredHitlRunner,
         );
     }
 

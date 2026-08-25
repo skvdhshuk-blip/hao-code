@@ -3,35 +3,29 @@
 namespace Tests\Unit;
 
 use HaoCode\Services\ToolResult\ToolResultStorage;
-use HaoCode\Support\Runtime\SdkRuntime;
 use PHPUnit\Framework\TestCase;
 
 class ToolResultStorageTest extends TestCase
 {
     private string $testDir;
-    private mixed $oldSessionPath;
+    private string $sessionRoot;
 
     protected function setUp(): void
     {
         $this->testDir = sys_get_temp_dir().'/haocode_test_storage_'.bin2hex(random_bytes(6));
         mkdir($this->testDir, 0700, true);
-        $this->oldSessionPath = SdkRuntime::config('haocode.session_path');
-        SdkRuntime::config([
-            'haocode.session_path' => $this->testDir.'/sessions',
-        ]);
+        $this->sessionRoot = $this->testDir.'/sessions';
     }
 
     protected function tearDown(): void
     {
-        SdkRuntime::config([
-            'haocode.session_path' => $this->oldSessionPath,
-        ]);
         $this->removeTree($this->testDir);
     }
 
     private function makeStorage(?string $sessionId = null): ToolResultStorage
     {
         return new ToolResultStorage(
+            $this->sessionRoot,
             $sessionId ?? 'test_'.getmypid().'_'.bin2hex(random_bytes(5)),
         );
     }
@@ -122,7 +116,7 @@ class ToolResultStorageTest extends TestCase
         $sessionRoot = $this->testDir.'/existing-sessions';
         mkdir($sessionRoot, 0755);
         chmod($sessionRoot, 0755);
-        SdkRuntime::config(['haocode.session_path' => $sessionRoot]);
+        $this->sessionRoot = $sessionRoot;
 
         $result = $this->makeStorage('existing_safe')->persist('call_1', 'secret');
 
@@ -143,7 +137,7 @@ class ToolResultStorageTest extends TestCase
         $sessionRoot = $this->testDir.'/unsafe-sessions';
         mkdir($sessionRoot, 0700);
         chmod($sessionRoot, 0777);
-        SdkRuntime::config(['haocode.session_path' => $sessionRoot]);
+        $this->sessionRoot = $sessionRoot;
 
         $result = $this->makeStorage('unsafe_shared')->persist('call_1', 'secret');
 
@@ -162,7 +156,7 @@ class ToolResultStorageTest extends TestCase
         $sessionRoot = $this->testDir.'/sticky-sessions';
         mkdir($sessionRoot, 0700);
         chmod($sessionRoot, 01777);
-        SdkRuntime::config(['haocode.session_path' => $sessionRoot]);
+        $this->sessionRoot = $sessionRoot;
 
         $result = $this->makeStorage('sticky_shared')->persist('call_1', 'secret');
 
@@ -178,7 +172,7 @@ class ToolResultStorageTest extends TestCase
         $this->expectException(\InvalidArgumentException::class);
         $this->expectExceptionMessage('Invalid session id');
 
-        new ToolResultStorage('../escaped');
+        new ToolResultStorage($this->testDir.'/sessions', '../escaped');
     }
 
     public function test_persist_fails_closed_when_session_root_is_a_symlink(): void
@@ -214,10 +208,8 @@ class ToolResultStorageTest extends TestCase
 
         clearstatcache(true, DIRECTORY_SEPARATOR);
         $modeBefore = fileperms(DIRECTORY_SEPARATOR) & 0777;
-        SdkRuntime::config(['haocode.session_path' => DIRECTORY_SEPARATOR]);
-
         try {
-            new ToolResultStorage('root_rejected');
+            new ToolResultStorage(DIRECTORY_SEPARATOR, 'root_rejected');
             $this->fail('Expected filesystem-root storage to be rejected.');
         } catch (\RuntimeException $exception) {
             $this->assertStringContainsString('filesystem root', $exception->getMessage());

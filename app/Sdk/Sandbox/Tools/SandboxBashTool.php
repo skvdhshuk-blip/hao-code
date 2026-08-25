@@ -23,15 +23,10 @@ final class SandboxBashTool extends SandboxTool
             'properties' => [
                 'command' => ['type' => 'string', 'description' => 'Foreground command to execute in the sandbox.'],
                 'description' => ['type' => 'string', 'description' => 'Short description of the command.'],
-                'timeout' => ['type' => 'integer', 'description' => 'Timeout in milliseconds, max 600000.'],
+                'timeout' => ['type' => 'integer', 'minimum' => 1000, 'maximum' => 600000, 'description' => 'Timeout in milliseconds, max 600000.'],
                 'run_in_background' => ['type' => 'boolean', 'description' => 'Background commands are not supported in sandbox.'],
             ],
             'required' => ['command'],
-        ], [
-            'command' => 'required|string',
-            'description' => 'nullable|string',
-            'timeout' => 'nullable|integer|min:1000|max:600000',
-            'run_in_background' => 'nullable|boolean',
         ]);
     }
 

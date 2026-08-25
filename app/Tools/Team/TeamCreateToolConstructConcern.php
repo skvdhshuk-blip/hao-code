@@ -4,6 +4,7 @@ namespace HaoCode\Tools\Team;
 
 use HaoCode\Services\Agent\AgentLoopFactory;
 use HaoCode\Services\Agent\BackgroundAgentManager;
+use HaoCode\Services\Agent\BackgroundAgentBusyException;
 use HaoCode\Services\Agent\TeamManager;
 use HaoCode\Services\Task\TaskManager;
 use HaoCode\Tools\Agent\AgentDefinition;
@@ -21,6 +22,8 @@ trait TeamCreateToolConstructConcern
         private readonly TeamManager $teamManager,
         private readonly BackgroundAgentManager $backgroundAgentManager,
         private readonly TaskManager $taskManager,
+        private readonly int $backgroundIdleTimeoutSeconds = 300,
+        private readonly int $backgroundPollIntervalMs = 250,
     ) {}
 
     public function name(): string
@@ -46,14 +49,19 @@ DESC;
             'properties' => [
                 'name' => [
                     'type' => 'string',
+                    'pattern' => '^[a-z0-9][a-z0-9_-]*$',
+                    'maxLength' => 32,
                     'description' => 'Unique team name (lowercase alphanumeric with hyphens, e.g., "backend-team")',
                 ],
                 'task' => [
                     'type' => 'string',
+                    'minLength' => 5,
                     'description' => 'The overall objective in a concise single-line string',
                 ],
                 'members' => [
                     'type' => 'array',
+                    'minItems' => 1,
+                    'maxItems' => 10,
                     'description' => 'Team members to create (max 10)',
                     'items' => [
                         'type' => 'object',
@@ -85,6 +93,8 @@ DESC;
                 ],
                 'max_turns' => [
                     'type' => 'integer',
+                    'minimum' => 1,
+                    'maximum' => 50,
                     'description' => 'Optional maximum model turns for each member (1-50)',
                 ],
                 'default_agent_type' => [
@@ -93,17 +103,6 @@ DESC;
                 ],
             ],
             'required' => ['name', 'task', 'members'],
-        ], [
-            'name' => 'required|string|regex:/^[a-z0-9][a-z0-9_-]*$/|max:32',
-            'task' => 'required|string|min:5',
-            'members' => 'required|array|min:1|max:10',
-            'members.*.role' => 'required|string',
-            'members.*.agent_type' => 'nullable|string',
-            'members.*.prompt' => 'nullable|string',
-            'members.*.model' => 'nullable|string|in:sonnet,opus,haiku,inherit',
-            'read_only' => 'nullable|boolean',
-            'max_turns' => 'nullable|integer|min:1|max:50',
-            'default_agent_type' => 'nullable|string',
         ]);
     }
 
@@ -199,6 +198,7 @@ DESC;
                     prompt: $fullPrompt,
                     agentType: $agentDef->agentType,
                     description: "Team '{$name}' member: {$member['role']}",
+                    ownerRunId: $context->sessionId,
                 );
                 try {
                     $this->taskManager->createWithId(
@@ -226,7 +226,9 @@ DESC;
                 }
             }
 
-            return ToolResult::error("Failed to create team: {$e->getMessage()}");
+            return $e instanceof BackgroundAgentBusyException
+                ? ToolResult::error($e->getMessage(), $e->metadata(), safeError: 'background_busy')
+                : ToolResult::error("Failed to create team: {$e->getMessage()}");
         }
 
         // Spawn each member after every ID has been claimed.
@@ -427,8 +429,8 @@ PREAMBLE;
 
         $lastResponse = $this->runTurn($subLoop, $agentId, $prompt);
         $idleSince = time();
-        $idleTimeout = max(30, (int) \HaoCode\Support\Runtime\SdkRuntime::config('haocode.background_agent_idle_timeout', 300));
-        $pollMicros = max(100_000, ((int) \HaoCode\Support\Runtime\SdkRuntime::config('haocode.background_agent_poll_interval_ms', 250)) * 1000);
+        $idleTimeout = max(30, $this->backgroundIdleTimeoutSeconds);
+        $pollMicros = max(100_000, $this->backgroundPollIntervalMs * 1000);
 
         while (true) {
             if ($this->backgroundAgentManager->isStopRequested($agentId)) {

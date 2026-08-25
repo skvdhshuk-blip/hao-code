@@ -4,7 +4,6 @@ declare(strict_types=1);
 
 namespace HaoCode\Services\Hitl;
 
-use HaoCode\Sdk\HaoCode;
 use HaoCode\Sdk\HaoCodeConfig;
 use HaoCode\Sdk\StructuredResult;
 use HaoCode\Services\Api\ApiErrorException;
@@ -54,7 +53,7 @@ final class HitlReviewer
     private readonly string $cwd;
 
     /** @var null|\Closure(string, array, HaoCodeConfig): StructuredResult */
-    private readonly ?\Closure $structuredRunner;
+    private readonly \Closure $structuredRunner;
 
     private readonly ?UsageAccumulator $usageAccumulator;
 
@@ -64,20 +63,19 @@ final class HitlReviewer
      * @param array{apiKey: ?string, model: ?string, baseUrl: ?string, providerType: ?string, maxBudgetUsd?: ?float, oauthBearer?: ?bool} $providerConfig
      *        Provider settings reused from the run request; `model` already
      *        reflects the hitlReviewModel override when one was supplied.
-     * @param null|callable(string, array, HaoCodeConfig): StructuredResult $structuredRunner
-     *        Structured-call runner; when null, HaoCode::structured is used.
-     *        Injectable so tests can fake the model round-trip.
+     * @param callable(string, array, HaoCodeConfig): StructuredResult $structuredRunner
+     *        Structured-call runner supplied by the SDK composition edge.
      */
     public function __construct(
         array $providerConfig,
         string $cwd,
-        ?callable $structuredRunner = null,
+        callable $structuredRunner,
         ?UsageAccumulator $usageAccumulator = null,
         ?BudgetLedger $budgetLedger = null,
     ) {
         $this->providerConfig = $providerConfig;
         $this->cwd = $cwd;
-        $this->structuredRunner = $structuredRunner !== null ? \Closure::fromCallable($structuredRunner) : null;
+        $this->structuredRunner = \Closure::fromCallable($structuredRunner);
         $this->usageAccumulator = $usageAccumulator;
         $this->budgetLedger = $budgetLedger;
     }
@@ -186,10 +184,7 @@ final class HitlReviewer
         try {
             for ($attempt = 1; $attempt <= self::MAX_ATTEMPTS; $attempt++) {
                 try {
-                    $runner = $this->structuredRunner;
-                    $result = $runner !== null
-                        ? $runner($prompt, self::SCHEMA, $config)
-                        : HaoCode::structured($prompt, self::SCHEMA, $config);
+                    $result = ($this->structuredRunner)($prompt, self::SCHEMA, $config);
                 } catch (\Throwable $e) {
                     // Non-transient errors (auth, config, our own budget alarm)
                     // fail immediately; transient ones retry within budget.
@@ -254,7 +249,7 @@ final class HitlReviewer
             return true;
         }
 
-        // HaoCode::structured JSON parse failure — same class codex retries.
+        // Structured-runner JSON parse failure — same class codex retries.
         if ($e instanceof \RuntimeException
             && str_starts_with($e->getMessage(), 'Failed to parse structured response as JSON')) {
             return true;

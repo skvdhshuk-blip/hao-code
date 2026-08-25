@@ -44,7 +44,7 @@ class SessionStatsServiceTest extends TestCase
             json_encode(['timestamp' => $today.'T11:02:00+08:00', 'session_id' => 'session-b', 'type' => 'assistant_turn', 'message' => ['role' => 'assistant', 'content' => 'done'], 'tool_results' => []]),
         ])."\n");
 
-        $service = new SessionStatsService;
+        $service = new SessionStatsService($this->tmpDir);
         $overview = $service->getOverview('session-b');
 
         $this->assertSame(2, $overview['sessions_count']);
@@ -58,7 +58,7 @@ class SessionStatsServiceTest extends TestCase
 
     public function test_get_session_returns_zeroed_stats_for_unknown_session(): void
     {
-        $service = new SessionStatsService;
+        $service = new SessionStatsService($this->tmpDir);
         $session = $service->getSession('missing');
 
         $this->assertSame('missing', $session['session_id']);

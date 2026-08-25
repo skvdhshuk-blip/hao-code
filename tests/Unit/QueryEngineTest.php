@@ -192,7 +192,10 @@ class QueryEngineTest extends TestCase
         $settings->set('provider_type', 'openai');
         $settings->set('api_key', 'test-key');
         $settings->set('model', 'gpt-5.2');
-        $tracker = new CostTracker(budgetLedger: BudgetLedger::create(1.0));
+        $tracker = new CostTracker(budgetLedger: BudgetLedger::create(
+            1.0,
+            sys_get_temp_dir().'/haocode-query-engine-'.getmypid(),
+        ));
         $client = $this->createMock(StreamingClient::class);
         $client->expects($this->never())->method('streamMessages');
         $engine = new QueryEngine(
@@ -213,6 +216,7 @@ class QueryEngineTest extends TestCase
         $settings = new SettingsManager;
         $settings->set('provider_type', 'anthropic');
         $settings->set('api_key', 'test-key');
+        $settings->set('api_base_url', 'https://api.anthropic.com');
         $settings->set('model', 'claude-sonnet-4-6');
         $tracker = new CostTracker;
         $engine = new QueryEngine(
@@ -226,6 +230,7 @@ class QueryEngineTest extends TestCase
         $this->assertTrue($tracker->isPricingAvailable());
 
         $settings->set('provider_type', 'openai');
+        $settings->set('api_base_url', 'https://api.openai.com');
         $settings->set('model', 'gpt-5.2');
         $engine->query([], []);
 

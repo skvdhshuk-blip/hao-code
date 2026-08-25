@@ -7,6 +7,7 @@ use HaoCode\Services\Agent\AgentLoopFactory;
 use HaoCode\Services\Agent\MessageHistory;
 use HaoCode\Services\Api\StreamingClient;
 use HaoCode\Services\Session\SessionManager;
+use HaoCode\Sdk\Internal\FiberMessageStream;
 
 trait ConversationStreamResumeInterruptConcern
 {
@@ -21,10 +22,14 @@ trait ConversationStreamResumeInterruptConcern
     public function streamResumeInterrupt(string $interruptId, array $decisions): \Generator
     {
         $this->beginOperation();
-        $fiber = null;
-        $autoDecisionHandlerRegistered = false;
-        $thrown = null;
+        $stream = null;
         $operationReleased = false;
+        $release = function () use (&$operationReleased): void {
+            if (! $operationReleased) {
+                $this->endOperation();
+                $operationReleased = true;
+            }
+        };
 
         try {
             if (! $this->snapshotRestored) {
@@ -53,14 +58,14 @@ trait ConversationStreamResumeInterruptConcern
                             $message->cost,
                             $sandboxLease,
                         );
-                        $this->releaseTerminalStreamOperation($autoDecisionHandlerRegistered, $operationReleased);
+                        $release();
                     } elseif ($message->isInterrupt()) {
                         if ($preserveCurrentSandboxOnInterrupt) {
                             $this->run->preserveSandboxOnClose();
                         }
-                        $this->releaseTerminalStreamOperation($autoDecisionHandlerRegistered, $operationReleased);
+                        $release();
                     } elseif ($message->isError()) {
-                        $this->releaseTerminalStreamOperation($autoDecisionHandlerRegistered, $operationReleased);
+                        $release();
                     }
                     yield $message;
                     if ($message->isResult() || $message->isInterrupt() || $message->isError()) {
@@ -71,98 +76,45 @@ trait ConversationStreamResumeInterruptConcern
                 return;
             }
 
-            $queue = new \SplQueue;
-            $this->loop->setAutoDecisionHandler(function (Message $message) use ($queue): void {
-                $queue->enqueue($message);
-                \Fiber::getCurrent()?->suspend();
-            });
-            $autoDecisionHandlerRegistered = true;
-            $response = null;
-            $fiber = new \Fiber(function () use ($interruptId, $decisions, $queue, &$response, &$thrown): void {
-                try {
-                    $response = $this->loop->resumeInterrupt(
+            $stream = new FiberMessageStream(
+                loop: $this->loop,
+                operation: function (
+                    callable $onText,
+                    callable $onToolStart,
+                    callable $onToolComplete,
+                    callable $onTurnStart,
+                ) use ($interruptId, $decisions) {
+                    return $this->loop->resumeInterruptOutcome(
                         $interruptId,
                         $decisions,
-                        function (string $delta) use ($queue): void {
-                            $queue->enqueue(Message::text($delta));
-                            if ($this->options->onText) {
-                                ($this->options->onText)($delta);
-                            }
-                            \Fiber::getCurrent()?->suspend();
-                        },
-                        function (string $name, array $input) use ($queue): void {
-                            $queue->enqueue(Message::toolStart($name, $input));
-                            if ($this->options->onToolStart) {
-                                ($this->options->onToolStart)($name, $input);
-                            }
-                            \Fiber::getCurrent()?->suspend();
-                        },
-                        function (string $name, $result) use ($queue): void {
-                            $queue->enqueue(Message::toolResult($name, $result->output, $result->isError));
-                            if ($this->options->onToolComplete) {
-                                ($this->options->onToolComplete)($name, $result);
-                            }
-                            \Fiber::getCurrent()?->suspend();
-                        },
-                        function (int $turn) use ($queue): void {
-                            $queue->enqueue(Message::turn($turn));
-                            if ($this->options->onTurnStart) {
-                                ($this->options->onTurnStart)($turn);
-                            }
-                            \Fiber::getCurrent()?->suspend();
-                        },
+                        $onText,
+                        $onToolStart,
+                        $onToolComplete,
+                        $onTurnStart,
                         $this->options->onThinking,
                     );
-                } catch (\Throwable $e) {
-                    $thrown = $e;
-                }
-            });
-            $fiber->start();
-            while (! $fiber->isTerminated()) {
-                while (! $queue->isEmpty()) {
-                    yield $queue->dequeue();
-                }
-                if (! $fiber->isTerminated()) {
-                    $fiber->resume();
-                }
-            }
-            while (! $queue->isEmpty()) {
-                yield $queue->dequeue();
-            }
-            if ($thrown instanceof HumanInterruptException) {
-                $this->run->preserveSandboxOnClose();
-                $this->releaseTerminalStreamOperation($autoDecisionHandlerRegistered, $operationReleased);
-                yield Message::interrupt($thrown->interrupt);
-
-                return;
-            }
-            if ($thrown !== null) {
-                $this->releaseTerminalStreamOperation($autoDecisionHandlerRegistered, $operationReleased);
-                yield Message::error($thrown->getMessage());
-
-                return;
-            }
-            $this->releaseTerminalStreamOperation($autoDecisionHandlerRegistered, $operationReleased);
-            yield Message::result(
-                $response ?? '',
-                self::extractUsage($this->loop),
-                $this->loop->getEstimatedCost(),
-                $this->loop->getSessionManager()->getSessionId(),
+                },
+                terminalMessage: fn ($outcome): Message => Message::result(
+                    $outcome->text,
+                    self::extractUsage($this->loop),
+                    $this->loop->getEstimatedCost(),
+                    $this->loop->getSessionManager()->getSessionId(),
+                    $outcome->terminationReason,
+                ),
+                release: $release,
+                preserveInterrupt: fn () => $this->run->preserveSandboxOnClose(),
+                onText: $this->options->onText,
+                onToolStart: $this->options->onToolStart,
+                onToolComplete: $this->options->onToolComplete,
+                onTurnStart: $this->options->onTurnStart,
             );
+
+            while (($message = $stream->nextMessage()) !== null) {
+                yield $message;
+            }
         } finally {
-            if ($fiber instanceof \Fiber && $fiber->isStarted() && ! $fiber->isTerminated()) {
-                $this->loop->abort();
-                $fiber = null;
-            }
-            if ($thrown instanceof HumanInterruptException) {
-                $this->run->preserveSandboxOnClose();
-            }
-            if ($autoDecisionHandlerRegistered) {
-                $this->loop->setAutoDecisionHandler(null);
-            }
-            if (! $operationReleased) {
-                $this->endOperation();
-            }
+            $stream?->abandon();
+            $release();
         }
     }
 

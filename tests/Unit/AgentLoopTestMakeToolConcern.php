@@ -34,7 +34,7 @@ trait AgentLoopTestMakeToolConcern
             public function __construct(private string $n, private $fn) {}
             public function name(): string { return $this->n; }
             public function description(): string { return ''; }
-            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object'], []); }
+            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object']); }
             public function call(array $input, ToolUseContext $ctx): ToolResult { return ($this->fn)($input, $ctx); }
         };
     }
@@ -266,6 +266,9 @@ trait AgentLoopTestMakeToolConcern
         $sessionManager = $this->createMock(SessionManager::class);
         $sessionManager->method('getSessionId')->willReturn('canonical-session');
         $sessionManager->method('isPersistenceEnabled')->willReturn(true);
+        $sessionManager->method('getSessionPath')->willReturn(
+            sys_get_temp_dir().'/haocode-agent-loop-sessions',
+        );
 
         $loop = new AgentLoop(
             queryEngine: $this->createMock(QueryEngine::class),
@@ -322,13 +325,17 @@ trait AgentLoopTestMakeToolConcern
                 ];
             }
 
-            $storage = new ToolResultStorage('aggregate-read');
+            $storage = new ToolResultStorage(
+                sys_get_temp_dir().'/haocode-agent-loop-tool-results',
+                'aggregate-read',
+            );
             $after = $storage->enforceMessageBudget($before);
-            $method = (new \ReflectionClass(AgentLoop::class))
-                ->getMethod('invalidateCompactedReadReceipts');
-            $method->setAccessible(true);
-            $loop = $this->makeLoop($this->createMock(QueryEngine::class));
-            $method->invoke($loop, $toolCalls, $before, $after, $context);
+            \HaoCode\Services\Agent\ReadReceiptVisibility::invalidate(
+                $toolCalls,
+                $before,
+                $after,
+                $context,
+            );
 
             $afterById = [];
             foreach ($after as $result) {

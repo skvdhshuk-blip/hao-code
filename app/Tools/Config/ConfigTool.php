@@ -48,16 +48,13 @@ DESC;
                     'description' => 'The value to set (omit to get current value)',
                 ],
             ],
-        ], [
-            'key' => 'nullable|string|in:model,active_provider,api_base_url,max_tokens,permission_mode,output_style',
-            'value' => 'nullable|string',
         ]);
     }
 
     public function call(array $input, ToolUseContext $context): ToolResult
     {
         /** @var SettingsManager $settings */
-        $settings = $this->settings ?? \HaoCode\Support\Runtime\SdkRuntime::app(SettingsManager::class);
+        $settings = $this->settings ?? new SettingsManager($context->workingDirectory);
         $key = $input['key'] ?? null;
         $value = $input['value'] ?? null;
 

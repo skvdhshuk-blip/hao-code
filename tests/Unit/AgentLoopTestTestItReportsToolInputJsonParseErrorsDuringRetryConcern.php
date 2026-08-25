@@ -92,7 +92,7 @@ trait AgentLoopTestTestItReportsToolInputJsonParseErrorsDuringRetryConcern
 
             public function inputSchema(): ToolInputSchema
             {
-                return ToolInputSchema::make(['type' => 'object'], []);
+                return ToolInputSchema::make(['type' => 'object']);
             }
 
             public function call(array $input, ToolUseContext $context): ToolResult
@@ -239,7 +239,7 @@ trait AgentLoopTestTestItReportsToolInputJsonParseErrorsDuringRetryConcern
 
             public function inputSchema(): ToolInputSchema
             {
-                return ToolInputSchema::make(['type' => 'object'], []);
+                return ToolInputSchema::make(['type' => 'object']);
             }
 
             public function call(array $input, ToolUseContext $context): ToolResult
@@ -275,10 +275,8 @@ trait AgentLoopTestTestItReportsToolInputJsonParseErrorsDuringRetryConcern
 
     public function test_team_create_malformed_retry_requires_compact_complete_input(): void
     {
-        $reflection = new \ReflectionClass(AgentLoop::class);
-        $agent = $reflection->newInstanceWithoutConstructor();
-        $instruction = $reflection->getMethod('buildMalformedToolRetryInstruction')->invoke(
-            $agent,
+        $policy = new \HaoCode\Services\Agent\AgentResponseRetryPolicy;
+        $instruction = $policy->buildMalformedToolRetryInstruction(
             [[
                 'id' => 'toolu_team',
                 'name' => 'TeamCreate',
@@ -294,16 +292,14 @@ trait AgentLoopTestTestItReportsToolInputJsonParseErrorsDuringRetryConcern
 
     public function test_malformed_retry_categories_keep_json_and_schema_budgets_separate(): void
     {
-        $reflection = new \ReflectionClass(AgentLoop::class);
-        $agent = $reflection->newInstanceWithoutConstructor();
-        $method = $reflection->getMethod('malformedFailureSignature');
+        $policy = new \HaoCode\Services\Agent\AgentResponseRetryPolicy;
 
-        $json = $method->invoke($agent, [[
+        $json = $policy->malformedFailureSignature([[
             'id' => 'toolu_team',
             'name' => 'TeamCreate',
             'error' => 'Tool input JSON could not be parsed: Control character error.',
         ]]);
-        $schema = $method->invoke($agent, [[
+        $schema = $policy->malformedFailureSignature([[
             'id' => 'toolu_team',
             'name' => 'TeamCreate',
             'error' => 'Tool input validation failed: The members field is required.',

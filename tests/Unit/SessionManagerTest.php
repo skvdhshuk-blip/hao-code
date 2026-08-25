@@ -2,8 +2,19 @@
 
 namespace Tests\Unit;
 
-use HaoCode\Services\Session\SessionManager;
 use Tests\TestCase;
+
+/** Test fixture that turns the configured test path into an explicit constructor dependency. */
+final class SessionManager extends \HaoCode\Services\Session\SessionManager
+{
+    public function __construct(bool $persistenceEnabled = true, string $sessionPath = '')
+    {
+        parent::__construct(
+            $persistenceEnabled,
+            $sessionPath !== '' ? $sessionPath : config('haocode.session_path'),
+        );
+    }
+}
 
 class SessionManagerTest extends TestCase
 {

@@ -71,29 +71,6 @@ trait ConversationGetTurnCountConcern
     }
 
     /**
-     * A terminal stream message is the end of the underlying operation even
-     * though a Generator remains suspended at yield until its caller advances
-     * or releases it. Clear the stream-only callback and the operation lease
-     * before exposing that terminal message, so a caller can immediately send
-     * a follow-up or resume an interrupt without the old Generator corrupting
-     * the next operation's lifecycle when it is later destroyed.
-     */
-    private function releaseTerminalStreamOperation(
-        bool &$autoDecisionHandlerRegistered,
-        bool &$operationReleased,
-    ): void {
-        if ($autoDecisionHandlerRegistered) {
-            $this->loop->setAutoDecisionHandler(null);
-            $autoDecisionHandlerRegistered = false;
-        }
-
-        if (! $operationReleased) {
-            $this->endOperation();
-            $operationReleased = true;
-        }
-    }
-
-    /**
      * @api
      */
     public function close(): void

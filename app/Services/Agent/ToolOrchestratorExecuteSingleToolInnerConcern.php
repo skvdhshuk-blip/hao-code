@@ -214,8 +214,10 @@ trait ToolOrchestratorExecuteSingleToolInnerConcern
             }
             // Fallback: inline truncation if persistence failed or unavailable
             if (mb_strlen($result->output) > $maxChars) {
-                $storage = $this->toolResultStorage ?? new ToolResultStorage();
-                $preview = $storage->generatePreview($result->output, ToolResultStorage::PREVIEW_SIZE_BYTES);
+                $preview = ToolResultStorage::previewContent(
+                    $result->output,
+                    ToolResultStorage::PREVIEW_SIZE_BYTES,
+                );
                 $sizeLabel = round(mb_strlen($result->output) / 1024, 1) . 'K chars';
                 $result = $result->withOutput(
                     "<persisted-output>\nOutput too large ({$sizeLabel}). Showing first 2KB preview:\n\n{$preview}\n...(truncated)\n</persisted-output>",

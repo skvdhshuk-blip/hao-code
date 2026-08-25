@@ -14,6 +14,7 @@ trait McpClientConstructConcern
         private readonly McpTransport $transport,
         private readonly string $serverName,
         private readonly ?PhoenixTracer $tracer = null,
+        private readonly string $clientVersion = 'dev',
     ) {}
 
     public function getServerName(): string
@@ -102,7 +103,7 @@ trait McpClientConstructConcern
                 ],
                 'clientInfo' => [
                     'name' => 'hao-code',
-                    'version' => (string) \HaoCode\Support\Runtime\SdkRuntime::environment('HAO_CODE_VERSION', 'dev'),
+                    'version' => $this->clientVersion,
                 ],
             ], $initRemaining);
 

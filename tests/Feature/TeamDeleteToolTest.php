@@ -35,7 +35,7 @@ class TeamDeleteToolTest extends TestCase
         $teams = new TeamManager($this->tempDir.'/teams');
         $agents = new BackgroundAgentManager($this->tempDir.'/agents');
         $tasks = new TaskManager($this->tempDir.'/tasks');
-        $sessions = new SessionManager;
+        $sessions = new SessionManager(sessionPath: $this->tempDir.'/sessions');
         $team = $teams->create('reviewers', [[
             'role' => 'reader',
             'agent_type' => 'Explore',
@@ -78,7 +78,7 @@ class TeamDeleteToolTest extends TestCase
         $teams = new TeamManager($this->tempDir.'/teams');
         $agents = new BackgroundAgentManager($this->tempDir.'/agents');
         $tasks = new TaskManager($this->tempDir.'/tasks');
-        $sessions = new SessionManager;
+        $sessions = new SessionManager(sessionPath: $this->tempDir.'/sessions');
         $team = $teams->create('reviewers', [[
             'role' => 'reader',
             'agent_type' => 'Explore',
@@ -107,7 +107,7 @@ class TeamDeleteToolTest extends TestCase
         $teams = new TeamManager($this->tempDir.'/teams');
         $agents = new BackgroundAgentManager($this->tempDir.'/agents');
         $tasks = new TaskManager($this->tempDir.'/tasks');
-        $sessions = new SessionManager;
+        $sessions = new SessionManager(sessionPath: $this->tempDir.'/sessions');
         $team = $teams->create('reviewers', [['role' => 'reader']]);
         $agentId = $team['members'][0]['agent_id'];
         $tasks->createWithId($agentId, 'Reader', 'Reviewing');

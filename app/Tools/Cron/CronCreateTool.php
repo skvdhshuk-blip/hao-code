@@ -43,11 +43,6 @@ class CronCreateTool extends BaseTool
                 ],
             ],
             'required' => ['cron', 'prompt'],
-        ], [
-            'cron' => 'required|string',
-            'prompt' => 'required|string',
-            'recurring' => 'nullable|boolean',
-            'durable' => 'nullable|boolean',
         ]);
     }
 

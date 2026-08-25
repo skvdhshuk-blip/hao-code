@@ -27,7 +27,10 @@ class AgentInvocationTest extends TestCase
         $loop = $this->createMock(AgentLoop::class);
         $session = $this->createMock(\HaoCode\Services\Session\SessionManager::class);
         $session->method('getSessionId')->willReturn('session-1');
-        $loop->expects($this->once())->method('run')->with('task')->willReturn('done');
+        $loop->expects($this->once())
+            ->method('runOutcome')
+            ->with('task')
+            ->willReturn(\HaoCode\Services\Agent\AgentRunOutcome::normal('done'));
         $loop->method('getSessionManager')->willReturn($session);
         $loop->method('getTotalInputTokens')->willReturn(10);
         $loop->method('getTotalOutputTokens')->willReturn(4);
@@ -45,6 +48,7 @@ class AgentInvocationTest extends TestCase
         $this->assertSame(0.2, $result->localCost);
         $this->assertSame('session-1', $result->sessionId);
         $this->assertSame(2, $result->turnsUsed);
+        $this->assertSame(\HaoCode\Contracts\RunTerminationReason::Normal, $result->terminationReason);
     }
 
     public function test_child_invocation_accepts_a_forked_parent_scope(): void

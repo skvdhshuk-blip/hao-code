@@ -32,8 +32,6 @@ class MemoryDeleteTool extends BaseTool
                 'key' => ['type' => 'string', 'description' => 'Memory key to delete.'],
             ],
             'required' => ['key'],
-        ], [
-            'key' => 'required|string',
         ]);
     }
 

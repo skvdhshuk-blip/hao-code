@@ -172,17 +172,18 @@ trait HaoCodeContinueLatestConcern
     ): Conversation {
         /** @var AgentLoopFactory $factory */
         $factory = \HaoCode\Support\Runtime\SdkRuntime::app(AgentLoopFactory::class);
-        SdkRunFactory::stageResumeSnapshot($config, $runSnapshot);
         try {
-            $conversation = new Conversation($config, $factory);
+            $conversation = new Conversation(
+                $config,
+                $factory,
+                bootstrap: new \HaoCode\Sdk\Internal\ConversationBootstrap($runSnapshot),
+            );
             $conversation->loadSession($sessionId);
         } catch (\Throwable $e) {
             if (isset($conversation)) {
                 $conversation->close();
             }
             throw $e;
-        } finally {
-            SdkRunFactory::clearResumeSnapshot($config);
         }
 
         return $conversation;
@@ -211,6 +212,7 @@ trait HaoCodeContinueLatestConcern
             cost: $result->cost,
             sessionId: $result->sessionId,
             turnsUsed: $result->turnsUsed,
+            terminationReason: $result->terminationReason,
         );
     }
 
@@ -234,6 +236,7 @@ trait HaoCodeContinueLatestConcern
             array_merge($message->usage ?? [], $outcome['metadata']),
             $message->cost ?? 0.0,
             $message->sessionId,
+            $message->terminationReason ?? \HaoCode\Contracts\RunTerminationReason::Normal,
         );
     }
 
@@ -265,6 +268,7 @@ trait HaoCodeContinueLatestConcern
             cost: $parent->cost,
             sessionId: $parent->sessionId,
             turnsUsed: $parent->turnsUsed,
+            terminationReason: $parent->terminationReason,
         );
     }
 
@@ -280,6 +284,7 @@ trait HaoCodeContinueLatestConcern
             array_merge($parent->usage ?? [], $metadata),
             $parent->cost ?? 0.0,
             $parent->sessionId,
+            $parent->terminationReason ?? \HaoCode\Contracts\RunTerminationReason::Normal,
         );
     }
 

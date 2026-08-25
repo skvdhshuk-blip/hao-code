@@ -51,11 +51,6 @@ DESC;
                 ],
             ],
             'required' => ['todos'],
-        ], [
-            'todos' => 'present|array',
-            'todos.*.content' => 'required|string',
-            'todos.*.status' => 'required|string|in:pending,in_progress,completed',
-            'todos.*.activeForm' => 'required|string',
         ]);
     }
 

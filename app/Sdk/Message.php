@@ -2,6 +2,8 @@
 
 namespace HaoCode\Sdk;
 
+use HaoCode\Contracts\RunTerminationReason;
+
 /**
  * SDK message — typed envelope for streaming events.
  *
@@ -57,6 +59,8 @@ class Message
         public readonly ?string $riskLevel = null,
         /** @api */
         public readonly ?string $reason = null,
+        /** @api */
+        public readonly ?RunTerminationReason $terminationReason = null,
     ) {}
 
     /** @api */
@@ -84,9 +88,22 @@ class Message
     }
 
     /** @api */
-    public static function result(string $text, array $usage, float $cost, ?string $sessionId = null): self
+    public static function result(
+        string $text,
+        array $usage,
+        float $cost,
+        ?string $sessionId = null,
+        RunTerminationReason $terminationReason = RunTerminationReason::Normal,
+    ): self
     {
-        return new self(type: 'result', text: $text, usage: $usage, cost: $cost, sessionId: $sessionId);
+        return new self(
+            type: 'result',
+            text: $text,
+            usage: $usage,
+            cost: $cost,
+            sessionId: $sessionId,
+            terminationReason: $terminationReason,
+        );
     }
 
     /** @api */

@@ -20,6 +20,7 @@ use HaoCode\Sdk\Sandbox\SandboxManager;
 use HaoCode\Tools\Mcp\ListMcpResourcesTool;
 use HaoCode\Tools\Mcp\McpDynamicTool;
 use HaoCode\Tools\Mcp\ReadMcpResourceTool;
+use HaoCode\Tools\ToolInputSchema;
 use HaoCode\Tools\ToolRegistry;
 use HaoCode\Tools\WebFetch\WebFetchTool;
 
@@ -95,6 +96,20 @@ trait SdkRunFactoryLoadMcpToolsConcern
                 );
             }
             $registeredNames[$definition['qualifiedName']] = true;
+
+            $schema = ToolInputSchema::make($definition['inputSchema']);
+            try {
+                $schema->assertValidDefinition();
+            } catch (\InvalidArgumentException) {
+                if (in_array($definition['qualifiedName'], $requestedNames, true)) {
+                    throw McpConnectionException::protocol(
+                        "Explicitly allowed MCP tool has an invalid input schema: {$definition['qualifiedName']}"
+                    );
+                }
+                $connectionManager->recordInvalidToolSchema($definition['qualifiedName']);
+
+                continue;
+            }
 
             $tools[] = new McpDynamicTool(
                 qualifiedName: $definition['qualifiedName'],

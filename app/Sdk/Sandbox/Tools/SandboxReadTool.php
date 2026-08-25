@@ -24,14 +24,10 @@ final class SandboxReadTool extends SandboxTool
             'type' => 'object',
             'properties' => [
                 'file_path' => ['type' => 'string', 'description' => 'Sandbox file path to read.'],
-                'offset' => ['type' => 'integer', 'description' => 'Line number to start from, 1-based.'],
-                'limit' => ['type' => 'integer', 'description' => 'Number of lines to read.'],
+                'offset' => ['type' => 'integer', 'minimum' => 1, 'description' => 'Line number to start from, 1-based.'],
+                'limit' => ['type' => 'integer', 'minimum' => 1, 'description' => 'Number of lines to read.'],
             ],
             'required' => ['file_path'],
-        ], [
-            'file_path' => 'required|string',
-            'offset' => 'nullable|integer|min:1',
-            'limit' => 'nullable|integer|min:1',
         ]);
     }
 

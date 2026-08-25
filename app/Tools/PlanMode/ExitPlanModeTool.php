@@ -24,7 +24,7 @@ class ExitPlanModeTool extends BaseTool
         return ToolInputSchema::make([
             'type' => 'object',
             'properties' => (object) [],
-        ], []);
+        ]);
     }
 
     public function call(array $input, ToolUseContext $context): ToolResult

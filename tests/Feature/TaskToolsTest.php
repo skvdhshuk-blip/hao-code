@@ -7,13 +7,47 @@ use HaoCode\Services\Session\SessionManager;
 use HaoCode\Services\Task\TaskManager;
 use HaoCode\Sdk\HumanActionRequest;
 use HaoCode\Sdk\HumanInterrupt;
-use HaoCode\Tools\Task\TaskCreateTool;
-use HaoCode\Tools\Task\TaskGetTool;
-use HaoCode\Tools\Task\TaskListTool;
-use HaoCode\Tools\Task\TaskStopTool;
-use HaoCode\Tools\Task\TaskUpdateTool;
 use HaoCode\Tools\ToolUseContext;
 use Tests\TestCase;
+
+/** Test fixtures that resolve collaborators at the test edge before constructing tools. */
+class TaskCreateTool extends \HaoCode\Tools\Task\TaskCreateTool
+{
+    public function __construct() { parent::__construct(app(TaskManager::class)); }
+}
+
+class TaskGetTool extends \HaoCode\Tools\Task\TaskGetTool
+{
+    public function __construct()
+    {
+        parent::__construct(app(TaskManager::class), app(BackgroundAgentManager::class));
+    }
+}
+
+class TaskListTool extends \HaoCode\Tools\Task\TaskListTool
+{
+    public function __construct()
+    {
+        parent::__construct(app(TaskManager::class), app(BackgroundAgentManager::class));
+    }
+}
+
+class TaskUpdateTool extends \HaoCode\Tools\Task\TaskUpdateTool
+{
+    public function __construct() { parent::__construct(app(TaskManager::class)); }
+}
+
+class TaskStopTool extends \HaoCode\Tools\Task\TaskStopTool
+{
+    public function __construct()
+    {
+        parent::__construct(
+            app(TaskManager::class),
+            app(BackgroundAgentManager::class),
+            app(SessionManager::class),
+        );
+    }
+}
 
 class TaskToolsTest extends TestCase
 {
@@ -50,7 +84,7 @@ class TaskToolsTest extends TestCase
         $this->sessionTmpDir = sys_get_temp_dir().'/session_tools_test_'.uniqid();
         mkdir($this->sessionTmpDir, 0755, true);
         config(['haocode.session_path' => $this->sessionTmpDir]);
-        $this->sessionManager = new SessionManager();
+        $this->sessionManager = new SessionManager(sessionPath: $this->sessionTmpDir);
         $this->app->instance(SessionManager::class, $this->sessionManager);
     }
 

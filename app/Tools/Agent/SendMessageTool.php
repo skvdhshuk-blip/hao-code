@@ -3,6 +3,7 @@
 namespace HaoCode\Tools\Agent;
 
 use HaoCode\Services\Agent\BackgroundAgentManager;
+use HaoCode\Services\Agent\BackgroundAgentBusyException;
 use HaoCode\Services\Agent\TeamManager;
 use HaoCode\Tools\BaseTool;
 use HaoCode\Tools\ToolInputSchema;
@@ -13,6 +14,7 @@ class SendMessageTool extends BaseTool
 {
     public function __construct(
         private readonly BackgroundAgentManager $backgroundAgentManager,
+        private readonly ?TeamManager $teamManager = null,
     ) {}
 
     public function name(): string
@@ -39,10 +41,12 @@ DESC;
             'properties' => [
                 'to' => [
                     'type' => 'string',
+                    'maxLength' => 133,
                     'description' => 'Background agent ID returned by the Agent tool (for example: agent_ab12cd34)',
                 ],
                 'message' => [
                     'type' => 'string',
+                    'minLength' => 1,
                     'description' => 'The follow-up instruction to deliver to the agent',
                 ],
                 'summary' => [
@@ -51,10 +55,6 @@ DESC;
                 ],
             ],
             'required' => ['to', 'message'],
-        ], [
-            'to' => 'required|string|max:133',
-            'message' => 'required|string|min:1',
-            'summary' => 'nullable|string',
         ]);
     }
 
@@ -78,6 +78,8 @@ DESC;
 
         try {
             $agent = $this->backgroundAgentManager->refreshStatus($to);
+        } catch (BackgroundAgentBusyException $e) {
+            return $this->busyResult($e);
         } catch (\InvalidArgumentException $e) {
             return ToolResult::error($e->getMessage());
         }
@@ -101,6 +103,8 @@ DESC;
                 summary: $input['summary'] ?? null,
                 from: $context->sessionId,
             );
+        } catch (BackgroundAgentBusyException $e) {
+            return $this->busyResult($e);
         } catch (\InvalidArgumentException $e) {
             return ToolResult::error($e->getMessage());
         }
@@ -127,9 +131,10 @@ DESC;
         ?string $summary,
         ToolUseContext $context,
     ): ToolResult {
-        /** @var TeamManager $teamManager */
-        $teamManager = \HaoCode\Support\Runtime\SdkRuntime::app(TeamManager::class);
-        $team = $teamManager->get($teamName);
+        if ($this->teamManager === null) {
+            return ToolResult::error('Team broadcast requires an injected team manager.');
+        }
+        $team = $this->teamManager->get($teamName);
 
         if ($team === null) {
             return ToolResult::error("Team not found: {$teamName}");
@@ -159,6 +164,8 @@ DESC;
                     summary: $summary,
                     from: $context->sessionId,
                 );
+            } catch (BackgroundAgentBusyException $exception) {
+                return $this->busyResult($exception);
             } catch (\InvalidArgumentException) {
                 $result = null;
             }
@@ -181,5 +188,14 @@ DESC;
     public function isReadOnly(array $input): bool
     {
         return false;
+    }
+
+    private function busyResult(BackgroundAgentBusyException $exception): ToolResult
+    {
+        return ToolResult::error(
+            $exception->getMessage(),
+            $exception->metadata(),
+            safeError: 'background_busy',
+        );
     }
 }

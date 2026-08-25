@@ -378,8 +378,13 @@ trait AgentLoopTestTestRestoreRunSnapshotRestoresCostAndUsageTotalsConcern
             hookExecutor: $hookExecutor,
         );
 
-        $result = $loop->run('hi');
-        $this->assertStringContainsString('Cost limit reached', $result);
+        $outcome = $loop->runOutcome('hi');
+        $this->assertStringContainsString('Cost limit reached', $outcome->text);
+        $this->assertSame(
+            \HaoCode\Contracts\RunTerminationReason::BudgetExhausted,
+            $outcome->terminationReason,
+        );
+        $this->assertSame(\HaoCode\Services\Run\RunStatus::Cancelled, $outcome->status);
     }
 
     public function test_max_turns_exceeded_returns_finalization_response(): void

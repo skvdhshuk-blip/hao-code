@@ -2,6 +2,8 @@
 
 namespace HaoCode\Sdk;
 
+use HaoCode\Contracts\RunTerminationReason;
+
 /**
  * Result of an SDK query — carries the response text plus usage metadata.
  *
@@ -29,6 +31,8 @@ class QueryResult implements \Stringable
          * @api
          */
         public readonly int $turnsUsed = 0,
+        /** @api */
+        public readonly RunTerminationReason $terminationReason = RunTerminationReason::Normal,
     ) {}
 
     /** @api */

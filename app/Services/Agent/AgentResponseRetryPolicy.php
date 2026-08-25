@@ -292,7 +292,7 @@ final class AgentResponseRetryPolicy
             return true;
         }
 
-        if (! $this->assistantMessageHasVisibleContent($assistantMessage)) {
+        if (! $this->assistantMessageHasTextContent($assistantMessage)) {
             return true;
         }
 
@@ -317,6 +317,28 @@ final class AgentResponseRetryPolicy
             }
 
             if ($type === 'thinking' && trim((string) ($block['thinking'] ?? '')) !== '') {
+                return true;
+            }
+        }
+
+        return false;
+    }
+
+    /**
+     * A terminal SDK result is user-facing text. Thinking blocks remain useful
+     * provider history, but they cannot make an otherwise empty result a
+     * successful answer.
+     */
+    public function assistantMessageHasTextContent(array $assistantMessage): bool
+    {
+        $content = $assistantMessage['content'] ?? null;
+        if (! is_array($content)) {
+            return false;
+        }
+
+        foreach ($content as $block) {
+            if (($block['type'] ?? null) === 'text'
+                && trim((string) ($block['text'] ?? '')) !== '') {
                 return true;
             }
         }
@@ -355,7 +377,16 @@ final class AgentResponseRetryPolicy
     public function shouldSkipIncompleteAssistantHistory(array $assistantMessage): bool
     {
         $content = $assistantMessage['content'] ?? null;
-        if (! is_array($content) || count($content) !== 1) {
+        if (! is_array($content)) {
+            return false;
+        }
+
+        if (! $this->assistantMessageHasTextContent($assistantMessage)
+            && $this->assistantMessageHasThinkingContent($assistantMessage)) {
+            return true;
+        }
+
+        if (count($content) !== 1) {
             return false;
         }
 
@@ -381,6 +412,18 @@ final class AgentResponseRetryPolicy
             "~^(现在|接下来|继续|然后|下一步|接着|Now\\b|Next\\b|I(?:'ll| will)\\b|Let's\\b)~iu",
             $text,
         ) === 1;
+    }
+
+    private function assistantMessageHasThinkingContent(array $assistantMessage): bool
+    {
+        foreach ($assistantMessage['content'] ?? [] as $block) {
+            if (($block['type'] ?? null) === 'thinking'
+                && trim((string) ($block['thinking'] ?? '')) !== '') {
+                return true;
+            }
+        }
+
+        return false;
     }
 
     public function isNarrationOnlyAssistantMessage(array $assistantMessage): bool

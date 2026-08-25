@@ -4,6 +4,7 @@ namespace HaoCode\Tools\FileWrite;
 
 use HaoCode\Services\FileEdit\AtomicFileWriter;
 use HaoCode\Services\FileEdit\FileConflictException;
+use HaoCode\Services\FileHistory\FileHistoryManager;
 use HaoCode\Services\Security\SecretScanner;
 use HaoCode\Tools\BaseTool;
 use HaoCode\Tools\FileEdit\DiffGenerator;
@@ -15,6 +16,8 @@ class FileWriteTool extends BaseTool
 {
     private const MAX_WRITE_CONTENT_BYTES = 1_000_000;
     private const MAX_DIFF_SOURCE_BYTES = 1_000_000;
+
+    public function __construct(private readonly ?FileHistoryManager $fileHistory = null) {}
 
     public function name(): string
     {
@@ -51,9 +54,6 @@ DESC;
                 ],
             ],
             'required' => ['file_path', 'content'],
-        ], [
-            'file_path' => 'required|string',
-            'content' => 'required|string',
         ]);
     }
 
@@ -107,15 +107,10 @@ DESC;
                 $filePath,
                 $content,
                 $expectedRevision,
-                $existed
-                    ? function (string $target) use ($context): void {
-                        try {
-                            \HaoCode\Support\Runtime\SdkRuntime::app(\HaoCode\Services\FileHistory\FileHistoryManager::class)
-                                ->forSession($context->sessionId)
-                                ->recordBefore($target);
-                        } catch (\Throwable) {
-                        }
-                    }
+                $existed && $this->fileHistory !== null
+                    ? fn (string $target) => $this->fileHistory
+                        ->forSession($context->sessionId)
+                        ->recordBefore($target)
                     : null,
             );
         } catch (FileConflictException $e) {

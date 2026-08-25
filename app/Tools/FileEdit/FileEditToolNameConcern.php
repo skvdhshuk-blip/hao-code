@@ -12,6 +12,10 @@ use HaoCode\Tools\ToolUseContext;
 
 trait FileEditToolNameConcern
 {
+    public function __construct(
+        private readonly ?\HaoCode\Services\FileHistory\FileHistoryManager $fileHistory = null,
+    ) {}
+
 
     public function name(): string
     {
@@ -55,11 +59,6 @@ DESC;
                 ],
             ],
             'required' => ['file_path', 'old_string', 'new_string'],
-        ], [
-            'file_path' => 'required|string',
-            'old_string' => 'required|string',
-            'new_string' => 'required|string',
-            'replace_all' => 'nullable|boolean',
         ]);
     }
 
@@ -171,14 +170,11 @@ DESC;
                 $filePath,
                 $newContent,
                 $expectedRevision,
-                function (string $target) use ($context): void {
-                    try {
-                        \HaoCode\Support\Runtime\SdkRuntime::app(\HaoCode\Services\FileHistory\FileHistoryManager::class)
-                            ->forSession($context->sessionId)
-                            ->recordBefore($target);
-                    } catch (\Throwable) {
-                    }
-                },
+                $this->fileHistory !== null
+                    ? fn (string $target) => $this->fileHistory
+                        ->forSession($context->sessionId)
+                        ->recordBefore($target)
+                    : null,
             );
         } catch (FileConflictException $e) {
             return ToolResult::error($e->getMessage());
@@ -281,14 +277,11 @@ DESC;
                     );
                 },
                 $expectedRevision,
-                function (string $target) use ($context): void {
-                    try {
-                        \HaoCode\Support\Runtime\SdkRuntime::app(\HaoCode\Services\FileHistory\FileHistoryManager::class)
-                            ->forSession($context->sessionId)
-                            ->recordBefore($target);
-                    } catch (\Throwable) {
-                    }
-                },
+                $this->fileHistory !== null
+                    ? fn (string $target) => $this->fileHistory
+                        ->forSession($context->sessionId)
+                        ->recordBefore($target)
+                    : null,
             );
         } catch (FileConflictException $e) {
             return ToolResult::error($e->getMessage());

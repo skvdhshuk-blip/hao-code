@@ -30,6 +30,11 @@ class ToolSearchToolTest extends TestCase
         foreach ($tools as $tool) {
             $registry->register($tool);
         }
+        $this->context = new ToolUseContext(
+            workingDirectory: sys_get_temp_dir(),
+            sessionId: 'test',
+            toolRegistry: $registry,
+        );
         return $registry;
     }
 
@@ -45,7 +50,7 @@ class ToolSearchToolTest extends TestCase
             public function description(): string { return $this->toolDesc; }
             public function inputSchema(): ToolInputSchema
             {
-                return ToolInputSchema::make(['type' => 'object', 'properties' => []], []);
+                return ToolInputSchema::make(['type' => 'object', 'properties' => []]);
             }
             public function call(array $input, \HaoCode\Tools\ToolUseContext $context): ToolResult
             {

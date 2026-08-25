@@ -45,7 +45,7 @@ class RunnerTest extends TestCase
 
     public function test_run_returns_query_result_from_agent_loop(): void
     {
-        $this->loop->method('run')->willReturn('fake response');
+        $this->loop->method('runOutcome')->willReturn(\HaoCode\Services\Agent\AgentRunOutcome::normal('fake response'));
 
         $agent = $this->makeAgent();
         $result = Runner::run($agent, 'What is the answer?');
@@ -62,15 +62,15 @@ class RunnerTest extends TestCase
     public function test_run_invokes_text_callback_from_run_options(): void
     {
         $deltas = [];
-        $this->loop->method('run')->willReturnCallback(
-            static function (string|array $userInput, ?callable $onTextDelta = null) use (&$deltas): string {
+        $this->loop->method('runOutcome')->willReturnCallback(
+            static function (string|array $userInput, ?callable $onTextDelta = null) use (&$deltas): \HaoCode\Services\Agent\AgentRunOutcome {
                 if ($onTextDelta !== null) {
                     $onTextDelta('hello');
                     $onTextDelta(' ');
                     $onTextDelta('world');
                 }
 
-                return 'hello world';
+                return \HaoCode\Services\Agent\AgentRunOutcome::normal('hello world');
             }
         );
 
@@ -86,15 +86,15 @@ class RunnerTest extends TestCase
 
     public function test_stream_yields_messages_and_result(): void
     {
-        $this->loop->method('run')->willReturnCallback(
-            static function (string|array $userInput, ?callable $onTextDelta = null) use (&$deltas): string {
+        $this->loop->method('runOutcome')->willReturnCallback(
+            static function (string|array $userInput, ?callable $onTextDelta = null) use (&$deltas): \HaoCode\Services\Agent\AgentRunOutcome {
                 if ($onTextDelta !== null) {
                     $onTextDelta('fake');
                     $onTextDelta(' ');
                     $onTextDelta('response');
                 }
 
-                return 'fake response';
+                return \HaoCode\Services\Agent\AgentRunOutcome::normal('fake response');
             }
         );
 
@@ -134,7 +134,7 @@ class RunnerTest extends TestCase
                 $autoDecisionHandlers[] = $handler;
             },
         );
-        $this->loop->method('run')->willReturn('completed');
+        $this->loop->method('runOutcome')->willReturn(\HaoCode\Services\Agent\AgentRunOutcome::normal('completed'));
 
         $messages = Runner::stream(new Agent(
             name: 'terminal-cleanup-agent',
@@ -163,7 +163,7 @@ class RunnerTest extends TestCase
                 $runtime = $sandbox;
             },
         );
-        $this->loop->method('run')->willThrowException(new \RuntimeException('stream failed'));
+        $this->loop->method('runOutcome')->willThrowException(new \RuntimeException('stream failed'));
 
         $messages = Runner::stream(new Agent(
             name: 'failing-cleanup-agent',
@@ -186,15 +186,15 @@ class RunnerTest extends TestCase
     {
         $streamCallbackReturned = false;
         $autoDecisionHandlers = [];
-        $this->loop->method('run')->willReturnCallback(
+        $this->loop->method('runOutcome')->willReturnCallback(
             static function (
                 string|array $userInput,
                 ?callable $onTextDelta = null,
-            ) use (&$streamCallbackReturned): string {
+            ) use (&$streamCallbackReturned): \HaoCode\Services\Agent\AgentRunOutcome {
                 $onTextDelta?->__invoke('first delta');
                 $streamCallbackReturned = true;
 
-                return 'must not complete after abandonment';
+                return \HaoCode\Services\Agent\AgentRunOutcome::normal('must not complete after abandonment');
             },
         );
         $this->loop->expects($this->once())->method('abort');
@@ -233,7 +233,7 @@ class RunnerTest extends TestCase
                 $runtime = $sandbox;
             },
         );
-        $this->loop->method('run')->willReturnCallback(
+        $this->loop->method('runOutcome')->willReturnCallback(
             static function (string|array $userInput, ?callable $onTextDelta = null) use ($interrupt): never {
                 $onTextDelta?->__invoke('before interrupt');
 
@@ -263,7 +263,7 @@ class RunnerTest extends TestCase
 
     public function test_run_uses_durable_session_when_options_say_so(): void
     {
-        $this->loop->method('run')->willReturn('ok');
+        $this->loop->method('runOutcome')->willReturn(\HaoCode\Services\Agent\AgentRunOutcome::normal('ok'));
 
         $options = RunOptions::make()->withDurableSession();
         $result = Runner::run($this->makeAgent(), 'Remember this', $options);

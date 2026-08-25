@@ -100,7 +100,7 @@ class TeamCreateToolTest extends TestCase
         $tasks->createWithId('reviewers_reader', 'Reader', 'Reviewing');
         $definition = BuiltInAgents::get('Explore');
         $loop = $this->createMock(AgentLoop::class);
-        $loop->method('run')->willReturn('Done');
+        $loop->method('runOutcome')->willReturn(\HaoCode\Services\Agent\AgentRunOutcome::normal('Done'));
         $factory = $this->createMock(AgentLoopFactory::class);
         $factory->expects($this->once())
             ->method('createIsolated')

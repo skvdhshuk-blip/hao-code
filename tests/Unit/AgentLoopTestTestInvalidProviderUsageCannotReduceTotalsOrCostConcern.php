@@ -3,6 +3,8 @@
 namespace Tests\Unit;
 
 use HaoCode\Services\Agent\AgentLoop;
+use HaoCode\Services\Agent\AgentFinalResponseCoordinator;
+use HaoCode\Services\Agent\AgentTranscriptLifecycle;
 use HaoCode\Services\Agent\CancellationToken;
 use HaoCode\Services\Agent\ContextBuilder;
 use HaoCode\Services\Agent\MessageHistory;
@@ -27,6 +29,21 @@ use PHPUnit\Framework\TestCase;
 
 trait AgentLoopTestTestInvalidProviderUsageCannotReduceTotalsOrCostConcern
 {
+
+    public function test_model_text_that_equals_legacy_abort_marker_is_a_normal_completion(): void
+    {
+        $queryEngine = $this->createMock(QueryEngine::class);
+        $queryEngine->method('query')->willReturn($this->makePlainTextProcessor('(aborted)'));
+
+        $outcome = $this->makeLoop($queryEngine)->runOutcome('return the marker literally');
+
+        $this->assertSame('(aborted)', $outcome->text);
+        $this->assertSame(
+            \HaoCode\Contracts\RunTerminationReason::Normal,
+            $outcome->terminationReason,
+        );
+        $this->assertSame(\HaoCode\Services\Run\RunStatus::Completed, $outcome->status);
+    }
 
     public function test_invalid_provider_usage_cannot_reduce_totals_or_cost(): void
     {
@@ -151,12 +168,39 @@ trait AgentLoopTestTestInvalidProviderUsageCannotReduceTotalsOrCostConcern
                 return $this->makePlainTextProcessor('evidence-backed final answer');
             });
 
-        $loop = $this->makeLoop($qe);
-        $method = new \ReflectionMethod($loop, 'finalizeAfterTurnLimit');
-        $answer = $method->invoke($loop, [], null, null);
+        $history = new MessageHistory;
+        $contextBuilder = $this->createMock(ContextBuilder::class);
+        $contextBuilder->method('getTelemetrySystemPrompt')->willReturn([]);
+        $sessions = $this->createMock(SessionManager::class);
+        $sessions->method('getSessionId')->willReturn('turn-limit-test');
+        $transcript = new AgentTranscriptLifecycle(
+            $sessions,
+            $this->createMock(ToolOrchestrator::class),
+        );
+        $outcome = (new AgentFinalResponseCoordinator)->finalize(
+            systemPrompt: [],
+            onTextDelta: null,
+            onThinkingDelta: null,
+            reason: null,
+            maxTurns: 50,
+            maxInputTokens: 100000,
+            lastRunTurns: 50,
+            compactor: $this->createMock(ContextCompactor::class),
+            history: $history,
+            queryEngine: $qe,
+            contextBuilder: $contextBuilder,
+            costTracker: new CostTracker,
+            transcript: $transcript,
+            hooks: null,
+            sessions: $sessions,
+            isCancelled: static fn (): bool => false,
+            normalizeUsage: static fn (array $usage): array => $usage,
+            recordUsage: static function (array $usage): void {},
+        );
 
         $this->assertSame([], $toolsOverride);
-        $this->assertSame('evidence-backed final answer', $answer);
+        $this->assertSame('evidence-backed final answer', $outcome->text);
+        $this->assertSame(\HaoCode\Contracts\RunTerminationReason::TurnLimit, $outcome->terminationReason);
     }
 
     private function makePlainTextProcessor(string $text): StreamProcessor
@@ -179,6 +223,31 @@ trait AgentLoopTestTestInvalidProviderUsageCannotReduceTotalsOrCostConcern
                 'type' => 'text_delta',
                 'text' => $text,
             ],
+        ]));
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('content_block_stop', [
+            'index' => 0,
+        ]));
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('message_delta', [
+            'delta' => ['stop_reason' => 'end_turn'],
+        ]));
+
+        return $processor;
+    }
+
+    private function makeThinkingOnlyProcessor(string $thinking): StreamProcessor
+    {
+        $processor = new StreamProcessor;
+
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('message_start', [
+            'message' => ['id' => 'msg_thinking_only', 'usage' => []],
+        ]));
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('content_block_start', [
+            'index' => 0,
+            'content_block' => ['type' => 'thinking', 'thinking' => ''],
+        ]));
+        $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('content_block_delta', [
+            'index' => 0,
+            'delta' => ['type' => 'thinking_delta', 'thinking' => $thinking],
         ]));
         $processor->processEvent(new \HaoCode\Services\Api\StreamEvent('content_block_stop', [
             'index' => 0,

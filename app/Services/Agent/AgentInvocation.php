@@ -39,7 +39,7 @@ final class AgentInvocation
 
     public function invoke(AgentLoop $loop): AgentInvocationResult
     {
-        $text = $loop->run(
+        $outcome = $loop->runOutcome(
             userInput: $this->input,
             onTextDelta: $this->onTextDelta,
             onToolStart: $this->onToolStart,
@@ -48,7 +48,7 @@ final class AgentInvocation
             onThinkingDelta: $this->onThinkingDelta,
         );
 
-        return AgentInvocationResult::capture($text, $loop);
+        return AgentInvocationResult::capture($outcome, $loop);
     }
 
     private static function closure(?callable $callback): ?\Closure

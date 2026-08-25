@@ -12,71 +12,21 @@ trait BackgroundAgentManagerConstructConcern
     public function __construct(
         private readonly ?string $storagePath = null,
         private readonly ?TaskManager $taskManager = null,
+        ?BackgroundAgentLimits $limits = null,
     ) {
-        $this->ensureStoragePath();
-    }
-
-    public function create(
-        string $id,
-        string $prompt,
-        string $agentType,
-        ?string $description = null,
-        ?int $pid = null,
-        ?string $worktreePath = null,
-        ?string $worktreeBranch = null,
-    ): array {
-        $id = StateIdentifier::backgroundAgentId($id);
-
-        return $this->withAgentLock(
-            $id,
-            LOCK_EX,
-            function () use ($id, $prompt, $agentType, $description, $pid, $worktreePath, $worktreeBranch): array {
-                if (is_file($this->statePath($id)) || is_file($this->mailboxPath($id))) {
-                    throw new \InvalidArgumentException("Background agent '{$id}' already exists.");
-                }
-
-                $state = [
-                    'id' => $id,
-                    'prompt' => $prompt,
-                    'description' => $description,
-                    'agent_type' => $agentType,
-                    'pid' => $pid,
-                    'process_start_time' => $pid !== null ? $this->processStartTime($pid) : null,
-                    'process_token' => null,
-                    'status' => 'pending',
-                    'pending_messages' => 0,
-                    'stop_requested' => false,
-                    'last_message_at' => null,
-                    'last_result' => null,
-                    'error' => null,
-                    'worktree_path' => $worktreePath,
-                    'worktree_branch' => $worktreeBranch,
-                    'worktree_retained' => $worktreePath !== null,
-                    'worktree_cleanup_error' => null,
-                    'created_at' => time(),
-                    'updated_at' => time(),
-                ];
-
-                try {
-                    $this->writeJsonAtomically($this->statePath($id), $state);
-                    $this->writeJsonAtomically($this->mailboxPath($id), []);
-                } catch (\Throwable $e) {
-                    @unlink($this->statePath($id));
-                    @unlink($this->mailboxPath($id));
-                    throw $e;
-                }
-
-                return $state;
-            },
+        $this->limits = $limits ?? new BackgroundAgentLimits;
+        $this->stateStore = new BackgroundAgentStateStore(
+            $this->storagePath ?? sys_get_temp_dir().'/haocode_background_agents',
         );
+        $this->processReaper = new BackgroundAgentProcessReaper;
     }
 
     public function delete(string $id): void
     {
         $id = StateIdentifier::backgroundAgentId($id);
-        $this->withAgentLock($id, LOCK_EX, function () use ($id): void {
-            @unlink($this->statePath($id));
-            @unlink($this->mailboxPath($id));
+        $this->stateStore->withLock($id, LOCK_EX, function () use ($id): void {
+            @unlink($this->stateStore->statePath($id));
+            @unlink($this->stateStore->mailboxPath($id));
         });
     }
 
@@ -85,8 +35,8 @@ trait BackgroundAgentManagerConstructConcern
         $this->reapExitedChildren();
         $id = StateIdentifier::backgroundAgentId($id);
 
-        return $this->withAgentLock($id, LOCK_SH, function () use ($id): ?array {
-            return $this->readJson($this->statePath($id));
+        return $this->stateStore->withLock($id, LOCK_SH, function () use ($id): ?array {
+            return $this->stateStore->read($this->stateStore->statePath($id));
         });
     }
 
@@ -98,7 +48,7 @@ trait BackgroundAgentManagerConstructConcern
         $this->reapExitedChildren();
         $states = [];
 
-        foreach (glob($this->storageRoot().'/*.state.json') ?: [] as $path) {
+        foreach (glob($this->stateStore->root().'/*.state.json') ?: [] as $path) {
             $file = basename($path);
             $id = substr($file, 0, -strlen('.state.json'));
             try {
@@ -121,7 +71,7 @@ trait BackgroundAgentManagerConstructConcern
         $id = StateIdentifier::backgroundAgentId($id);
         $token = bin2hex(random_bytes(16));
         $startTime = $this->processStartTime($pid);
-        $state = $this->mutateState($id, function (array $state) use ($pid, $token, $startTime) {
+        $state = $this->stateStore->mutate($id, function (array $state) use ($pid, $token, $startTime) {
             if (in_array($state['status'] ?? null, ['completed', 'error', 'dead', 'waiting_for_input'], true)) {
                 return $state;
             }
@@ -139,8 +89,7 @@ trait BackgroundAgentManagerConstructConcern
         // A child may persist a terminal state just before it actually exits.
         // Track it even when process metadata is no longer attached so a later
         // non-blocking reap cannot miss that small window.
-        $this->ownedProcesses[$pid] = ['id' => $id, 'token' => $token];
-        $this->registerSignalReaper();
+        $this->processReaper->track($pid, $id, $token);
         $this->reapExitedChildren();
 
         return $state;
@@ -148,7 +97,7 @@ trait BackgroundAgentManagerConstructConcern
 
     public function markRunning(string $id): ?array
     {
-        return $this->mutateState($id, function (array $state) {
+        return $this->stateStore->mutate($id, function (array $state) {
             $state['status'] = 'running';
             $state['error'] = null;
             $this->clearInterruptState($state);
@@ -159,7 +108,7 @@ trait BackgroundAgentManagerConstructConcern
 
     public function markWaitingForInput(string $id, \HaoCode\Sdk\HumanInterrupt $interrupt): ?array
     {
-        return $this->mutateState($id, function (array $state) use ($interrupt) {
+        return $this->stateStore->mutate($id, function (array $state) use ($interrupt) {
             $state['status'] = 'waiting_for_input';
             $state['child_session_id'] = $interrupt->sessionId;
             $state['pending_interrupt'] = $interrupt->toArray();
@@ -172,7 +121,7 @@ trait BackgroundAgentManagerConstructConcern
 
     public function recordResult(string $id, string $result): ?array
     {
-        return $this->mutateState($id, function (array $state) use ($result) {
+        return $this->stateStore->mutate($id, function (array $state) use ($result) {
             $state['last_result'] = $this->truncate($result, self::RESULT_LIMIT);
             $state['status'] = 'idle';
             $state['error'] = null;
@@ -184,7 +133,7 @@ trait BackgroundAgentManagerConstructConcern
 
     public function markCompleted(string $id, ?string $result = null): ?array
     {
-        return $this->mutateState($id, function (array $state) use ($result) {
+        return $this->stateStore->mutate($id, function (array $state) use ($result) {
             $state['status'] = 'completed';
             if ($result !== null) {
                 $state['last_result'] = $this->truncate($result, self::RESULT_LIMIT);
@@ -199,7 +148,7 @@ trait BackgroundAgentManagerConstructConcern
 
     public function markError(string $id, string $error): ?array
     {
-        return $this->mutateState($id, function (array $state) use ($error) {
+        return $this->stateStore->mutate($id, function (array $state) use ($error) {
             $state['status'] = 'error';
             $state['error'] = $this->truncate($error, 4000);
             $this->clearInterruptState($state);
@@ -211,7 +160,7 @@ trait BackgroundAgentManagerConstructConcern
 
     public function markDead(string $id, ?string $error = null): ?array
     {
-        return $this->mutateState($id, function (array $state) use ($error) {
+        return $this->stateStore->mutate($id, function (array $state) use ($error) {
             $state['status'] = 'dead';
             if ($error !== null && ($state['error'] ?? null) === null) {
                 $state['error'] = $this->truncate($error, 4000);
@@ -264,7 +213,7 @@ trait BackgroundAgentManagerConstructConcern
         $deadline = microtime(true) + (max(0, $waitMilliseconds) / 1000);
         do {
             $this->reapExitedChildren();
-            if (! isset($this->ownedProcesses[$pid])) {
+            if (! $this->processReaper->owns($pid)) {
                 return true;
             }
             usleep(10_000);
@@ -275,7 +224,7 @@ trait BackgroundAgentManagerConstructConcern
 
     public function requestStop(string $id): ?array
     {
-        return $this->mutateState($id, function (array $state) {
+        return $this->stateStore->mutate($id, function (array $state) {
             $state['stop_requested'] = true;
 
             return $state;
@@ -287,78 +236,13 @@ trait BackgroundAgentManagerConstructConcern
         return (bool) ($this->get($id)['stop_requested'] ?? false);
     }
 
-    public function queueMessage(string $id, string $message, ?string $summary = null, string $from = 'controller'): ?array
-    {
-        $id = StateIdentifier::backgroundAgentId($id);
-
-        return $this->withAgentLock($id, LOCK_EX, function () use ($id, $message, $summary, $from): ?array {
-            $state = $this->readJson($this->statePath($id));
-            if ($state === null) {
-                return null;
-            }
-            $status = $state['status'] ?? 'unknown';
-            if ($status === 'waiting_for_input') {
-                throw new \InvalidArgumentException(
-                    "Background agent {$id} is waiting for human input; resume the interrupt first.",
-                );
-            }
-            if (in_array($status, ['completed', 'error', 'dead'], true)) {
-                throw new \InvalidArgumentException("Background agent {$id} is no longer running.");
-            }
-
-            $entry = [
-                'from' => $from,
-                'summary' => $summary,
-                'message' => $message,
-                'created_at' => time(),
-            ];
-            $messages = $this->readJson($this->mailboxPath($id)) ?? [];
-            $messages[] = $entry;
-            $messageCount = count($messages);
-
-            $state['pending_messages'] = $messageCount;
-            $state['last_message_at'] = time();
-            $state['updated_at'] = time();
-
-            $this->writeJsonAtomically($this->mailboxPath($id), $messages);
-            $this->writeJsonAtomically($this->statePath($id), $state);
-
-            return $entry + ['pending_messages' => $messageCount];
-        });
-    }
-
-    public function popNextMessage(string $id): ?array
-    {
-        $id = StateIdentifier::backgroundAgentId($id);
-
-        return $this->withAgentLock($id, LOCK_EX, function () use ($id): ?array {
-            $state = $this->readJson($this->statePath($id));
-            if ($state === null) {
-                return null;
-            }
-
-            $messages = $this->readJson($this->mailboxPath($id)) ?? [];
-            $popped = array_shift($messages) ?: null;
-            if ($popped === null) {
-                return null;
-            }
-
-            $state['pending_messages'] = count($messages);
-            $state['updated_at'] = time();
-            $this->writeJsonAtomically($this->mailboxPath($id), $messages);
-            $this->writeJsonAtomically($this->statePath($id), $state);
-
-            return $popped;
-        });
-    }
-
     public function finalizeWorktree(
         string $id,
         bool $retained,
         ?string $notice = null,
         ?string $error = null,
     ): ?array {
-        return $this->mutateState($id, function (array $state) use ($retained, $notice, $error): array {
+        return $this->stateStore->mutate($id, function (array $state) use ($retained, $notice, $error): array {
             $state['worktree_retained'] = $retained;
             $state['worktree_cleanup_error'] = $error;
             if (! $retained) {

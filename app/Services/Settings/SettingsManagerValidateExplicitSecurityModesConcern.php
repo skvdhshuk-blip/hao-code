@@ -28,9 +28,9 @@ trait SettingsManagerValidateExplicitSecurityModesConcern
 
     private function validateConfiguredSecurityModes(): void
     {
-        $permissionMode = \HaoCode\Support\Runtime\SdkRuntime::config('haocode.permission_mode');
-        $approvalPolicy = \HaoCode\Support\Runtime\SdkRuntime::config('haocode.approval_policy');
-        $sandboxMode = \HaoCode\Support\Runtime\SdkRuntime::config('haocode.sandbox_mode');
+        $permissionMode = $this->runtimeDefault('permission_mode');
+        $approvalPolicy = $this->runtimeDefault('approval_policy');
+        $sandboxMode = $this->runtimeDefault('sandbox_mode');
 
         if ($permissionMode !== null) {
             $this->normalizePermissionModeValue($permissionMode);

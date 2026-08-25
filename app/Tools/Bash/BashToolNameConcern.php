@@ -62,6 +62,8 @@ DESC;
                 ],
                 'timeout' => [
                     'type' => 'integer',
+                    'minimum' => 1000,
+                    'maximum' => 600000,
                     'description' => 'Optional timeout in milliseconds (max 600000)',
                 ],
                 'run_in_background' => [
@@ -70,11 +72,6 @@ DESC;
                 ],
             ],
             'required' => ['command'],
-        ], [
-            'command' => 'required|string',
-            'description' => 'nullable|string',
-            'timeout' => 'nullable|integer|min:1000|max:600000',
-            'run_in_background' => 'nullable|boolean',
         ]);
     }
 

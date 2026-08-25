@@ -95,7 +95,7 @@ trait HookExecutorTestMakeExecutorConcern
         ]);
 
         try {
-            $result = (new HookExecutor($project))->execute('ConfiguredEvent');
+            $result = (new HookExecutor($project, $globalPath))->execute('ConfiguredEvent');
             $this->assertTrue($result->allowed);
             $this->assertSame('configured-global-hook', $result->output);
         } finally {

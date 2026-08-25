@@ -3,128 +3,9 @@
 namespace HaoCode\Services\Agent;
 
 use HaoCode\Services\Git\HardenedGitRunner;
-use HaoCode\Services\Task\TaskManager;
-use HaoCode\Support\StateIdentifier;
 
 trait BackgroundAgentManagerMutateStateConcern
 {
-
-    private function mutateState(string $id, callable $callback): ?array
-    {
-        $id = StateIdentifier::backgroundAgentId($id);
-
-        return $this->withAgentLock($id, LOCK_EX, function () use ($id, $callback): ?array {
-            $current = $this->readJson($this->statePath($id));
-            if ($current === null) {
-                return null;
-            }
-
-            $next = $callback($current);
-            if (! is_array($next)) {
-                $next = $current;
-            }
-
-            $next['updated_at'] = time();
-            $this->writeJsonAtomically($this->statePath($id), $next);
-
-            return $next;
-        });
-    }
-
-    private function readJson(string $path): ?array
-    {
-        if (! is_file($path)) {
-            return null;
-        }
-
-        $raw = file_get_contents($path);
-        if ($raw === false || $raw === '') {
-            return null;
-        }
-
-        $decoded = json_decode($raw, true);
-
-        return is_array($decoded) ? $decoded : null;
-    }
-
-    private function writeJsonAtomically(string $path, array $payload): void
-    {
-        $json = json_encode(
-            $payload,
-            JSON_PRETTY_PRINT | JSON_UNESCAPED_UNICODE | JSON_UNESCAPED_SLASHES | JSON_THROW_ON_ERROR,
-        );
-        $temporary = tempnam($this->storageRoot(), '.haocode-');
-        if ($temporary === false) {
-            throw new \RuntimeException('Unable to create a temporary state file.');
-        }
-
-        try {
-            $written = file_put_contents($temporary, $json);
-            if ($written !== strlen($json)) {
-                throw new \RuntimeException("Unable to write state file: {$path}");
-            }
-            if (! rename($temporary, $path)) {
-                throw new \RuntimeException("Unable to replace state file: {$path}");
-            }
-        } finally {
-            if (is_file($temporary)) {
-                @unlink($temporary);
-            }
-        }
-    }
-
-    private function withAgentLock(string $id, int $operation, callable $callback): mixed
-    {
-        $handle = fopen($this->lockPath($id), 'c+');
-        if ($handle === false) {
-            throw new \RuntimeException("Unable to open background agent lock for {$id}");
-        }
-
-        try {
-            if (! flock($handle, $operation)) {
-                throw new \RuntimeException("Unable to lock background agent state for {$id}");
-            }
-
-            return $callback();
-        } finally {
-            flock($handle, LOCK_UN);
-            fclose($handle);
-        }
-    }
-
-    private function statePath(string $id): string
-    {
-        $id = StateIdentifier::backgroundAgentId($id);
-
-        return $this->storageRoot()."/{$id}.state.json";
-    }
-
-    private function mailboxPath(string $id): string
-    {
-        $id = StateIdentifier::backgroundAgentId($id);
-
-        return $this->storageRoot()."/{$id}.mailbox.json";
-    }
-
-    private function lockPath(string $id): string
-    {
-        $id = StateIdentifier::backgroundAgentId($id);
-
-        return $this->storageRoot()."/{$id}.lock";
-    }
-
-    private function storageRoot(): string
-    {
-        return $this->storagePath ?? sys_get_temp_dir().'/haocode_background_agents';
-    }
-
-    private function ensureStoragePath(): void
-    {
-        if (! is_dir($this->storageRoot()) && ! mkdir($this->storageRoot(), 0755, true) && ! is_dir($this->storageRoot())) {
-            throw new \RuntimeException("Unable to create background agent storage: {$this->storageRoot()}");
-        }
-    }
-
     private function clearInterruptState(array &$state): void
     {
         unset($state['pending_interrupt'], $state['child_session_id']);
@@ -168,7 +49,7 @@ trait BackgroundAgentManagerMutateStateConcern
             return false;
         }
 
-        $owned = $this->ownedProcesses[$pid] ?? null;
+        $owned = $this->processReaper->owned($pid);
 
         return is_array($owned)
             && hash_equals($owned['token'], $token)
@@ -190,7 +71,7 @@ trait BackgroundAgentManagerMutateStateConcern
             ['ps', '-o', 'lstart=', '-p', (string) $pid],
             $descriptors,
             $pipes,
-            $this->storageRoot(),
+            $this->stateStore->root(),
             [
                 'PATH' => getenv('PATH') ?: '/usr/bin:/bin',
                 'LANG' => 'C',
@@ -327,62 +208,26 @@ trait BackgroundAgentManagerMutateStateConcern
     /** @internal */
     public static function assertRuntimeResetSafe(): void
     {
-        $ownedIds = [];
-        foreach (self::$signalReapers as $key => $reference) {
-            $manager = $reference->get();
-            if (! $manager instanceof self) {
-                unset(self::$signalReapers[$key]);
-                continue;
-            }
-
-            $manager->reapExitedChildren();
-            foreach ($manager->ownedProcesses as $owned) {
-                $ownedIds[] = $owned['id'];
-            }
-        }
-
-        if ($ownedIds !== []) {
-            throw new \RuntimeException(
-                'Cannot reset HaoCode runtime while background agents are still running: '
-                .implode(', ', array_values(array_unique($ownedIds))).'.',
-            );
-        }
+        BackgroundAgentProcessReaper::assertResetSafe();
     }
 
     /** @internal */
     public static function resetSignalReaper(): void
     {
-        if (self::$signalReaperInstalled
-            && function_exists('pcntl_signal')
-            && defined('SIGCHLD')) {
-            $handler = self::$previousSigchldHandler;
-            if (! is_callable($handler) && ! is_int($handler)) {
-                $handler = defined('SIG_DFL') ? constant('SIG_DFL') : 0;
-            }
-            pcntl_signal(constant('SIGCHLD'), $handler);
-            if (self::$previousAsyncSignals !== null && function_exists('pcntl_async_signals')) {
-                pcntl_async_signals(self::$previousAsyncSignals);
-            }
-        }
-
-        self::$signalReapers = [];
-        self::$signalReaperInstalled = false;
-        self::$previousSigchldHandler = null;
-        self::$previousAsyncSignals = null;
+        BackgroundAgentProcessReaper::resetSignalHandler();
     }
 
     private function reapExitedChildren(): void
     {
-        $this->reapExitedProcessHandles();
+        $this->processReaper->drain();
         if ($this->processingExitedChildren) {
             return;
         }
 
         $this->processingExitedChildren = true;
         try {
-            while ($this->exitedProcesses !== []) {
-                $owned = array_shift($this->exitedProcesses);
-                $state = $this->mutateState($owned['id'], function (array $state): array {
+            while (($owned = $this->processReaper->shiftExited()) !== null) {
+                $state = $this->stateStore->mutate($owned['id'], function (array $state): array {
                     if (in_array($state['status'] ?? null, ['pending', 'running', 'idle'], true)) {
                         $state['status'] = 'dead';
                         $state['error'] ??= 'Background agent process exited before recording a terminal state.';
@@ -407,43 +252,12 @@ trait BackgroundAgentManagerMutateStateConcern
         }
     }
 
-    private function reapExitedProcessHandles(): void
+    private function truncate(string $value, int $limit): string
     {
-        if ($this->ownedProcesses === [] || ! function_exists('pcntl_waitpid')) {
-            return;
-        }
-        if ($this->reapingProcessHandles) {
-            $this->reapAgain = true;
-
-            return;
+        if (mb_strlen($value) <= $limit) {
+            return $value;
         }
 
-        $this->reapingProcessHandles = true;
-        try {
-            do {
-                $this->reapAgain = false;
-                foreach ($this->ownedProcesses as $pid => $owned) {
-                    $waited = @pcntl_waitpid($pid, $status, WNOHANG);
-                    if ($waited === -1) {
-                        $interrupted = defined('PCNTL_EINTR')
-                            && function_exists('pcntl_get_last_error')
-                            && pcntl_get_last_error() === constant('PCNTL_EINTR');
-                        if (! $interrupted) {
-                            unset($this->ownedProcesses[$pid]);
-                        }
-
-                        continue;
-                    }
-                    if ($waited !== $pid) {
-                        continue;
-                    }
-
-                    unset($this->ownedProcesses[$pid]);
-                    $this->exitedProcesses[] = $owned;
-                }
-            } while ($this->reapAgain);
-        } finally {
-            $this->reapingProcessHandles = false;
-        }
+        return mb_substr($value, 0, $limit).'...';
     }
 }

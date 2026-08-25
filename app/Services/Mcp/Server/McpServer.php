@@ -32,6 +32,7 @@ class McpServer
         private readonly ToolAdapter $toolAdapter,
         private readonly ?PhoenixTracer $tracer = null,
         private readonly string $caller = 'unknown',
+        private readonly string $serverVersion = 'dev',
     ) {}
 
     public function run(): void
@@ -207,7 +208,7 @@ class McpServer
             ],
             'serverInfo' => [
                 'name' => 'hao-code',
-                'version' => \HaoCode\Support\Runtime\SdkRuntime::config('app.version', 'dev'),
+                'version' => $this->serverVersion,
                 'meta' => [
                     'allowed_tools' => $allowedTools,
                     'bash_concurrency' => 1,

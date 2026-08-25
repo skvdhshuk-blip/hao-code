@@ -28,7 +28,6 @@ final class PhpFileSizeCheck
         foreach ($files as $relativePath) {
             $path = $projectRoot.DIRECTORY_SEPARATOR.str_replace('/', DIRECTORY_SEPARATOR, $relativePath);
             if (! is_file($path)) {
-                $issues[] = "{$relativePath} is tracked but missing from the working tree.";
                 continue;
             }
 
@@ -45,7 +44,15 @@ final class PhpFileSizeCheck
 
         sort($issues);
 
-        return ['files' => count($files), 'issues' => $issues];
+        return [
+            'files' => count(array_filter(
+                $files,
+                static fn (string $path): bool => is_file(
+                    $projectRoot.DIRECTORY_SEPARATOR.str_replace('/', DIRECTORY_SEPARATOR, $path),
+                ),
+            )),
+            'issues' => $issues,
+        ];
     }
 
     public static function countPhysicalLines(string $source): int

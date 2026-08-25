@@ -96,7 +96,7 @@ trait StreamingToolExecutorTestMakeRegistryConcern
             public function __construct(private readonly string $stateFile) {}
             public function name(): string { return 'WriteState'; }
             public function description(): string { return ''; }
-            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object'], []); }
+            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object']); }
             public function isReadOnly(array $input): bool { return false; }
             public function call(array $input, ToolUseContext $context): ToolResult
             {
@@ -109,7 +109,7 @@ trait StreamingToolExecutorTestMakeRegistryConcern
             public function __construct(private readonly string $stateFile) {}
             public function name(): string { return 'ReadState'; }
             public function description(): string { return ''; }
-            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object'], []); }
+            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object']); }
             public function isReadOnly(array $input): bool { return true; }
             public function isConcurrencySafe(array $input): bool { return true; }
             public function call(array $input, ToolUseContext $context): ToolResult
@@ -161,7 +161,7 @@ trait StreamingToolExecutorTestMakeRegistryConcern
             public function __construct(private readonly string $stateFile) {}
             public function name(): string { return 'WriteState'; }
             public function description(): string { return ''; }
-            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object'], []); }
+            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object']); }
             public function isReadOnly(array $input): bool { return false; }
             public function call(array $input, ToolUseContext $context): ToolResult
             {
@@ -177,7 +177,7 @@ trait StreamingToolExecutorTestMakeRegistryConcern
             ) {}
             public function name(): string { return 'StateSensitiveRead'; }
             public function description(): string { return ''; }
-            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object'], []); }
+            public function inputSchema(): ToolInputSchema { return ToolInputSchema::make(['type' => 'object']); }
             public function validateInput(array $input, ToolUseContext $context): ?string
             {
                 $this->validationStates->observed[] = is_file($this->stateFile);

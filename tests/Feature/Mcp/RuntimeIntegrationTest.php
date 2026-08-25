@@ -248,6 +248,80 @@ final class RuntimeIntegrationTest extends TestCase
         }
     }
 
+    public function test_explicit_invalid_mcp_schema_fails_preflight_with_tool_name(): void
+    {
+        $projectDir = sys_get_temp_dir().'/haocode-mcp-invalid-explicit-'.bin2hex(random_bytes(4));
+        mkdir($projectDir.'/.haocode', 0755, true);
+        file_put_contents($projectDir.'/.haocode/settings.json', json_encode([
+            'mcp_servers' => ['schema-probe' => [
+                'transport' => 'stdio',
+                'command' => PHP_BINARY,
+                'args' => [dirname(__DIR__, 2).'/fixtures/mcp-jsonl-probe-server.php'],
+                'env' => ['HAOCODE_MCP_INVALID_SCHEMA' => '1'],
+            ]],
+        ], JSON_THROW_ON_ERROR));
+
+        try {
+            $this->expectException(McpConnectionException::class);
+            $this->expectExceptionMessage('mcp__schema_probe__echo_value');
+            SdkRunFactory::create(
+                new HaoCodeConfig(
+                    apiKey: 'test-key',
+                    cwd: $projectDir,
+                    allowedTools: ['mcp__schema_probe__echo_value'],
+                ),
+                SdkRuntime::app(AgentLoopFactory::class),
+            );
+        } finally {
+            @unlink($projectDir.'/.haocode/settings.json');
+            @rmdir($projectDir.'/.haocode');
+            @rmdir($projectDir);
+        }
+    }
+
+    public function test_wildcard_quarantines_only_invalid_mcp_schema_with_safe_diagnostic(): void
+    {
+        $projectDir = sys_get_temp_dir().'/haocode-mcp-invalid-wildcard-'.bin2hex(random_bytes(4));
+        mkdir($projectDir.'/.haocode', 0755, true);
+        file_put_contents($projectDir.'/.haocode/settings.json', json_encode([
+            'mcp_servers' => ['schema-probe' => [
+                'transport' => 'stdio',
+                'command' => PHP_BINARY,
+                'args' => [dirname(__DIR__, 2).'/fixtures/mcp-jsonl-probe-server.php'],
+                'env' => ['HAOCODE_MCP_INVALID_SCHEMA' => '1'],
+            ]],
+        ], JSON_THROW_ON_ERROR));
+        $run = SdkRunFactory::create(
+            new HaoCodeConfig(
+                apiKey: 'test-key',
+                cwd: $projectDir,
+                allowedTools: ['*'],
+                disallowedTools: ['ListMcpResourcesTool', 'ReadMcpResourceTool'],
+            ),
+            SdkRuntime::app(AgentLoopFactory::class),
+        );
+
+        try {
+            $registryProperty = new \ReflectionProperty($run->loop, 'toolRegistry');
+            /** @var ToolRegistry $registry */
+            $registry = $registryProperty->getValue($run->loop);
+            $managerProperty = new \ReflectionProperty($run, 'mcpConnectionManager');
+            $manager = $managerProperty->getValue($run);
+
+            $this->assertFalse($registry->has('mcp__schema_probe__echo_value'));
+            $this->assertTrue($registry->has('mcp__schema_probe__healthy_value'));
+            $this->assertSame([[
+                'code' => 'invalid_tool_schema',
+                'tool' => 'mcp__schema_probe__echo_value',
+            ]], $manager?->getToolDiagnostics());
+        } finally {
+            $run->close();
+            @unlink($projectDir.'/.haocode/settings.json');
+            @rmdir($projectDir.'/.haocode');
+            @rmdir($projectDir);
+        }
+    }
+
     public function test_sandbox_wildcard_does_not_implicitly_enable_host_mcp_servers(): void
     {
         $allowsMcpTools = new \ReflectionMethod(SdkRunFactory::class, 'allowsMcpTools');

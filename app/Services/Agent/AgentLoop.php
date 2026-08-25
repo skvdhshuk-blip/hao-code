@@ -2,56 +2,28 @@
 
 namespace HaoCode\Services\Agent;
 
-use HaoCode\Sdk\HumanInterrupt;
 use HaoCode\Sdk\HumanInterruptException;
-use HaoCode\Sdk\HumanActionRequest;
-use HaoCode\Services\Compact\ContextCompactor;
-use HaoCode\Services\Cost\CostTracker;
-use HaoCode\Services\Hitl\HitlAllowlist;
-use HaoCode\Services\Hitl\HitlReviewer;
 use HaoCode\Services\Hitl\SmartInterruptDecider;
-use HaoCode\Services\Hooks\HookExecutor;
-use HaoCode\Services\Permissions\PermissionChecker;
-use HaoCode\Services\Session\SessionManager;
-use HaoCode\Services\Telemetry\PhoenixTracer;
-use HaoCode\Services\ToolResult\ToolResultStorage;
-use HaoCode\Tools\ToolRegistry;
 use HaoCode\Tools\ToolUseContext;
 
 class AgentLoop
 {
     use AgentLoopConstructConcern;
     use AgentLoopRunInternalConcern;
-    use AgentLoopMessageEnvelopeConcern;
     use AgentLoopBuildRunSnapshotConcern;
-    use AgentLoopMarkSessionResumedConcern;
-    use AgentLoopRunStateConcern;
-
-    private const MAX_IDENTICAL_TOOL_ERROR_BATCHES = 3;
-
     private int $maxTurns = 50;
-
     private int $maxMalformedToolInputRetries = 4;
-
     private int $maxTotalMalformedToolInputRetries = 10;
-
     private int $maxIncompleteResponseRetries = 2;
-
     private bool $aborted = false;
-
-    private bool $durablePersistenceFailed = false;
-
     private bool $sessionStarted = false;
 
     /** @var array<int, array<string, mixed>>|null Cache-stable prompt for this loop/session. */
     private ?array $systemPrompt = null;
 
     private int $totalInputTokens = 0;
-
     private int $totalOutputTokens = 0;
-
     private int $totalCacheCreationTokens = 0;
-
     private int $totalCacheReadTokens = 0;
 
     /** Tracks the most recent API call's input token count for auto-compact decisions. */
@@ -96,6 +68,41 @@ class AgentLoop
 
     private ?AgentResponseRetryPolicy $responseRetryPolicy = null;
 
+    private readonly RunStateLifecycle $runStateLifecycle;
+
+    private readonly AgentSnapshotCoordinator $snapshotCoordinator;
+
+    private readonly AgentTranscriptLifecycle $transcriptLifecycle;
+
+    private readonly RepeatedToolFailureDetector $repeatedToolFailureDetector;
+
+    private readonly AgentFinalResponseCoordinator $finalResponseCoordinator;
+
     /** Parent model captured for the current user turn, including HITL snapshots. */
     private ?string $runBaseModel = null;
+
+    private function completeRunOutcome(AgentRunOutcome $outcome): void
+    {
+        $this->runStateLifecycle->complete($outcome, $this->lastRunTurns, [
+            'input_tokens' => $this->totalInputTokens,
+            'output_tokens' => $this->totalOutputTokens,
+            'cache_creation_tokens' => $this->totalCacheCreationTokens,
+            'cache_read_tokens' => $this->totalCacheReadTokens,
+        ]);
+    }
+
+    private function failRunOutcome(\Throwable $error): void
+    {
+        $snapshot = $error instanceof HumanInterruptException
+            ? $this->buildRunSnapshot($this->lastRunTurns)
+            : [];
+        $this->runStateLifecycle->fail($error, $this->lastRunTurns, $snapshot);
+    }
+
+    /** @internal */
+    public function markSessionResumed(): void
+    {
+        $this->sessionStarted = true;
+        $this->transcriptLifecycle->bindToolResultStorage();
+    }
 }

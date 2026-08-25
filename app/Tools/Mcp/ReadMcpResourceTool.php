@@ -42,9 +42,6 @@ final class ReadMcpResourceTool extends BaseTool
                 ],
             ],
             'required' => ['server', 'uri'],
-        ], [
-            'server' => 'required|string',
-            'uri' => 'required|string',
         ]);
     }
 

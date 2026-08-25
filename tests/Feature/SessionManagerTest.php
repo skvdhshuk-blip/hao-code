@@ -17,12 +17,7 @@ class SessionManagerTest extends TestCase
         $this->tmpDir = sys_get_temp_dir() . '/session_test_' . uniqid();
         mkdir($this->tmpDir, 0755, true);
 
-        $this->manager = new SessionManager;
-        // Redirect session path to our temp dir
-        $ref = new \ReflectionClass($this->manager);
-        $prop = $ref->getProperty('sessionPath');
-        $prop->setAccessible(true);
-        $prop->setValue($this->manager, $this->tmpDir);
+        $this->manager = new SessionManager(sessionPath: $this->tmpDir);
     }
 
     protected function tearDown(): void
@@ -52,7 +47,7 @@ class SessionManagerTest extends TestCase
     public function test_each_manager_gets_unique_session_id(): void
     {
         $m1 = $this->manager;
-        $m2 = new SessionManager;
+        $m2 = new SessionManager(sessionPath: $this->tmpDir);
         $this->assertNotSame($m1->getSessionId(), $m2->getSessionId());
     }
 

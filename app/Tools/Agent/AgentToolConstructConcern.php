@@ -3,6 +3,7 @@
 namespace HaoCode\Tools\Agent;
 
 use HaoCode\Services\Agent\BackgroundAgentManager;
+use HaoCode\Services\Agent\BackgroundAgentBusyException;
 use HaoCode\Services\Agent\AgentLoopFactory;
 use HaoCode\Services\Agent\AgentInvocation;
 use HaoCode\Services\Git\HardenedGitRunner;
@@ -18,6 +19,8 @@ trait AgentToolConstructConcern
         private readonly AgentLoopFactory $agentLoopFactory,
         private readonly ?BackgroundAgentManager $backgroundAgentManager = null,
         private readonly ?TaskManager $taskManager = null,
+        private readonly int $backgroundIdleTimeoutSeconds = 300,
+        private readonly int $backgroundPollIntervalMs = 250,
     ) {}
 
     public function name(): string
@@ -59,6 +62,7 @@ DESC;
             'properties' => [
                 'prompt' => [
                     'type' => 'string',
+                    'minLength' => 5,
                     'description' => 'The task for the agent to perform',
                 ],
                 'description' => [
@@ -80,6 +84,7 @@ DESC;
                 ],
                 'name' => [
                     'type' => 'string',
+                    'pattern' => '^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$',
                     'description' => 'Optional name for addressing via SendMessage',
                 ],
                 'isolation' => [
@@ -89,14 +94,6 @@ DESC;
                 ],
             ],
             'required' => ['description', 'prompt'],
-        ], [
-            'prompt' => 'required|string|min:5',
-            'description' => 'required|string',
-            'subagent_type' => 'nullable|string',
-            'model' => 'nullable|string|in:sonnet,opus,haiku,inherit',
-            'run_in_background' => 'nullable|boolean',
-            'name' => 'nullable|string|regex:/^[A-Za-z0-9][A-Za-z0-9_-]{0,127}$/',
-            'isolation' => 'nullable|string|in:worktree',
         ]);
     }
 
@@ -248,6 +245,7 @@ DESC;
             subject: $subject,
             worktreePath: $worktreePath,
             worktreeBranch: $worktreeBranch,
+            ownerRunId: $context->sessionId,
         );
         if ($claim instanceof ToolResult) {
             return $worktreePath === null || $worktreeBranch === null
@@ -324,6 +322,7 @@ DESC;
         string $subject,
         ?string $worktreePath,
         ?string $worktreeBranch,
+        string $ownerRunId,
     ): string|ToolResult {
         $attempts = $name === null ? 10 : 1;
         for ($attempt = 0; $attempt < $attempts; $attempt++) {
@@ -338,6 +337,7 @@ DESC;
                     description: $description,
                     worktreePath: $worktreePath,
                     worktreeBranch: $worktreeBranch,
+                    ownerRunId: $ownerRunId,
                 );
                 try {
                     $this->tasks()->createWithId(
@@ -352,6 +352,8 @@ DESC;
                 }
 
                 return $taskId;
+            } catch (BackgroundAgentBusyException $e) {
+                return ToolResult::error($e->getMessage(), $e->metadata(), safeError: 'background_busy');
             } catch (\InvalidArgumentException $e) {
                 if ($name !== null) {
                     return ToolResult::error($e->getMessage());

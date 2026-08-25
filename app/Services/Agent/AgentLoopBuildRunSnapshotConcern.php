@@ -28,29 +28,23 @@ trait AgentLoopBuildRunSnapshotConcern
      */
     private function buildRunSnapshot(int $turnCount): array
     {
-        $snapshot = AgentRunSnapshotBuilder::build(
-            turnCount: $turnCount,
-            maxTurns: $this->maxTurns,
-            cwd: $this->getCurrentWorkingDirectory(),
-            runContext: $this->runContext,
-            allowedTools: $this->effectiveAllowedTools(),
-            activeSkillAllowedTools: $this->toolOrchestrator->getActiveSkillAllowedTools(),
-            activeSkillModelOverride: $this->toolOrchestrator->getActiveSkillModelOverride(),
-            activeSkillContext: $this->toolOrchestrator->getActiveSkillContext(),
-            baseModel: $this->runBaseModel,
-            estimatedCost: $this->getEstimatedCost(),
-            totalInputTokens: $this->getTotalInputTokens(),
-            totalOutputTokens: $this->getTotalOutputTokens(),
-            totalCacheCreationTokens: $this->getCacheCreationTokens(),
-            totalCacheReadTokens: $this->getCacheReadTokens(),
-            lastTurnInputTokens: $this->lastTurnInputTokens,
-            sandboxRuntime: $this->sandboxRuntime,
+        return $this->snapshotCoordinator->build(
+            $turnCount,
+            $this->maxTurns,
+            $this->getCurrentWorkingDirectory(),
+            $this->runContext,
+            $this->effectiveAllowedTools(),
+            $this->toolOrchestrator,
+            $this->runBaseModel,
+            $this->getEstimatedCost(),
+            $this->getTotalInputTokens(),
+            $this->getTotalOutputTokens(),
+            $this->getCacheCreationTokens(),
+            $this->getCacheReadTokens(),
+            $this->lastTurnInputTokens,
+            $this->sandboxRuntime,
+            $this->runJournal,
         );
-        if ($this->runJournal?->invocationId() !== null) {
-            $snapshot['run_invocation_id'] = $this->runJournal->invocationId();
-        }
-
-        return $snapshot;
     }
 
     /** @param array<string, mixed> $checkpoint */
@@ -112,89 +106,6 @@ trait AgentLoopBuildRunSnapshotConcern
             $contextBlock,
             ['type' => 'text', 'text' => $userInput],
         ];
-    }
-
-    private function finalizeAfterTurnLimit(
-        array $systemPrompt,
-        ?callable $onTextDelta,
-        ?callable $onThinkingDelta,
-        ?string $reason = null,
-    ): string {
-        $this->synchronizeRuntimeContextBudget();
-        $this->contextCompactor->microCompact($this->messageHistory);
-        $messages = $this->messageHistory->getMessagesForApi();
-        $messages[] = [
-            'role' => 'user',
-            'content' => $reason === 'repeated identical tool failure'
-                ? 'The same tool failure has repeated several times. Do not call tools. Return the best final answer now using the evidence already collected, and state any remaining uncertainty.'
-                : 'The tool-turn limit has been reached. Do not call tools. Return the best final answer now using the evidence already collected, and state any remaining uncertainty.',
-        ];
-
-        $estimatedTokens = ContextBudget::estimateTokens($systemPrompt, $messages, []);
-        if ($estimatedTokens > $this->maxEstimatedInputTokens) {
-            $this->contextCompactor->compact($this->messageHistory);
-            $messages = $this->messageHistory->getMessagesForApi();
-            $messages[] = [
-                'role' => 'user',
-                'content' => 'Return the final answer now without tools, using the retained evidence.',
-            ];
-            if (ContextBudget::estimateTokens($systemPrompt, $messages, []) > $this->maxEstimatedInputTokens) {
-                $this->contextCompactor->emergencyCompact($this->messageHistory);
-                $messages = $this->messageHistory->getMessagesForApi();
-                $messages[] = [
-                    'role' => 'user',
-                    'content' => 'Return a concise final answer now without tools, using the retained evidence previews.',
-                ];
-            }
-
-            $estimatedTokens = ContextBudget::estimateTokens($systemPrompt, $messages, []);
-            if ($estimatedTokens > $this->maxEstimatedInputTokens) {
-                $this->throwContextBudgetExceeded($estimatedTokens);
-            }
-        }
-
-        $processor = $this->queryEngine->query(
-            systemPrompt: $systemPrompt,
-            messages: $messages,
-            onTextDelta: $onTextDelta,
-            onThinkingDelta: $onThinkingDelta,
-            shouldAbort: fn (): bool => $this->cancellationToken->isCancelled(),
-            toolsOverride: [],
-            telemetrySystemPrompt: $this->contextBuilder->getTelemetrySystemPrompt(),
-            telemetryMessages: $this->messageHistory->getTelemetryMessagesForApi(),
-        );
-
-        if ($this->isCancellationRequested()) {
-            return '(aborted)';
-        }
-
-        $usage = $this->normalizeUsage($processor->getUsage());
-        $this->recordUsage($usage);
-        if ($processor->getModel() !== null) {
-            $this->costTracker->setResponseModel($processor->getModel());
-        }
-        $this->costTracker->addUsage(
-            $usage['input_tokens'] ?? 0,
-            $usage['output_tokens'] ?? 0,
-            $usage['cache_creation_input_tokens'] ?? 0,
-            $usage['cache_read_input_tokens'] ?? 0,
-        );
-
-        $assistantMessage = $processor->toAssistantMessage();
-        $this->messageHistory->addAssistantMessage($assistantMessage);
-        $this->persistAssistantTurn($assistantMessage, []);
-        $this->hookExecutor?->execute('Stop', [
-            'session_id' => $this->sessionManager->getSessionId(),
-            'turn' => $this->lastRunTurns,
-        ]);
-
-        $answer = trim($processor->getAccumulatedText());
-
-        return $answer !== ''
-            ? $answer
-            : ($reason === 'repeated identical tool failure'
-                ? 'Stopped after repeated identical tool failures without a final answer.'
-                : "Reached maximum turn limit ({$this->maxTurns}) without a final answer.");
     }
 
     private function throwContextBudgetExceeded(int $estimatedTokens): never
@@ -408,53 +319,18 @@ trait AgentLoopBuildRunSnapshotConcern
     /** @internal */
     public function restoreRunSnapshot(array $snapshot): void
     {
-        if (is_string($snapshot['run_invocation_id'] ?? null)
-            && trim($snapshot['run_invocation_id']) !== '') {
-            $this->runJournal?->restoreInvocation($snapshot['run_invocation_id']);
-        }
-        if (is_array($snapshot['allowed_tools'] ?? null)) {
-            $this->toolOrchestrator->setResumeAllowedTools($snapshot['allowed_tools']);
-        }
-        $this->toolOrchestrator->restoreSkillScope(
-            is_array($snapshot['active_skill_allowed_tools'] ?? null)
-                ? $snapshot['active_skill_allowed_tools']
-                : null,
-            is_string($snapshot['active_skill_model_override'] ?? null)
-                ? $snapshot['active_skill_model_override']
-                : null,
-            is_string($snapshot['active_skill_context'] ?? null)
-                ? $snapshot['active_skill_context']
-                : null,
+        $metrics = $this->snapshotCoordinator->restore(
+            $snapshot,
+            $this->runJournal,
+            $this->toolOrchestrator,
+            $this->costTracker,
+            $this->runContext,
         );
-
-        $this->totalInputTokens = max(0, (int) ($snapshot['total_input_tokens'] ?? 0));
-        $this->totalOutputTokens = max(0, (int) ($snapshot['total_output_tokens'] ?? 0));
-        $this->totalCacheCreationTokens = max(0, (int) ($snapshot['total_cache_creation_tokens'] ?? 0));
-        $this->totalCacheReadTokens = max(0, (int) ($snapshot['total_cache_read_tokens'] ?? 0));
-        $this->lastTurnInputTokens = max(0, (int) ($snapshot['last_turn_input_tokens'] ?? 0));
-        if (is_numeric($snapshot['estimated_cost_usd'] ?? null)) {
-            $this->costTracker->setTotalCost(max(0.0, (float) $snapshot['estimated_cost_usd']));
-        }
-
-        // Seed a fresh shared accumulator so resume QueryResult usage matches the
-        // checkpoint (AgentAsTool children add on top of this base).
-        $acc = $this->runContext?->usageAccumulator;
-        if ($acc !== null
-            && $acc->getInputTokens() === 0
-            && $acc->getOutputTokens() === 0
-            && $acc->getCacheCreationTokens() === 0
-            && $acc->getCacheReadTokens() === 0
-            && ($this->totalInputTokens > 0
-                || $this->totalOutputTokens > 0
-                || $this->totalCacheCreationTokens > 0
-                || $this->totalCacheReadTokens > 0)) {
-            $acc->add(
-                $this->totalInputTokens,
-                $this->totalOutputTokens,
-                $this->totalCacheCreationTokens,
-                $this->totalCacheReadTokens,
-            );
-        }
+        $this->totalInputTokens = $metrics['input'];
+        $this->totalOutputTokens = $metrics['output'];
+        $this->totalCacheCreationTokens = $metrics['cache_creation'];
+        $this->totalCacheReadTokens = $metrics['cache_read'];
+        $this->lastTurnInputTokens = $metrics['last_input'];
     }
 
     public function resetSessionMetrics(): void

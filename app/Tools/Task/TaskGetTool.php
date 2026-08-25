@@ -11,6 +11,11 @@ use HaoCode\Tools\ToolUseContext;
 
 class TaskGetTool extends BaseTool
 {
+    public function __construct(
+        private readonly TaskManager $taskManager,
+        private readonly BackgroundAgentManager $backgroundAgentManager,
+    ) {}
+
     public function name(): string { return 'TaskGet'; }
 
     public function description(): string
@@ -26,13 +31,12 @@ class TaskGetTool extends BaseTool
                 'id' => ['type' => 'string', 'description' => 'The task ID'],
             ],
             'required' => ['id'],
-        ], ['id' => 'required|string']);
+        ]);
     }
 
     public function call(array $input, ToolUseContext $context): ToolResult
     {
-        $manager = \HaoCode\Support\Runtime\SdkRuntime::app(TaskManager::class);
-        $task = $manager->get($input['id']);
+        $task = $this->taskManager->get($input['id']);
 
         if (!$task) {
             return ToolResult::error("Task not found: {$input['id']}");
@@ -55,7 +59,7 @@ class TaskGetTool extends BaseTool
             $lines[] = "Result: {$task->result}";
         }
 
-        $agent = \HaoCode\Support\Runtime\SdkRuntime::app(BackgroundAgentManager::class)->refreshStatus($task->id);
+        $agent = $this->backgroundAgentManager->refreshStatus($task->id);
         if ($agent !== null) {
             $lines[] = "Agent status: {$agent['status']}";
             if (! empty($agent['pid'])) {

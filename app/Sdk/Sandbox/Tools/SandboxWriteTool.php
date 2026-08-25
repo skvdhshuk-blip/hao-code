@@ -26,9 +26,6 @@ final class SandboxWriteTool extends SandboxTool
                 'content' => ['type' => 'string', 'description' => 'Content to write.'],
             ],
             'required' => ['file_path', 'content'],
-        ], [
-            'file_path' => 'required|string',
-            'content' => 'required|string',
         ]);
     }
 

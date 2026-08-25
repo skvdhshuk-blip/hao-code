@@ -3,12 +3,11 @@
 namespace HaoCode\Services\ToolResult;
 
 use HaoCode\Support\Filesystem\CanonicalPathResolver;
-use HaoCode\Support\Runtime\SdkRuntime;
 
 trait ToolResultStorageConstructConcern
 {
 
-    public function __construct(?string $sessionId = null)
+    public function __construct(string $sessionRoot, ?string $sessionId = null)
     {
         $sessionId ??= 'default';
         if ($sessionId === '' || strlen($sessionId) > 128
@@ -19,10 +18,6 @@ trait ToolResultStorageConstructConcern
             );
         }
 
-        $sessionRoot = SdkRuntime::config(
-            'haocode.session_path',
-            SdkRuntime::storagePath('app/haocode/sessions'),
-        );
         if (! is_string($sessionRoot) || trim($sessionRoot) === '') {
             throw new \RuntimeException('Session storage path must be a non-empty string.');
         }
@@ -365,6 +360,11 @@ trait ToolResultStorageConstructConcern
      * Generate a preview truncated at a newline boundary.
      */
     public function generatePreview(string $content, int $maxBytes): string
+    {
+        return self::previewContent($content, $maxBytes);
+    }
+
+    public static function previewContent(string $content, int $maxBytes): string
     {
         if (mb_strlen($content) <= $maxBytes) {
             return $content;

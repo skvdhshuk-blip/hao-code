@@ -72,13 +72,14 @@ class PhoenixTracer
         private readonly string $apiKey,
         private readonly string $projectName,
         private readonly bool $redactMessages,
+        private readonly string $serviceVersion = 'dev',
     ) {}
 
     /**
      * Build a tracer from resolved settings + env vars. Never throws — if
      * configuration is missing or invalid, returns a disabled tracer.
      */
-    public static function fromSettings(SettingsManager $settings): self
+    public static function fromSettings(SettingsManager $settings, string $serviceVersion = 'dev'): self
     {
         $config = $settings->getTelemetryConfig();
 
@@ -88,13 +89,14 @@ class PhoenixTracer
             apiKey: (string) ($config['api_key'] ?? ''),
             projectName: (string) ($config['project_name'] ?? 'hao-code'),
             redactMessages: (bool) ($config['redact_messages'] ?? false),
+            serviceVersion: $serviceVersion,
         );
     }
 
     /**
      * @param array<string, mixed> $config Already-resolved telemetry config
      */
-    public static function fromConfig(array $config): self
+    public static function fromConfig(array $config, string $serviceVersion = 'dev'): self
     {
         return new self(
             enabled: (bool) ($config['enabled'] ?? false),
@@ -102,6 +104,7 @@ class PhoenixTracer
             apiKey: (string) ($config['api_key'] ?? ''),
             projectName: (string) ($config['project_name'] ?? 'hao-code'),
             redactMessages: (bool) ($config['redact_messages'] ?? false),
+            serviceVersion: $serviceVersion,
         );
     }
 
@@ -277,12 +280,11 @@ class PhoenixTracer
             $this->provider = $this->buildProvider();
             $this->tracer = $this->provider->getTracer(
                 'hao-code',
-                \HaoCode\Support\Runtime\SdkRuntime::environment('HAO_CODE_VERSION', 'dev'),
+                $this->serviceVersion,
             );
 
             // Ensure queued spans get exported when the PHP process ends,
-            // even on the `$result = HaoCode::query(...); echo $result;` SDK
-            // path that never explicitly shuts the tracer down.
+            // even on SDK paths that never explicitly shut the tracer down.
             register_shutdown_function(function (): void {
                 $this->shutdown();
             });
@@ -322,7 +324,7 @@ class PhoenixTracer
 
         $resource = ResourceInfoFactory::emptyResource()->merge(ResourceInfo::create(Attributes::create([
             'service.name' => 'hao-code',
-            'service.version' => \HaoCode\Support\Runtime\SdkRuntime::environment('HAO_CODE_VERSION', 'dev'),
+            'service.version' => $this->serviceVersion,
             // Phoenix buckets spans by this resource attribute.
             'openinference.project.name' => $this->projectName,
         ])));

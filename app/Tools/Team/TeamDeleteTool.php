@@ -17,7 +17,7 @@ class TeamDeleteTool extends BaseTool
         private readonly TeamManager $teamManager,
         private readonly BackgroundAgentManager $backgroundAgentManager,
         private readonly TaskManager $taskManager,
-        private readonly ?SessionManager $sessionManager = null,
+        private readonly SessionManager $sessionManager,
     ) {}
 
     public function name(): string
@@ -39,12 +39,11 @@ DESC;
             'properties' => [
                 'name' => [
                     'type' => 'string',
+                    'pattern' => '^[a-z0-9][a-z0-9_-]{0,31}$',
                     'description' => 'Name of the team to delete',
                 ],
             ],
             'required' => ['name'],
-        ], [
-            'name' => 'required|string|regex:/^[a-z0-9][a-z0-9_-]{0,31}$/',
         ]);
     }
 
@@ -188,8 +187,7 @@ DESC;
 
     private function sessions(): SessionManager
     {
-        return $this->sessionManager
-            ?? \HaoCode\Support\Runtime\SdkRuntime::app(SessionManager::class);
+        return $this->sessionManager;
     }
 
     public function isReadOnly(array $input): bool

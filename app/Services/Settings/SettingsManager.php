@@ -32,6 +32,9 @@ class SettingsManager
 
     private array $runtimeOverrides = [];
 
+    /** @var array<string, mixed> Immutable defaults captured by the composition root. */
+    private readonly array $runtimeDefaults;
+
     /** @var (\Closure(ResolvedProviderConfig, self): void)|null */
     private ?\Closure $runtimeConfigurationValidator = null;
 

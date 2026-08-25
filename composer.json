@@ -39,10 +39,14 @@
     ],
     "scripts": {
         "test": "@test:full",
+        "quality:aggregate-size": "php scripts/php-aggregate-size-check.php",
+        "quality:dependency-direction": "php scripts/runtime-dependency-check.php",
         "quality:file-size": "php scripts/php-file-size-check.php",
         "test:discover": "php scripts/test-discovery-check.php",
         "test:full": [
             "@quality:file-size",
+            "@quality:aggregate-size",
+            "@quality:dependency-direction",
             "@test:discover",
             "php -d memory_limit=-1 vendor/bin/phpunit --exclude-group live --no-progress"
         ],

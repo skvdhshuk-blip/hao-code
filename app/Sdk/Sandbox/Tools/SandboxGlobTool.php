@@ -24,9 +24,6 @@ final class SandboxGlobTool extends SandboxTool
                 'path' => ['type' => 'string', 'description' => 'Sandbox directory to search. Defaults to current sandbox cwd.'],
             ],
             'required' => ['pattern'],
-        ], [
-            'pattern' => 'required|string',
-            'path' => 'nullable|string',
         ]);
     }
 

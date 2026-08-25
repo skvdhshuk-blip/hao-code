@@ -145,14 +145,14 @@ trait ConversationInternalsTestTestConversationDerivesAgentAndOptionsFromConfigC
             allowedTools: [],
             ephemeral: false,
         );
-        SdkRunFactory::stageResumeSnapshot($config, [
+        $bootstrap = new \HaoCode\Sdk\Internal\ConversationBootstrap([
             'cwd' => getcwd(),
             'model' => 'skill-model',
             'base_model' => 'parent-model',
             'active_skill_model_override' => 'skill-model',
         ]);
 
-        $conversation = new Conversation($config, $factory);
+        $conversation = new Conversation($config, $factory, bootstrap: $bootstrap);
         $conversation->close();
     }
 
@@ -162,7 +162,7 @@ trait ConversationInternalsTestTestConversationDerivesAgentAndOptionsFromConfigC
         $session->method('getSessionId')->willReturn('sess-turns');
 
         $loop = $this->createMock(AgentLoop::class);
-        $loop->method('run')->willReturn('done');
+        $loop->method('runOutcome')->willReturn(\HaoCode\Services\Agent\AgentRunOutcome::normal('done'));
         // Multi-step agent loop (tool + final answer) should report 2 turns.
         $loop->method('getLastRunTurns')->willReturn(2);
         $loop->method('getTotalInputTokens')->willReturn(10);
@@ -201,7 +201,7 @@ trait ConversationInternalsTestTestConversationDerivesAgentAndOptionsFromConfigC
                 $runtime = $sandbox;
             },
         );
-        $loop->method('run')->willThrowException(new HumanInterruptException($interrupt));
+        $loop->method('runOutcome')->willThrowException(new HumanInterruptException($interrupt));
 
         $factory = $this->createMock(AgentLoopFactory::class);
         $factory->method('createIsolated')->willReturn($loop);
@@ -241,7 +241,7 @@ trait ConversationInternalsTestTestConversationDerivesAgentAndOptionsFromConfigC
                 $runtime = $sandbox;
             },
         );
-        $loop->method('resumeInterrupt')->willThrowException(new HumanInterruptException($interrupt));
+        $loop->method('resumeInterruptOutcome')->willThrowException(new HumanInterruptException($interrupt));
 
         $factory = $this->createMock(AgentLoopFactory::class);
         $factory->method('createIsolated')->willReturn($loop);
@@ -251,9 +251,11 @@ trait ConversationInternalsTestTestConversationDerivesAgentAndOptionsFromConfigC
             ephemeral: false,
             sandbox: SandboxConfig::local(cleanup: 'always'),
         );
-        SdkRunFactory::stageResumeSnapshot($config, ['cwd' => getcwd()]);
-
-        $conversation = new Conversation($config, $factory);
+        $conversation = new Conversation(
+            $config,
+            $factory,
+            bootstrap: new \HaoCode\Sdk\Internal\ConversationBootstrap(['cwd' => getcwd()]),
+        );
         $this->assertInstanceOf(SandboxRuntime::class, $runtime);
         $root = $runtime->exportLease()['root'];
 
@@ -280,7 +282,7 @@ trait ConversationInternalsTestTestConversationDerivesAgentAndOptionsFromConfigC
                 $runtime = $sandbox;
             },
         );
-        $loop->method('resumeInterrupt')->willReturnCallback(
+        $loop->method('resumeInterruptOutcome')->willReturnCallback(
             static function (
                 string $interruptId,
                 array $decisions,
@@ -300,8 +302,11 @@ trait ConversationInternalsTestTestConversationDerivesAgentAndOptionsFromConfigC
             ephemeral: false,
             sandbox: SandboxConfig::local(cleanup: 'always'),
         );
-        SdkRunFactory::stageResumeSnapshot($config, ['cwd' => getcwd()]);
-        $conversation = new Conversation($config, $factory);
+        $conversation = new Conversation(
+            $config,
+            $factory,
+            bootstrap: new \HaoCode\Sdk\Internal\ConversationBootstrap(['cwd' => getcwd()]),
+        );
         $messages = $conversation->streamResumeInterrupt('first-interrupt', []);
         $messages->rewind();
         $this->assertInstanceOf(SandboxRuntime::class, $runtime);
@@ -326,20 +331,20 @@ trait ConversationInternalsTestTestConversationDerivesAgentAndOptionsFromConfigC
         $runCount = 0;
         $autoDecisionHandlers = [];
         $loop = $this->createMock(AgentLoop::class);
-        $loop->method('run')->willReturnCallback(
+        $loop->method('runOutcome')->willReturnCallback(
             static function (
                 string|array $userInput,
                 ?callable $onTextDelta = null,
-            ) use (&$streamCallbackReturned, &$runCount): string {
+            ) use (&$streamCallbackReturned, &$runCount): \HaoCode\Services\Agent\AgentRunOutcome {
                 $runCount++;
                 if ($runCount === 1) {
                     $onTextDelta?->__invoke('first delta');
                     $streamCallbackReturned = true;
 
-                    return 'stream completed';
+                    return \HaoCode\Services\Agent\AgentRunOutcome::normal('stream completed');
                 }
 
-                return 'next send completed';
+                return \HaoCode\Services\Agent\AgentRunOutcome::normal('next send completed');
             },
         );
         $loop->expects($this->once())->method('abort');

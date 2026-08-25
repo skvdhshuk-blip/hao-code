@@ -17,6 +17,7 @@ declare(strict_types=1);
 
 require_once __DIR__.'/../vendor/autoload.php';
 
+use HaoCode\Contracts\RunTerminationReason;
 use HaoCode\Sdk\AbortController;
 use HaoCode\Sdk\Agent;
 use HaoCode\Sdk\AgentAsTool;
@@ -53,6 +54,7 @@ if (! in_array($mode, ['--write', '--verify'], true)) {
 }
 
 $classes = [
+    RunTerminationReason::class,
     HaoCode::class,
     HaoCodeConfig::class,
     HumanActionRequest::class,
@@ -245,12 +247,24 @@ foreach ($classes as $className) {
     $classIsInternal = isInternal($classDoc);
 
     $entry = [
-        'kind' => $ref->isInterface() ? 'interface' : ($ref->isAbstract() ? 'abstract_class' : 'class'),
+        'kind' => $ref->isEnum()
+            ? 'enum'
+            : ($ref->isInterface() ? 'interface' : ($ref->isAbstract() ? 'abstract_class' : 'class')),
         'api' => $classIsApi,
         'internal' => $classIsInternal,
         'methods' => [],
         'properties' => [],
     ];
+    if ($ref->isEnum()) {
+        $enum = new ReflectionEnum($className);
+        $entry['backing_type'] = $enum->getBackingType()?->__toString();
+        $entry['cases'] = [];
+        foreach ($enum->getCases() as $case) {
+            $entry['cases'][$case->getName()] = $case instanceof ReflectionEnumBackedCase
+                ? $case->getBackingValue()
+                : null;
+        }
+    }
 
     // Public methods (own + inherited from same namespace? No — only declared in this class)
     $methods = $ref->getMethods(ReflectionMethod::IS_PUBLIC);

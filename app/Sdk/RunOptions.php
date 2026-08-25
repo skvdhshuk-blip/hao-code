@@ -19,6 +19,9 @@ namespace HaoCode\Sdk;
  */
 class RunOptions
 {
+    /** Legacy resume policy retained only while adapting HaoCodeConfig. @internal */
+    private bool $legacyAllowCwdOverride = false;
+
     /**
      * @api
      */
@@ -129,19 +132,15 @@ class RunOptions
      */
     public static function fromConfig(HaoCodeConfig $config): self
     {
-        return new self(
-            onText: $config->onText,
-            onThinking: $config->onThinking,
-            onToolStart: $config->onToolStart,
-            onToolComplete: $config->onToolComplete,
-            onTurnStart: $config->onTurnStart,
-            images: $config->images,
-            ephemeral: $config->ephemeral,
-            responseSchema: $config->responseSchema,
-            abortController: $config->abortController,
-            cwd: $config->cwd,
-            maxBudgetUsd: $config->maxBudgetUsd,
-        );
+        return \HaoCode\Sdk\Internal\LegacyHaoCodeConfigAdapter::toRunOptions($config);
+    }
+
+    /** @internal LegacyHaoCodeConfigAdapter is the only intended caller. */
+    public function retainLegacyAllowCwdOverride(bool $allow): self
+    {
+        $this->legacyAllowCwdOverride = $allow;
+
+        return $this;
     }
 
     public static function make(
@@ -161,7 +160,7 @@ class RunOptions
      */
     public function withTextCallback(callable $callback): self
     {
-        return new self(...array_merge($this->toArray(), ['onText' => $callback]));
+        return $this->copy(array_merge($this->toArray(), ['onText' => $callback]));
     }
 
     /**
@@ -171,7 +170,7 @@ class RunOptions
      */
     public function withDurableSession(): self
     {
-        return new self(...array_merge($this->toArray(), ['ephemeral' => false]));
+        return $this->copy(array_merge($this->toArray(), ['ephemeral' => false]));
     }
 
     /**
@@ -181,7 +180,7 @@ class RunOptions
      */
     public function withCwd(string $cwd): self
     {
-        return new self(...array_merge($this->toArray(), ['cwd' => $cwd]));
+        return $this->copy(array_merge($this->toArray(), ['cwd' => $cwd]));
     }
 
     /**
@@ -191,7 +190,11 @@ class RunOptions
      */
     public function toConfig(Agent $agent): HaoCodeConfig
     {
-        return \HaoCode\Sdk\Internal\RunSpec::fromAgent($agent, $this)->config;
+        return \HaoCode\Sdk\Internal\LegacyHaoCodeConfigAdapter::toConfig(
+            $agent,
+            $this,
+            $this->legacyAllowCwdOverride,
+        );
     }
 
     /**
@@ -222,5 +225,14 @@ class RunOptions
             'cwd' => $this->cwd,
             'maxBudgetUsd' => $this->maxBudgetUsd,
         ];
+    }
+
+    /** @param array<string, mixed> $values */
+    private function copy(array $values): self
+    {
+        $copy = new self(...$values);
+        $copy->legacyAllowCwdOverride = $this->legacyAllowCwdOverride;
+
+        return $copy;
     }
 }

@@ -54,6 +54,7 @@ DESC;
             'properties' => [
                 'query' => [
                     'type' => 'string',
+                    'minLength' => 2,
                     'description' => 'The search query',
                 ],
                 'allowed_domains' => [
@@ -68,10 +69,6 @@ DESC;
                 ],
             ],
             'required' => ['query'],
-        ], [
-            'query' => 'required|string|min:2',
-            'allowed_domains' => 'nullable|array',
-            'blocked_domains' => 'nullable|array',
         ]);
     }
 

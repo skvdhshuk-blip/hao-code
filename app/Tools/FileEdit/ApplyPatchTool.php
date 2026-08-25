@@ -68,8 +68,6 @@ DESC;
                 ],
             ],
             'required' => ['patch'],
-        ], [
-            'patch' => 'required|string',
         ]);
     }
 

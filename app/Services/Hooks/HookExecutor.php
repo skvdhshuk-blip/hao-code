@@ -13,10 +13,11 @@ class HookExecutor
 
     public function __construct(
         private readonly ?string $workingDirectory = null,
+        ?string $globalSettingsPath = null,
     )
     {
         $this->processRunner = new HookProcessRunner;
-        $this->fileStore = new SettingsFileStore($workingDirectory);
+        $this->fileStore = new SettingsFileStore($workingDirectory, $globalSettingsPath);
         $this->loadHooks();
     }
 

@@ -30,7 +30,7 @@ trait ConversationInternalsTestTestTerminalStreamCleanupDoesNotClearANewStreamOp
         $runCount = 0;
         $autoDecisionHandlers = [];
         $loop = $this->createMock(AgentLoop::class);
-        $loop->method('run')->willReturnCallback(
+        $loop->method('runOutcome')->willReturnCallback(
             static function (
                 string|array $userInput,
                 ?callable $onTextDelta = null,
@@ -38,18 +38,18 @@ trait ConversationInternalsTestTestTerminalStreamCleanupDoesNotClearANewStreamOp
                 ?callable $onToolComplete = null,
                 ?callable $onTurnStart = null,
                 ?callable $onThinkingDelta = null,
-            ) use (&$runCount): string {
+            ) use (&$runCount): \HaoCode\Services\Agent\AgentRunOutcome {
                 $runCount++;
 
                 if ($runCount === 2) {
                     $onTextDelta?->__invoke('immediate follow-up started');
 
-                    return 'immediate follow-up completed';
+                    return \HaoCode\Services\Agent\AgentRunOutcome::normal('immediate follow-up completed');
                 }
 
-                return $runCount === 1
+                return \HaoCode\Services\Agent\AgentRunOutcome::normal($runCount === 1
                     ? 'stream completed'
-                    : 'post-generator follow-up completed';
+                    : 'post-generator follow-up completed');
             },
         );
         $loop->method('setAutoDecisionHandler')->willReturnCallback(

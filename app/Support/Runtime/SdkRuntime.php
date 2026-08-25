@@ -18,6 +18,7 @@ use HaoCode\Services\Hooks\HookExecutor;
 use HaoCode\Services\Mcp\McpConnectionManager;
 use HaoCode\Services\Mcp\McpServerConfigManager;
 use HaoCode\Services\Memory\SessionMemory;
+use HaoCode\Services\Memory\TieredSummarizer;
 use HaoCode\Sdk\Memory\JsonMemoryStore;
 use HaoCode\Sdk\Memory\MemoryStoreInterface;
 use HaoCode\Services\OutputStyle\OutputStyleLoader;
@@ -148,6 +149,27 @@ final class SdkRuntime
         return self::boot()->resourcePath($path);
     }
 
+    /** @return array<string, mixed> Immutable settings defaults for one assembled run. */
+    public static function settingsDefaults(): array
+    {
+        $app = self::boot();
+        $keys = [
+            'api_key', 'model', 'api_base_url', 'max_tokens', 'context_window',
+            'permission_mode', 'approval_policy', 'sandbox_mode',
+            'model_provider', 'active_provider', 'global_settings_path',
+        ];
+        $defaults = [];
+        foreach ($keys as $key) {
+            $defaults[$key] = $app->config('haocode.'.$key);
+        }
+        $defaults['session_path'] = $app->config(
+            'haocode.session_path',
+            $app->storagePath('app/haocode/sessions'),
+        );
+
+        return $defaults;
+    }
+
     public static function reset(): void
     {
         BackgroundAgentManager::assertRuntimeResetSafe();
@@ -182,9 +204,19 @@ final class SdkRuntime
 
     private static function registerCoreServices(Container $app): void
     {
-        $app->singleton(SettingsManager::class);
-        $app->singleton(SessionManager::class);
-        $app->singleton(PhoenixTracer::class, fn (Container $app) => PhoenixTracer::fromSettings($app->make(SettingsManager::class)));
+        $app->singleton(SettingsManager::class, fn () => new SettingsManager(
+            runtimeDefaults: self::settingsDefaults(),
+        ));
+        $app->singleton(SessionManager::class, fn (Container $app) => new SessionManager(
+            sessionPath: (string) $app->config(
+                'haocode.session_path',
+                $app->storagePath('app/haocode/sessions'),
+            ),
+        ));
+        $app->singleton(PhoenixTracer::class, fn (Container $app) => PhoenixTracer::fromSettings(
+            $app->make(SettingsManager::class),
+            (string) self::environment('HAO_CODE_VERSION', 'dev'),
+        ));
         $app->singleton(SessionTitleService::class, function (Container $app) {
             $settings = $app->make(SettingsManager::class);
 
@@ -205,9 +237,18 @@ final class SdkRuntime
         });
         $app->singleton(DenialTracker::class);
         $app->singleton(PermissionChecker::class);
-        $app->singleton(HookExecutor::class);
+        $app->singleton(HookExecutor::class, fn (Container $app) => new HookExecutor(
+            globalSettingsPath: is_string($app->config('haocode.global_settings_path'))
+                ? $app->config('haocode.global_settings_path')
+                : null,
+        ));
         $app->singleton(OutputStyleLoader::class);
-        $app->singleton(SessionMemory::class);
+        $app->singleton(TieredSummarizer::class, fn (Container $app) => new TieredSummarizer(
+            settings: $app->make(SettingsManager::class),
+        ));
+        $app->singleton(SessionMemory::class, fn (Container $app) => new SessionMemory(
+            summarizer: $app->make(TieredSummarizer::class),
+        ));
         $app->singleton(MemoryStoreInterface::class, fn (Container $app) => new JsonMemoryStore(
             $app->make(SettingsManager::class)->getMemoryStoragePath(),
         ));
@@ -238,21 +279,47 @@ final class SdkRuntime
         $app->singleton(BackgroundAgentManager::class, fn (Container $app) => new BackgroundAgentManager(
             $app->storagePath('app/haocode/background-agents'),
             $app->make(\HaoCode\Services\Task\TaskManager::class),
+            new \HaoCode\Services\Agent\BackgroundAgentLimits(
+                maxActivePerRun: (int) self::config('haocode.background_agent_max_active_per_run', 8),
+                mailboxMaxMessages: (int) self::config('haocode.background_agent_mailbox_max_messages', 128),
+                messageMaxBytes: (int) self::config('haocode.background_agent_message_max_bytes', 65_536),
+                mailboxMaxBytes: (int) self::config('haocode.background_agent_mailbox_max_bytes', 1_048_576),
+            ),
         ));
         $app->singleton(TeamManager::class, fn (Container $app) => new TeamManager(
             $app->storagePath('app/haocode/teams'),
+        ));
+        $app->bind(AgentTool::class, fn (Container $app) => new AgentTool(
+            $app->make(AgentLoopFactory::class),
+            $app->make(BackgroundAgentManager::class),
+            $app->make(\HaoCode\Services\Task\TaskManager::class),
+            (int) $app->config('haocode.background_agent_idle_timeout', 300),
+            (int) $app->config('haocode.background_agent_poll_interval_ms', 250),
+        ));
+        $app->bind(TeamCreateTool::class, fn (Container $app) => new TeamCreateTool(
+            $app->make(AgentLoopFactory::class),
+            $app->make(TeamManager::class),
+            $app->make(BackgroundAgentManager::class),
+            $app->make(\HaoCode\Services\Task\TaskManager::class),
+            (int) $app->config('haocode.background_agent_idle_timeout', 300),
+            (int) $app->config('haocode.background_agent_poll_interval_ms', 250),
         ));
         $app->singleton(GitContext::class);
         $app->singleton(McpServerConfigManager::class);
         $app->singleton(McpConnectionManager::class, fn (Container $app) => new McpConnectionManager(
             configManager: $app->make(McpServerConfigManager::class),
+            tracer: $app->make(PhoenixTracer::class),
+            clientVersion: (string) self::environment('HAO_CODE_VERSION', 'dev'),
         ));
         $app->singleton(ContextBuilder::class, fn (Container $app) => new ContextBuilder(
             settings: $app->make(SettingsManager::class),
             toolRegistry: $app->make(ToolRegistry::class),
             memoryStore: $app->make(MemoryStoreInterface::class),
             skillLoader: $app->make(SkillLoader::class),
-            contextPreset: new CodingContextPreset($app->make(GitContext::class)),
+            contextPreset: new CodingContextPreset(
+                $app->make(GitContext::class),
+                systemPromptPath: $app->resourcePath('prompts/system.md'),
+            ),
             outputStyleLoader: $app->make(OutputStyleLoader::class),
         ));
         $app->singleton(StreamingClient::class, function (Container $app) {
@@ -271,6 +338,8 @@ final class SdkRuntime
                 providerType: $settings->getProviderType(),
             );
         });
+        $app->singleton(\HaoCode\Services\Api\LlmProvider::class, fn (Container $app) =>
+            $app->make(StreamingClient::class));
         $app->singleton(MessageHistory::class);
         $app->singleton(QueryEngine::class, fn (Container $app) => new QueryEngine(
             streamingClient: $app->make(StreamingClient::class),
@@ -285,13 +354,18 @@ final class SdkRuntime
             tracer: $app->make(PhoenixTracer::class),
         ));
         $app->singleton(ContextCompactor::class);
-        $app->singleton(AgentLoopFactory::class, fn (Container $app) => new AgentLoopFactory($app));
+        $app->singleton(AgentLoopFactory::class, fn (Container $app) =>
+            AgentLoopFactoryComposer::make($app));
     }
 
     private static function registerToolRegistry(Container $app): void
     {
         $app->singleton(ToolRegistry::class, function (Container $app) {
             $registry = new ToolRegistry();
+            // Publish the empty registry before resolving tools whose
+            // constructors depend on AgentLoopFactory, which in turn receives
+            // this same registry as its explicit tool-set authority.
+            $app->instance(ToolRegistry::class, $registry);
 
             // CronCreate/List/Delete are intentionally not advertised here:
             // the legacy JSON scheduler has no production execution driver.

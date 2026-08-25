@@ -35,7 +35,11 @@ trait AgentToolTestTestCommittedWorktreeChangesAreRetainedConcern
                     return $loop;
                 });
 
-            $result = (new AgentTool($factory))->call([
+            $result = (new AgentTool(
+                $factory,
+                new BackgroundAgentManager($root.'/agent-state'),
+                new TaskManager($root.'/task-state'),
+            ))->call([
                 'prompt' => 'Commit a repository change',
                 'isolation' => 'worktree',
             ], new ToolUseContext($root, 'session-1'));

@@ -7,13 +7,14 @@ trait SessionManagerConstructConcern
 
     public function __construct(
         private readonly bool $persistenceEnabled = true,
+        string $sessionPath = '',
     )
     {
+        if (trim($sessionPath) === '') {
+            throw new \InvalidArgumentException('Session storage path must be injected.');
+        }
         $this->sessionId = $this->generateSessionId();
-        $this->sessionPath = \HaoCode\Support\Runtime\SdkRuntime::config(
-            'haocode.session_path',
-            \HaoCode\Support\Runtime\SdkRuntime::storagePath('app/haocode/sessions'),
-        );
+        $this->sessionPath = rtrim($sessionPath, '/\\');
     }
 
     private function jsonlStore(): SessionJsonlStore
@@ -41,6 +42,12 @@ trait SessionManagerConstructConcern
     public function getSessionId(): string
     {
         return $this->sessionId;
+    }
+
+    /** @internal */
+    public function getSessionPath(): string
+    {
+        return $this->sessionPath;
     }
 
     /**

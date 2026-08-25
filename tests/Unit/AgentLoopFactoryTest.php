@@ -3,6 +3,9 @@
 namespace Tests\Unit;
 
 use HaoCode\Services\Agent\AgentLoopFactory;
+use HaoCode\Services\Agent\AgentLoopBuilder;
+use HaoCode\Services\Agent\AgentPersistenceFactory;
+use HaoCode\Services\Agent\AgentToolSetBuilder;
 use HaoCode\Services\Agent\AgentRunContext;
 use HaoCode\Services\Agent\CancellationToken;
 use HaoCode\Services\Agent\ContextBuilder;
@@ -69,9 +72,7 @@ class AgentLoopFactoryTest extends TestCase
             }
         };
 
-        $factory = new AgentLoopFactory(
-            container: $container,
-        );
+        $factory = $this->factoryFromResolver($container, $toolRegistry);
 
         $first = $factory->createIsolated();
         $second = $factory->createIsolated();
@@ -82,8 +83,8 @@ class AgentLoopFactoryTest extends TestCase
         $this->assertNotSame($first->getCostTracker(), $second->getCostTracker());
 
         $toolRegistry->register(new TodoWriteTool);
-        $method = new \ReflectionMethod($factory, 'buildToolRegistry');
-        $clonedRegistry = $method->invoke($factory, $toolRegistry, null, true);
+        $clonedRegistry = (new AgentToolSetBuilder($toolRegistry))
+            ->cloneRegistry($toolRegistry, null, true);
 
         $this->assertNotSame($toolRegistry->getTool('TodoWrite'), $clonedRegistry->getTool('TodoWrite'));
     }
@@ -101,9 +102,9 @@ class AgentLoopFactoryTest extends TestCase
         $registry = new ToolRegistry();
         $registry->register($tool);
 
-        $factory = new AgentLoopFactory(container: $this->buildContainer($registry));
-        $method = new \ReflectionMethod($factory, 'buildToolRegistry');
-        $childRegistry = $method->invoke($factory, $registry, null, true);
+        $factory = $this->buildFactory($registry);
+        $childRegistry = (new AgentToolSetBuilder($registry))
+            ->cloneRegistry($registry, null, true);
 
         $this->assertSame($tool, $childRegistry->getTool('NonCloneable'));
     }
@@ -121,9 +122,9 @@ class AgentLoopFactoryTest extends TestCase
         $registry = new ToolRegistry();
         $registry->register($tool);
 
-        $factory = new AgentLoopFactory(container: $this->buildContainer($registry));
-        $method = new \ReflectionMethod($factory, 'buildToolRegistry');
-        $childRegistry = $method->invoke($factory, $registry, null, true);
+        $factory = $this->buildFactory($registry);
+        $childRegistry = (new AgentToolSetBuilder($registry))
+            ->cloneRegistry($registry, null, true);
         $childTool = $childRegistry->getTool('Stateful');
 
         $this->assertNotSame($tool, $childTool);
@@ -142,11 +143,11 @@ class AgentLoopFactoryTest extends TestCase
     {
         $this->assertTrue(class_exists(\HaoCode\Tools\Skill\SkillLoader::class));
 
-        $source = file_get_contents((new \ReflectionClass(AgentLoopFactory::class))->getFileName());
+        $source = file_get_contents((new \ReflectionClass(AgentLoopBuilder::class))->getFileName());
         $this->assertStringContainsString(
             'use HaoCode\\Tools\\Skill\\SkillLoader;',
             $source,
-            'AgentLoopFactory must import HaoCode\Tools\Skill\SkillLoader so the read-only branch does not resolve to a non-existent namespace-local class.',
+            'AgentLoopBuilder must import HaoCode\Tools\Skill\SkillLoader so the read-only branch does not resolve to a non-existent namespace-local class.',
         );
     }
 
@@ -170,7 +171,7 @@ class AgentLoopFactoryTest extends TestCase
         $toolFilter = static fn (string $name): bool => in_array($name, ['AllowedTool', 'HookDeniedTool'], true);
         $additionalToolFilter = static fn (string $name): bool => $name !== 'HookDeniedTool';
 
-        $factory = new AgentLoopFactory(container: $this->buildContainer(new ToolRegistry()));
+        $factory = $this->buildFactory(new ToolRegistry());
         $loop = $factory->createIsolated(
             toolFilter: $toolFilter,
             additionalTools: [$allowed, $notWhitelisted, $hookDenied],
@@ -195,7 +196,7 @@ class AgentLoopFactoryTest extends TestCase
             public function handle(array $input): string { return 'child'; }
         };
         $parent = new ToolRegistry();
-        $factory = new AgentLoopFactory(container: $this->buildContainer($parent));
+        $factory = $this->buildFactory($parent);
 
         $this->expectException(\LogicException::class);
         $this->expectExceptionMessage("cannot add capability 'ChildOnly' absent from its parent");
@@ -218,7 +219,7 @@ class AgentLoopFactoryTest extends TestCase
         };
         $parent = new ToolRegistry();
         $parent->register($makeTool('parent'));
-        $factory = new AgentLoopFactory(container: $this->buildContainer($parent));
+        $factory = $this->buildFactory($parent);
 
         $loop = $factory->createIsolated(
             additionalTools: [$makeTool('child')],
@@ -247,7 +248,7 @@ class AgentLoopFactoryTest extends TestCase
             cancellationToken: new CancellationToken(),
             enableAskUser: true,
         );
-        $factory = new AgentLoopFactory(container: $this->buildContainer($parent));
+        $factory = $this->buildFactory($parent);
 
         $loop = $factory->createIsolated(
             streamingClient: $this->createMock(StreamingClient::class),
@@ -304,7 +305,7 @@ class AgentLoopFactoryTest extends TestCase
         };
 
         try {
-            $factory = new AgentLoopFactory(container: $this->buildContainer(new ToolRegistry()));
+            $factory = $this->buildFactory(new ToolRegistry());
             $loop = $factory->createIsolated(
                 workingDirectory: $root,
                 streamingClient: $provider,
@@ -341,6 +342,30 @@ class AgentLoopFactoryTest extends TestCase
         } finally {
             $this->removeDirectory($root);
         }
+    }
+
+    private function buildFactory(ToolRegistry $registry): AgentLoopFactory
+    {
+        return $this->factoryFromResolver($this->buildContainer($registry), $registry);
+    }
+
+    private function factoryFromResolver(object $resolver, ToolRegistry $registry): AgentLoopFactory
+    {
+        return new AgentLoopFactory(
+            new AgentToolSetBuilder($registry),
+            new AgentPersistenceFactory(
+                sys_get_temp_dir().'/haocode-agent-loop-factory-'.getmypid(),
+            ),
+            new AgentLoopBuilder(
+                $resolver->make(SettingsManager::class),
+                $resolver->make(ContextBuilder::class),
+                $resolver->make(PermissionChecker::class),
+                $resolver->make(HookExecutor::class),
+                $resolver->make(\HaoCode\Services\Telemetry\PhoenixTracer::class),
+                $resolver->make(StreamingClient::class),
+                dirname(__DIR__, 2).'/resources/prompts/system.md',
+            ),
+        );
     }
 
     private function buildContainer(ToolRegistry $toolRegistry): object

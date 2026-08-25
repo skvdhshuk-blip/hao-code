@@ -10,6 +10,8 @@ use HaoCode\Tools\ToolUseContext;
 
 class TaskUpdateTool extends BaseTool
 {
+    public function __construct(private readonly TaskManager $taskManager) {}
+
     public function name(): string { return 'TaskUpdate'; }
 
     public function description(): string
@@ -27,17 +29,12 @@ class TaskUpdateTool extends BaseTool
                 'result' => ['type' => 'string', 'description' => 'Optional result/output text'],
             ],
             'required' => ['id', 'status'],
-        ], [
-            'id' => 'required|string',
-            'status' => 'required|string|in:pending,in_progress,completed',
-            'result' => 'nullable|string',
         ]);
     }
 
     public function call(array $input, ToolUseContext $context): ToolResult
     {
-        $manager = \HaoCode\Support\Runtime\SdkRuntime::app(TaskManager::class);
-        $task = $manager->update(
+        $task = $this->taskManager->update(
             id: $input['id'],
             status: $input['status'],
             result: $input['result'] ?? null,

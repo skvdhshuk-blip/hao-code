@@ -25,7 +25,7 @@ class CronDeleteTool extends BaseTool
                 'id' => ['type' => 'string', 'description' => 'The job ID to cancel'],
             ],
             'required' => ['id'],
-        ], ['id' => 'required|string']);
+        ]);
     }
 
     public function call(array $input, ToolUseContext $context): ToolResult

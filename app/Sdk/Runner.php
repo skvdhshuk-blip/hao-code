@@ -5,6 +5,7 @@ namespace HaoCode\Sdk;
 use HaoCode\Services\Agent\AgentLoop;
 use HaoCode\Services\Agent\AgentLoopFactory;
 use HaoCode\Services\Agent\AgentInvocation;
+use HaoCode\Sdk\Internal\FiberMessageStream;
 use HaoCode\Sdk\AbortController;
 use HaoCode\Sdk\Agent;
 use HaoCode\Sdk\RunOptions;
@@ -40,6 +41,7 @@ class Runner
 
         $run = self::createRun($agent, $options);
         $loop = $run->loop;
+        $stream = null;
 
         try {
             $userInput = $options->images !== []
@@ -61,11 +63,13 @@ class Runner
                 cost: $result->cost,
                 sessionId: $ephemeral ? null : $result->sessionId,
                 turnsUsed: $result->turnsUsed,
+                terminationReason: $result->terminationReason,
             );
         } catch (HumanInterruptException $e) {
             $run->preserveSandboxOnClose();
             throw $e;
         } finally {
+            $stream?->abandon();
             $run->close();
         }
     }
@@ -84,59 +88,19 @@ class Runner
 
         $run = self::createRun($agent, $options);
         $loop = $run->loop;
-        $fiber = null;
-        $autoDecisionHandlerRegistered = false;
-        $thrownException = null;
         try {
-            $queue = new \SplQueue;
-
             $userInput = $options->images !== []
                 ? ImageContentBlock::buildUserContent($prompt, $options->images, $options->cwd)
                 : $prompt;
-
-            $onText = function (string $delta) use ($queue, $options): void {
-                $queue->enqueue(Message::text($delta));
-                if ($options->onText) {
-                    ($options->onText)($delta);
-                }
-                \Fiber::getCurrent()?->suspend();
-            };
-
-            $onToolStart = function (string $name, array $input) use ($queue, $options): void {
-                $queue->enqueue(Message::toolStart($name, $input));
-                if ($options->onToolStart) {
-                    ($options->onToolStart)($name, $input);
-                }
-                \Fiber::getCurrent()?->suspend();
-            };
-
-            $onToolComplete = function (string $name, $result) use ($queue, $options): void {
-                $queue->enqueue(Message::toolResult($name, $result->output, $result->isError));
-                if ($options->onToolComplete) {
-                    ($options->onToolComplete)($name, $result);
-                }
-                \Fiber::getCurrent()?->suspend();
-            };
-
-            $onTurnStart = function (int $turn) use ($queue, $options): void {
-                $queue->enqueue(Message::turn($turn));
-                if ($options->onTurnStart) {
-                    ($options->onTurnStart)($turn);
-                }
-                \Fiber::getCurrent()?->suspend();
-            };
-
-            $loop->setAutoDecisionHandler(function (Message $message) use ($queue): void {
-                $queue->enqueue($message);
-                \Fiber::getCurrent()?->suspend();
-            });
-            $autoDecisionHandlerRegistered = true;
-
-            $invocationResult = null;
-
-            $fiber = new \Fiber(function () use ($loop, $userInput, $onText, $onToolStart, $onToolComplete, $onTurnStart, $options, &$invocationResult, &$thrownException): void {
-                try {
-                    $invocationResult = (new AgentInvocation(
+            $stream = new FiberMessageStream(
+                loop: $loop,
+                operation: static function (
+                    callable $onText,
+                    callable $onToolStart,
+                    callable $onToolComplete,
+                    callable $onTurnStart,
+                ) use ($loop, $userInput, $options) {
+                    return (new AgentInvocation(
                         input: $userInput,
                         onTextDelta: $onText,
                         onToolStart: $onToolStart,
@@ -144,82 +108,28 @@ class Runner
                         onTurnStart: $onTurnStart,
                         onThinkingDelta: $options->onThinking,
                     ))->invoke($loop);
-                } catch (\Throwable $e) {
-                    $thrownException = $e;
-                }
-            });
-
-            $fiber->start();
-
-            while (! $fiber->isTerminated()) {
-                while (! $queue->isEmpty()) {
-                    yield $queue->dequeue();
-                }
-                if (! $fiber->isTerminated()) {
-                    $fiber->resume();
-                }
-            }
-
-            while (! $queue->isEmpty()) {
-                yield $queue->dequeue();
-            }
-
-            if ($thrownException instanceof HumanInterruptException) {
-                $run->preserveSandboxOnClose();
-                self::releaseTerminalStreamResources($run, $loop, $autoDecisionHandlerRegistered);
-                yield Message::interrupt($thrownException->interrupt);
-
-                return;
-            }
-            if ($thrownException !== null) {
-                self::releaseTerminalStreamResources($run, $loop, $autoDecisionHandlerRegistered);
-                yield Message::error($thrownException->getMessage());
-
-                return;
-            }
-
-            self::releaseTerminalStreamResources($run, $loop, $autoDecisionHandlerRegistered);
-            yield Message::result(
-                text: $invocationResult?->text ?? '',
-                usage: $invocationResult?->usage ?? [],
-                cost: $invocationResult?->cost ?? 0.0,
-                sessionId: $ephemeral ? null : $invocationResult?->sessionId,
+                },
+                terminalMessage: static fn ($result): Message => Message::result(
+                    text: $result->text,
+                    usage: $result->usage,
+                    cost: $result->cost,
+                    sessionId: $ephemeral ? null : $result->sessionId,
+                    terminationReason: $result->terminationReason,
+                ),
+                release: static fn () => $run->close(),
+                preserveInterrupt: static fn () => $run->preserveSandboxOnClose(),
+                onText: $options->onText,
+                onToolStart: $options->onToolStart,
+                onToolComplete: $options->onToolComplete,
+                onTurnStart: $options->onTurnStart,
             );
+
+            while (($message = $stream->nextMessage()) !== null) {
+                yield $message;
+            }
         } finally {
-            if ($fiber instanceof \Fiber && $fiber->isStarted() && ! $fiber->isTerminated()) {
-                $loop->abort();
-                // Abandonment is cancellation. Do not resume model/tool work
-                // after the caller stopped consuming the stream. Dropping the
-                // suspended fiber also works on PHP 8.1-8.3, where switching
-                // fibers from a Generator destructor is forbidden.
-                $fiber = null;
-            }
-            if ($thrownException instanceof HumanInterruptException) {
-                $run->preserveSandboxOnClose();
-            }
-            if ($autoDecisionHandlerRegistered) {
-                $loop->setAutoDecisionHandler(null);
-            }
             $run->close();
         }
-    }
-
-    /**
-     * A one-shot stream owns its SDK run. Once it has produced a terminal
-     * message, the run must not remain open merely because the caller retains
-     * the Generator at that final yield.
-     */
-    private static function releaseTerminalStreamResources(
-        SdkRun $run,
-        AgentLoop $loop,
-        bool &$autoDecisionHandlerRegistered,
-    ): void {
-        if ($autoDecisionHandlerRegistered) {
-            $loop->setAutoDecisionHandler(null);
-            $autoDecisionHandlerRegistered = false;
-        }
-
-        $run->close();
     }
 
     private static function createRun(Agent $agent, RunOptions $options): SdkRun

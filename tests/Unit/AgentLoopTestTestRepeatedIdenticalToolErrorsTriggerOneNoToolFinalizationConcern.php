@@ -73,7 +73,12 @@ trait AgentLoopTestTestRepeatedIdenticalToolErrorsTriggerOneNoToolFinalizationCo
             hookExecutor: $hookExecutor,
         );
 
-        $this->assertSame('best final answer', $loop->run('try it'));
+        $outcome = $loop->runOutcome('try it');
+        $this->assertSame('best final answer', $outcome->text);
+        $this->assertSame(
+            \HaoCode\Contracts\RunTerminationReason::RepeatedToolFailure,
+            $outcome->terminationReason,
+        );
         $this->assertSame(3, $loop->getLastRunTurns());
     }
 

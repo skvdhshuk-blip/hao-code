@@ -25,7 +25,7 @@ class TeamCollectTool extends BaseTool
             'type' => 'object',
             'properties' => ['name' => ['type' => 'string', 'description' => 'Team name']],
             'required' => ['name'],
-        ], ['name' => 'required|string']);
+        ]);
     }
 
     public function call(array $input, ToolUseContext $context): ToolResult

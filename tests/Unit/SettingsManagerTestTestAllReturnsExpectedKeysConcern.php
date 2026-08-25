@@ -2,7 +2,6 @@
 
 namespace Tests\Unit;
 
-use HaoCode\Services\Settings\SettingsManager;
 use Tests\TestCase;
 
 trait SettingsManagerTestTestAllReturnsExpectedKeysConcern
@@ -318,10 +317,7 @@ trait SettingsManagerTestTestAllReturnsExpectedKeysConcern
 
         $settings = new SettingsManager;
 
-        $ref = new \ReflectionClass($settings);
-        $cachedSettings = $ref->getProperty('cachedSettings');
-        $cachedSettings->setAccessible(true);
-        $cachedSettings->setValue($settings, [
+        $settings->useCachedSettings([
             'provider' => [
                 'anthropic' => [
                     'api_key' => 'anthropic-key',
@@ -432,8 +428,7 @@ trait SettingsManagerTestTestAllReturnsExpectedKeysConcern
     public function test_active_provider_switch_replaces_the_complete_connection_identity(): void
     {
         $settings = new SettingsManager;
-        $reflection = new \ReflectionObject($settings);
-        $reflection->getProperty('cachedSettings')->setValue($settings, [
+        $settings->useCachedSettings([
             'active_provider' => 'anthropic-main',
             'provider' => [
                 'anthropic-main' => [

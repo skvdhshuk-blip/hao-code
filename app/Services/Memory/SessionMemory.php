@@ -16,12 +16,13 @@ class SessionMemory
 {
     private ?array $memories = null;
     private string $path;
-    private ?TieredSummarizer $summarizer = null;
+    private ?TieredSummarizer $summarizer;
 
     private ?string $loadedFileSignature = null;
 
-    public function __construct(?string $storagePath = null)
+    public function __construct(?string $storagePath = null, ?TieredSummarizer $summarizer = null)
     {
+        $this->summarizer = $summarizer;
         if ($storagePath !== null) {
             $this->path = $storagePath;
         } else {

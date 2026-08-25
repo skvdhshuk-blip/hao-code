@@ -20,13 +20,13 @@ final class BudgetLedger
         private readonly string $path,
     ) {}
 
-    public static function create(float $limit): self
+    public static function create(float $limit, string $directory): self
     {
         if (! is_finite($limit) || $limit < 0) {
             throw new \InvalidArgumentException('Budget limit must be a non-negative finite amount.');
         }
 
-        $directory = self::directory();
+        self::assertDirectory($directory);
         self::ensureDirectory($directory);
         self::collectGarbage($directory);
 
@@ -37,7 +37,7 @@ final class BudgetLedger
         return $ledger;
     }
 
-    public static function resume(string $id, float $limit, float $minimumSpent = 0.0): self
+    public static function resume(string $id, float $limit, string $directory, float $minimumSpent = 0.0): self
     {
         if (preg_match('/^[a-f0-9]{32}$/', $id) !== 1) {
             throw new \InvalidArgumentException('Invalid budget ledger id.');
@@ -46,7 +46,7 @@ final class BudgetLedger
             throw new \InvalidArgumentException('Budget limit must be a non-negative finite amount.');
         }
 
-        $directory = self::directory();
+        self::assertDirectory($directory);
         self::ensureDirectory($directory);
         $path = $directory.'/budget-'.$id.'.json';
 
@@ -293,9 +293,11 @@ final class BudgetLedger
         }
     }
 
-    private static function directory(): string
+    private static function assertDirectory(string $directory): void
     {
-        return \HaoCode\Support\Runtime\SdkRuntime::storagePath('app/haocode/budgets');
+        if (trim($directory) === '') {
+            throw new \InvalidArgumentException('Budget ledger directory must be injected.');
+        }
     }
 
     private static function ensureDirectory(string $directory): void

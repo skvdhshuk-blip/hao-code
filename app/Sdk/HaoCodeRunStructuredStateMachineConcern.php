@@ -283,6 +283,7 @@ trait HaoCodeRunStructuredStateMachineConcern
                 cost: $result->cost,
                 sessionId: $config->ephemeral ? null : $result->sessionId,
                 turnsUsed: $result->turnsUsed,
+                terminationReason: $result->terminationReason,
             );
         } finally {
             $run->close();

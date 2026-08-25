@@ -127,16 +127,6 @@ PROMPT;
 
     private function defaultTranscriptDir(): string
     {
-        $configuredPath = $this->configuredSessionPath();
-        if ($configuredPath !== null) {
-            return $configuredPath;
-        }
-
-        $storagePath = $this->storageSessionPath();
-        if ($storagePath !== null) {
-            return $storagePath;
-        }
-
         $storagePath = $_SERVER['HAOCODE_STORAGE_PATH'] ?? getenv('HAOCODE_STORAGE_PATH') ?: null;
         if (is_string($storagePath) && $storagePath !== '') {
             return rtrim($storagePath, '/\\').'/app/haocode/sessions';
@@ -145,35 +135,5 @@ PROMPT;
         $home = $_SERVER['HOME'] ?? getenv('HOME') ?: sys_get_temp_dir();
 
         return rtrim($home, '/\\').'/.haocode/storage/app/haocode/sessions';
-    }
-
-    private function configuredSessionPath(): ?string
-    {
-        if (! function_exists('config')) {
-            return null;
-        }
-
-        try {
-            $path = \HaoCode\Support\Runtime\SdkRuntime::config('haocode.session_path');
-        } catch (\Throwable) {
-            return null;
-        }
-
-        return is_string($path) && $path !== '' ? $path : null;
-    }
-
-    private function storageSessionPath(): ?string
-    {
-        if (! function_exists('storage_path')) {
-            return null;
-        }
-
-        try {
-            $path = \HaoCode\Support\Runtime\SdkRuntime::storagePath('app/haocode/sessions');
-        } catch (\Throwable) {
-            return null;
-        }
-
-        return is_string($path) && $path !== '' ? $path : null;
     }
 }

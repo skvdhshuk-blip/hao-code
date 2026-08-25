@@ -4,6 +4,9 @@ declare(strict_types=1);
 
 namespace HaoCode\Services\Agent;
 
+use HaoCode\Contracts\RunTerminationReason;
+use HaoCode\Services\Run\RunStatus;
+
 /** @internal */
 final class AgentInvocationResult
 {
@@ -19,12 +22,14 @@ final class AgentInvocationResult
         public readonly float $localCost,
         public readonly ?string $sessionId,
         public readonly int $turnsUsed,
+        public readonly RunStatus $status,
+        public readonly RunTerminationReason $terminationReason,
     ) {}
 
-    public static function capture(string $text, AgentLoop $loop): self
+    public static function capture(AgentRunOutcome $outcome, AgentLoop $loop): self
     {
         return new self(
-            $text,
+            $outcome->text,
             [
                 'input_tokens' => $loop->getTotalInputTokens(),
                 'output_tokens' => $loop->getTotalOutputTokens(),
@@ -41,6 +46,8 @@ final class AgentInvocationResult
             $loop->getLocalEstimatedCost(),
             $loop->getSessionManager()->getSessionId(),
             $loop->getLastRunTurns(),
+            $outcome->status,
+            $outcome->terminationReason,
         );
     }
 }

@@ -143,9 +143,7 @@ class ConfigToolTest extends TestCase
 
     private function makeToolWithSettings(SettingsManager $settings): ConfigTool
     {
-        // Bind mock to the container
-        app()->instance(SettingsManager::class, $settings);
-        return new ConfigTool;
+        return new ConfigTool($settings);
     }
 
     public function test_call_get_all_returns_current_settings(): void

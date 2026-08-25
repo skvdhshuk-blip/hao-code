@@ -13,6 +13,7 @@ final class SettingsFileStore
 {
     public function __construct(
         private readonly ?string $workingDirectory = null,
+        private readonly ?string $globalSettingsPath = null,
     ) {}
 
     /**
@@ -24,8 +25,7 @@ final class SettingsFileStore
         $projectDirectory = $this->workingDirectory ?? (getcwd() ?: '/');
 
         return [
-            'global' => \HaoCode\Support\Runtime\SdkRuntime::config('haocode.global_settings_path')
-                ?: $home.'/.haocode/settings.json',
+            'global' => $this->globalSettingsPath ?: $home.'/.haocode/settings.json',
             'project' => rtrim($projectDirectory, '/').'/.haocode/settings.json',
         ];
     }

@@ -5,7 +5,6 @@ declare(strict_types=1);
 namespace HaoCode\Services\Agent;
 
 use HaoCode\Services\Git\GitContext;
-use HaoCode\Support\Runtime\SdkRuntime;
 
 /**
  * Coding-only context layered onto the generic agent prompt assembly.
@@ -22,6 +21,7 @@ final class CodingContextPreset implements ContextPresetInterface
         private readonly GitContext $gitContext,
         private readonly ?string $workingDirectory = null,
         private readonly bool $omitProjectInstructions = false,
+        private readonly ?string $systemPromptPath = null,
     ) {}
 
     public function beginSnapshot(): void
@@ -36,7 +36,7 @@ final class CodingContextPreset implements ContextPresetInterface
 
     public function defaultSystemPrompt(): string
     {
-        $path = SdkRuntime::resourcePath('prompts/system.md');
+        $path = $this->systemPromptPath ?? dirname(__DIR__, 3).'/resources/prompts/system.md';
         if (file_exists($path)) {
             return file_get_contents($path);
         }

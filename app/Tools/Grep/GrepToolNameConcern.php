@@ -55,14 +55,17 @@ DESC;
                 ],
                 '-A' => [
                     'type' => 'integer',
+                    'minimum' => 0,
                     'description' => 'Number of lines after match',
                 ],
                 '-B' => [
                     'type' => 'integer',
+                    'minimum' => 0,
                     'description' => 'Number of lines before match',
                 ],
                 '-C' => [
                     'type' => 'integer',
+                    'minimum' => 0,
                     'description' => 'Context lines before and after match',
                 ],
                 '-i' => [
@@ -71,6 +74,7 @@ DESC;
                 ],
                 'head_limit' => [
                     'type' => 'integer',
+                    'minimum' => 0,
                     'description' => 'Limit output to first N entries',
                 ],
                 'type' => [
@@ -83,23 +87,11 @@ DESC;
                 ],
                 'offset' => [
                     'type' => 'integer',
+                    'minimum' => 0,
                     'description' => 'Skip first N entries before applying head_limit. Default: 0.',
                 ],
             ],
             'required' => ['pattern'],
-        ], [
-            'pattern' => 'required|string',
-            'path' => 'nullable|string',
-            'glob' => 'nullable|string',
-            'output_mode' => 'nullable|string|in:content,files_with_matches,count',
-            '-A' => 'nullable|integer|min:0',
-            '-B' => 'nullable|integer|min:0',
-            '-C' => 'nullable|integer|min:0',
-            '-i' => 'nullable|boolean',
-            'head_limit' => 'nullable|integer|min:0',
-            'type' => 'nullable|string',
-            'multiline' => 'nullable|boolean',
-            'offset' => 'nullable|integer|min:0',
         ]);
     }
 

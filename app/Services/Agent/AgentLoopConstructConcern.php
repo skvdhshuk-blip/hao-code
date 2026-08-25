@@ -43,6 +43,11 @@ trait AgentLoopConstructConcern
     ) {
         $this->cancellationToken = $cancellationToken ?? new CancellationToken();
         $this->responseRetryPolicy = new AgentResponseRetryPolicy($toolRegistry);
+        $this->runStateLifecycle = new RunStateLifecycle($runJournal);
+        $this->snapshotCoordinator = new AgentSnapshotCoordinator;
+        $this->transcriptLifecycle = new AgentTranscriptLifecycle($sessionManager, $toolOrchestrator);
+        $this->repeatedToolFailureDetector = new RepeatedToolFailureDetector;
+        $this->finalResponseCoordinator = new AgentFinalResponseCoordinator;
     }
 
     private function responseRetryPolicy(): AgentResponseRetryPolicy
@@ -192,8 +197,27 @@ trait AgentLoopConstructConcern
         ?callable $onTurnStart = null,
         ?callable $onThinkingDelta = null,
     ): string {
-        $this->assertDurableConversationUsable();
-        $inputEvent = $this->beginRunState($userInput);
+        return $this->runOutcome(
+            $userInput,
+            $onTextDelta,
+            $onToolStart,
+            $onToolComplete,
+            $onTurnStart,
+            $onThinkingDelta,
+        )->text;
+    }
+
+    /** @internal */
+    public function runOutcome(
+        string|array $userInput,
+        ?callable $onTextDelta = null,
+        ?callable $onToolStart = null,
+        ?callable $onToolComplete = null,
+        ?callable $onTurnStart = null,
+        ?callable $onThinkingDelta = null,
+    ): AgentRunOutcome {
+        $this->transcriptLifecycle->assertUsable();
+        $inputEvent = $this->runStateLifecycle->begin($userInput);
         $originalModel = $this->runContext?->settings->getModel();
         $this->runBaseModel = $originalModel;
         $this->toolOrchestrator->resetSkillScope();
@@ -209,18 +233,18 @@ trait AgentLoopConstructConcern
         $agentScope = $agentSpan?->activate();
 
         try {
-            $output = $this->runInternal($userInput, $onTextDelta, $onToolStart, $onToolComplete, $onTurnStart, $onThinkingDelta);
+            $outcome = $this->runInternal($userInput, $onTextDelta, $onToolStart, $onToolComplete, $onTurnStart, $onThinkingDelta);
             // Route through PhoenixTracer::setAttribute so redact_messages
             // masks the agent's final answer; a direct setAttribute bypasses
             // the sanitizer that startSpan() applies to its initial attributes.
-            $this->tracer?->setAttribute($agentSpan, 'output.value', $output);
+            $this->tracer?->setAttribute($agentSpan, 'output.value', $outcome->text);
             $this->tracer?->setAttribute($agentSpan, 'llm.token_count.prompt', $this->totalInputTokens);
             $this->tracer?->setAttribute($agentSpan, 'llm.token_count.completion', $this->totalOutputTokens);
-            $this->completeRunState($output);
+            $this->completeRunOutcome($outcome);
 
-            return $output;
+            return $outcome;
         } catch (\Throwable $e) {
-            $this->failRunState($e);
+            $this->failRunOutcome($e);
             $this->tracer?->recordException($agentSpan, $e);
             throw $e;
         } finally {
@@ -250,7 +274,28 @@ trait AgentLoopConstructConcern
         ?callable $onTurnStart = null,
         ?callable $onThinkingDelta = null,
     ): string {
-        $this->assertDurableConversationUsable();
+        return $this->resumeInterruptOutcome(
+            $interruptId,
+            $decisions,
+            $onTextDelta,
+            $onToolStart,
+            $onToolComplete,
+            $onTurnStart,
+            $onThinkingDelta,
+        )->text;
+    }
+
+    /** @internal */
+    public function resumeInterruptOutcome(
+        string $interruptId,
+        array $decisions,
+        ?callable $onTextDelta = null,
+        ?callable $onToolStart = null,
+        ?callable $onToolComplete = null,
+        ?callable $onTurnStart = null,
+        ?callable $onThinkingDelta = null,
+    ): AgentRunOutcome {
+        $this->transcriptLifecycle->assertUsable();
         $originalModel = $this->runContext?->settings->getModel();
         $this->runBaseModel = $originalModel;
         $restoredModelOverride = $this->toolOrchestrator->getActiveSkillModelOverride();
@@ -267,10 +312,10 @@ trait AgentLoopConstructConcern
                 $this->lastRunTurns = 0;
                 $this->abort();
 
-                $output = '(aborted)';
-                $this->completeRunState($output);
+                $outcome = AgentRunOutcome::cancelled();
+                $this->completeRunOutcome($outcome);
 
-                return $output;
+                return $outcome;
             }
             $context = $this->toolUseContext ??= new ToolUseContext(
                 workingDirectory: $this->workingDirectory ?? (getcwd() ?: '/'),
@@ -293,7 +338,7 @@ trait AgentLoopConstructConcern
                     $onToolStart,
                     $onToolComplete,
                     function () use ($interruptId, $decisions): void {
-                        $this->resumeRunState($interruptId, $decisions);
+                        $this->runStateLifecycle->resume($interruptId, $decisions);
                     },
                 );
                 $this->interruptSourceAgentId = $resolution['interrupt']->sourceAgentId;
@@ -308,12 +353,12 @@ trait AgentLoopConstructConcern
                 }
             }
 
-            $output = $this->runInternal(null, $onTextDelta, $onToolStart, $onToolComplete, $onTurnStart, $onThinkingDelta);
-            $this->completeRunState($output);
+            $outcome = $this->runInternal(null, $onTextDelta, $onToolStart, $onToolComplete, $onTurnStart, $onThinkingDelta);
+            $this->completeRunOutcome($outcome);
 
-            return $output;
+            return $outcome;
         } catch (\Throwable $error) {
-            $this->failRunState($error);
+            $this->failRunOutcome($error);
             throw $error;
         } finally {
             if ($originalModel !== null && $this->toolOrchestrator->getActiveSkillModelOverride() !== null) {
@@ -364,7 +409,7 @@ trait AgentLoopConstructConcern
             $onToolStart,
             $onToolComplete,
             function () use ($interrupt, $batch): void {
-                $this->resumeRunState($interrupt->id, $batch['decisions']);
+                $this->runStateLifecycle->resume($interrupt->id, $batch['decisions']);
             },
         );
 
@@ -405,6 +450,10 @@ trait AgentLoopConstructConcern
         $reviewer = null;
         if ($mode === 'smart') {
             $settings = $this->runContext?->settings;
+            $structuredRunner = $this->runContext?->hitlStructuredRunner;
+            if ($structuredRunner === null) {
+                throw new \LogicException('Smart HITL requires an injected structured runner.');
+            }
             $apiKey = $settings?->getApiKey();
             $baseUrl = $settings?->getBaseUrl();
             $providerType = $settings?->getProviderType();
@@ -415,7 +464,7 @@ trait AgentLoopConstructConcern
                 'providerType' => is_string($providerType) && trim($providerType) !== '' ? trim($providerType) : null,
                 'maxBudgetUsd' => $this->runContext?->budgetLedger?->getLimit(),
                 'oauthBearer' => null,
-            ], $cwd, usageAccumulator: $this->runContext?->usageAccumulator, budgetLedger: $this->runContext?->budgetLedger);
+            ], $cwd, $structuredRunner, $this->runContext?->usageAccumulator, $this->runContext?->budgetLedger);
         }
 
         return $this->interruptDecider = new SmartInterruptDecider(

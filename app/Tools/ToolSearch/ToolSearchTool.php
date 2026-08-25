@@ -10,6 +10,8 @@ use HaoCode\Tools\ToolUseContext;
 
 class ToolSearchTool extends BaseTool
 {
+    public function __construct(private readonly ?ToolRegistry $registry = null) {}
+
     public function name(): string { return 'ToolSearch'; }
 
     public function description(): string
@@ -28,13 +30,16 @@ class ToolSearchTool extends BaseTool
                 ],
             ],
             'required' => ['query'],
-        ], ['query' => 'required|string']);
+        ]);
     }
 
     public function call(array $input, ToolUseContext $context): ToolResult
     {
         $query = strtolower(trim((string) $input['query']));
-        $registry = \HaoCode\Support\Runtime\SdkRuntime::app(ToolRegistry::class);
+        $registry = $context->toolRegistry ?? $this->registry;
+        if ($registry === null) {
+            return ToolResult::error('ToolSearch requires an injected tool registry.');
+        }
         $tools = $registry->getAllTools();
         $keywords = $this->keywords($query);
 

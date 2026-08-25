@@ -26,7 +26,7 @@ class BudgetLedgerTest extends TestCase
 
     public function test_trackers_share_one_process_safe_budget_and_resume_it(): void
     {
-        $ledger = BudgetLedger::create(1.0);
+        $ledger = BudgetLedger::create(1.0, $this->budgetDirectory());
         $first = new CostTracker(0.8, 1.0, $ledger);
         $second = new CostTracker(0.8, 1.0, $ledger);
 
@@ -38,7 +38,7 @@ class BudgetLedgerTest extends TestCase
         $this->assertTrue($first->shouldStop());
         $this->assertTrue($second->shouldStop());
 
-        $resumed = BudgetLedger::resume($ledger->getId(), 1.0);
+        $resumed = BudgetLedger::resume($ledger->getId(), 1.0, $this->budgetDirectory());
         $third = new CostTracker(0.8, 1.0, $resumed);
         $this->assertEqualsWithDelta(1.2, $third->getTotalCost(), 0.0001);
         $this->assertTrue($third->shouldStop());
@@ -46,19 +46,19 @@ class BudgetLedgerTest extends TestCase
 
     public function test_resume_can_tighten_budget_but_not_widen_it(): void
     {
-        $ledger = BudgetLedger::create(10.0);
+        $ledger = BudgetLedger::create(10.0, $this->budgetDirectory());
         $ledger->add(1.0);
 
-        $tight = BudgetLedger::resume($ledger->getId(), 5.0);
+        $tight = BudgetLedger::resume($ledger->getId(), 5.0, $this->budgetDirectory());
         $this->assertEqualsWithDelta(5.0, $tight->getLimit(), 0.0001);
         $this->assertEqualsWithDelta(1.0, $tight->getSpent(), 0.0001);
         $this->assertFalse($tight->shouldStop());
 
-        $attemptWiden = BudgetLedger::resume($ledger->getId(), 10.0);
+        $attemptWiden = BudgetLedger::resume($ledger->getId(), 10.0, $this->budgetDirectory());
         $this->assertEqualsWithDelta(5.0, $attemptWiden->getLimit(), 0.0001);
         $this->assertEqualsWithDelta(1.0, $attemptWiden->getSpent(), 0.0001);
 
-        $over = BudgetLedger::resume($ledger->getId(), 5.0, 6.0);
+        $over = BudgetLedger::resume($ledger->getId(), 5.0, $this->budgetDirectory(), 6.0);
         $this->assertEqualsWithDelta(6.0, $over->getSpent(), 0.0001);
         $this->assertTrue($over->shouldStop());
     }
@@ -66,10 +66,10 @@ class BudgetLedgerTest extends TestCase
     public function test_pre_tighten_holder_add_cannot_re_widen_disk_limit(): void
     {
         // create(10) → resume(5) → original->add() must leave disk limit at 5.
-        $original = BudgetLedger::create(10.0);
+        $original = BudgetLedger::create(10.0, $this->budgetDirectory());
         $this->assertEqualsWithDelta(10.0, $original->getLimit(), 0.0001);
 
-        $tight = BudgetLedger::resume($original->getId(), 5.0);
+        $tight = BudgetLedger::resume($original->getId(), 5.0, $this->budgetDirectory());
         $this->assertEqualsWithDelta(5.0, $tight->getLimit(), 0.0001);
 
         $original->add(0.5);
@@ -95,7 +95,7 @@ class BudgetLedgerTest extends TestCase
 
     public function test_stale_ledgers_are_collected_and_can_be_rebuilt_from_a_checkpoint(): void
     {
-        $ledger = BudgetLedger::create(1.0);
+        $ledger = BudgetLedger::create(1.0, $this->budgetDirectory());
         $directory = SdkRuntime::storagePath('app/haocode/budgets');
         $path = $directory.'/budget-'.$ledger->getId().'.json';
         $expired = time() - (100 * 86400);
@@ -103,11 +103,11 @@ class BudgetLedgerTest extends TestCase
         touch($directory.'/.gc', $expired);
         file_put_contents($directory.'/.gc', (string) $expired);
 
-        BudgetLedger::create(2.0);
+        BudgetLedger::create(2.0, $this->budgetDirectory());
 
         $this->assertFileDoesNotExist($path);
 
-        $resumed = BudgetLedger::resume($ledger->getId(), 1.0, 0.4);
+        $resumed = BudgetLedger::resume($ledger->getId(), 1.0, $this->budgetDirectory(), 0.4);
         $this->assertFileExists($path);
         $this->assertEqualsWithDelta(0.4, $resumed->getSpent(), 0.0001);
     }
@@ -126,5 +126,10 @@ class BudgetLedgerTest extends TestCase
             $item->isDir() ? @rmdir($item->getPathname()) : @unlink($item->getPathname());
         }
         @rmdir($directory);
+    }
+
+    private function budgetDirectory(): string
+    {
+        return $this->storagePath.'/app/haocode/budgets';
     }
 }

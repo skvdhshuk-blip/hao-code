@@ -38,9 +38,6 @@ class ExitWorktreeTool extends BaseTool
                 ],
             ],
             'required' => ['action'],
-        ], [
-            'action' => 'required|string|in:keep,remove',
-            'discard_changes' => 'nullable|boolean',
         ]);
     }
 

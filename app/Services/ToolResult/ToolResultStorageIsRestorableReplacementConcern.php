@@ -3,7 +3,6 @@
 namespace HaoCode\Services\ToolResult;
 
 use HaoCode\Support\Filesystem\CanonicalPathResolver;
-use HaoCode\Support\Runtime\SdkRuntime;
 
 trait ToolResultStorageIsRestorableReplacementConcern
 {

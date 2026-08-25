@@ -11,7 +11,10 @@ class CostTrackerTest extends TestCase
     public function test_budgeted_tracker_keeps_the_priced_request_model_for_an_unknown_response_alias(): void
     {
         $tracker = new CostTracker(
-            budgetLedger: \HaoCode\Services\Cost\BudgetLedger::create(1.0),
+            budgetLedger: \HaoCode\Services\Cost\BudgetLedger::create(
+                1.0,
+                sys_get_temp_dir().'/haocode-cost-tracker-'.getmypid(),
+            ),
         );
         $tracker->setProviderContext('anthropic', 'claude-sonnet-4-6');
         $tracker->setResponseModel('unpriced-provider-alias');

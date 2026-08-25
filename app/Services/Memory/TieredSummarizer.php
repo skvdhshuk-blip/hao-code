@@ -2,6 +2,7 @@
 
 namespace HaoCode\Services\Memory;
 
+use HaoCode\Services\Settings\SettingsManager;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
 /**
@@ -18,6 +19,7 @@ class TieredSummarizer
 
     public function __construct(
         private readonly ?HttpClientInterface $httpClient = null,
+        private readonly ?SettingsManager $settings = null,
     ) {}
 
     /**
@@ -231,17 +233,12 @@ class TieredSummarizer
      */
     private function resolveProviderConfig(): ?array
     {
-        // Route through SettingsManager when the SDK runtime is available; this
-        // correctly reads the active provider's api_key/base_url/model/type
-        // from settings.json (including nested provider.<name> entries).
-        if (function_exists('app')) {
+        if ($this->settings !== null) {
             try {
-                /** @var \HaoCode\Services\Settings\SettingsManager $settings */
-                $settings = \HaoCode\Support\Runtime\SdkRuntime::app(\HaoCode\Services\Settings\SettingsManager::class);
-                $apiKey = $settings->getApiKey();
-                $baseUrl = $settings->getBaseUrl();
-                $model = $settings->getModel();
-                $providerType = $settings->getProviderType();
+                $apiKey = $this->settings->getApiKey();
+                $baseUrl = $this->settings->getBaseUrl();
+                $model = $this->settings->getModel();
+                $providerType = $this->settings->getProviderType();
                 $isAnthropic = $providerType === 'anthropic';
 
                 if ($apiKey !== '') {
@@ -259,37 +256,16 @@ class TieredSummarizer
             } catch (\Throwable) {}
         }
 
-        // Fallback: env vars and config
+        // Standalone fallback: environment only. SDK configuration must be
+        // supplied through the injected immutable SettingsManager snapshot.
         $key = $_ENV['ANTHROPIC_API_KEY'] ?? $_SERVER['ANTHROPIC_API_KEY'] ?? null;
-        if (function_exists('config')) {
-            try {
-                $key = $key ?: \HaoCode\Support\Runtime\SdkRuntime::config('haocode.api_key');
-            } catch (\Throwable) {}
-        }
 
         if (! is_string($key) || $key === '') {
             return null;
         }
 
         $baseUrl = 'https://api.anthropic.com';
-        if (function_exists('config')) {
-            try {
-                $url = \HaoCode\Support\Runtime\SdkRuntime::config('haocode.api_base_url');
-                if (is_string($url) && $url !== '') {
-                    $baseUrl = $url;
-                }
-            } catch (\Throwable) {}
-        }
-
         $model = 'claude-haiku-4-5-20251001';
-        if (function_exists('config')) {
-            try {
-                $m = \HaoCode\Support\Runtime\SdkRuntime::config('haocode.model');
-                if (is_string($m) && $m !== '') {
-                    $model = $m;
-                }
-            } catch (\Throwable) {}
-        }
 
         $isAnthropic = str_contains($baseUrl, 'anthropic');
 

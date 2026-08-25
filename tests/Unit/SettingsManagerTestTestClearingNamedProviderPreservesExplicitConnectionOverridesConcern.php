@@ -2,7 +2,6 @@
 
 namespace Tests\Unit;
 
-use HaoCode\Services\Settings\SettingsManager;
 use Tests\TestCase;
 
 trait SettingsManagerTestTestClearingNamedProviderPreservesExplicitConnectionOverridesConcern
@@ -28,8 +27,7 @@ trait SettingsManagerTestTestClearingNamedProviderPreservesExplicitConnectionOve
     public function test_qualified_model_switch_replaces_the_complete_connection_identity(): void
     {
         $settings = new SettingsManager;
-        $reflection = new \ReflectionObject($settings);
-        $reflection->getProperty('cachedSettings')->setValue($settings, [
+        $settings->useCachedSettings([
             'active_provider' => 'anthropic-main',
             'provider' => [
                 'anthropic-main' => [
@@ -63,8 +61,7 @@ trait SettingsManagerTestTestClearingNamedProviderPreservesExplicitConnectionOve
     public function test_rejected_runtime_provider_switch_rolls_back_every_override(): void
     {
         $settings = new SettingsManager;
-        $reflection = new \ReflectionObject($settings);
-        $reflection->getProperty('cachedSettings')->setValue($settings, [
+        $settings->useCachedSettings([
             'active_provider' => 'anthropic-main',
             'provider' => [
                 'anthropic-main' => [

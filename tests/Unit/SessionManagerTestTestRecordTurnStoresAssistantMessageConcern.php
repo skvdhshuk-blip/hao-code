@@ -2,7 +2,6 @@
 
 namespace Tests\Unit;
 
-use HaoCode\Services\Session\SessionManager;
 use Tests\TestCase;
 
 trait SessionManagerTestTestRecordTurnStoresAssistantMessageConcern

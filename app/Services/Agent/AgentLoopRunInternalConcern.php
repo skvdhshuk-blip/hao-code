@@ -5,17 +5,6 @@ namespace HaoCode\Services\Agent;
 use HaoCode\Sdk\HumanInterrupt;
 use HaoCode\Sdk\HumanInterruptException;
 use HaoCode\Sdk\HumanActionRequest;
-use HaoCode\Services\Compact\ContextCompactor;
-use HaoCode\Services\Cost\CostTracker;
-use HaoCode\Services\Hitl\HitlAllowlist;
-use HaoCode\Services\Hitl\HitlReviewer;
-use HaoCode\Services\Hitl\SmartInterruptDecider;
-use HaoCode\Services\Hooks\HookExecutor;
-use HaoCode\Services\Permissions\PermissionChecker;
-use HaoCode\Services\Session\SessionManager;
-use HaoCode\Services\Telemetry\PhoenixTracer;
-use HaoCode\Services\ToolResult\ToolResultStorage;
-use HaoCode\Tools\ToolRegistry;
 use HaoCode\Tools\ToolUseContext;
 
 trait AgentLoopRunInternalConcern
@@ -30,21 +19,22 @@ trait AgentLoopRunInternalConcern
         ?callable $onToolComplete,
         ?callable $onTurnStart,
         ?callable $onThinkingDelta = null,
-    ): string {
+    ): AgentRunOutcome {
         $this->aborted = false;
         $this->cancellationToken->reset();
         $this->interruptDecider = null;
         $this->interruptDeciderResolved = false;
+        $retryPolicy = $this->responseRetryPolicy();
         $this->lastRunTurns = 0;
         if ($this->abortRequestedChecker !== null && ($this->abortRequestedChecker)()) {
             $this->abort();
-            return '(aborted)';
+            return AgentRunOutcome::cancelled();
         }
         if ($this->isCancellationRequested()) {
-            return '(aborted)';
+            return AgentRunOutcome::cancelled();
         }
         if ($this->costTracker->shouldStop()) {
-            return '(Cost limit reached: '.$this->costTracker->getSummary().')';
+            return AgentRunOutcome::budgetExhausted($this->costTracker->getSummary());
         }
         if (is_string($userInput)) {
             $this->lastUserPrompt = $userInput;
@@ -57,12 +47,17 @@ trait AgentLoopRunInternalConcern
             $modelInput = $isSessionStart
                 ? $this->withInitialTurnContext($userInput)
                 : $userInput;
-            $this->recordUserInputEnvelope($userInput, $modelInput, $isSessionStart);
+            $this->transcriptLifecycle->recordUserInput(
+                $userInput,
+                $modelInput,
+                $isSessionStart,
+                $this->messageHistory,
+            );
         }
         // Fire SessionStart hook on the very first user turn
         if ($isSessionStart) {
             $this->sessionStarted = true;
-            $this->initializeDurableToolResultStorage();
+            $this->transcriptLifecycle->bindToolResultStorage();
             $this->hookExecutor?->execute('SessionStart', [
                 'session_id' => $this->sessionManager->getSessionId(),
             ]);
@@ -80,10 +75,10 @@ trait AgentLoopRunInternalConcern
                 ($this->eventPump)();
             }
             if ($this->isCancellationRequested()) {
-                return '(aborted)';
+                return AgentRunOutcome::cancelled();
             }
             if ($this->costTracker->shouldStop()) {
-                return '(Cost limit reached: '.$this->costTracker->getSummary().')';
+                return AgentRunOutcome::budgetExhausted($this->costTracker->getSummary());
             }
             $this->synchronizeRuntimeContextBudget();
             $turnCount++;
@@ -172,7 +167,7 @@ trait AgentLoopRunInternalConcern
                 if ($this->isCancellationRequested()) {
                     $streamingExecutor->cleanup();
 
-                    return '(aborted)';
+                    return AgentRunOutcome::cancelled();
                 }
 
                 // 5. Track usage
@@ -194,7 +189,7 @@ trait AgentLoopRunInternalConcern
                 if ($this->costTracker->shouldStop()) {
                     $streamingExecutor->cleanup();
 
-                    return '(Cost limit reached: '.$this->costTracker->getSummary().')';
+                    return AgentRunOutcome::budgetExhausted($this->costTracker->getSummary());
                 }
 
                 $assistantMessage = $processor->toAssistantMessage();
@@ -203,17 +198,23 @@ trait AgentLoopRunInternalConcern
 
                 // 6. Check if we need to execute tools
                 if ($toolCalls === []) {
-                    $skipIncompleteAssistantHistory = $this->shouldSkipIncompleteAssistantHistory($assistantMessage);
-                    if ($this->shouldRetryIncompleteAssistantResponse(
+                    $skipIncompleteAssistantHistory = $retryPolicy
+                        ->shouldSkipIncompleteAssistantHistory($assistantMessage);
+                    if ($retryPolicy->shouldRetryIncompleteAssistantResponse(
                         $processor,
                         $assistantMessage,
                         $stopReason,
                         $incompleteResponseRetries,
+                        $this->maxIncompleteResponseRetries,
                     )) {
                         $incompleteResponseRetries++;
-                        $this->recordIncompleteAssistantResponse($assistantMessage, $skipIncompleteAssistantHistory);
+                        if (! $skipIncompleteAssistantHistory
+                            && $retryPolicy->assistantMessageHasVisibleContent($assistantMessage)) {
+                            $this->messageHistory->addAssistantMessage($assistantMessage);
+                            $this->transcriptLifecycle->persistTurn($assistantMessage, []);
+                        }
                         $this->messageHistory->addUserMessage(
-                            $this->buildIncompleteResponseRetryInstruction(
+                            $retryPolicy->buildIncompleteResponseRetryInstruction(
                                 $stopReason,
                                 $incompleteResponseRetries,
                                 $skipIncompleteAssistantHistory,
@@ -224,7 +225,7 @@ trait AgentLoopRunInternalConcern
                         continue;
                     }
 
-                    if (! $this->assistantMessageHasVisibleContent($assistantMessage)) {
+                    if (! $retryPolicy->assistantMessageHasTextContent($assistantMessage)) {
                         $streamingExecutor->cleanup();
 
                         throw new \RuntimeException(
@@ -234,20 +235,22 @@ trait AgentLoopRunInternalConcern
 
                     $incompleteResponseRetries = 0;
                     $this->messageHistory->addAssistantMessage($assistantMessage);
-                    $this->persistAssistantTurn($assistantMessage, []);
+                    $this->transcriptLifecycle->persistTurn($assistantMessage, []);
                     $this->hookExecutor?->execute('Stop', [
                         'session_id' => $this->sessionManager->getSessionId(),
                         'turn' => $turnCount,
                     ]);
 
-                    return $processor->getAccumulatedText();
+                    return AgentRunOutcome::normal($processor->getAccumulatedText());
                 }
 
-                $malformedToolUseFailures = $this->findMalformedToolUseFailures($toolCalls, $context);
+                $malformedToolUseFailures = $retryPolicy
+                    ->findMalformedToolUseFailures($toolCalls, $context);
                 if ($malformedToolUseFailures !== []) {
                     $streamingExecutor->cleanup();
 
-                    $failureSignature = $this->malformedFailureSignature($malformedToolUseFailures);
+                    $failureSignature = $retryPolicy
+                        ->malformedFailureSignature($malformedToolUseFailures);
                     $signatureRetries = $malformedToolInputRetries[$failureSignature] ?? 0;
 
                     if ($signatureRetries < $this->maxMalformedToolInputRetries
@@ -255,20 +258,21 @@ trait AgentLoopRunInternalConcern
                         $signatureRetries++;
                         $totalMalformedToolInputRetries++;
                         $malformedToolInputRetries[$failureSignature] = $signatureRetries;
-                        $assistantMessage = $this->sanitizeMalformedToolAssistantMessage(
+                        $assistantMessage = $retryPolicy->sanitizeMalformedToolAssistantMessage(
                             $assistantMessage,
                             $malformedToolUseFailures,
                         );
-                        $toolResults = $this->buildMalformedToolRetryResults($malformedToolUseFailures);
+                        $toolResults = $retryPolicy
+                            ->buildMalformedToolRetryResults($malformedToolUseFailures);
                         $this->messageHistory->addAssistantMessage($assistantMessage);
                         $this->messageHistory->addToolResultMessage(
                             $toolResults,
-                            $this->buildMalformedToolRetryInstruction(
+                            $retryPolicy->buildMalformedToolRetryInstruction(
                                 $malformedToolUseFailures,
                                 $signatureRetries,
                             ),
                         );
-                        $this->persistAssistantTurn($assistantMessage, $toolResults);
+                        $this->transcriptLifecycle->persistTurn($assistantMessage, $toolResults);
                         $turnCount--;
 
                         continue;
@@ -420,7 +424,7 @@ trait AgentLoopRunInternalConcern
                 if ($storage !== null) {
                     $uncompactedToolResults = $toolResults;
                     $toolResults = $storage->enforceMessageBudget($toolResults);
-                    $this->invalidateCompactedReadReceipts(
+                    ReadReceiptVisibility::invalidate(
                         $toolCalls,
                         $uncompactedToolResults,
                         $toolResults,
@@ -434,9 +438,9 @@ trait AgentLoopRunInternalConcern
                 $readReceiptBatchCommitted = true;
 
                 // 9. Record transcript
-                $this->persistAssistantTurn($assistantMessage, $toolResults);
+                $this->transcriptLifecycle->persistTurn($assistantMessage, $toolResults);
 
-                if ($this->detectRepeatedToolErrorBatch(
+                if ($this->repeatedToolFailureDetector->detect(
                     $toolCalls,
                     $toolResults,
                     $lastToolErrorFingerprint,
@@ -448,27 +452,9 @@ trait AgentLoopRunInternalConcern
                 }
 
                 // 10. Auto-generate session title after first turn
-                if (! $this->autoTitleGenerated && $this->sessionManager->getTitle() === null) {
+                if (! $this->autoTitleGenerated
+                    && $this->transcriptLifecycle->persistInitialTitle($userInput)) {
                     $this->autoTitleGenerated = true;
-                    if (is_string($userInput)) {
-                        $rawTitle = $userInput;
-                    } elseif (is_array($userInput)) {
-                        // Array of content blocks (e.g. text + image): extract text parts.
-                        // Each block is normally an array like ['type'=>'text','text'=>'...'],
-                        // but guard against bare strings that may appear in mixed inputs.
-                        $texts = array_filter(
-                            array_map(fn ($block) => is_string($block) ? $block : (is_array($block) ? ($block['text'] ?? null) : null), $userInput),
-                            fn ($t) => is_string($t) && $t !== '',
-                        );
-                        $rawTitle = implode(' ', $texts);
-                    } else {
-                        $rawTitle = '';
-                    }
-                    $firstInput = mb_substr($rawTitle, 0, 80);
-                    $title = preg_replace('/\s+/', ' ', trim($firstInput));
-                    if ($title !== '') {
-                        $this->persistSessionTitle($title);
-                    }
                 }
             } finally {
                 if (! $readReceiptBatchCommitted) {
@@ -484,14 +470,31 @@ trait AgentLoopRunInternalConcern
         }
 
         if ($this->isCancellationRequested()) {
-            return '(aborted)';
+            return AgentRunOutcome::cancelled();
         }
 
-        return $this->finalizeAfterTurnLimit(
+        $this->synchronizeRuntimeContextBudget();
+
+        return $this->finalResponseCoordinator->finalize(
             $systemPrompt,
             $onTextDelta,
             $onThinkingDelta,
             $finalizationReason,
+            $this->maxTurns,
+            $this->maxEstimatedInputTokens,
+            $this->lastRunTurns,
+            $this->contextCompactor,
+            $this->messageHistory,
+            $this->queryEngine,
+            $this->contextBuilder,
+            $this->costTracker,
+            $this->transcriptLifecycle,
+            $this->hookExecutor,
+            $this->sessionManager,
+            fn (): bool => $this->cancellationToken->isCancelled(),
+            fn (array $usage): array => $this->normalizeUsage($usage),
+            function (array $usage): void { $this->recordUsage($usage); },
         );
     }
+
 }

@@ -422,6 +422,7 @@ trait HaoCodeQueryConcern
                     cost: (float) ($final->cost ?? 0.0),
                     sessionId: $final->sessionId ?? $sessionId,
                     turnsUsed: 0,
+                    terminationReason: $final->terminationReason ?? \HaoCode\Contracts\RunTerminationReason::Normal,
                 );
                 try {
                     $structured = self::runStructuredStateMachine(
@@ -443,6 +444,7 @@ trait HaoCodeQueryConcern
                     usage: $structured->queryResult?->usage ?? $seed->usage,
                     cost: $structured->queryResult?->cost ?? $seed->cost,
                     sessionId: $structured->queryResult?->sessionId ?? $seed->sessionId,
+                    terminationReason: $structured->queryResult?->terminationReason ?? $seed->terminationReason,
                 );
 
                 return;

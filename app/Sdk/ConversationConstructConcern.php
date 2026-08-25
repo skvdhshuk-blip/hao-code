@@ -8,6 +8,8 @@ use HaoCode\Services\Agent\AgentInvocation;
 use HaoCode\Services\Agent\MessageHistory;
 use HaoCode\Services\Api\StreamingClient;
 use HaoCode\Services\Session\SessionManager;
+use HaoCode\Sdk\Internal\FiberMessageStream;
+use HaoCode\Sdk\Internal\ConversationBootstrap;
 
 trait ConversationConstructConcern
 {
@@ -19,10 +21,11 @@ trait ConversationConstructConcern
         private readonly HaoCodeConfig $config,
         private readonly AgentLoopFactory $factory,
         private readonly ?StreamingClient $streamingClient = null,
+        ?ConversationBootstrap $bootstrap = null,
     ) {
         $this->agent = Agent::fromConfig($config);
         $this->options = RunOptions::fromConfig($config);
-        $resumeSnapshot = SdkRunFactory::consumeResumeSnapshot($config);
+        $resumeSnapshot = $bootstrap?->resumeSnapshot;
         $this->snapshotRestored = $resumeSnapshot !== null;
         $this->run = SdkRunFactory::createFromAgent(
             $this->agent,
@@ -60,6 +63,7 @@ trait ConversationConstructConcern
     private function sendInternal(string $prompt, array $images, bool $toolsEnabled): QueryResult
     {
         $this->beginOperation();
+        $stream = null;
         try {
             $this->turnCount++;
 
@@ -96,6 +100,7 @@ trait ConversationConstructConcern
                 sessionId: $this->options->ephemeral ? null : $result->sessionId,
                 // Per-operation Agent loop turns (not cumulative conversation sends).
                 turnsUsed: $result->turnsUsed,
+                terminationReason: $result->terminationReason,
             );
         } finally {
             $this->endOperation();
@@ -116,10 +121,13 @@ trait ConversationConstructConcern
     public function stream(string $prompt, array $images = []): \Generator
     {
         $this->beginOperation();
-        $fiber = null;
-        $autoDecisionHandlerRegistered = false;
-        $thrownException = null;
         $operationReleased = false;
+        $release = function () use (&$operationReleased): void {
+            if (! $operationReleased) {
+                $this->endOperation();
+                $operationReleased = true;
+            }
+        };
 
         try {
             $this->turnCount++;
@@ -128,55 +136,15 @@ trait ConversationConstructConcern
                 ? ImageContentBlock::buildUserContent($prompt, $images, $this->config->cwd)
                 : $prompt;
 
-            $queue = new \SplQueue;
-
-            // These callbacks are exclusively invoked from within the Fiber below.
-            // Fiber::getCurrent()?->suspend() uses the nullable operator as a defensive
-            // guard; in practice getCurrent() will always return the active Fiber here.
-            $onText = function (string $delta) use ($queue): void {
-                $queue->enqueue(Message::text($delta));
-                if ($this->options->onText) {
-                    ($this->options->onText)($delta);
-                }
-                \Fiber::getCurrent()?->suspend();
-            };
-
-            $onToolStart = function (string $name, array $input) use ($queue): void {
-                $queue->enqueue(Message::toolStart($name, $input));
-                if ($this->options->onToolStart) {
-                    ($this->options->onToolStart)($name, $input);
-                }
-                \Fiber::getCurrent()?->suspend();
-            };
-
-            $onToolComplete = function (string $name, $result) use ($queue): void {
-                $queue->enqueue(Message::toolResult($name, $result->output, $result->isError));
-                if ($this->options->onToolComplete) {
-                    ($this->options->onToolComplete)($name, $result);
-                }
-                \Fiber::getCurrent()?->suspend();
-            };
-
-            $onTurnStart = function (int $turn) use ($queue): void {
-                $queue->enqueue(Message::turn($turn));
-                if ($this->options->onTurnStart) {
-                    ($this->options->onTurnStart)($turn);
-                }
-                \Fiber::getCurrent()?->suspend();
-            };
-
-            // Smart/auto HITL decision events flow through the same fiber queue.
-            $this->loop->setAutoDecisionHandler(function (Message $message) use ($queue): void {
-                $queue->enqueue($message);
-                \Fiber::getCurrent()?->suspend();
-            });
-            $autoDecisionHandlerRegistered = true;
-
-            $invocationResult = null;
-
-            $fiber = new \Fiber(function () use ($userInput, $onText, $onToolStart, $onToolComplete, $onTurnStart, &$invocationResult, &$thrownException): void {
-                try {
-                    $invocationResult = (new AgentInvocation(
+            $stream = new FiberMessageStream(
+                loop: $this->loop,
+                operation: function (
+                    callable $onText,
+                    callable $onToolStart,
+                    callable $onToolComplete,
+                    callable $onTurnStart,
+                ) use ($userInput) {
+                    return (new AgentInvocation(
                         input: $userInput,
                         onTextDelta: $onText,
                         onToolStart: $onToolStart,
@@ -184,65 +152,28 @@ trait ConversationConstructConcern
                         onTurnStart: $onTurnStart,
                         onThinkingDelta: $this->options->onThinking,
                     ))->invoke($this->loop);
-                } catch (\Throwable $e) {
-                    $thrownException = $e;
-                }
-            });
-
-            $fiber->start();
-
-            while (! $fiber->isTerminated()) {
-                while (! $queue->isEmpty()) {
-                    yield $queue->dequeue();
-                }
-                if (! $fiber->isTerminated()) {
-                    $fiber->resume();
-                }
-            }
-
-            // Drain any messages enqueued before the fiber's final termination
-            while (! $queue->isEmpty()) {
-                yield $queue->dequeue();
-            }
-
-            if ($thrownException instanceof HumanInterruptException) {
-                $this->run->preserveSandboxOnClose();
-                $this->releaseTerminalStreamOperation($autoDecisionHandlerRegistered, $operationReleased);
-                yield Message::interrupt($thrownException->interrupt);
-
-                return;
-            }
-            if ($thrownException !== null) {
-                $this->releaseTerminalStreamOperation($autoDecisionHandlerRegistered, $operationReleased);
-                yield Message::error($thrownException->getMessage());
-
-                return;
-            }
-
-            $this->releaseTerminalStreamOperation($autoDecisionHandlerRegistered, $operationReleased);
-            yield Message::result(
-                text: $invocationResult?->text ?? '',
-                usage: $invocationResult?->usage ?? [],
-                cost: $invocationResult?->cost ?? 0.0,
-                sessionId: $this->options->ephemeral ? null : $invocationResult?->sessionId,
+                },
+                terminalMessage: fn ($result): Message => Message::result(
+                    text: $result->text,
+                    usage: $result->usage,
+                    cost: $result->cost,
+                    sessionId: $this->options->ephemeral ? null : $result->sessionId,
+                    terminationReason: $result->terminationReason,
+                ),
+                release: $release,
+                preserveInterrupt: fn () => $this->run->preserveSandboxOnClose(),
+                onText: $this->options->onText,
+                onToolStart: $this->options->onToolStart,
+                onToolComplete: $this->options->onToolComplete,
+                onTurnStart: $this->options->onTurnStart,
             );
+
+            while (($message = $stream->nextMessage()) !== null) {
+                yield $message;
+            }
         } finally {
-            if ($fiber instanceof \Fiber && $fiber->isStarted() && ! $fiber->isTerminated()) {
-                $this->loop->abort();
-                // Abandonment is cancellation. Resuming here would continue
-                // agent/tool work after the caller stopped consuming and is
-                // forbidden from Generator destruction on PHP 8.1-8.3.
-                $fiber = null;
-            }
-            if ($thrownException instanceof HumanInterruptException) {
-                $this->run->preserveSandboxOnClose();
-            }
-            if ($autoDecisionHandlerRegistered) {
-                $this->loop->setAutoDecisionHandler(null);
-            }
-            if (! $operationReleased) {
-                $this->endOperation();
-            }
+            $stream?->abandon();
+            $release();
         }
     }
 
@@ -284,7 +215,7 @@ trait ConversationConstructConcern
             }
 
             try {
-                $response = $this->loop->resumeInterrupt(
+                $outcome = $this->loop->resumeInterruptOutcome(
                     interruptId: $interruptId,
                     decisions: $decisions,
                     onTextDelta: $this->options->onText,
@@ -300,11 +231,12 @@ trait ConversationConstructConcern
             }
 
             return new QueryResult(
-                text: $response,
+                text: $outcome->text,
                 usage: self::extractUsage($this->loop),
                 cost: $this->loop->getEstimatedCost(),
                 sessionId: $this->loop->getSessionManager()->getSessionId(),
                 turnsUsed: $this->loop->getLastRunTurns(),
+                terminationReason: $outcome->terminationReason,
             );
         } finally {
             $this->endOperation();

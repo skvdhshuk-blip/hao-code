@@ -34,10 +34,6 @@ class MemoryWriteTool extends BaseTool
                 'type' => ['type' => 'string', 'description' => 'Optional category, such as note, preference, decision, or workflow.'],
             ],
             'required' => ['key', 'value'],
-        ], [
-            'key' => 'required|string',
-            'value' => 'required|string',
-            'type' => 'nullable|string',
         ]);
     }
 
