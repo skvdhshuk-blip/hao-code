@@ -2024,6 +2024,11 @@
                 "api": false,
                 "internal": true
             },
+            "isConcurrencySafe": {
+                "signature": "public function isConcurrencySafe(array $input) : bool",
+                "api": true,
+                "internal": false
+            },
             "isReadOnly": {
                 "signature": "public function isReadOnly(array $input) : bool",
                 "api": false,

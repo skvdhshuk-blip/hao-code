@@ -111,6 +111,22 @@ class SdkToolDefaultsTest extends TestCase
 
         $decision = $checker->check($tool, [], $context);
         $this->assertTrue($decision->allowed);
+        $this->assertFalse($tool->isConcurrencySafe([]), 'Read-only must not implicitly opt into process forking');
+    }
+
+    public function test_sdk_tool_can_explicitly_opt_into_read_only_concurrency(): void
+    {
+        $tool = new class extends SdkTool {
+            public function name(): string { return 'ForkSafeLookup'; }
+            public function description(): string { return 'reads immutable process-safe data'; }
+            public function parameters(): array { return []; }
+            public function handle(array $input): string { return 'data'; }
+            public function isReadOnly(array $input): bool { return true; }
+            public function isConcurrencySafe(array $input): bool { return true; }
+        };
+
+        $this->assertTrue($tool->isReadOnly([]));
+        $this->assertTrue($tool->isConcurrencySafe([]));
     }
 
     private function makePlanChecker(): PermissionChecker

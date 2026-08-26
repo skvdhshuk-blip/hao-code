@@ -21,6 +21,7 @@ use PHPUnit\Framework\TestCase;
 class StreamingToolExecutorTest extends TestCase
 {
     use StreamingToolExecutorTestMakeRegistryConcern;
+    use StreamingToolExecutorTestSdkToolDefaultsConcern;
     use StreamingToolExecutorTestTestItDoesNotScheduleTheSameBlockTwiceConcern;
     use StreamingToolExecutorTestTestCancellationInterruptsWaitForForkedToolAndReturnsAbortedResultConcern;
 

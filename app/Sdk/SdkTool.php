@@ -12,7 +12,8 @@ use HaoCode\Tools\ToolUseContext;
  *
  * Implement only 4 methods: name(), description(), parameters(), handle().
  * Everything else (schema, permissions, concurrency) has conservative defaults:
- * custom tools are treated as non-read-only until you override isReadOnly().
+ * custom tools are non-read-only and never forked unless both capabilities are
+ * explicitly declared.
  *
  * @example
  *   class LookupOrderTool extends SdkTool {
@@ -130,6 +131,21 @@ abstract class SdkTool extends BaseTool
      * @internal
      */
     public function isReadOnly(array $input): bool
+    {
+        return false;
+    }
+
+    /**
+     * Conservative default: SDK tools execute in the caller process.
+     *
+     * Read-only describes effects and permission policy; it does not prove that
+     * a tool is safe after pcntl_fork(). Database clients, cURL transports, and
+     * framework containers may all carry process-bound state. Override this
+     * method only when the complete tool dependency graph is fork-safe.
+     *
+     * @api
+     */
+    public function isConcurrencySafe(array $input): bool
     {
         return false;
     }

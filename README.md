@@ -759,7 +759,7 @@ $lookupOrder = new class extends SdkTool {
     {
         return json_encode(['status' => 'paid']);
     }
-    // Pure lookups must opt in: default is non-read-only (Plan + concurrency).
+    // Pure lookups opt into Plan-mode approval. Forking remains disabled.
     public function isReadOnly(array $input): bool
     {
         return true;
@@ -774,12 +774,14 @@ $result = HaoCode::query('Check order A123', new HaoCodeConfig(
 
 Custom tools and sandbox replacement tools are exposed only when their exact
 names appear in `allowedTools` (or when `allowedTools: ['*']` is used);
-`disallowedTools` always wins. By default `SdkTool` is **not** treated as
-read-only — Plan mode will not auto-approve it, and the orchestrator will not
-fork it for parallel execution. Override `isReadOnly()` and return `true` only
-for pure query tools with no side effects. Only contiguous pure-query calls may
-run in parallel; a stateful tool remains an execution barrier for later calls
-in the same model response.
+`disallowedTools` always wins. By default `SdkTool` is neither read-only nor
+concurrency-safe. Override `isReadOnly()` only for pure queries; this allows
+Plan-mode approval but still executes in the caller process. Forking requires a
+second explicit opt-in via `isConcurrencySafe()`, and is appropriate only when
+the tool's complete dependency graph is safe after `pcntl_fork`. Framework
+containers, database connections, and cURL clients generally are not. Any
+stateful or non-concurrency-safe tool remains an execution barrier for later
+calls in the same model response.
 
 Each public run gets its own agent loop, message history, cost tracker, and
 tool registry. Custom `SdkTool` objects do not have a cloneability contract,

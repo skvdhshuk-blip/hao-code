@@ -1239,8 +1239,7 @@ class LookupOrderTool extends SdkTool
         return $order->toJson();
     }
 
-    // Pure lookups must opt in: the SdkTool default is non-read-only so Plan
-    // mode and parallel scheduling stay fail-closed for custom tools.
+    // Pure lookups opt into Plan-mode approval. This does not enable forking.
     public function isReadOnly(array $input): bool
     {
         return true;
@@ -1290,17 +1289,22 @@ public function handle(array $input): string
 
 ### Read-only vs stateful tools
 
-By default, `SdkTool` is **not** read-only: Plan mode denies it without an
-explicit allow path, and the tool orchestrator will not treat it as
-concurrency-safe (no `pcntl_fork` parallelization). That is intentional —
+By default, `SdkTool` is **not** read-only and **not** concurrency-safe: Plan
+mode denies it without an explicit allow path, and the tool orchestrator will
+not use `pcntl_fork`. Those are separate capabilities. This is intentional —
 `handle()` may write databases, files, or call external APIs even when the
 class name looks like a lookup.
 
 - Mutating / stateful tools: keep the default (`isReadOnly() === false`).
-- Pure query tools: override `isReadOnly()` and return `true` so Plan mode
-  may auto-approve and contiguous parallel scheduling may apply. A stateful
-  tool is an execution barrier, so a later pure query waits for its effects in
-  the same model response.
+- Pure query tools: override `isReadOnly()` and return `true` so Plan mode may
+  auto-approve them. They still execute sequentially in the caller process.
+- Fork-safe pure query tools: also override `isConcurrencySafe()` and return
+  `true`. Do this only when the tool and every dependency are safe after
+  `pcntl_fork`; framework containers, database connections, and cURL clients
+  generally are not.
+
+A stateful or non-concurrency-safe tool is an execution barrier, so later calls
+wait for its effects in the same model response.
 
 Every public run gets a fresh loop, message history, cost tracker, and tool
 registry. `SdkTool` does not require a clone implementation, so cloneable
