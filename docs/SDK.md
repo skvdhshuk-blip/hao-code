@@ -552,10 +552,34 @@ configured output tokens and a safety margin before sending a request.
 | `hitlMode` | `?string` | `null` | HITL approval mode: `'ask'`, `'smart'`, or `'auto'`; `null` resolves from config/env (default `'smart'`). See [Smart HITL modes](#smart-hitl-modes) |
 | `hitlReviewModel` | `?string` | `null` | Model used to review gray-area actions in `'smart'` mode; `null` reuses the current run's model |
 | `hitlAllowlistPath` | `?string` | `null` | JSON file with user-saved "always allow" Bash rules (exact/prefix, v1+v2); `null` disables the feature. See [Smart HITL modes](#smart-hitl-modes) |
+| `goal` | `?string` | `null` | What the run must achieve, in a sentence or two. When set, the model is asked once to check its final answer against it before the run ends. Blank values normalize to `null` |
+| `goalVerificationRounds` | `int` | `1` | How many goal checks a run may spend (0-5). `0` disables the check while keeping `goal` available to the reminder |
+| `goalReminder` | `?array` | `null` | Periodically restate the task during long runs. `null` disables it; `[]` enables the defaults. Keys: `recapEvery` (default 5), `fullEvery` (default 10); `0` disables that half and at least one must be positive |
 
 Security modes are validated exactly. Unknown values (including accidental
 whitespace such as `'plan '`) throw instead of falling back to the broader
 `default` mode.
+
+### Staying on task in long runs
+
+Task context is injected once, on the first user turn. Thirty turns and a
+compaction later it can be the least prominent thing in the window, and the model
+drifts or stops early. Two opt-in settings address that.
+
+`goalReminder` restates the task at a turn boundary: a one-line recap every
+`recapEvery` turns and the full original request every `fullEvery` turns, with the
+full restatement winning when both fall on the same turn. The recap uses `goal`
+when set, otherwise the opening of the original prompt. Reminders are not
+persisted, so a resumed session does not replay them.
+
+`goal` also enables a verification round. When the model stops calling tools, it is
+shown the goal alongside its own final answer and asked whether the goal is really
+met; if not it keeps working. The round is bounded by `goalVerificationRounds`, not
+by `maxTurns`, so a run already at the turn limit still gets its check. This costs
+one extra model request per run, which is why it needs an explicit `goal`.
+
+Both apply to the run the caller asked for. Nested agents have their own task and
+do not inherit either setting.
 
 ### Prompts
 

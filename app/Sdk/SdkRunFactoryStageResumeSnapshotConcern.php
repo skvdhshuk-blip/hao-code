@@ -293,6 +293,10 @@ trait SdkRunFactoryStageResumeSnapshotConcern
                     watchBash: $watchesBash,
                 ));
             }
+
+            // Reminders and the goal check belong to the run the caller asked for.
+            // A nested agent has its own task and must not inherit them.
+            $loop->configureGoal($config->goal, $config->goalReminder, $config->goalVerificationRounds);
         }
 
         $costTracker = $loop->getCostTracker();

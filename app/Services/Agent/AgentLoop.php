@@ -3,7 +3,6 @@
 namespace HaoCode\Services\Agent;
 
 use HaoCode\Sdk\HumanInterruptException;
-use HaoCode\Services\Hitl\SmartInterruptDecider;
 use HaoCode\Tools\ToolUseContext;
 
 class AgentLoop
@@ -52,10 +51,8 @@ class AgentLoop
     /** @var \Closure(): bool|null */
     private ?\Closure $abortRequestedChecker = null;
 
-    /** Decider for smart/auto HITL modes; rebuilt per run so circuit-breaker state stays run-scoped. */
-    private ?SmartInterruptDecider $interruptDecider = null;
-
-    private bool $interruptDeciderResolved = false;
+    /** Settles smart/auto HITL batches; its decider is reset per run. */
+    private readonly SmartInterruptSettlement $interruptSettlement;
 
     /** Most recent user input, used as guardian-review context in smart HITL mode. */
     private ?string $lastUserPrompt = null;

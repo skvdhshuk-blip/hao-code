@@ -36,6 +36,7 @@ class AgentLoopTest extends TestCase
     use AgentLoopTestTestSkillScopeFiltersNextTurnToolsAppliesModelAndRestoresItAfterRunConcern;
     use AgentLoopTestTestInvalidProviderUsageCannotReduceTotalsOrCostConcern;
     use AgentLoopTestTestTurnInjectionsAreDeliveredAsTrailingTextBlockConcern;
+    use AgentLoopTestTestGoalRemindersAndVerificationConcern;
 
     // ─── helpers ──────────────────────────────────────────────────────────
 

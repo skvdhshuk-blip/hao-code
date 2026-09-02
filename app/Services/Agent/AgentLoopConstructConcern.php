@@ -4,12 +4,8 @@ namespace HaoCode\Services\Agent;
 
 use HaoCode\Sdk\HumanInterrupt;
 use HaoCode\Sdk\HumanInterruptException;
-use HaoCode\Sdk\HumanActionRequest;
 use HaoCode\Services\Compact\ContextCompactor;
 use HaoCode\Services\Cost\CostTracker;
-use HaoCode\Services\Hitl\HitlAllowlist;
-use HaoCode\Services\Hitl\HitlReviewer;
-use HaoCode\Services\Hitl\SmartInterruptDecider;
 use HaoCode\Services\Hooks\HookExecutor;
 use HaoCode\Services\Permissions\PermissionChecker;
 use HaoCode\Services\Run\RunJournal;
@@ -49,6 +45,12 @@ trait AgentLoopConstructConcern
         $this->repeatedToolFailureDetector = new RepeatedToolFailureDetector;
         $this->finalResponseCoordinator = new AgentFinalResponseCoordinator;
         $this->turnInjections = new TurnInjectionQueue;
+        $this->interruptSettlement = new SmartInterruptSettlement(
+            $sessionManager,
+            $toolOrchestrator,
+            $this->runStateLifecycle,
+            $runContext,
+        );
     }
 
     /**
@@ -59,6 +61,34 @@ trait AgentLoopConstructConcern
     public function turnInjections(): TurnInjectionQueue
     {
         return $this->turnInjections;
+    }
+
+    /**
+     * Configure goal-directed behaviour for this run.
+     *
+     * Both parts are opt-in. Without a reminder config nothing is injected; without
+     * a goal the run finishes as soon as the model stops calling tools.
+     *
+     * @param  array{recapEvery?: int, fullEvery?: int}|null  $reminder
+     *
+     * @internal
+     */
+    public function configureGoal(?string $goal, ?array $reminder = null, int $verificationRounds = 1): void
+    {
+        $goal = $goal === null ? null : (trim($goal) === '' ? null : trim($goal));
+
+        if ($reminder !== null) {
+            $this->turnInjections->addProducer(new GoalReminderPolicy(
+                $goal,
+                (int) ($reminder['recapEvery'] ?? 5),
+                (int) ($reminder['fullEvery'] ?? 10),
+                fn (): ?string => $this->lastUserPrompt,
+            ));
+        }
+
+        $this->goalVerifier = $goal !== null && $verificationRounds > 0
+            ? new GoalVerificationPolicy($goal, $verificationRounds)
+            : null;
     }
 
     private function responseRetryPolicy(): AgentResponseRetryPolicy
@@ -385,110 +415,4 @@ trait AgentLoopConstructConcern
         }
     }
 
-    /**
-     * Attempt to settle a pending interrupt batch without a human (smart/auto
-     * HITL modes). Emits one auto-decision event per action through the
-     * registered handler. When the whole batch is auto-decided, the decisions
-     * are applied through the exact same path a human resume would take
-     * (HumanInterruptCoordinator::resolve against the recorded checkpoint), so
-     * validation, checkpoint, and tool-execution semantics are preserved.
-     *
-     * @return array<int, array<string, mixed>>|null Resolved tool results, or
-     *         null when the batch must interrupt for a human.
-     */
-    private function settleInterruptBatchAutomatically(
-        HumanInterrupt $interrupt,
-        ToolUseContext $context,
-        ?callable $onToolStart,
-        ?callable $onToolComplete,
-    ): ?array {
-        $decider = $this->smartInterruptDecider();
-        if ($decider === null) {
-            return null; // ask mode: zero behaviour change.
-        }
-
-        $batch = $decider->decide($interrupt, $this->lastUserPrompt ?? '');
-        foreach ($batch['events'] as $event) {
-            if ($this->autoDecisionHandler !== null) {
-                ($this->autoDecisionHandler)($event);
-            }
-        }
-        if ($batch['status'] !== 'auto') {
-            return null;
-        }
-
-        $resolution = (new HumanInterruptCoordinator($this->sessionManager, $this->toolOrchestrator))->resolve(
-            $interrupt->id,
-            $batch['decisions'],
-            $context,
-            $onToolStart,
-            $onToolComplete,
-            function () use ($interrupt, $batch): void {
-                $this->runStateLifecycle->resume($interrupt->id, $batch['decisions']);
-            },
-        );
-
-        return $resolution['results'];
-    }
-
-    /**
-     * Build the per-run smart/auto interrupt decider. Returns null in ask mode
-     * so the default path stays untouched. The reviewer reuses the run's
-     * provider settings, with the model overridden by hitlReviewModel when set.
-     */
-    private function smartInterruptDecider(): ?SmartInterruptDecider
-    {
-        if ($this->interruptDeciderResolved) {
-            return $this->interruptDecider;
-        }
-        $this->interruptDeciderResolved = true;
-
-        $mode = $this->runContext?->hitlMode ?? 'ask';
-        if (! in_array($mode, ['smart', 'auto'], true)) {
-            return null;
-        }
-
-        $cwd = $this->workingDirectory
-            ?? $this->runContext?->workingDirectory
-            ?? (getcwd() ?: '/');
-        $sandbox = $this->runContext?->sandbox;
-        if ($sandbox !== null && ! is_dir($cwd)) {
-            // A sandbox remote cwd (e.g. '/workspace') usually does not exist
-            // on the PHP host; classify against the host project directory
-            // instead of failing every action closed.
-            $cwd = $this->runContext?->projectDirectory ?? $cwd;
-        }
-        $allowlistPath = $this->runContext?->hitlAllowlistPath;
-        $allowlist = is_string($allowlistPath) && trim($allowlistPath) !== ''
-            ? HitlAllowlist::fromFile($allowlistPath)
-            : null;
-        $reviewer = null;
-        if ($mode === 'smart') {
-            $settings = $this->runContext?->settings;
-            $structuredRunner = $this->runContext?->hitlStructuredRunner;
-            if ($structuredRunner === null) {
-                throw new \LogicException('Smart HITL requires an injected structured runner.');
-            }
-            $apiKey = $settings?->getApiKey();
-            $baseUrl = $settings?->getBaseUrl();
-            $providerType = $settings?->getProviderType();
-            $reviewer = new HitlReviewer([
-                'apiKey' => is_string($apiKey) && trim($apiKey) !== '' ? trim($apiKey) : null,
-                'model' => $this->runContext?->hitlReviewModel ?? $settings?->getModel(),
-                'baseUrl' => is_string($baseUrl) && trim($baseUrl) !== '' ? trim($baseUrl) : null,
-                'providerType' => is_string($providerType) && trim($providerType) !== '' ? trim($providerType) : null,
-                'maxBudgetUsd' => $this->runContext?->budgetLedger?->getLimit(),
-                'oauthBearer' => null,
-            ], $cwd, $structuredRunner, $this->runContext?->usageAccumulator, $this->runContext?->budgetLedger);
-        }
-
-        return $this->interruptDecider = new SmartInterruptDecider(
-            mode: $mode,
-            reviewer: $reviewer,
-            cwd: $cwd,
-            fallbackSessionId: (string) $this->sessionManager->getSessionId(),
-            sandbox: $sandbox,
-            allowlist: $allowlist,
-        );
-    }
 }

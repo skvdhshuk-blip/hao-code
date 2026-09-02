@@ -76,7 +76,7 @@
         "internal": false,
         "methods": {
             "__construct": {
-                "signature": "public function __construct(string $name = \"default\", ?string $model = null, ?string $apiKey = null, ?string $baseUrl = null, ?string $providerType = null, ?int $maxTokens = null, int $maxTurns = 50, ?string $systemPrompt = null, ?string $appendSystemPrompt = null, bool $thinkingEnabled = false, int $thinkingBudget = 10000, string $permissionMode = \"default\", array $allowedTools = [], array $disallowedTools = [], array $tools = [], array $skills = [], ?HaoCode\\Sdk\\Sandbox\\SandboxConfig $sandbox = null, ?HaoCode\\Sdk\\CredentialPool $credentialPool = null, ?bool $oauthBearer = null, string $memorySummaryLevel = \"l0\", ?string $memoryStoragePath = null, array $skillDirectories = [], bool $recursiveSkillDiscovery = false, array $interruptOn = [], bool $enableAskUser = false, ?HaoCode\\Sdk\\Memory\\MemoryStoreInterface $memoryStore = null, ?string $hitlMode = null, ?string $hitlReviewModel = null, ?string $hitlAllowlistPath = null, bool $ephemeral = true, array $headers = [], bool $webfetchAllowPrivateNetworks = false, array $webfetchPrivateAllowList = [], int $webfetchMaxBytes = 5242880, ?string $sessionId = null, bool $continueSession = false, int $structuredMaxRetries = 1, string $contextPreset = \"coding\")",
+                "signature": "public function __construct(string $name = \"default\", ?string $model = null, ?string $apiKey = null, ?string $baseUrl = null, ?string $providerType = null, ?int $maxTokens = null, int $maxTurns = 50, ?string $systemPrompt = null, ?string $appendSystemPrompt = null, bool $thinkingEnabled = false, int $thinkingBudget = 10000, string $permissionMode = \"default\", array $allowedTools = [], array $disallowedTools = [], array $tools = [], array $skills = [], ?HaoCode\\Sdk\\Sandbox\\SandboxConfig $sandbox = null, ?HaoCode\\Sdk\\CredentialPool $credentialPool = null, ?bool $oauthBearer = null, string $memorySummaryLevel = \"l0\", ?string $memoryStoragePath = null, array $skillDirectories = [], bool $recursiveSkillDiscovery = false, array $interruptOn = [], bool $enableAskUser = false, ?HaoCode\\Sdk\\Memory\\MemoryStoreInterface $memoryStore = null, ?string $hitlMode = null, ?string $hitlReviewModel = null, ?string $hitlAllowlistPath = null, ?string $goal = null, int $goalVerificationRounds = 1, ?array $goalReminder = null, bool $ephemeral = true, array $headers = [], bool $webfetchAllowPrivateNetworks = false, array $webfetchPrivateAllowList = [], int $webfetchMaxBytes = 5242880, ?string $sessionId = null, bool $continueSession = false, int $structuredMaxRetries = 1, string $contextPreset = \"coding\")",
                 "api": true,
                 "internal": false
             },
@@ -174,6 +174,21 @@
             },
             "ephemeral": {
                 "signature": "public readonly bool $ephemeral",
+                "api": true,
+                "internal": false
+            },
+            "goal": {
+                "signature": "public readonly ?string $goal",
+                "api": true,
+                "internal": false
+            },
+            "goalReminder": {
+                "signature": "public readonly ?array $goalReminder",
+                "api": true,
+                "internal": false
+            },
+            "goalVerificationRounds": {
+                "signature": "public readonly int $goalVerificationRounds",
                 "api": true,
                 "internal": false
             },
@@ -601,7 +616,7 @@
         "internal": false,
         "methods": {
             "__construct": {
-                "signature": "public function __construct(?string $apiKey = null, ?string $model = null, ?string $baseUrl = null, ?string $providerType = null, ?int $maxTokens = null, ?string $cwd = null, int $maxTurns = 50, ?float $maxBudgetUsd = null, string $permissionMode = \"default\", array $allowedTools = [], array $disallowedTools = [], ?string $systemPrompt = null, ?string $appendSystemPrompt = null, bool $thinkingEnabled = false, int $thinkingBudget = 10000, mixed $onText = null, mixed $onThinking = null, mixed $onToolStart = null, mixed $onToolComplete = null, mixed $onTurnStart = null, bool $ephemeral = true, array $tools = [], array $skills = [], ?HaoCode\\Sdk\\AbortController $abortController = null, ?string $sessionId = null, bool $continueSession = false, ?array $responseSchema = null, ?HaoCode\\Sdk\\CredentialPool $credentialPool = null, ?HaoCode\\Sdk\\Sandbox\\SandboxConfig $sandbox = null, string $memorySummaryLevel = \"l0\", ?string $memoryStoragePath = null, array $skillDirectories = [], bool $recursiveSkillDiscovery = false, array $interruptOn = [], bool $enableAskUser = false, ?HaoCode\\Sdk\\Memory\\MemoryStoreInterface $memoryStore = null, ?string $hitlMode = null, ?string $hitlReviewModel = null, ?string $hitlAllowlistPath = null, ?bool $oauthBearer = null, array $images = [], array $headers = [], int $structuredMaxRetries = 1, bool $webfetchAllowPrivateNetworks = false, array $webfetchPrivateAllowList = [], int $webfetchMaxBytes = 5242880, bool $allowCwdOverride = false, string $contextPreset = \"coding\")",
+                "signature": "public function __construct(?string $apiKey = null, ?string $model = null, ?string $baseUrl = null, ?string $providerType = null, ?int $maxTokens = null, ?string $cwd = null, int $maxTurns = 50, ?float $maxBudgetUsd = null, string $permissionMode = \"default\", array $allowedTools = [], array $disallowedTools = [], ?string $systemPrompt = null, ?string $appendSystemPrompt = null, bool $thinkingEnabled = false, int $thinkingBudget = 10000, mixed $onText = null, mixed $onThinking = null, mixed $onToolStart = null, mixed $onToolComplete = null, mixed $onTurnStart = null, bool $ephemeral = true, array $tools = [], array $skills = [], ?HaoCode\\Sdk\\AbortController $abortController = null, ?string $sessionId = null, bool $continueSession = false, ?array $responseSchema = null, ?HaoCode\\Sdk\\CredentialPool $credentialPool = null, ?HaoCode\\Sdk\\Sandbox\\SandboxConfig $sandbox = null, string $memorySummaryLevel = \"l0\", ?string $memoryStoragePath = null, array $skillDirectories = [], bool $recursiveSkillDiscovery = false, array $interruptOn = [], bool $enableAskUser = false, ?HaoCode\\Sdk\\Memory\\MemoryStoreInterface $memoryStore = null, ?string $hitlMode = null, ?string $hitlReviewModel = null, ?string $hitlAllowlistPath = null, ?string $goal = null, int $goalVerificationRounds = 1, ?array $goalReminder = null, ?bool $oauthBearer = null, array $images = [], array $headers = [], int $structuredMaxRetries = 1, bool $webfetchAllowPrivateNetworks = false, array $webfetchPrivateAllowList = [], int $webfetchMaxBytes = 5242880, bool $allowCwdOverride = false, string $contextPreset = \"coding\")",
                 "api": false,
                 "internal": false
             },
@@ -699,6 +714,21 @@
             },
             "ephemeral": {
                 "signature": "public readonly bool $ephemeral",
+                "api": true,
+                "internal": false
+            },
+            "goal": {
+                "signature": "public readonly ?string $goal",
+                "api": true,
+                "internal": false
+            },
+            "goalReminder": {
+                "signature": "public readonly ?array $goalReminder",
+                "api": true,
+                "internal": false
+            },
+            "goalVerificationRounds": {
+                "signature": "public readonly int $goalVerificationRounds",
                 "api": true,
                 "internal": false
             },

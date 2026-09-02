@@ -65,6 +65,14 @@ class HaoCodeConfig
     public readonly ?string $hitlAllowlistPath;
 
     /**
+     * What this run must achieve, in one or two sentences. When set, the model is
+     * asked once to check its final answer against it before the run ends.
+     *
+     * @api
+     */
+    public readonly ?string $goal;
+
+    /**
      * Extra HTTP request headers merged into every provider request (e.g.
      * GitHub Copilot's `Editor-Version` / `Copilot-Integration-Id`).
      *

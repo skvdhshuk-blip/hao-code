@@ -44,6 +44,65 @@ class AgentTest extends TestCase
         new HaoCodeConfig(permissionMode: 'plan ');
     }
 
+    public function test_goal_settings_default_to_off(): void
+    {
+        $config = new HaoCodeConfig();
+
+        $this->assertNull($config->goal);
+        $this->assertNull($config->goalReminder);
+        $this->assertSame(1, $config->goalVerificationRounds);
+    }
+
+    public function test_blank_goal_normalizes_to_null(): void
+    {
+        $this->assertNull((new HaoCodeConfig(goal: '   '))->goal);
+        $this->assertSame('ship it', (new HaoCodeConfig(goal: '  ship it  '))->goal);
+    }
+
+    public function test_config_rejects_out_of_range_goal_verification_rounds(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('goalVerificationRounds');
+
+        new HaoCodeConfig(goalVerificationRounds: 6);
+    }
+
+    public function test_config_rejects_unknown_goal_reminder_keys(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('goalReminder');
+
+        new HaoCodeConfig(goalReminder: ['every' => 5]);
+    }
+
+    public function test_config_rejects_a_goal_reminder_that_never_fires(): void
+    {
+        $this->expectException(\InvalidArgumentException::class);
+        $this->expectExceptionMessage('positive');
+
+        new HaoCodeConfig(goalReminder: ['recapEvery' => 0, 'fullEvery' => 0]);
+    }
+
+    public function test_empty_goal_reminder_array_enables_the_defaults(): void
+    {
+        $this->assertSame([], (new HaoCodeConfig(goalReminder: []))->goalReminder);
+    }
+
+    public function test_goal_settings_survive_the_agent_round_trip(): void
+    {
+        $agent = new Agent(
+            goal: 'All tests pass',
+            goalVerificationRounds: 2,
+            goalReminder: ['recapEvery' => 3, 'fullEvery' => 9],
+        );
+
+        $copy = $agent->withModel('claude-sonnet-5');
+
+        $this->assertSame('All tests pass', $copy->goal);
+        $this->assertSame(2, $copy->goalVerificationRounds);
+        $this->assertSame(['recapEvery' => 3, 'fullEvery' => 9], $copy->goalReminder);
+    }
+
     public function test_with_methods_are_immutable_and_return_new_instances(): void
     {
         $agent = new Agent();

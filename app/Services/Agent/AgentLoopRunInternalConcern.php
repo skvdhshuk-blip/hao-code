@@ -22,8 +22,7 @@ trait AgentLoopRunInternalConcern
     ): AgentRunOutcome {
         $this->aborted = false;
         $this->cancellationToken->reset();
-        $this->interruptDecider = null;
-        $this->interruptDeciderResolved = false;
+        $this->interruptSettlement->reset();
         $retryPolicy = $this->responseRetryPolicy();
         $this->lastRunTurns = 0;
         if ($this->abortRequestedChecker !== null && ($this->abortRequestedChecker)()) {
@@ -72,6 +71,7 @@ trait AgentLoopRunInternalConcern
         $malformedToolInputRetries = [];
         $totalMalformedToolInputRetries = 0;
         $incompleteResponseRetries = 0;
+        $goalVerificationRounds = 0;
         $lastToolErrorFingerprint = null;
         $identicalToolErrorBatches = 0;
         $finalizationReason = null;
@@ -243,6 +243,30 @@ trait AgentLoopRunInternalConcern
                     $incompleteResponseRetries = 0;
                     $this->messageHistory->addAssistantMessage($assistantMessage);
                     $this->transcriptLifecycle->persistTurn($assistantMessage, []);
+
+                    // The model believes it is done. When the run has a goal, make it
+                    // check its own answer against that goal once before we agree.
+                    $goalCheck = $this->goalVerifier?->instruction(
+                        $processor->getAccumulatedText(),
+                        $goalVerificationRounds,
+                    );
+                    if ($goalCheck !== null) {
+                        $goalVerificationRounds++;
+                        $this->turnInjections->push($goalCheck);
+                        $this->transcriptLifecycle->recordSyntheticUserMessage(
+                            (string) $this->turnInjections->drain(
+                                $turnCount,
+                                $this->sessionManager->getSessionId(),
+                            ),
+                            $this->messageHistory,
+                        );
+                        // Bounded by its own counter, not by maxTurns: a run that is
+                        // already at the limit must still get its check.
+                        $turnCount--;
+
+                        continue;
+                    }
+
                     $this->hookExecutor?->execute('Stop', [
                         'session_id' => $this->sessionManager->getSessionId(),
                         'turn' => $turnCount,
@@ -395,11 +419,14 @@ trait AgentLoopRunInternalConcern
                         // Returns the resolved tool results when every action was
                         // auto-decided, null when the batch must go to a human
                         // (ask mode, escalation, or fail-closed decider error).
-                        $autoResults = $this->settleInterruptBatchAutomatically(
+                        $autoResults = $this->interruptSettlement->settle(
                             $interrupt,
                             $context,
                             $onToolStart,
                             $onToolComplete,
+                            $this->workingDirectory,
+                            $this->lastUserPrompt ?? '',
+                            $this->autoDecisionHandler,
                         );
                         if ($autoResults === null) {
                             throw new HumanInterruptException($interrupt);
