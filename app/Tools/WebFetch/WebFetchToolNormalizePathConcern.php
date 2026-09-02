@@ -106,6 +106,64 @@ trait WebFetchToolNormalizePathConcern
         return implode('', $chunks);
     }
 
+    /**
+     * A short, plain-text digest of a 4xx/5xx body, appended to the thrown
+     * message. Best-effort: a body that cannot be read adds nothing rather
+     * than masking the status code with a secondary failure.
+     */
+    private function errorBodyPreview($response, ?callable $shouldAbort = null): string
+    {
+        try {
+            $body = $this->readCappedPreview($response, self::ERROR_PREVIEW_BYTES * 4, $shouldAbort);
+        } catch (\Throwable) {
+            return '';
+        }
+
+        $text = trim(PageQualitySignals::stripScriptsAndTags($this->normalizeUtf8Text($body)));
+        $text = trim(preg_replace('/\s+/u', ' ', html_entity_decode($text, ENT_QUOTES | ENT_HTML5, 'UTF-8')) ?? $text);
+        if ($text === '') {
+            return '';
+        }
+
+        if (strlen($text) > self::ERROR_PREVIEW_BYTES) {
+            $text = $this->truncateUtf8ByBytes($text, self::ERROR_PREVIEW_BYTES).'…[truncated]';
+        }
+
+        return "\nResponse body: {$text}";
+    }
+
+    /**
+     * Read at most `$maxBytes` and stop, unlike streamWithByteCap which treats
+     * an oversized body as a failure. An error page that runs long should
+     * still yield its first line.
+     */
+    private function readCappedPreview($response, int $maxBytes, ?callable $shouldAbort = null): string
+    {
+        $this->throwIfAborted($shouldAbort);
+        $chunks = [];
+        $total = 0;
+
+        foreach ($this->client()->stream($response) as $chunk) {
+            $this->throwIfAborted($shouldAbort);
+            if ($chunk->isTimeout()) {
+                continue;
+            }
+            if ($chunk->isLast()) {
+                break;
+            }
+
+            $data = $chunk->getContent();
+            $chunks[] = $data;
+            $total += strlen($data);
+            if ($total >= $maxBytes) {
+                $response->cancel();
+                break;
+            }
+        }
+
+        return implode('', $chunks);
+    }
+
     private function isAllowedTextContentType(string $contentType): bool
     {
         $mediaType = strtolower(trim(explode(';', $contentType, 2)[0]));

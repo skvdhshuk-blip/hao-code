@@ -57,7 +57,11 @@ trait WebFetchToolConstructConcern
         return <<<DESC
 Fetch content from a URL. Returns the page content as text/markdown.
 Use this tool to read web pages, API documentation, or other online resources.
-Supports an optional `prompt` parameter to state a requested focus; the full page content is still returned (this is not extraction).
+Set `extract` to true to return only the main article instead of the whole page — far fewer tokens on
+navigation-heavy sites. Pass `keywords` alongside it so a short but relevant block (a data table, a price
+row) outranks long boilerplate.
+Supports an optional `prompt` parameter to state a requested focus; on its own it does not change what is returned.
+A `[WebFetch]` note is prepended when the response looks like a bot-challenge page or a client-rendered shell.
 Results are cached for 15 minutes.
 DESC;
     }
@@ -74,12 +78,24 @@ DESC;
                 ],
                 'prompt' => [
                     'type' => 'string',
-                    'description' => 'Optional requested focus; the full page content is returned and nothing is extracted',
+                    'description' => 'Optional requested focus; on its own it does not change what is returned',
                 ],
                 'format' => [
                     'type' => 'string',
                     'enum' => ['text', 'markdown'],
                     'description' => 'Output format (default: text)',
+                ],
+                'extract' => [
+                    'type' => 'boolean',
+                    'description' => 'Return only the main article instead of the whole page (default: false). '
+                        .'Falls back to the full page when no article-like block is found',
+                ],
+                'keywords' => [
+                    'type' => 'array',
+                    'items' => ['type' => 'string'],
+                    'description' => 'Terms the answer likely contains. Blocks mentioning them are weighted up '
+                        .'during extraction, so short relevant content is not lost to long boilerplate. '
+                        .'Only meaningful with extract=true',
                 ],
             ],
             'required' => ['url'],
@@ -95,8 +111,10 @@ DESC;
         $url = $input['url'];
         $prompt = $input['prompt'] ?? null;
         $format = ($input['format'] ?? 'text') === 'markdown' ? 'markdown' : 'text';
+        $extract = ($input['extract'] ?? false) === true;
+        $keywords = $this->normalizeKeywordInput($input['keywords'] ?? []);
 
-        $cacheKey = $this->cacheKey($url, $format);
+        $cacheKey = $this->cacheKey($url, $format, $extract, $keywords);
         $this->purgeExpiredCache();
 
         if (isset(self::$cache[$cacheKey])) {
@@ -120,12 +138,17 @@ DESC;
             }
 
             $mediaType = strtolower(trim(explode(';', $contentType, 2)[0]));
-            $content = $this->normalizeUtf8Text($content);
-            if (in_array($mediaType, ['text/html', 'application/xhtml+xml'], true)) {
-                $content = $format === 'markdown'
-                    ? $this->htmlToMarkdown($content)
-                    : $this->htmlToText($content);
-            }
+            $content = (new WebFetchOutputComposer)->compose(
+                $this->normalizeUtf8Text($content),
+                $mediaType,
+                $finalUrl ?? $url,
+                $format === 'markdown',
+                $extract,
+                $keywords,
+                fn (string $html, bool $markdown): string => $markdown
+                    ? $this->htmlToMarkdown($html)
+                    : $this->htmlToText($html),
+            );
 
             [$content] = $this->truncateForOutput($content);
             if ($context->isAborted()) {
@@ -153,12 +176,39 @@ DESC;
     }
 
     /**
-     * Per-instance cache key. Includes the URL, the requested format, and the
-     * full security policy (private-network toggle + sorted allowlist +
+     * Normalise the caller's keyword list: strings only, trimmed, de-duplicated,
+     * order-independent so it can key the cache.
+     *
+     * @return list<string>
+     */
+    private function normalizeKeywordInput(mixed $keywords): array
+    {
+        if (! is_array($keywords)) {
+            return [];
+        }
+
+        $normalized = [];
+        foreach ($keywords as $keyword) {
+            if (is_string($keyword) && trim($keyword) !== '') {
+                $normalized[] = trim($keyword);
+            }
+        }
+        $normalized = array_values(array_unique($normalized));
+        sort($normalized);
+
+        return $normalized;
+    }
+
+    /**
+     * Per-instance cache key. Includes the URL, the requested rendering
+     * (format plus extraction settings, which change the returned text), and
+     * the full security policy (private-network toggle + sorted allowlist +
      * byte cap) so responses fetched under one policy are never served to a
      * caller with a stricter or looser policy.
+     *
+     * @param  list<string>  $keywords  already sorted and de-duplicated
      */
-    private function cacheKey(string $url, string $format): string
+    private function cacheKey(string $url, string $format, bool $extract, array $keywords): string
     {
         $allowList = $this->ssrfAllowList;
         sort($allowList);
@@ -166,6 +216,8 @@ DESC;
         return md5(implode('|', [
             $url,
             $format,
+            $extract ? 'extract' : 'full',
+            implode(',', $keywords),
             $this->allowPrivateNetworks ? '1' : '0',
             implode(',', $allowList),
             (string) $this->maxBytes,
@@ -291,7 +343,12 @@ DESC;
                 }
 
                 if ($statusCode >= 400) {
-                    throw new \RuntimeException("HTTP {$statusCode} for URL: {$url}");
+                    // The body carries the actual reason ("denied by UA ACL",
+                    // a rate-limit notice, an auth hint). Without it the agent
+                    // only sees a bare status and retries blindly.
+                    throw new \RuntimeException(
+                        "HTTP {$statusCode} for URL: {$url}".$this->errorBodyPreview($response, $shouldAbort),
+                    );
                 }
 
                 $contentType = $headers['content-type'][0] ?? '';
@@ -351,9 +408,19 @@ DESC;
         }
 
         return [
+            // A tool-shaped User-Agent draws a 403 from CDNs that blacklist
+            // non-browser agents by default (Alibaba Tengine answers
+            // "denied by UA ACL = blacklist"), which reads to the agent as a
+            // dead link rather than a blocked one. Present as a current
+            // desktop browser and send the headers one would send.
             'headers' => [
-                'User-Agent' => 'HaoCode/1.0 (PHP SDK)',
-                'Accept' => 'text/html,text/plain,text/*,application/json,application/*+json,application/xml,application/*+xml,application/javascript',
+                'User-Agent' => self::USER_AGENT,
+                'Accept' => 'text/html,application/xhtml+xml,application/xml;q=0.9,text/plain;q=0.9,application/json;q=0.9,*/*;q=0.8',
+                'Accept-Language' => 'en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7',
+                'Sec-Fetch-Dest' => 'document',
+                'Sec-Fetch-Mode' => 'navigate',
+                'Sec-Fetch-Site' => 'none',
+                'Upgrade-Insecure-Requests' => '1',
             ],
             'max_redirects' => 0,
             // Symfony otherwise inherits HTTP(S)_PROXY from the environment.
@@ -362,117 +429,5 @@ DESC;
             'no_proxy' => '*',
             'resolve' => [$host => $ip],
         ];
-    }
-
-    /**
-     * Resolve a (possibly relative) redirect Location against the base URL
-     * using parse_url so every URI-reference form is handled:
-     *   - absolute: https://other.example/path
-     *   - scheme-relative: //other.example/path
-     *   - absolute-path: /path
-     *   - query-only: ?page=2
-     *   - fragment: #section (ignored for fetching)
-     *   - relative: ../next, ./next, next
-     *   - bracketed IPv6 authority: https://[::1]:8080/
-     */
-    private function resolveRedirect(string $base, string $location): string
-    {
-        $location = trim($location);
-        $locationParts = parse_url($location);
-        if ($locationParts === false) {
-            throw new \RuntimeException("Invalid redirect Location: {$location}");
-        }
-
-        // RFC 3986 section 5.2: an absolute URI replaces the base entirely,
-        // but its path still goes through remove_dot_segments.
-        if (isset($locationParts['scheme'])) {
-            if (! isset($locationParts['host'])) {
-                // The SSRF guard will reject non-HTTP opaque URIs; retain the
-                // reference here so redirect resolution does not invent an
-                // authority for forms such as `g:h`.
-                return $this->withoutFragment($location);
-            }
-
-            return $this->formatAbsoluteUri((string) $locationParts['scheme'], $locationParts);
-        }
-
-        $baseParts = parse_url($base);
-        if ($baseParts === false || ! isset($baseParts['scheme'], $baseParts['host'])) {
-            throw new \RuntimeException("Invalid base URL: {$base}");
-        }
-
-        $scheme = (string) $baseParts['scheme'];
-        $authority = $this->formatAuthority($baseParts);
-
-        // A network-path reference replaces the authority while retaining the
-        // base scheme (including bracketed IPv6 and an optional port).
-        if (str_starts_with($location, '//')) {
-            return $this->formatAbsoluteUri($scheme, $locationParts);
-        }
-
-        $basePath = (string) ($baseParts['path'] ?? '');
-        $locationPath = (string) ($locationParts['path'] ?? '');
-
-        if ($locationPath === '') {
-            $path = $basePath === '' ? '/' : $basePath;
-        } elseif (str_starts_with($locationPath, '/')) {
-            $path = $this->normalizePath($locationPath);
-        } else {
-            // Merge with the base path up to and including its last slash.
-            // Unlike dirname(), this preserves a trailing slash: /foo/ + bar
-            // resolves to /foo/bar, as required by RFC 3986.
-            $slash = strrpos($basePath, '/');
-            $prefix = $slash === false ? '/' : substr($basePath, 0, $slash + 1);
-            $path = $this->normalizePath($prefix.$locationPath);
-        }
-
-        $query = array_key_exists('query', $locationParts)
-            ? '?'.(string) $locationParts['query']
-            : ($locationPath === '' && isset($baseParts['query']) ? '?'.(string) $baseParts['query'] : '');
-
-        return "{$scheme}://{$authority}{$path}{$query}";
-    }
-
-    /** @param array<string, mixed> $parts */
-    private function formatAuthority(array $parts): string
-    {
-        $host = trim((string) ($parts['host'] ?? ''), '[]');
-        $authority = '';
-        if (isset($parts['user'])) {
-            $authority .= (string) $parts['user'];
-            if (isset($parts['pass'])) {
-                $authority .= ':'.(string) $parts['pass'];
-            }
-            $authority .= '@';
-        }
-        $authority .= str_contains($host, ':') ? '['.$host.']' : $host;
-        if (isset($parts['port'])) {
-            $authority .= ':'.(int) $parts['port'];
-        }
-
-        return $authority;
-    }
-
-    /** @param array<string, mixed> $parts */
-    private function formatAbsoluteUri(string $scheme, array $parts): string
-    {
-        $authority = $this->formatAuthority($parts);
-        if ($authority === '') {
-            throw new \RuntimeException('Redirect URL is missing an authority.');
-        }
-
-        $path = isset($parts['path']) && $parts['path'] !== ''
-            ? $this->normalizePath((string) $parts['path'])
-            : '';
-        $query = array_key_exists('query', $parts) ? '?'.(string) $parts['query'] : '';
-
-        return "{$scheme}://{$authority}{$path}{$query}";
-    }
-
-    private function withoutFragment(string $url): string
-    {
-        $hash = strpos($url, '#');
-
-        return $hash === false ? $url : substr($url, 0, $hash);
     }
 }

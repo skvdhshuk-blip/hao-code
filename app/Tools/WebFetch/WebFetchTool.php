@@ -15,6 +15,7 @@ class WebFetchTool extends BaseTool
 {
     use WebFetchToolConstructConcern;
     use WebFetchToolNormalizePathConcern;
+    use WebFetchToolResolveRedirectConcern;
 
     /**
      * Shared per-process cache. The key includes the security policy so a
@@ -41,6 +42,17 @@ class WebFetchTool extends BaseTool
     private const DEFAULT_MAX_BYTES = 5_242_880;
 
     private const MAX_REDIRECTS = 3;
+
+    /**
+     * Presented to origins as a current desktop Chrome. Declared here rather
+     * than in a trait because trait constants need PHP 8.2 and this package
+     * supports 8.1.
+     */
+    private const USER_AGENT = 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 '
+        .'(KHTML, like Gecko) Chrome/131.0.0.0 Safari/537.36';
+
+    /** Bytes of an error response echoed back so the failure reason survives. */
+    private const ERROR_PREVIEW_BYTES = 1024;
 
     private ?HttpClientInterface $client = null;
 

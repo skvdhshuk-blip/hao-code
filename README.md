@@ -1011,7 +1011,14 @@ split cohesive behavior into same-namespace concern traits.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.21.0`. Notable changes since `v1.10.0`:
+is based on `v1.22.0`. Notable changes since `v1.10.0`:
+
+- `v1.22.0` — WebFetch gains opt-in main-content extraction (`extract`, with
+  `keywords` to weight the blocks that matter), flags bot-challenge pages and
+  client-rendered shells instead of returning them as content, reports the body
+  of a 4xx/5xx response alongside its status code, and presents a browser
+  `User-Agent` so CDN user-agent blacklists no longer read as dead links.
+  Default WebFetch output is unchanged. Adds an `ext-dom` requirement.
 
 - `v1.21.0` — Adds typed run termination reasons, fail-closed JSON Schema tool
   registration, one Fiber-backed streaming lifecycle, bounded background-agent

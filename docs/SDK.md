@@ -608,6 +608,20 @@ images through the SDK image-input APIs described in [Multimodal Input](#multimo
 Host and sandbox text reads use the same bounded line-window contract: offsets
 must be at most 1,000,000, limits at most 10,000 lines, and a single line or
 rendered result cannot exceed 1,000,000 bytes.
+The built-in `WebFetch` tool returns the whole converted page by default. Set
+`extract: true` to return only the main article instead, and pass `keywords`
+with the terms the answer should contain — blocks mentioning them are weighted
+up during scoring, so a short but relevant block (a data table, a price row) is
+not outranked by long boilerplate. When no block scores above the surrounding
+noise, or the winning block retains too little of the page, the full page is
+returned instead and a `[WebFetch]` note explains why. Extraction runs before
+the output-size cap, so an article is never truncated to make room for
+navigation. `WebFetch` also prepends a `[WebFetch]` warning when the response
+is a bot-challenge interstitial, an access-denied wall, or a client-rendered
+shell with no static text; no headless browser is bundled to fetch such pages,
+so the note tells the model to find another source. A 4xx/5xx response is
+reported with the first part of its body alongside the status code.
+
 The read-before-write guard records only complete, successful reads. Failed or
 partial reads do not authorize `Write` or `Edit`, and if the file's external
 revision changes, the caller must complete another full `Read` before mutation.
