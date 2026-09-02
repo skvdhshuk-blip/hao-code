@@ -43,7 +43,7 @@ Returns search results with titles, URLs, and snippets.
 Usage notes:
 - Always include a "Sources:" section with markdown links at the end of responses using search results
 - Use specific queries for better results
-- The current date can be used to find recent information
+- Today's date is provided in the runtime context of the first user turn. When the user asks for current, latest, or recent information without naming a date or time period, append today's date to the query (for example "php 8.5 release notes 2026-09-02") so the results are not stale. Do not add a date when the user already specified one.
 DESC;
     }
 
@@ -55,7 +55,7 @@ DESC;
                 'query' => [
                     'type' => 'string',
                     'minLength' => 2,
-                    'description' => 'The search query',
+                    'description' => "The search query. If the request is time-sensitive and the user gave no explicit date or period, append today's date from the runtime context (YYYY-MM-DD).",
                 ],
                 'allowed_domains' => [
                     'type' => 'array',

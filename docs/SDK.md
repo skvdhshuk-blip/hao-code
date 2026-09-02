@@ -622,6 +622,12 @@ shell with no static text; no headless browser is bundled to fetch such pages,
 so the note tells the model to find another source. A 4xx/5xx response is
 reported with the first part of its body alongside the status code.
 
+The built-in `WebSearch` tool asks the model to append today's date to
+time-sensitive queries when the user named no date or period, so "latest
+release notes" does not return last year's page. The date itself is not baked
+into the tool definition — that would change the cached prompt prefix daily —
+it comes from the runtime context injected on the first user turn.
+
 The read-before-write guard records only complete, successful reads. Failed or
 partial reads do not authorize `Write` or `Edit`, and if the file's external
 revision changes, the caller must complete another full `Read` before mutation.

@@ -72,6 +72,13 @@ class WebSearchToolTest extends TestCase
         $this->assertStringContainsString('search', strtolower($this->tool->description()));
     }
 
+    public function test_description_instructs_appending_todays_date(): void
+    {
+        $description = strtolower($this->tool->description());
+        $this->assertStringContainsString("today's date", $description);
+        $this->assertStringContainsString('append', $description);
+    }
+
     // ─── decodeDdgUrl ─────────────────────────────────────────────────────
 
     public function test_decode_ddg_url_extracts_uddg_param(): void
@@ -194,6 +201,12 @@ class WebSearchToolTest extends TestCase
     {
         $schema = $this->tool->inputSchema()->toJsonSchema();
         $this->assertContains('query', $schema['required']);
+    }
+
+    public function test_query_schema_describes_date_appending(): void
+    {
+        $schema = $this->tool->inputSchema()->toJsonSchema();
+        $this->assertStringContainsString('date', strtolower($schema['properties']['query']['description']));
     }
 
     // ─── domain-boundary matching (private hostMatchesDomain) ─────────────
