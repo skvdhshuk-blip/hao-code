@@ -312,41 +312,6 @@ trait HaoCodeConfigConstructConcern
          */
         ?string $hitlAllowlistPath = null,
         /**
-         * What this run must achieve, in one or two sentences. When set, the model
-         * is asked once to check its final answer against it before the run ends.
-         * Empty values normalize to null.
-         *
-         * @api
-         */
-        ?string $goal = null,
-        /**
-         * How many goal checks a run may spend (0-5). 0 disables the check while
-         * keeping {@see $goal} available to the reminder.
-         *
-         * @api
-         */
-        public readonly int $goalVerificationRounds = 1,
-        /**
-         * Periodically restate the task during long runs. null disables it; `[]`
-         * enables the defaults of a short recap every 5 turns and the full request
-         * every 10. Keys: `recapEvery`, `fullEvery`; 0 disables that half, and at
-         * least one must be positive.
-         *
-         * @api
-         *
-         * @var array{recapEvery?: int, fullEvery?: int}|null
-         */
-        public readonly ?array $goalReminder = null,
-        /**
-         * How ExitPlanMode leaves plan mode: 'approval' (default) requires a human
-         * decision through the interrupt mechanism, 'auto' switches the permission
-         * mode without asking. In an ephemeral session 'approval' cannot ask, so
-         * ExitPlanMode returns the plan and ends the run instead.
-         *
-         * @api
-         */
-        public readonly string $planExitPolicy = 'approval',
-        /**
          * Treat {@see $apiKey} as an Anthropic OAuth access token instead of
          * an API key: the SDK then sends `Authorization: Bearer <token>` plus
          * the `oauth-2025-04-20` anthropic-beta flag instead of the
@@ -444,6 +409,41 @@ trait HaoCodeConfigConstructConcern
          * @api
          */
         public readonly string $contextPreset = ContextPreset::CODING,
+        /**
+         * What this run must achieve, in one or two sentences. When set, the model
+         * is asked once to check its final answer against it before the run ends.
+         * Empty values normalize to null.
+         *
+         * @api
+         */
+        ?string $goal = null,
+        /**
+         * How many goal checks a run may spend (0-5). 0 disables the check while
+         * keeping {@see $goal} available to the reminder.
+         *
+         * @api
+         */
+        public readonly int $goalVerificationRounds = 1,
+        /**
+         * Periodically restate the task during long runs. null disables it; `[]`
+         * enables the defaults of a short recap every 5 turns and the full request
+         * every 10. Keys: `recapEvery`, `fullEvery`; 0 disables that half, and at
+         * least one must be positive.
+         *
+         * @api
+         *
+         * @var array{recapEvery?: int, fullEvery?: int}|null
+         */
+        public readonly ?array $goalReminder = null,
+        /**
+         * How ExitPlanMode leaves plan mode: 'approval' (default) requires a human
+         * decision through the interrupt mechanism, 'auto' switches the permission
+         * mode without asking. In an ephemeral session 'approval' cannot ask, so
+         * ExitPlanMode returns the plan and ends the run instead.
+         *
+         * @api
+         */
+        public readonly string $planExitPolicy = 'approval',
     ) {
         if (PermissionMode::tryFrom($this->permissionMode) === null) {
             throw new \InvalidArgumentException(

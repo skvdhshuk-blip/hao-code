@@ -139,42 +139,6 @@ class Agent
         public readonly ?string $hitlAllowlistPath = null,
 
         /**
-         * What this run must achieve, in one or two sentences. When set, the model
-         * is asked once to check its final answer against it before the run ends.
-         *
-         * @api
-         */
-        public readonly ?string $goal = null,
-
-        /**
-         * How many goal checks a run may spend. 0 disables the check while keeping
-         * {@see $goal} available to the reminder.
-         *
-         * @api
-         */
-        public readonly int $goalVerificationRounds = 1,
-
-        /**
-         * Periodically restate the task during long runs. null disables it; `[]`
-         * enables the defaults of a short recap every 5 turns and the full request
-         * every 10. Keys: `recapEvery`, `fullEvery` (0 disables that half).
-         *
-         * @api
-         *
-         * @var array{recapEvery?: int, fullEvery?: int}|null
-         */
-        public readonly ?array $goalReminder = null,
-
-        /**
-         * How ExitPlanMode leaves plan mode: 'approval' (default) requires a human
-         * decision through the interrupt mechanism, 'auto' switches the permission
-         * mode without asking.
-         *
-         * @api
-         */
-        public readonly string $planExitPolicy = 'approval',
-
-        /**
          * Disable session and tool-result persistence for this agent's runs.
          * Single-turn runs usually keep this true; durable sessions or HITL
          * flows must set it to false.
@@ -264,6 +228,42 @@ class Agent
          * @api
          */
         public readonly string $contextPreset = ContextPreset::CODING,
+
+        /**
+         * What this run must achieve, in one or two sentences. When set, the model
+         * is asked once to check its final answer against it before the run ends.
+         *
+         * @api
+         */
+        public readonly ?string $goal = null,
+
+        /**
+         * How many goal checks a run may spend. 0 disables the check while keeping
+         * {@see $goal} available to the reminder.
+         *
+         * @api
+         */
+        public readonly int $goalVerificationRounds = 1,
+
+        /**
+         * Periodically restate the task during long runs. null disables it; `[]`
+         * enables the defaults of a short recap every 5 turns and the full request
+         * every 10. Keys: `recapEvery`, `fullEvery` (0 disables that half).
+         *
+         * @api
+         *
+         * @var array{recapEvery?: int, fullEvery?: int}|null
+         */
+        public readonly ?array $goalReminder = null,
+
+        /**
+         * How ExitPlanMode leaves plan mode: 'approval' (default) requires a human
+         * decision through the interrupt mechanism, 'auto' switches the permission
+         * mode without asking.
+         *
+         * @api
+         */
+        public readonly string $planExitPolicy = 'approval',
     ) {
         if (PermissionMode::tryFrom($this->permissionMode) === null) {
             throw new \InvalidArgumentException(

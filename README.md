@@ -1011,7 +1011,18 @@ split cohesive behavior into same-namespace concern traits.
 ## Version
 
 Published versions are identified by Git tags and Packagist. This source line
-is based on `v1.22.0`. Notable changes since `v1.10.0`:
+is based on `v1.23.0`. Notable changes since `v1.10.0`:
+
+- `v1.23.0` — Background agents and `run_in_background` Bash commands now report
+  themselves when they finish, instead of waiting to be polled, and background
+  Bash output is finally reachable through a `BashOutput` tool. Plan mode gains a
+  plan file, a system-prompt section, and an `ExitPlanMode` that actually resolves
+  the phase: human approval on a durable session, otherwise the plan is handed
+  back with the new `RunTerminationReason::PlanReady`. New opt-in `goal`,
+  `goalVerificationRounds`, `goalReminder`, and `planExitPolicy` settings keep
+  long runs on task. `WebSearch` asks for a date on time-sensitive queries. All
+  public API changes are additive; hosts with an exhaustive `match` over
+  `RunTerminationReason` must add a `PlanReady` arm.
 
 - `v1.22.0` — WebFetch gains opt-in main-content extraction (`extract`, with
   `keywords` to weight the blocks that matter), flags bot-challenge pages and
