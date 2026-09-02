@@ -7,6 +7,7 @@ use HaoCode\Services\Permissions\Policy\PolicyDecisionKind;
 use HaoCode\Services\Permissions\Policy\PolicyLoader;
 use HaoCode\Services\Permissions\Policy\PolicyMatcher;
 use HaoCode\Services\Settings\SettingsManager;
+use HaoCode\Support\Filesystem\CanonicalPathResolver;
 use HaoCode\Tools\ToolUseContext;
 
 class PermissionChecker
@@ -26,6 +27,28 @@ class PermissionChecker
     public function nonInteractive(bool $flag = true): void
     {
         $this->nonInteractive = $flag;
+    }
+
+    /**
+     * Exact-match a write against this session's plan file.
+     *
+     * Both sides are canonicalized so `./plans/../plans/x.md` and a symlinked
+     * session directory still compare equal, and nothing but that one path is
+     * ever allowed through.
+     */
+    private function targetsPlanFile(array $input, ToolUseContext $context): bool
+    {
+        $planFilePath = $context->planFilePath;
+        if (! is_string($planFilePath) || $planFilePath === '') {
+            return false;
+        }
+        $target = $input['file_path'] ?? null;
+        if (! is_string($target) || $target === '') {
+            return false;
+        }
+
+        return CanonicalPathResolver::resolve($target, $context->workingDirectory)
+            === CanonicalPathResolver::resolve($planFilePath, $context->workingDirectory);
     }
 
     public function isNonInteractive(): bool
@@ -60,6 +83,16 @@ class PermissionChecker
             );
 
             return PermissionDecision::deny("Blocked by sensitive-path guard: {$sensitiveHit}");
+        }
+
+        // Plan mode: the plan file is the one thing the model may write. Without
+        // this exception it would have nowhere to draft a plan, since every write
+        // tool is denied below.
+        if ($mode === PermissionMode::Plan
+            && in_array($tool->name(), ['Write', 'Edit'], true)
+            && $this->targetsPlanFile($input, $context)
+        ) {
+            return PermissionDecision::allow();
         }
 
         // Plan mode: deny write operations

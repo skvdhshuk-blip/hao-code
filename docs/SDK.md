@@ -42,6 +42,7 @@ For `openai` and `openai_chat`, `OPENAI_API_KEY` is used when no explicit
 - [Custom Tools (SdkTool)](#custom-tools-sdktool)
 - [Custom Skills (SdkSkill)](#custom-skills-sdkskill)
 - [Streaming Messages](#streaming-messages)
+- [Plan Mode](#plan-mode)
 - [Agent Teams](#agent-teams)
 - [Multi-turn Conversations](#multi-turn-conversations)
 - [Session Resume & Continue](#session-resume--continue)
@@ -555,6 +556,7 @@ configured output tokens and a safety margin before sending a request.
 | `goal` | `?string` | `null` | What the run must achieve, in a sentence or two. When set, the model is asked once to check its final answer against it before the run ends. Blank values normalize to `null` |
 | `goalVerificationRounds` | `int` | `1` | How many goal checks a run may spend (0-5). `0` disables the check while keeping `goal` available to the reminder |
 | `goalReminder` | `?array` | `null` | Periodically restate the task during long runs. `null` disables it; `[]` enables the defaults. Keys: `recapEvery` (default 5), `fullEvery` (default 10); `0` disables that half and at least one must be positive |
+| `planExitPolicy` | `string` | `'approval'` | How `ExitPlanMode` leaves plan mode: `'approval'` requires a human decision, `'auto'` switches the permission mode without asking. See [Plan Mode](#plan-mode) |
 
 Security modes are validated exactly. Unknown values (including accidental
 whitespace such as `'plan '`) throw instead of falling back to the broader
@@ -1690,6 +1692,53 @@ foreach (HaoCode::stream('Deploy the release', $config) as $msg) {
     }
 }
 ```
+
+---
+
+## Plan Mode
+
+`permissionMode: 'plan'` starts a read-only phase: the model explores and designs
+an approach, and every tool that modifies files or state is denied. The one
+exception is the session's plan file, `<session path>/plans/<session id>.md`,
+which `Write` and `Edit` may target so the model has somewhere to draft. The path
+is matched canonically and exactly; nothing else becomes writable.
+
+The model ends the phase by calling `ExitPlanMode`, and what happens next depends
+on whether a human can be asked.
+
+| Session | `planExitPolicy` | What `ExitPlanMode` does |
+|---|---|---|
+| durable (`ephemeral: false`) | `'approval'` (default) | Raises a human interrupt for `ExitPlanMode`. On `approve` the permission mode switches to `default` and the plan is injected back as an approved plan; `reject` and `respond` leave the run in plan mode |
+| ephemeral | `'approval'` | Nothing can approve, so the plan is returned and the run ends with `RunTerminationReason::PlanReady`. `QueryResult->text` is the plan |
+| any | `'auto'` | Switches to `default` and injects the plan, with no approval step |
+
+The durable path reuses the ordinary interrupt mechanism, so
+`interruptOn['ExitPlanMode']` is armed for you when the run starts in plan mode.
+Set it to `false` to opt out, which falls back to handing the plan back.
+
+```php
+try {
+    $result = $haoCode->query('Design the billing migration', new HaoCodeConfig(
+        permissionMode: 'plan',
+        ephemeral: false,
+    ));
+} catch (HumanInterruptException $e) {
+    // One action, named ExitPlanMode, carrying the plan for review.
+    $result = $haoCode->resumeInterrupt(
+        $e->interrupt->id,
+        [HumanDecision::approve($e->interrupt->actions[0]->id)],
+    );
+}
+```
+
+Two things to know. The mode switch is in-memory and is not written to the run
+snapshot, so a later `resume()` of the same session should pass
+`permissionMode: 'default'` itself. And a nested agent never inherits an
+escalating policy: it hands its plan back to its caller instead of changing any
+permission mode.
+
+`RunTerminationReason::PlanReady` is a new case on an `@api` enum. A host with an
+exhaustive `match` over termination reasons must add an arm for it.
 
 ---
 

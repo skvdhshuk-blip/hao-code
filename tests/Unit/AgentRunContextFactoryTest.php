@@ -33,6 +33,69 @@ class AgentRunContextFactoryTest extends TestCase
         parent::tearDown();
     }
 
+    public function test_a_durable_plan_run_arms_exit_plan_mode_for_human_approval(): void
+    {
+        $context = AgentRunContextFactory::make(new HaoCodeConfig(
+            cwd: $this->makeProjectDirectory('durable-plan'),
+            permissionMode: 'plan',
+            ephemeral: false,
+        ));
+
+        $this->assertSame('approval', $context->planExitMode);
+        $this->assertSame(
+            ['approve', 'reject', 'respond'],
+            $context->interruptOn['ExitPlanMode']['allowedDecisions'],
+        );
+    }
+
+    public function test_an_ephemeral_run_hands_the_plan_back_instead_of_escalating(): void
+    {
+        $context = AgentRunContextFactory::make(new HaoCodeConfig(
+            cwd: $this->makeProjectDirectory('ephemeral-plan'),
+            permissionMode: 'plan',
+        ));
+
+        // Nothing can approve, so the tool must not switch the mode by itself.
+        $this->assertSame('return', $context->planExitMode);
+        $this->assertArrayNotHasKey('ExitPlanMode', $context->interruptOn);
+    }
+
+    public function test_auto_policy_switches_without_asking(): void
+    {
+        $context = AgentRunContextFactory::make(new HaoCodeConfig(
+            cwd: $this->makeProjectDirectory('auto-plan'),
+            permissionMode: 'plan',
+            planExitPolicy: 'auto',
+        ));
+
+        $this->assertSame('auto', $context->planExitMode);
+        $this->assertArrayNotHasKey('ExitPlanMode', $context->interruptOn);
+    }
+
+    public function test_opting_out_of_the_interrupt_falls_back_to_handing_the_plan_back(): void
+    {
+        $context = AgentRunContextFactory::make(new HaoCodeConfig(
+            cwd: $this->makeProjectDirectory('opted-out-plan'),
+            permissionMode: 'plan',
+            ephemeral: false,
+            interruptOn: ['ExitPlanMode' => false],
+        ));
+
+        $this->assertSame('return', $context->planExitMode);
+    }
+
+    public function test_a_nested_agent_never_inherits_an_escalating_plan_exit_mode(): void
+    {
+        $parent = AgentRunContextFactory::make(new HaoCodeConfig(
+            cwd: $this->makeProjectDirectory('nested-plan'),
+            permissionMode: 'plan',
+            planExitPolicy: 'auto',
+        ));
+
+        $this->assertSame('auto', $parent->planExitMode);
+        $this->assertSame('return', $parent->fork()->planExitMode);
+    }
+
     public function test_it_isolates_working_directory_settings_and_skills_per_run(): void
     {
         $firstDirectory = $this->makeProjectDirectory('first-project');

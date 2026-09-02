@@ -44,6 +44,16 @@ trait SessionManagerConstructConcern
         return $this->sessionId;
     }
 
+    /**
+     * Where this session's plan file lives while the run is in plan mode.
+     *
+     * @internal
+     */
+    public function getPlanFilePath(): string
+    {
+        return $this->sessionPath.'/plans/'.$this->sessionId.'.md';
+    }
+
     /** @internal */
     public function getSessionPath(): string
     {

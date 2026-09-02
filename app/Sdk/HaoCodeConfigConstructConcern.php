@@ -338,6 +338,15 @@ trait HaoCodeConfigConstructConcern
          */
         public readonly ?array $goalReminder = null,
         /**
+         * How ExitPlanMode leaves plan mode: 'approval' (default) requires a human
+         * decision through the interrupt mechanism, 'auto' switches the permission
+         * mode without asking. In an ephemeral session 'approval' cannot ask, so
+         * ExitPlanMode returns the plan and ends the run instead.
+         *
+         * @api
+         */
+        public readonly string $planExitPolicy = 'approval',
+        /**
          * Treat {@see $apiKey} as an Anthropic OAuth access token instead of
          * an API key: the SDK then sends `Authorization: Bearer <token>` plus
          * the `oauth-2025-04-20` anthropic-beta flag instead of the
@@ -462,6 +471,11 @@ trait HaoCodeConfigConstructConcern
         if ($this->goalVerificationRounds < 0 || $this->goalVerificationRounds > 5) {
             throw new \InvalidArgumentException(
                 'goalVerificationRounds must be between 0 and 5; got '.$this->goalVerificationRounds.'.',
+            );
+        }
+        if (! in_array($this->planExitPolicy, ['approval', 'auto'], true)) {
+            throw new \InvalidArgumentException(
+                "planExitPolicy must be 'approval' or 'auto'; got '{$this->planExitPolicy}'.",
             );
         }
         if ($this->goalReminder !== null) {

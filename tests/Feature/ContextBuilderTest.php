@@ -31,7 +31,48 @@ class ContextBuilderTest extends TestCase
             $omitProjectInstructions,
         );
 
-        return new ContextBuilder($settings, $toolRegistry, $sessionMemory, $skillLoader, $contextPreset, $styleLoader);
+        return new ContextBuilder(
+            $settings,
+            $toolRegistry,
+            $sessionMemory,
+            $skillLoader,
+            $contextPreset,
+            $styleLoader,
+            planFilePath: $overrides['planFilePath'] ?? null,
+        );
+    }
+
+    public function test_plan_mode_instructions_are_absent_outside_plan_mode(): void
+    {
+        $prompt = $this->makeBuilder()->buildSystemPrompt();
+
+        $this->assertStringNotContainsString('# Plan mode', $prompt[0]['text']);
+    }
+
+    public function test_plan_mode_instructions_name_the_plan_file(): void
+    {
+        $prompt = $this->makeBuilder([
+            'settings' => $this->makeSettings([
+                'permissionMode' => \HaoCode\Services\Permissions\PermissionMode::Plan,
+            ]),
+            'planFilePath' => '/tmp/sessions/plans/abc.md',
+        ])->buildSystemPrompt();
+
+        $this->assertStringContainsString('# Plan mode', $prompt[0]['text']);
+        $this->assertStringContainsString('/tmp/sessions/plans/abc.md', $prompt[0]['text']);
+        $this->assertStringContainsString('ExitPlanMode', $prompt[0]['text']);
+    }
+
+    public function test_plan_mode_instructions_fall_back_to_the_plan_argument(): void
+    {
+        $prompt = $this->makeBuilder([
+            'settings' => $this->makeSettings([
+                'permissionMode' => \HaoCode\Services\Permissions\PermissionMode::Plan,
+            ]),
+        ])->buildSystemPrompt();
+
+        $this->assertStringContainsString('# Plan mode', $prompt[0]['text']);
+        $this->assertStringContainsString('`plan` argument', $prompt[0]['text']);
     }
 
     private function makeSettings(array $stubs = []): SettingsManager
@@ -41,6 +82,9 @@ class ContextBuilderTest extends TestCase
         $m->method('getAppendSystemPrompt')->willReturn($stubs['appendPrompt'] ?? null);
         $m->method('getOutputStyle')->willReturn($stubs['outputStyle'] ?? null);
         $m->method('getMemorySummaryLevel')->willReturn($stubs['memorySummaryLevel'] ?? 'l0');
+        $m->method('getPermissionMode')->willReturn(
+            $stubs['permissionMode'] ?? \HaoCode\Services\Permissions\PermissionMode::Default,
+        );
         return $m;
     }
 

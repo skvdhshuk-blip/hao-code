@@ -29,11 +29,17 @@ class EnterPlanModeTool extends BaseTool
 
     public function call(array $input, ToolUseContext $context): ToolResult
     {
-        // Signal to the agent loop that we're entering plan mode
-        // This is handled via the permission system
+        // The mode itself is enforced by the permission system; this only tells the
+        // model where to draft, since the plan file is the one path it may write.
+        $path = $context->planFilePath;
+        $where = is_string($path) && $path !== ''
+            ? "Write and refine the plan in {$path}, the only file you may modify in plan mode. "
+            : 'Keep the plan in your response, then pass it as the `plan` argument of ExitPlanMode. ';
+
         return ToolResult::success(
-            "Entering plan mode. I will explore the codebase and design an implementation plan without making changes. " .
-            "Use ExitPlanMode when ready to implement."
+            'Entering plan mode. Explore the codebase and design an implementation plan without '
+            .'making changes. '.$where
+            .'Call ExitPlanMode when the plan is complete.',
         );
     }
 

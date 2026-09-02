@@ -112,13 +112,33 @@ final class AgentRunContextFactory
                 : null;
         }
 
+        // Plan mode ends by a human decision when one can be asked for. A durable
+        // session can raise an interrupt, so ExitPlanMode is gated like any other
+        // reviewed tool; an ephemeral one cannot, so the tool hands the plan back and
+        // ends the run instead of quietly granting itself write access.
+        $interruptOn = $config->interruptOn;
+        $planExitMode = 'return';
+        $startsInPlanMode = $config->permissionMode === 'plan';
+        if ($startsInPlanMode && $config->planExitPolicy === 'auto') {
+            $planExitMode = 'auto';
+        } elseif ($startsInPlanMode
+            && ! $config->ephemeral
+            && ($interruptOn['ExitPlanMode'] ?? null) !== false
+        ) {
+            $planExitMode = 'approval';
+            $interruptOn['ExitPlanMode'] ??= [
+                'allowedDecisions' => ['approve', 'reject', 'respond'],
+                'description' => 'Approve the implementation plan and leave plan mode',
+            ];
+        }
+
         return new AgentRunContext(
             $workingDirectory,
             $projectDirectory,
             $settings,
             $skillLoader,
             new CancellationToken(),
-            $config->interruptOn,
+            $interruptOn,
             $config->enableAskUser,
             null,
             null,
@@ -140,6 +160,7 @@ final class AgentRunContextFactory
             budgetLedger: null,
             usageAccumulator: new \HaoCode\Services\Cost\UsageAccumulator,
             contextPreset: $config->contextPreset,
+            planExitMode: $planExitMode,
             hitlStructuredRunner: new StructuredHitlRunner,
         );
     }

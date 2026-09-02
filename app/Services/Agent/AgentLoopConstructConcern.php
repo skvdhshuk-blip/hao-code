@@ -369,6 +369,7 @@ trait AgentLoopConstructConcern
                     $this->synchronizeToolWorkingDirectory($directory);
                 },
                 turnInjections: $this->turnInjections,
+                planFilePath: $this->sessionManager->getPlanFilePath(),
             );
             $context->beginReadReceiptBatch();
             $readReceiptBatchCommitted = false;

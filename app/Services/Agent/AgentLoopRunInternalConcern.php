@@ -152,6 +152,7 @@ trait AgentLoopRunInternalConcern
                     $this->synchronizeToolWorkingDirectory($directory);
                 },
                 turnInjections: $this->turnInjections,
+                planFilePath: $this->sessionManager->getPlanFilePath(),
             );
             $streamingExecutor->setContext($context, $onToolStart, $onToolComplete);
             $context->beginReadReceiptBatch();

@@ -18,6 +18,7 @@ class PermissionCheckerTest extends TestCase
 {
     use PermissionCheckerTestSetUpConcern;
     use PermissionCheckerTestTestNonInteractiveModeDowngradesAskToDenyConcern;
+    use PermissionCheckerTestPlanFileExceptionConcern;
 
     private ToolUseContext $context;
 

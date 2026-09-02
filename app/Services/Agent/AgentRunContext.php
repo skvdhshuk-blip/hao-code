@@ -46,6 +46,13 @@ final class AgentRunContext
         public readonly ?BudgetLedger $budgetLedger = null,
         public readonly ?UsageAccumulator $usageAccumulator = null,
         public readonly string $contextPreset = ContextPreset::CODING,
+        /**
+         * What ExitPlanMode does: 'return' hands the plan back and ends the run,
+         * 'approval' switches the permission mode once a human approves, 'auto'
+         * switches it without asking. Defaults to the conservative 'return' so a
+         * context built outside the SDK can never self-escalate out of plan mode.
+         */
+        public readonly string $planExitMode = 'return',
         ?callable $hitlStructuredRunner = null,
     ) {
         ContextPreset::assertValid($this->contextPreset);
@@ -111,6 +118,9 @@ final class AgentRunContext
             // Share the same accumulator so nested agents contribute tokens.
             $this->usageAccumulator,
             $contextPreset ?? $this->contextPreset,
+            // A nested agent hands its plan back to its caller; it never flips a
+            // permission mode, not even its own clone of the settings.
+            'return',
             $this->hitlStructuredRunner,
         );
     }
@@ -150,6 +160,7 @@ final class AgentRunContext
             $this->budgetLedger,
             $usageAccumulator,
             $this->contextPreset,
+            $this->planExitMode,
             $this->hitlStructuredRunner,
         );
     }

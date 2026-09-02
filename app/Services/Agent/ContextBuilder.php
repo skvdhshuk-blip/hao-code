@@ -35,6 +35,7 @@ class ContextBuilder
         private readonly ?OutputStyleLoader $outputStyleLoader = null,
         private readonly bool $textOnly = false,
         private readonly bool $includeMemoryInTextOnly = false,
+        private readonly ?string $planFilePath = null,
     ) {}
 
     public function buildSystemPrompt(): array
@@ -135,6 +136,10 @@ class ContextBuilder
 
         $fragments[] = $this->fragment('conventions', $this->contextPreset->conventionsContext());
 
+        if ($this->settings->getPermissionMode() === \HaoCode\Services\Permissions\PermissionMode::Plan) {
+            $fragments[] = $this->fragment('plan_mode', "\n\n".$this->planModeInstructions());
+        }
+
         // Inject active output style instructions
         $activeStyle = $this->settings->getOutputStyle();
         if ($activeStyle && $this->outputStyleLoader) {
@@ -227,6 +232,34 @@ PROMPT;
         }
 
         return $this->truncateFragments($fragments, self::MAX_SYSTEM_PROMPT_CHARS);
+    }
+
+    /**
+     * Plan-mode instructions.
+     *
+     * Worded so it stays true after approval: it describes the phase and how it
+     * ends, never a live state. The system prompt is memoized per loop, so a
+     * fragment claiming "you are currently blocked" would go stale the moment
+     * ExitPlanMode switched the mode.
+     */
+    private function planModeInstructions(): string
+    {
+        $where = $this->planFilePath === null
+            ? "Keep the plan in your replies and pass the final text as the `plan` argument of "
+                ."ExitPlanMode.\n\n"
+            : "Plan file: {$this->planFilePath}\nWrite and refine your plan in that file; it is the "
+                ."only file you may modify in plan mode. If it cannot be written, pass the full plan "
+                ."as the `plan` argument of ExitPlanMode instead.\n\n";
+
+        return "# Plan mode\n\n"
+            ."You are in plan mode: a read-only phase for exploring the codebase and designing an "
+            ."implementation approach. Tools that modify files or state are denied until the plan "
+            ."is approved.\n\n"
+            .$where
+            ."When the plan is complete, call ExitPlanMode. One of two things then happens: the plan "
+            ."is approved and the permission mode switches to default, in which case implement it; or "
+            ."the run ends and the plan is handed to the host for review. Never claim that "
+            .'implementation has started while plan mode is still active.';
     }
 
     private function fragment(

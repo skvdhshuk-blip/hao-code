@@ -119,6 +119,7 @@ final class AgentLoopBuilder
                 outputStyleLoader: new OutputStyleLoader($runContext->projectDirectory),
                 textOnly: $toolRegistry->getAllTools() === [],
                 includeMemoryInTextOnly: $runContext->includeMemoryInTextOnly,
+                planFilePath: $persistence->sessionManager->getPlanFilePath(),
             );
         } else {
             $settings = $this->baseSettings;

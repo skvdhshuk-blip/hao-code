@@ -20,6 +20,8 @@ final class GenericContextPresetTest extends TestCase
         $settings->method('getAppendSystemPrompt')->willReturn(null);
         $settings->method('getOutputStyle')->willReturn(null);
         $settings->method('getMemorySummaryLevel')->willReturn('l0');
+        $settings->method('getPermissionMode')
+            ->willReturn(\HaoCode\Services\Permissions\PermissionMode::Default);
 
         $memory = $this->createMock(MemoryStoreInterface::class);
         $memory->method('all')->willReturn([
@@ -53,6 +55,8 @@ final class GenericContextPresetTest extends TestCase
     {
         $settings = $this->createMock(SettingsManager::class);
         $settings->method('getMemorySummaryLevel')->willReturn('l0');
+        $settings->method('getPermissionMode')
+            ->willReturn(\HaoCode\Services\Permissions\PermissionMode::Default);
         $memory = $this->createMock(MemoryStoreInterface::class);
         $memory->method('all')->willReturn(['profile' => 'remembered profile']);
         $skills = $this->createMock(SkillLoader::class);

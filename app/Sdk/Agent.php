@@ -166,6 +166,15 @@ class Agent
         public readonly ?array $goalReminder = null,
 
         /**
+         * How ExitPlanMode leaves plan mode: 'approval' (default) requires a human
+         * decision through the interrupt mechanism, 'auto' switches the permission
+         * mode without asking.
+         *
+         * @api
+         */
+        public readonly string $planExitPolicy = 'approval',
+
+        /**
          * Disable session and tool-result persistence for this agent's runs.
          * Single-turn runs usually keep this true; durable sessions or HITL
          * flows must set it to false.
@@ -398,6 +407,7 @@ class Agent
             'goal' => $this->goal,
             'goalVerificationRounds' => $this->goalVerificationRounds,
             'goalReminder' => $this->goalReminder,
+            'planExitPolicy' => $this->planExitPolicy,
             'ephemeral' => $this->ephemeral,
             'headers' => $this->headers,
             'webfetchAllowPrivateNetworks' => $this->webfetchAllowPrivateNetworks,

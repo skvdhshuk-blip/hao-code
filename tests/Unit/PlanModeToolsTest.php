@@ -76,26 +76,27 @@ class PlanModeToolsTest extends TestCase
         $this->assertTrue((new ExitPlanModeTool)->isReadOnly([]));
     }
 
-    public function test_exit_is_concurrency_safe(): void
+    public function test_exit_is_not_concurrency_safe(): void
     {
-        $this->assertTrue((new ExitPlanModeTool)->isConcurrencySafe([]));
+        // It switches the permission mode and writes the plan file.
+        $this->assertFalse((new ExitPlanModeTool)->isConcurrencySafe([]));
     }
 
-    public function test_exit_call_returns_success(): void
+    public function test_exit_reports_when_no_plan_exists(): void
     {
         $result = (new ExitPlanModeTool)->call([], $this->context);
-        $this->assertFalse($result->isError);
+
+        $this->assertTrue($result->isError);
+        $this->assertStringContainsString('No plan found', $result->output);
     }
 
-    public function test_exit_call_mentions_implement(): void
+    public function test_exit_no_longer_mentions_the_plan_off_command(): void
     {
-        $result = (new ExitPlanModeTool)->call([], $this->context);
-        $this->assertStringContainsString('implement', strtolower($result->output));
-    }
+        // The command never existed in this SDK; the tool now resolves plan mode
+        // itself instead of telling the user to run something.
+        $tool = new ExitPlanModeTool;
 
-    public function test_exit_call_tells_user_to_run_plan_off(): void
-    {
-        $result = (new ExitPlanModeTool)->call([], $this->context);
-        $this->assertStringContainsString('/plan off', $result->output);
+        $this->assertStringNotContainsString('/plan off', $tool->description());
+        $this->assertStringNotContainsString('/plan off', $tool->call([], $this->context)->output);
     }
 }
