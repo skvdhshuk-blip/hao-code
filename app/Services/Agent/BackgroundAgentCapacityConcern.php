@@ -69,6 +69,7 @@ trait BackgroundAgentCapacityConcern
                     'last_message_at' => null,
                     'last_result' => null,
                     'error' => null,
+                    'completion_notified_at' => null,
                     'worktree_path' => $worktreePath,
                     'worktree_branch' => $worktreeBranch,
                     'worktree_retained' => $worktreePath !== null,

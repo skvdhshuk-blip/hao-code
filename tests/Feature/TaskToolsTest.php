@@ -214,6 +214,38 @@ class TaskToolsTest extends TestCase
         $this->assertStringContainsString('Pending messages: 0', $result->output);
     }
 
+    public function test_get_tool_marks_a_terminal_result_as_already_delivered(): void
+    {
+        $task = $this->manager->createWithId('agent_polled', 'Repo agent', 'Running');
+        $this->backgroundAgentManager->create(
+            'agent_polled', 'Inspect repo', 'Explore', 'Repo agent', null, null, null, 'test-session',
+        );
+        $this->backgroundAgentManager->markCompleted('agent_polled', 'the finding');
+
+        (new TaskGetTool)->call(['id' => $task->id], $this->context);
+
+        // Polling the result counts as delivery, so the automatic completion
+        // notice must not repeat it on the next turn.
+        $this->assertSame([], $this->backgroundAgentManager->claimCompletionNotices('test-session'));
+    }
+
+    public function test_get_tool_does_not_suppress_the_notice_for_a_running_agent(): void
+    {
+        $task = $this->manager->createWithId('agent_live', 'Repo agent', 'Running');
+        $this->backgroundAgentManager->create(
+            'agent_live', 'Inspect repo', 'Explore', 'Repo agent', null, null, null, 'test-session',
+        );
+        $this->backgroundAgentManager->markRunning('agent_live');
+
+        (new TaskGetTool)->call(['id' => $task->id], $this->context);
+        $this->backgroundAgentManager->markCompleted('agent_live', 'finished later');
+
+        $claimed = $this->backgroundAgentManager->claimCompletionNotices('test-session');
+
+        $this->assertCount(1, $claimed);
+        $this->assertSame('agent_live', $claimed[0]['id']);
+    }
+
     // ─── TaskListTool ─────────────────────────────────────────────────────
 
     public function test_list_tool_says_no_tasks_when_empty(): void

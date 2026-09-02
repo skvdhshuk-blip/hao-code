@@ -75,6 +75,11 @@ class TaskGetTool extends BaseTool
             if (! empty($agent['last_result'])) {
                 $lines[] = "Last response: {$agent['last_result']}";
             }
+            // The model has now seen this outcome, so the automatic completion
+            // notice must not repeat it on the next turn.
+            if (in_array($agent['status'] ?? '', ['completed', 'error', 'dead'], true)) {
+                $this->backgroundAgentManager->markCompletionNoticed($task->id);
+            }
         }
 
         return ToolResult::success(implode("\n", $lines));

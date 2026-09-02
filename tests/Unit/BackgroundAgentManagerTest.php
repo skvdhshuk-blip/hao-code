@@ -12,6 +12,7 @@ class BackgroundAgentManagerTest extends TestCase
 {
     use BackgroundAgentManagerTestSetUpConcern;
     use BackgroundAgentManagerTestTestSignalReaperRestoresHostHandlerAndAsyncModeConcern;
+    use BackgroundAgentManagerTestClaimCompletionNoticesConcern;
 
     private string $tempDir;
     private BackgroundAgentManager $manager;

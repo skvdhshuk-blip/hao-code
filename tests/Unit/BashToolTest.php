@@ -14,6 +14,7 @@ class BashToolTest extends TestCase
     use BashToolTestSetUpConcern;
     use BashToolTestTestForegroundOutputLimitTerminatesCommandBeforeLaterSideEffectsConcern;
     use BashToolTestTestBackgroundOutputLimitIsReportedWhenProcessExitsBeforePipeDrainConcern;
+    use BashToolTestBackgroundHarvestCompletedConcern;
 
     private BashTool $tool;
     private ToolUseContext $context;

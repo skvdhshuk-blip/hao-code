@@ -42,7 +42,7 @@ Usage notes:
  - Do not spend tool calls on availability probes or shell no-ops like `: > /dev/null 2>&1` or `true`, and do not start commands with `:`; run the real command directly.
  - Keep Bash commands short and concrete. Do not embed large heredocs, inline python/node scripts, base64 blobs, or long printf file-generation payloads in a single Bash call.
  - You may specify an optional timeout in milliseconds (up to 600000ms / 10 minutes). Default timeout is 120000ms (2 minutes).
- - Use the `run_in_background` parameter to run the command in the background.
+ - Use the `run_in_background` parameter for long-running commands. Its result is delivered to you automatically when the command finishes; you can also fetch it with the BashOutput tool.
  - Write a clear, concise description of what your command does.
 DESC;
     }
@@ -68,7 +68,7 @@ DESC;
                 ],
                 'run_in_background' => [
                     'type' => 'boolean',
-                    'description' => 'Run the command in the background (process-local; not durable across PHP restarts)',
+                    'description' => 'Run the command in the background (process-local; not durable across PHP restarts). The output is delivered automatically once it finishes, or on demand via the BashOutput tool.',
                 ],
             ],
             'required' => ['command'],
@@ -135,7 +135,7 @@ DESC;
         }
 
         if ($background) {
-            return $this->runInBackground($command, $cwd, $warnings, $timeout, $env);
+            return $this->runInBackground($command, $cwd, $warnings, $timeout, $env, $context->sessionId);
         }
 
         $capture = $this->allocateForegroundCaptureFiles();

@@ -14,6 +14,7 @@ trait BackgroundBashTaskManagerStartConcern
         array $warnings,
         float $timeoutSeconds,
         array $env,
+        ?string $owner = null,
     ): ToolResult
     {
         self::pruneBackgroundTasks();
@@ -116,12 +117,16 @@ trait BackgroundBashTaskManagerStartConcern
             'deadline' => microtime(true) + $timeoutSeconds,
             'startToken' => $startToken,
             'command' => $command,
+            'owner' => $owner,
+            'notified' => false,
         ];
 
         $result = "Background task started: {$taskId} (PID: {$pid})\n";
         $result .= "Command: {$command}\n";
         $result .= 'Status is process-local (not durable across PHP restarts). '
-            .'Use BashTool::checkTask() / checkAllTasks() to poll.';
+            .'The result is delivered to you automatically when the command finishes; '
+            ."you can also call BashOutput with task_id \"{$taskId}\" to fetch it. "
+            .'Continue with other work meanwhile.';
 
         if (!empty($warnings)) {
             $result = "<warnings>\n" . implode("\n", $warnings) . "\n</warnings>\n\n" . $result;
@@ -136,11 +141,17 @@ trait BackgroundBashTaskManagerStartConcern
         ]);
     }
 
-    public static function checkTask(string $taskId): ?ToolResult
+    public static function checkTask(string $taskId, ?string $owner = null): ?ToolResult
     {
         self::pruneBackgroundTasks();
 
         $task = self::$backgroundTasks[$taskId] ?? null;
+        // Tasks are keyed in a process-global map shared by every loop in this
+        // process. A caller that names an owner may only see its own tasks, so a
+        // nested agent cannot harvest output the parent run is waiting for.
+        if ($task !== null && $owner !== null && ($task['owner'] ?? null) !== $owner) {
+            $task = null;
+        }
         if ($task === null) {
             return ToolResult::error(
                 "Unknown background task: {$taskId}. "
@@ -304,7 +315,7 @@ trait BackgroundBashTaskManagerStartConcern
     /**
      * List tracked background tasks (after TTL / PID-reuse pruning).
      *
-     * @return array<string, array{pid: int, outFile: string, statusFile: string, startTime: float, startToken: ?string, command: string}>
+     * @return array<string, array{pid: int, outFile: string, statusFile: string, startTime: float, startToken: ?string, command: string, owner: ?string, notified: bool}>
      */
     public static function listTasks(): array
     {
@@ -318,9 +329,73 @@ trait BackgroundBashTaskManagerStartConcern
                 'startTime' => (float) ($task['startTime'] ?? 0.0),
                 'startToken' => is_string($task['startToken'] ?? null) ? $task['startToken'] : null,
                 'command' => (string) ($task['command'] ?? ''),
+                'owner' => is_string($task['owner'] ?? null) ? $task['owner'] : null,
+                'notified' => (bool) ($task['notified'] ?? false),
             ],
             self::$backgroundTasks,
         );
+    }
+
+    /**
+     * Collect background commands that have finished but were never reported.
+     *
+     * Small outputs are harvested inline, which removes the task: the result is
+     * delivered exactly once, either pushed from here or fetched via BashOutput,
+     * never both. A large output is only flagged, so the notice can stay short and
+     * the model can pull the full text when it actually needs it.
+     *
+     * @return list<array{taskId: string, command: string, result: ?ToolResult, outputBytes: int}>
+     */
+    public static function harvestCompleted(?string $owner, int $inlineLimitBytes = 8000): array
+    {
+        self::pruneBackgroundTasks();
+
+        $harvested = [];
+        foreach (array_keys(self::$backgroundTasks) as $taskId) {
+            $task = self::$backgroundTasks[$taskId] ?? null;
+            if ($task === null || ($task['notified'] ?? false)) {
+                continue;
+            }
+            if ($owner !== null && ($task['owner'] ?? null) !== $owner) {
+                continue;
+            }
+
+            $statusPath = is_string($task['statusFile'] ?? null) ? $task['statusFile'] : '';
+            $finished = (self::readBackgroundStatus($statusPath)['exitCode'] ?? null) !== null
+                || self::isBackgroundProcessAlive($task) === false;
+            if (! $finished) {
+                continue;
+            }
+
+            $command = (string) ($task['command'] ?? '');
+            $outFile = is_string($task['outFile'] ?? null) ? $task['outFile'] : '';
+            $outputBytes = $outFile !== '' && is_file($outFile) ? (int) filesize($outFile) : 0;
+
+            if ($outputBytes > $inlineLimitBytes) {
+                self::$backgroundTasks[$taskId]['notified'] = true;
+                $harvested[] = [
+                    'taskId' => $taskId,
+                    'command' => $command,
+                    'result' => null,
+                    'outputBytes' => $outputBytes,
+                ];
+
+                continue;
+            }
+
+            $result = self::checkTask($taskId, $owner);
+            if ($result === null) {
+                continue;
+            }
+            $harvested[] = [
+                'taskId' => $taskId,
+                'command' => $command,
+                'result' => $result,
+                'outputBytes' => $outputBytes,
+            ];
+        }
+
+        return $harvested;
     }
 
     /**

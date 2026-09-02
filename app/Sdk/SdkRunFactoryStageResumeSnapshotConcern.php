@@ -4,6 +4,8 @@ namespace HaoCode\Sdk;
 
 use HaoCode\Services\Agent\AgentLoopFactory;
 use HaoCode\Services\Agent\AgentRunContext;
+use HaoCode\Services\Agent\BackgroundAgentManager;
+use HaoCode\Services\Agent\BackgroundCompletionNotifier;
 use HaoCode\Services\Api\LlmProvider;
 use HaoCode\Services\Api\PooledProvider;
 use HaoCode\Services\Api\SettingsAwareProvider;
@@ -274,6 +276,23 @@ trait SdkRunFactoryStageResumeSnapshotConcern
             $loop->setEventPump(static function () use ($mcpConnectionManager): void {
                 $mcpConnectionManager->poll();
             });
+        }
+
+        // Only a root loop announces background completions. A nested agent has its
+        // own session id, while background work is owned by the session that started
+        // it, so a child would otherwise report on nothing or on a sibling's work.
+        if ($parentToolRegistry === null) {
+            $manifest = $loop->getToolManifest();
+            $watchesAgents = isset($manifest['Agent']);
+            $watchesBash = isset($manifest['Bash']);
+            if ($watchesAgents || $watchesBash) {
+                $loop->turnInjections()->addProducer(new BackgroundCompletionNotifier(
+                    static fn (): ?BackgroundAgentManager => $watchesAgents
+                        ? \HaoCode\Support\Runtime\SdkRuntime::app(BackgroundAgentManager::class)
+                        : null,
+                    watchBash: $watchesBash,
+                ));
+            }
         }
 
         $costTracker = $loop->getCostTracker();

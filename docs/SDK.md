@@ -1706,6 +1706,24 @@ cannot overwrite an existing background run. Their manifests, mailboxes, and
 task records are stored below the configured runtime storage path in
 `app/haocode/background-agents`, `app/haocode/teams`, and `app/haocode/tasks`.
 
+### Completion delivery
+
+A background agent or a `run_in_background` Bash command reports itself when it
+finishes: at the next turn boundary the root run injects a
+`# Background task updates` block naming each finished task and carrying its
+result. The model does not have to poll `TaskGet` to notice that work is done.
+
+Delivery happens exactly once. A completion is claimed under the state lock as
+it is announced, and reading a terminal result through `TaskGet` claims it the
+same way, so a result is never reported twice. Only a root run announces
+completions, and only for tasks owned by its own session, so a nested agent
+never sees a sibling's results.
+
+Background Bash output up to 8 KB is inlined in the notice, which also reaps the
+task. A larger output is announced by size only; fetch it with the `BashOutput`
+tool, which takes the `task_id` from the start message. `BashOutput` must be in
+`allowedTools` alongside `Bash` for the model to be able to call it.
+
 Background capacity is admitted atomically per owner run. The states `pending`,
 `running`, `idle`, and `waiting_for_input` all occupy a slot. Existing state
 without `owner_run_id` remains readable and counts against a legacy global

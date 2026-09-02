@@ -32,6 +32,7 @@ use HaoCode\Services\Telemetry\PhoenixTracer;
 use HaoCode\Support\Container\Container;
 use HaoCode\Tools\Agent\AgentTool;
 use HaoCode\Tools\Agent\SendMessageTool;
+use HaoCode\Tools\Bash\BashOutputTool;
 use HaoCode\Tools\Bash\BashTool;
 use HaoCode\Tools\Config\ConfigTool;
 use HaoCode\Tools\FileEdit\ApplyPatchTool;
@@ -373,6 +374,7 @@ final class SdkRuntime
             // claim/execute/complete runtime contract is wired end to end.
             foreach ([
                 BashTool::class,
+                BashOutputTool::class,
                 FileReadTool::class,
                 FileEditTool::class,
                 ApplyPatchTool::class,

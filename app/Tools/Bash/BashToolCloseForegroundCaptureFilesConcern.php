@@ -40,17 +40,30 @@ trait BashToolCloseForegroundCaptureFilesConcern
         array $warnings,
         float $timeoutSeconds,
         array $env,
+        ?string $owner = null,
     ): ToolResult
     {
-        return BackgroundBashTaskManager::start($command, $cwd, $warnings, $timeoutSeconds, $env);
+        return BackgroundBashTaskManager::start($command, $cwd, $warnings, $timeoutSeconds, $env, $owner);
     }
 
     /**
      * Check if a background task has completed.
+     *
+     * Naming an owner restricts the lookup to that session's tasks.
      */
-    public static function checkTask(string $taskId): ?ToolResult
+    public static function checkTask(string $taskId, ?string $owner = null): ?ToolResult
     {
-        return BackgroundBashTaskManager::checkTask($taskId);
+        return BackgroundBashTaskManager::checkTask($taskId, $owner);
+    }
+
+    /**
+     * Collect finished-but-unreported background commands for one owner.
+     *
+     * @return list<array{taskId: string, command: string, result: ?ToolResult, outputBytes: int}>
+     */
+    public static function harvestCompleted(?string $owner, int $inlineLimitBytes = 8000): array
+    {
+        return BackgroundBashTaskManager::harvestCompleted($owner, $inlineLimitBytes);
     }
 
     /**
@@ -122,7 +135,7 @@ trait BashToolCloseForegroundCaptureFilesConcern
     /**
      * List tracked background tasks (after TTL / PID-reuse pruning).
      *
-     * @return array<string, array{pid: int, outFile: string, statusFile: string, startTime: float, startToken: ?string, command: string}>
+     * @return array<string, array{pid: int, outFile: string, statusFile: string, startTime: float, startToken: ?string, command: string, owner: ?string, notified: bool}>
      */
     public static function listTasks(): array
     {

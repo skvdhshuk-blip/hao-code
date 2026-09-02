@@ -195,6 +195,69 @@ trait BackgroundAgentManagerConstructConcern
         return $this->markDead($id, 'Background agent process is no longer running.');
     }
 
+    /**
+     * Claim terminal background agents belonging to one owner that were never reported.
+     *
+     * The claim is the delivery record: `completion_notified_at` is written under the
+     * state lock and only agents this call actually stamped are returned, so a result is
+     * announced exactly once even when several loops poll the shared state directory.
+     *
+     * @return list<array<string, mixed>>
+     */
+    public function claimCompletionNotices(string $ownerRunId): array
+    {
+        $claimed = [];
+        foreach ($this->list() as $state) {
+            $id = $state['id'] ?? null;
+            if (! is_string($id) || $id === '') {
+                continue;
+            }
+            if (($state['owner_run_id'] ?? null) !== $ownerRunId) {
+                continue;
+            }
+            if (! in_array($state['status'] ?? '', ['completed', 'error', 'dead'], true)) {
+                continue;
+            }
+            if (($state['completion_notified_at'] ?? null) !== null) {
+                continue;
+            }
+
+            $won = false;
+            $updated = $this->stateStore->mutate($id, function (array $current) use (&$won) {
+                // Re-check under the lock: another loop may have claimed it since list().
+                if (($current['completion_notified_at'] ?? null) !== null) {
+                    return $current;
+                }
+                if (! in_array($current['status'] ?? '', ['completed', 'error', 'dead'], true)) {
+                    return $current;
+                }
+                $current['completion_notified_at'] = time();
+                $won = true;
+
+                return $current;
+            });
+
+            if ($won && is_array($updated)) {
+                $claimed[] = $updated;
+            }
+        }
+
+        return $claimed;
+    }
+
+    /**
+     * Record that a result reached the model by some other route (a TaskGet poll),
+     * so the completion notice does not repeat it.
+     */
+    public function markCompletionNoticed(string $id): ?array
+    {
+        return $this->stateStore->mutate($id, static function (array $state) {
+            $state['completion_notified_at'] ??= time();
+
+            return $state;
+        });
+    }
+
     public function terminateProcess(string $id, int $signal = 15, int $waitMilliseconds = 1000): bool
     {
         $state = $this->get($id);
