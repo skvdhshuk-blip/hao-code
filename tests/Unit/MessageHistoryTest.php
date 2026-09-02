@@ -82,6 +82,35 @@ class MessageHistoryTest extends TestCase
         $this->assertArrayHasKey('cache_control', $penultimateContent[count($penultimateContent) - 1]);
     }
 
+    public function test_trailing_injection_text_does_not_move_the_cache_breakpoint(): void
+    {
+        $history = new MessageHistory;
+        $history->addUserMessage('first');
+        $history->addAssistantMessage([
+            'role' => 'assistant',
+            'content' => [['type' => 'tool_use', 'id' => 'toolu_1', 'name' => 'Read', 'input' => []]],
+        ]);
+        $history->addToolResultMessage(
+            [['tool_use_id' => 'toolu_1', 'content' => 'file body', 'is_error' => false]],
+            '# Background task updates',
+        );
+
+        $messages = $history->getMessagesForApi();
+
+        // Breakpoint stays on the penultimate (assistant) message ...
+        $penultimate = $messages[1]['content'];
+        $this->assertArrayHasKey('cache_control', $penultimate[count($penultimate) - 1]);
+
+        // ... and the injected text is the last block of the unsent final message.
+        $last = $messages[2]['content'];
+        $this->assertSame('tool_result', $last[0]['type']);
+        $this->assertSame(
+            ['type' => 'text', 'text' => '# Background task updates'],
+            $last[count($last) - 1],
+        );
+        $this->assertArrayNotHasKey('cache_control', $last[count($last) - 1]);
+    }
+
     public function test_cache_control_not_added_when_fewer_than_three_messages(): void
     {
         $history = new MessageHistory;

@@ -22,6 +22,8 @@ trait ToolUseContextConstructConcern
         public readonly ?LlmProvider $provider = null,
         public readonly ?ToolRegistry $toolRegistry = null,
         \Closure|null $onWorkingDirectoryChanged = null,
+        public readonly ?\HaoCode\Services\Agent\TurnInjectionQueue $turnInjections = null,
+        public readonly ?string $planFilePath = null,
     ) {
         $this->onProgress = $onProgress;
         $this->shouldAbort = $shouldAbort;

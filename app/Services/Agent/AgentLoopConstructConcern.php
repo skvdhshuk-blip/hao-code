@@ -48,6 +48,17 @@ trait AgentLoopConstructConcern
         $this->transcriptLifecycle = new AgentTranscriptLifecycle($sessionManager, $toolOrchestrator);
         $this->repeatedToolFailureDetector = new RepeatedToolFailureDetector;
         $this->finalResponseCoordinator = new AgentFinalResponseCoordinator;
+        $this->turnInjections = new TurnInjectionQueue;
+    }
+
+    /**
+     * Queue for model-facing text delivered at the next turn boundary.
+     *
+     * @internal
+     */
+    public function turnInjections(): TurnInjectionQueue
+    {
+        return $this->turnInjections;
     }
 
     private function responseRetryPolicy(): AgentResponseRetryPolicy
@@ -327,6 +338,7 @@ trait AgentLoopConstructConcern
                 onWorkingDirectoryChanged: function (string $directory): void {
                     $this->synchronizeToolWorkingDirectory($directory);
                 },
+                turnInjections: $this->turnInjections,
             );
             $context->beginReadReceiptBatch();
             $readReceiptBatchCommitted = false;
@@ -344,7 +356,10 @@ trait AgentLoopConstructConcern
                 $this->interruptSourceAgentId = $resolution['interrupt']->sourceAgentId;
                 $this->interruptSourceTeam = $resolution['interrupt']->sourceTeam;
                 $this->queueCheckpointReadReceiptsForVisibleResults($resolution['checkpoint'], $context);
-                $this->messageHistory->addToolResultMessage($resolution['results']);
+                $this->messageHistory->addToolResultMessage(
+                    $resolution['results'],
+                    $this->turnInjections->drain(0, $this->sessionManager->getSessionId()),
+                );
                 $context->commitReadReceiptBatch();
                 $readReceiptBatchCommitted = true;
             } finally {

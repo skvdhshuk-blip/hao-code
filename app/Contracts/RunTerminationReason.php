@@ -16,4 +16,7 @@ enum RunTerminationReason: string
     case BudgetExhausted = 'budget_exhausted';
     case TurnLimit = 'turn_limit';
     case RepeatedToolFailure = 'repeated_tool_failure';
+
+    /** A plan is ready for the host to review; the run stopped instead of implementing it. */
+    case PlanReady = 'plan_ready';
 }

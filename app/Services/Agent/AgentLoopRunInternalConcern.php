@@ -47,6 +47,12 @@ trait AgentLoopRunInternalConcern
             $modelInput = $isSessionStart
                 ? $this->withInitialTurnContext($userInput)
                 : $userInput;
+            // Anything owed since the previous run (a background task that finished
+            // between two send() calls) rides along on this user message.
+            $carriedOver = $this->turnInjections->drain(0, $this->sessionManager->getSessionId());
+            if ($carriedOver !== null) {
+                $modelInput = TurnInjectionQueue::appendTextBlock($modelInput, $carriedOver);
+            }
             $this->transcriptLifecycle->recordUserInput(
                 $userInput,
                 $modelInput,
@@ -145,6 +151,7 @@ trait AgentLoopRunInternalConcern
                 onWorkingDirectoryChanged: function (string $directory): void {
                     $this->synchronizeToolWorkingDirectory($directory);
                 },
+                turnInjections: $this->turnInjections,
             );
             $streamingExecutor->setContext($context, $onToolStart, $onToolComplete);
             $context->beginReadReceiptBatch();
@@ -432,13 +439,32 @@ trait AgentLoopRunInternalConcern
                     );
                 }
 
-                // 8. Feed tool results back
-                $this->messageHistory->addToolResultMessage($toolResults);
+                // 8. Feed tool results back, carrying anything owed to the model this turn.
+                // A trailing text block is cache-safe: the single breakpoint sits on the
+                // penultimate message, and this message has not been sent yet.
+                $this->messageHistory->addToolResultMessage(
+                    $toolResults,
+                    $this->turnInjections->drain($turnCount, $this->sessionManager->getSessionId()),
+                );
                 $context->commitReadReceiptBatch();
                 $readReceiptBatchCommitted = true;
 
                 // 9. Record transcript
                 $this->transcriptLifecycle->persistTurn($assistantMessage, $toolResults);
+
+                // 9b. A tool may hand control back to the host (ExitPlanMode in return mode).
+                $requestedTermination = $this->turnInjections->takeTermination();
+                if ($requestedTermination !== null) {
+                    $this->hookExecutor?->execute('Stop', [
+                        'session_id' => $this->sessionManager->getSessionId(),
+                        'turn' => $turnCount,
+                    ]);
+
+                    return AgentRunOutcome::terminated(
+                        $requestedTermination['reason'],
+                        $requestedTermination['text'],
+                    );
+                }
 
                 if ($this->repeatedToolFailureDetector->detect(
                     $toolCalls,

@@ -35,6 +35,12 @@ final class AgentRunOutcome
         );
     }
 
+    /** A tool asked the loop to hand control back to the host with this text. */
+    public static function terminated(string $reason, string $text): self
+    {
+        return new self($text, RunStatus::Completed, RunTerminationReason::from($reason));
+    }
+
     public static function turnLimit(string $text, bool $repeatedToolFailure = false): self
     {
         return new self(

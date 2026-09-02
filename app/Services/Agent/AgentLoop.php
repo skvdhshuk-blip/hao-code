@@ -78,6 +78,12 @@ class AgentLoop
 
     private readonly AgentFinalResponseCoordinator $finalResponseCoordinator;
 
+    /** Model-facing text owed at the next turn boundary (background notices, reminders, plan hand-off). */
+    private readonly TurnInjectionQueue $turnInjections;
+
+    /** Optional end-of-run goal check; null when the run has no configured goal. */
+    private ?GoalVerificationPolicy $goalVerifier = null;
+
     /** Parent model captured for the current user turn, including HITL snapshots. */
     private ?string $runBaseModel = null;
 

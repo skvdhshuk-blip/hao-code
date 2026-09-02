@@ -65,6 +65,29 @@ final class AgentTranscriptLifecycle
         ));
     }
 
+    /**
+     * Record loop-generated user-side text as a real conversation turn.
+     *
+     * Unlike a trailing block on a tool-result message, this becomes its own message,
+     * so it must be persisted: resume replays the transcript, and a model-only message
+     * would leave two assistant turns adjacent. CACHE_STABLE because the text never
+     * changes after it is appended.
+     */
+    public function recordSyntheticUserMessage(string $text, MessageHistory $history): void
+    {
+        $this->sessions->recordEntry([
+            'type' => 'user_message',
+            'content' => $text,
+        ]);
+        $history->addEnvelope(MessageEnvelope::user(
+            $text,
+            persistence: MessageEnvelope::PERSIST_NONE,
+            sensitivity: MessageEnvelope::SENSITIVITY_PUBLIC,
+            audience: MessageEnvelope::AUDIENCE_MODEL,
+            cacheStability: MessageEnvelope::CACHE_STABLE,
+        ));
+    }
+
     /** @param string|array<int, mixed>|null $userInput */
     public function persistInitialTitle(string|array|null $userInput): bool
     {

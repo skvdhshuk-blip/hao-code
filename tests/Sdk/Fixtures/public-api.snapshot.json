@@ -38,7 +38,8 @@
             "Cancelled": "cancelled",
             "BudgetExhausted": "budget_exhausted",
             "TurnLimit": "turn_limit",
-            "RepeatedToolFailure": "repeated_tool_failure"
+            "RepeatedToolFailure": "repeated_tool_failure",
+            "PlanReady": "plan_ready"
         }
     },
     "HaoCode\\Sdk\\AbortController": {
