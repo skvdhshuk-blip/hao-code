@@ -986,6 +986,20 @@ application-owned store.
 | `examples/weather-agent.php` | Custom tool example |
 | `examples/sdk-suite/` | Focused examples for query, streaming, conversation, structured output, abort, credential pools, patching, MCP, and provider matrix |
 
+## Built-in Web Search
+
+`WebSearch` concurrently queries Bing, DuckDuckGo, Sogou, 360 Search, and
+Yahoo by default, then deterministically deduplicates and ranks up to eight
+results. Calls may select a non-empty subset with the optional `engines` tool
+argument; supported IDs are `bing`, `duckduckgo`, `sogou`, `360`, and `yahoo`.
+Google and other engines are not implicitly enabled.
+
+The model still receives the existing Markdown result list. Hosts can use
+`onToolComplete` and inspect `ToolResult::$data` for schema-v1 result cards,
+engine provenance, scores, per-engine status, and partial-failure state without
+parsing that Markdown. See [Complete SDK reference](docs/SDK.md#built-in-web-search)
+for the input and data contracts.
+
 ## Documentation
 
 - [Complete SDK reference](docs/SDK.md)

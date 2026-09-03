@@ -1,7 +1,7 @@
 # WebSearch multi-engine fan-out contract
 
-Status: implementation contract for the first fan-out release. This document
-defines the boundary to implement; it does not make the engine layer a public
+Status: implemented contract for the first fan-out release. This document
+defines the internal boundary; it does not make the engine layer a public
 SDK extension point.
 
 The baseline for this contract is the v1 `WebSearch` text shape plus the
@@ -37,7 +37,7 @@ Rust code is a design reference, not a source-compatible implementation.
 | Registered and default engine IDs | Internal `EngineRegistry` | Input validation and coordinator | Defaults are a positive allowlist; registration order and response completion order never decide ranking |
 | Engine URL and HTML parsing | One `EngineInterface` implementation per engine | Fan-out coordinator | An engine describes a request and parses a bounded response; it does not own transport, TLS, redirects, deadlines, or memory limits |
 | HTTP fan-out and warmup | Fan-out coordinator | Engine parsers | One failing or slow response is cancelled independently and cannot discard completed peers |
-| Domain policy | Existing `WebSearchToolFilterResultsConcern` | Aggregator | Exact hostname or true subdomain matching is unchanged; `blocked_domains` wins over `allowed_domains` |
+| Domain policy | Internal `WebSearchDomainPolicy` | Aggregator | Exact hostname or true subdomain matching is unchanged; `blocked_domains` wins over `allowed_domains` |
 | Deduplication, merge, and rank | Result aggregator | Text formatter and structured result composer | Equal input facts produce equal output regardless of network completion order |
 | Model-visible text | `WebSearchTool` formatter | Provider-neutral agent loop | Result list and no-result wording stay in the v1 Markdown shape; stats never enter model context |
 | Host-visible search data | `ToolResult::$data` | `onToolComplete` and internal IPC | Data uses the versioned schema below and survives the existing immutable `ToolResult` pipeline |

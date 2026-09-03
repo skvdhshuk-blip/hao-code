@@ -1,476 +1,312 @@
 <?php
 
+declare(strict_types=1);
+
 namespace Tests\Unit;
 
-use HaoCode\Tools\WebSearch\WebSearchTool;
 use HaoCode\Tools\ToolUseContext;
+use HaoCode\Tools\WebSearch\Engine\EngineRegistry;
+use HaoCode\Tools\WebSearch\WebSearchTool;
 use PHPUnit\Framework\TestCase;
 use Symfony\Component\HttpClient\MockHttpClient;
-use Symfony\Component\HttpClient\Exception\TransportException;
 use Symfony\Component\HttpClient\Response\MockResponse;
 
-class WebSearchToolTest extends TestCase
+final class WebSearchToolTest extends TestCase
 {
-    private WebSearchTool $tool;
-    private \ReflectionClass $ref;
-    private ToolUseContext $context;
-
-    protected function setUp(): void
+    public function test_schema_exposes_optional_unique_engine_subset(): void
     {
-        $this->tool = new WebSearchTool;
-        $this->ref = new \ReflectionClass($this->tool);
-        $this->context = new ToolUseContext(sys_get_temp_dir(), 'test');
-    }
+        $inputSchema = $this->newTool()->inputSchema();
+        $schema = $inputSchema->toJsonSchema();
 
-    private function invoke(string $method, mixed ...$args): mixed
-    {
-        $m = $this->ref->getMethod($method);
-        return $m->invoke($this->tool, ...$args);
-    }
-
-    private function callWithResponses(array $responses): \HaoCode\Tools\ToolResult
-    {
-        $tool = new WebSearchTool;
-        $tool->setClient(new MockHttpClient($responses));
-
-        return $tool->call(
-            ['query' => 'test'],
-            new ToolUseContext(sys_get_temp_dir(), 'test'),
+        $this->assertSame(['query'], $schema['required']);
+        $this->assertSame(
+            ['bing', 'duckduckgo', 'sogou', '360', 'yahoo'],
+            $schema['properties']['engines']['items']['enum'],
+        );
+        $this->assertSame(1, $schema['properties']['engines']['minItems']);
+        $this->assertSame(5, $schema['properties']['engines']['maxItems']);
+        $this->assertTrue($schema['properties']['engines']['uniqueItems']);
+        $this->assertStringContainsString('date', strtolower($schema['properties']['query']['description']));
+        $this->assertSame(
+            ['query' => 'test', 'engines' => ['360']],
+            $inputSchema->validate(['query' => 'test', 'engines' => ['360']]),
         );
     }
 
-    private function emptyDdgHtml(): string
+    public function test_default_call_fans_out_to_all_five_engines_and_never_google(): void
     {
-        return '<div class="no-results">No results.</div>';
+        $searchUrls = [];
+        $tool = $this->tool([], $searchUrls);
+
+        $result = $tool->call(['query' => 'php sdk'], $this->context());
+
+        $this->assertFalse($result->isError);
+        $this->assertCount(5, $searchUrls);
+        $this->assertSame(
+            ['bing', 'duckduckgo', 'sogou', '360', 'yahoo'],
+            $result->data['selected_engines'],
+        );
+        $this->assertStringNotContainsString('google.', implode(' ', $searchUrls));
+        $bingQuery = $this->queryForHost($searchUrls, 'www.bing.com');
+        $this->assertSame('php sdk', $bingQuery['q'] ?? null);
+        $this->assertSame('en-US', $bingQuery['mkt'] ?? null);
     }
 
-    private function emptyBingHtml(): string
+    public function test_model_markdown_stays_clean_while_data_contains_provenance_and_score(): void
     {
-        return '<ol id="b_results"><li class="b_no">There are no results for this query.</li></ol>';
-    }
-
-    // ─── name / description / isReadOnly ─────────────────────────────────
-
-    public function test_name_is_web_search(): void
-    {
-        $this->assertSame('WebSearch', $this->tool->name());
-    }
-
-    public function test_is_read_only(): void
-    {
-        $this->assertTrue($this->tool->isReadOnly([]));
-    }
-
-    public function test_is_concurrency_safe(): void
-    {
-        $this->assertTrue($this->tool->isConcurrencySafe([]));
-    }
-
-    public function test_description_mentions_search(): void
-    {
-        $this->assertStringContainsString('search', strtolower($this->tool->description()));
-    }
-
-    public function test_description_instructs_appending_todays_date(): void
-    {
-        $description = strtolower($this->tool->description());
-        $this->assertStringContainsString("today's date", $description);
-        $this->assertStringContainsString('append', $description);
-    }
-
-    // ─── decodeDdgUrl ─────────────────────────────────────────────────────
-
-    public function test_decode_ddg_url_extracts_uddg_param(): void
-    {
-        $ddgUrl = '//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fpage&rut=abc';
-        $decoded = $this->invoke('decodeDdgUrl', $ddgUrl);
-        $this->assertSame('https://example.com/page', $decoded);
-    }
-
-    public function test_decode_ddg_url_returns_unchanged_when_no_uddg(): void
-    {
-        $url = 'https://example.com/page';
-        $this->assertSame($url, $this->invoke('decodeDdgUrl', $url));
-    }
-
-    // ─── domain filtering (via call with injected results) ────────────────
-
-    public function test_allowed_domains_filter_keeps_matching_results(): void
-    {
-        // We test via a subclass that overrides searchDuckDuckGo to return known results
-        $proxy = new class extends WebSearchTool {
-            protected function searchDuckDuckGoForTest(): array
-            {
-                return [
-                    ['title' => 'PHP Docs', 'url' => 'https://php.net/manual', 'snippet' => ''],
-                    ['title' => 'Blog Post', 'url' => 'https://example.com/post', 'snippet' => ''],
-                ];
-            }
-
-            public function call(array $input, \HaoCode\Tools\ToolUseContext $ctx): \HaoCode\Tools\ToolResult
-            {
-                $results = $this->searchDuckDuckGoForTest();
-                $allowedDomains = $input['allowed_domains'] ?? [];
-                $blockedDomains = $input['blocked_domains'] ?? [];
-
-                if (!empty($allowedDomains)) {
-                    $results = array_filter($results, function ($r) use ($allowedDomains) {
-                        $host = parse_url($r['url'], PHP_URL_HOST) ?? '';
-                        foreach ($allowedDomains as $domain) {
-                            if (str_ends_with($host, $domain)) return true;
-                        }
-                        return false;
-                    });
-                }
-
-                if (!empty($blockedDomains)) {
-                    $results = array_filter($results, function ($r) use ($blockedDomains) {
-                        $host = parse_url($r['url'], PHP_URL_HOST) ?? '';
-                        foreach ($blockedDomains as $domain) {
-                            if (str_ends_with($host, $domain)) return false;
-                        }
-                        return true;
-                    });
-                }
-
-                if (empty($results)) {
-                    return \HaoCode\Tools\ToolResult::success("No search results found for: {$input['query']}");
-                }
-
-                $output = "Search results for: \"{$input['query']}\"\n\n";
-                foreach (array_values($results) as $i => $result) {
-                    $output .= ($i + 1) . ". [{$result['title']}]({$result['url']})\n\n";
-                }
-                return \HaoCode\Tools\ToolResult::success($output);
-            }
-        };
-
-        $ctx = new ToolUseContext(sys_get_temp_dir(), 'test');
-
-        $result = $proxy->call([
-            'query' => 'test',
-            'allowed_domains' => ['php.net'],
-        ], $ctx);
-
-        $this->assertStringContainsString('php.net', $result->output);
-        $this->assertStringNotContainsString('example.com', $result->output);
-    }
-
-    public function test_blocked_domains_filter_removes_matching_results(): void
-    {
-        $proxy = new class extends WebSearchTool {
-            public function call(array $input, \HaoCode\Tools\ToolUseContext $ctx): \HaoCode\Tools\ToolResult
-            {
-                $results = [
-                    ['title' => 'PHP Docs', 'url' => 'https://php.net/manual', 'snippet' => ''],
-                    ['title' => 'Spam Site', 'url' => 'https://spam.example.com/post', 'snippet' => ''],
-                ];
-
-                $blockedDomains = $input['blocked_domains'] ?? [];
-                if (!empty($blockedDomains)) {
-                    $results = array_filter($results, function ($r) use ($blockedDomains) {
-                        $host = parse_url($r['url'], PHP_URL_HOST) ?? '';
-                        foreach ($blockedDomains as $domain) {
-                            if (str_ends_with($host, $domain)) return false;
-                        }
-                        return true;
-                    });
-                }
-
-                $output = '';
-                foreach (array_values($results) as $r) {
-                    $output .= "[{$r['title']}]({$r['url']})\n";
-                }
-                return \HaoCode\Tools\ToolResult::success($output);
-            }
-        };
-
-        $result = $proxy->call([
-            'query' => 'test',
-            'blocked_domains' => ['example.com'],
-        ], new ToolUseContext(sys_get_temp_dir(), 'test'));
-
-        $this->assertStringContainsString('php.net', $result->output);
-        $this->assertStringNotContainsString('spam.example.com', $result->output);
-    }
-
-    // ─── input schema ─────────────────────────────────────────────────────
-
-    public function test_input_schema_requires_query(): void
-    {
-        $schema = $this->tool->inputSchema()->toJsonSchema();
-        $this->assertContains('query', $schema['required']);
-    }
-
-    public function test_query_schema_describes_date_appending(): void
-    {
-        $schema = $this->tool->inputSchema()->toJsonSchema();
-        $this->assertStringContainsString('date', strtolower($schema['properties']['query']['description']));
-    }
-
-    // ─── domain-boundary matching (private hostMatchesDomain) ─────────────
-    // The previous test suite reimplemented filtering in an anonymous subclass
-    // using str_ends_with, which silently treated notexample.com as matching
-    // example.com. These tests hit the real production method.
-
-    public function test_host_matches_domain_rejects_suffix_lookalike(): void
-    {
-        // notexample.com must NOT match example.com.
-        $this->assertFalse($this->invoke('hostMatchesDomain', 'notexample.com', 'example.com'));
-    }
-
-    public function test_host_matches_domain_accepts_exact_match(): void
-    {
-        $this->assertTrue($this->invoke('hostMatchesDomain', 'example.com', 'example.com'));
-    }
-
-    public function test_host_matches_domain_accepts_real_subdomain(): void
-    {
-        $this->assertTrue($this->invoke('hostMatchesDomain', 'docs.example.com', 'example.com'));
-        $this->assertTrue($this->invoke('hostMatchesDomain', 'a.b.example.com', 'example.com'));
-    }
-
-    public function test_host_matches_domain_rejects_different_tld(): void
-    {
-        $this->assertFalse($this->invoke('hostMatchesDomain', 'example.com.evil.com', 'example.com'));
-    }
-
-    // ─── normalizeDomains accepts URL / wildcard / case forms ─────────────
-
-    public function test_normalize_domains_strips_wildcard_and_url_forms(): void
-    {
-        $normalized = $this->invoke('normalizeDomains', [
-            '*.example.com',
-            'https://Foo.Com/path',
-            'BAR.ORG',
-            '',
-            123,
-            'bare.example.net',
+        $tool = $this->tool([
+            'bing' => $this->bing('HTTP title', 'http://www.example.com/page', 'Bing snippet'),
+            'duckduckgo' => $this->ddg('Clean title', 'https://example.com/page', 'Clean snippet'),
         ]);
 
-        $this->assertSame(['example.com', 'foo.com', 'bar.org', 'bare.example.net'], $normalized);
-    }
+        $result = $tool->call(['query' => 'test'], $this->context());
 
-    // ─── filterResults applies allowed + blocked with boundary semantics ──
-
-    public function test_filter_results_applies_allowed_and_blocked_boundaries(): void
-    {
-        $results = [
-            ['title' => 'A', 'url' => 'https://example.com/a', 'snippet' => ''],
-            ['title' => 'B', 'url' => 'https://docs.example.com/b', 'snippet' => ''],
-            ['title' => 'C', 'url' => 'https://notexample.com/c', 'snippet' => ''],
-            ['title' => 'D', 'url' => 'https://other.com/d', 'snippet' => ''],
-        ];
-
-        // allowed = example.com → A, B pass (exact + real subdomain);
-        // C (notexample.com — suffix lookalike) and D rejected.
-        $allowedOnly = $this->invoke('filterResults', $results, ['example.com'], []);
+        $this->assertFalse($result->isError);
         $this->assertSame(
-            ['https://example.com/a', 'https://docs.example.com/b'],
-            array_column($allowedOnly, 'url'),
+            "Search results for: \"test\"\n\n1. [Clean title](https://example.com/page)\n   Clean snippet\n\n",
+            $result->output,
         );
+        $this->assertStringNotContainsString('duckduckgo', strtolower($result->output));
+        $this->assertStringNotContainsString('score', strtolower($result->output));
+        $this->assertSame('web_search', $result->data['type']);
+        $this->assertSame(1, $result->data['schema_version']);
+        $this->assertFalse($result->data['partial']);
+        $this->assertSame(['duckduckgo', 'bing'], $result->data['results'][0]['engines']);
+        $this->assertSame(['duckduckgo' => 1, 'bing' => 1], $result->data['results'][0]['positions']);
+        $this->assertSame(4.0, $result->data['results'][0]['score']);
+        $this->assertCount(5, $result->data['stats']);
+    }
 
-        // blocked = example.com → A, B removed; C (notexample.com — NOT a
-        // match, so not blocked) and D kept.
-        $blockedOnly = $this->invoke('filterResults', $results, [], ['example.com']);
+    public function test_two_engine_failures_with_results_are_success_and_silent_in_model_text(): void
+    {
+        $tool = $this->tool([
+            'duckduckgo' => $this->ddg('Working result', 'https://example.com/ok', 'Useful'),
+            'sogou' => new MockResponse('SECRET_BACKEND_BODY', ['http_code' => 503]),
+            'yahoo' => new MockResponse('<main>unexpected layout</main>', ['http_code' => 200]),
+        ]);
+
+        $result = $tool->call(['query' => 'test'], $this->context());
+
+        $this->assertFalse($result->isError);
+        $this->assertTrue($result->data['partial']);
+        $this->assertStringContainsString('Working result', $result->output);
+        $this->assertStringNotContainsString('http_error', $result->output);
+        $this->assertStringNotContainsString('SECRET_BACKEND_BODY', $result->output);
+        $stats = array_column($result->data['stats'], null, 'engine');
+        $this->assertSame('http_error', $stats['sogou']['status']);
+        $this->assertSame(503, $stats['sogou']['http_status']);
+        $this->assertSame('http_status', $stats['sogou']['error']);
+        $this->assertSame('parse_error', $stats['yahoo']['status']);
+        $this->assertSame('unexpected_markup', $stats['yahoo']['error']);
+    }
+
+    public function test_all_explicitly_empty_engines_keep_existing_no_results_text(): void
+    {
+        $result = $this->tool()->call(['query' => 'nothing'], $this->context());
+
+        $this->assertFalse($result->isError);
+        $this->assertSame('No search results found for: nothing', $result->output);
+        $this->assertFalse($result->data['partial']);
+        $this->assertSame([], $result->data['results']);
         $this->assertSame(
-            ['https://notexample.com/c', 'https://other.com/d'],
-            array_column($blockedOnly, 'url'),
+            array_fill(0, 5, 'success_empty'),
+            array_column($result->data['stats'], 'status'),
         );
     }
 
-    // ─── Symfony HttpClient migration invariants ──────────────────────────
-
-    public function test_source_uses_symfony_http_client_not_curl(): void
+    public function test_no_results_plus_any_failure_is_an_error_with_ordered_statuses(): void
     {
-        // WebSearch previously called curl_init() directly and disabled TLS.
-        // After the migration it must use Symfony HttpClient exclusively.
-        $source = file_get_contents((new \ReflectionClass(WebSearchTool::class))->getFileName());
-        $this->assertStringNotContainsString('curl_init', $source);
-        $this->assertStringNotContainsString('CURLOPT_SSL_VERIFYPEER', $source);
-        $this->assertStringContainsString('Symfony\\Component\\HttpClient', $source);
+        $tool = $this->tool([
+            'duckduckgo' => new MockResponse('<main>unexpected</main>', ['http_code' => 200]),
+        ]);
+
+        $result = $tool->call(['query' => 'test'], $this->context());
+
+        $this->assertTrue($result->isError);
+        $this->assertTrue($result->data['partial']);
+        $this->assertSame(
+            'Web search failed with no usable results. Backend statuses: '
+            .'Bing=success_empty, DuckDuckGo=parse_error, Sogou=success_empty, '
+            .'360=success_empty, Yahoo=success_empty.',
+            $result->output,
+        );
     }
 
-    public function test_call_returns_no_results_message_when_all_filtered_out(): void
+    public function test_domain_policy_keeps_true_subdomains_and_blocked_wins(): void
     {
-        // Inject a search backend (via MockHttpClient) that returns only
-        // blocked-domain hits. The previous implementation returned an empty
-        // "Search results for: …" header because the empty check ran before
-        // filtering.
-        $ddgHtml = '<a rel="nofollow" class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fblocked.example.com%2Fa">A</a>'
-            .'<a class="result__snippet" href="">s</a>';
-
-        $tool = new WebSearchTool;
-        $tool->setClient(new MockHttpClient(function (string $method, string $url) use ($ddgHtml) {
-            if (str_contains($url, 'duckduckgo')) {
-                return new MockResponse($ddgHtml, ['http_code' => 200]);
-            }
-
-            return new MockResponse($this->emptyBingHtml(), ['http_code' => 200]);
-        }));
+        $tool = $this->tool([
+            'duckduckgo' => $this->ddg('Allowed', 'https://docs.example.com/a', 'one')
+                .$this->ddg('Suffix lookalike', 'https://notexample.com/b', 'two')
+                .$this->ddg('Blocked', 'https://private.example.com/c', 'three'),
+        ]);
 
         $result = $tool->call([
             'query' => 'test',
-            'blocked_domains' => ['example.com'],
-        ], new ToolUseContext(sys_get_temp_dir(), 'test'));
-
-        $this->assertStringNotContainsString('Search results for', $result->output);
-        $this->assertStringContainsString('No search results found', $result->output);
-        $this->assertFalse($result->isError);
-    }
-
-    public function test_ddg_title_and_url_are_results_without_a_snippet(): void
-    {
-        $result = $this->callWithResponses([
-            new MockResponse(
-                '<a class="result__a" href="//duckduckgo.com/l/?uddg=https%3A%2F%2Fexample.com%2Fddg">DDG title</a>',
-                ['http_code' => 200],
-            ),
-        ]);
+            'allowed_domains' => ['example.com'],
+            'blocked_domains' => ['private.example.com'],
+        ], $this->context());
 
         $this->assertFalse($result->isError);
-        $this->assertStringContainsString('[DDG title](https://example.com/ddg)', $result->output);
+        $this->assertStringContainsString('docs.example.com', $result->output);
+        $this->assertStringNotContainsString('notexample.com', $result->output);
+        $this->assertStringNotContainsString('private.example.com', $result->output);
+        $this->assertSame(1, $result->data['results'][0]['positions']['duckduckgo']);
+        $this->assertSame(3, $result->data['stats'][1]['count']);
     }
 
-    public function test_bing_title_and_url_are_results_without_a_snippet(): void
+    public function test_explicit_engine_subset_dispatches_only_selected_engines(): void
     {
-        $result = $this->callWithResponses([
-            new MockResponse($this->emptyDdgHtml(), ['http_code' => 200]),
-            new MockResponse(
-                '<ol id="b_results"><li class="b_algo"><h2>'
-                .'<a href="https://example.com/bing">Bing title</a>'
-                .'</h2></li></ol>',
-                ['http_code' => 200],
-            ),
-        ]);
+        $searchUrls = [];
+        $tool = $this->tool([
+            'duckduckgo' => $this->ddg('Only result', 'https://example.com/only', ''),
+        ], $searchUrls);
+
+        $result = $tool->call([
+            'query' => 'test',
+            'engines' => ['duckduckgo'],
+        ], $this->context());
 
         $this->assertFalse($result->isError);
-        $this->assertStringContainsString('[Bing title](https://example.com/bing)', $result->output);
+        $this->assertCount(1, $searchUrls);
+        $this->assertStringContainsString('html.duckduckgo.com', $searchUrls[0]);
+        $this->assertSame(['duckduckgo'], $result->data['selected_engines']);
+        $this->assertCount(1, $result->data['stats']);
     }
 
-    public function test_fallback_returns_decoded_bing_results_when_ddg_has_http_error(): void
+    public function test_invalid_engine_selection_fails_before_network_io(): void
     {
-        $encoded = rtrim(strtr(base64_encode('https://example.com/fallback'), '+/', '-_'), '=');
-        $result = $this->callWithResponses([
-            new MockResponse('SECRET_DDG_BODY', ['http_code' => 503]),
-            new MockResponse(
-                '<ol id="b_results"><li class="b_algo"><h2>'
-                .'<a href="https://www.bing.com/ck/a?x=1&amp;u=a1'.$encoded.'">Fallback title</a>'
-                .'</h2><p>Fallback snippet</p></li></ol>',
-                ['http_code' => 200],
-            ),
-        ]);
+        $requests = [];
+        $tool = $this->tool([], $requests);
+        $context = $this->context();
 
-        $this->assertFalse($result->isError);
-        $this->assertStringContainsString('[Fallback title](https://example.com/fallback)', $result->output);
-        $this->assertStringContainsString('Fallback snippet', $result->output);
-        $this->assertStringNotContainsString('SECRET_DDG_BODY', $result->output);
-    }
-
-    public function test_both_explicit_empty_backends_return_success(): void
-    {
-        $result = $this->callWithResponses([
-            new MockResponse($this->emptyDdgHtml(), ['http_code' => 200]),
-            new MockResponse($this->emptyBingHtml(), ['http_code' => 200]),
-        ]);
-
-        $this->assertFalse($result->isError);
-        $this->assertStringContainsString('No search results found', $result->output);
-    }
-
-    public function test_two_blank_success_bodies_are_parse_errors(): void
-    {
-        $result = $this->callWithResponses([
-            new MockResponse('', ['http_code' => 200]),
-            new MockResponse("\n", ['http_code' => 200]),
-        ]);
+        $this->assertSame(
+            'Duplicate WebSearch engine selection: bing',
+            $tool->validateInput(['query' => 'test', 'engines' => ['bing', 'bing']], $context),
+        );
+        $result = $tool->call(['query' => 'test', 'engines' => ['google']], $context);
 
         $this->assertTrue($result->isError);
-        $this->assertStringContainsString('DuckDuckGo=parse_error', $result->output);
-        $this->assertStringContainsString('Bing=parse_error', $result->output);
+        $this->assertSame('Unknown WebSearch engine: google', $result->output);
+        $this->assertSame([], $requests);
     }
 
-    public function test_http_error_without_usable_results_is_reported_without_body(): void
+    public function test_abort_before_warmup_returns_aborted_without_network_io(): void
     {
-        $result = $this->callWithResponses([
-            new MockResponse('SECRET_HTTP_BODY', ['http_code' => 503]),
-            new MockResponse($this->emptyBingHtml(), ['http_code' => 200]),
-        ]);
+        $requests = [];
+        $tool = $this->tool([], $requests);
+        $context = new ToolUseContext(sys_get_temp_dir(), 'test', shouldAbort: static fn (): bool => true);
 
-        $this->assertTrue($result->isError);
-        $this->assertStringContainsString('DuckDuckGo=http_error', $result->output);
-        $this->assertStringNotContainsString('SECRET_HTTP_BODY', $result->output);
+        $result = $tool->call(['query' => 'test'], $context);
+
+        $this->assertSame('aborted', $result->outcome()->value);
+        $this->assertSame([], $requests);
+        $this->assertNull($result->data);
     }
 
-    public function test_transport_error_without_usable_results_is_reported(): void
+    public function test_tool_identity_and_permissions_are_unchanged(): void
     {
-        $transportResponse = new MockResponse((function () {
-            throw new TransportException('SECRET_TRANSPORT_BODY');
-            yield '';
-        })(), ['http_code' => 200]);
+        $tool = $this->newTool();
 
-        $result = $this->callWithResponses([
-            $transportResponse,
-            new MockResponse($this->emptyBingHtml(), ['http_code' => 200]),
-        ]);
-
-        $this->assertTrue($result->isError);
-        $this->assertStringContainsString('DuckDuckGo=transport_error', $result->output);
-        $this->assertStringNotContainsString('SECRET_TRANSPORT_BODY', $result->output);
+        $this->assertSame('WebSearch', $tool->name());
+        $this->assertTrue($tool->isReadOnly([]));
+        $this->assertTrue($tool->isConcurrencySafe([]));
+        $this->assertStringContainsString("today's date", strtolower($tool->description()));
     }
 
-    public function test_oversized_response_is_transport_error(): void
+    /**
+     * @param array<string, string|MockResponse> $responses
+     * @param list<string> $searchUrls
+     */
+    private function tool(array $responses = [], array &$searchUrls = []): WebSearchTool
     {
-        $result = $this->callWithResponses([
-            new MockResponse(str_repeat('x', 2_097_153), ['http_code' => 200]),
-            new MockResponse($this->emptyBingHtml(), ['http_code' => 200]),
-        ]);
+        $tool = $this->newTool();
+        $tool->setClient(new MockHttpClient(function (string $method, string $url) use ($responses, &$searchUrls): MockResponse {
+            $engine = $this->engineForUrl($url);
+            if ($this->isWarmup($url)) {
+                return new MockResponse('', [
+                    'http_code' => 204,
+                    'response_headers' => ['set-cookie' => 'hao=code; Path=/; Secure'],
+                ]);
+            }
 
-        $this->assertTrue($result->isError);
-        $this->assertStringContainsString('DuckDuckGo=transport_error', $result->output);
+            $searchUrls[] = $url;
+            $response = $responses[$engine] ?? $this->emptyHtml($engine);
+
+            return $response instanceof MockResponse
+                ? $response
+                : new MockResponse($response, ['http_code' => 200]);
+        }));
+
+        return $tool;
     }
 
-    public function test_captcha_page_is_parse_error(): void
+    private function newTool(): WebSearchTool
     {
-        $result = $this->callWithResponses([
-            new MockResponse('<div class="g-recaptcha">challenge</div>', ['http_code' => 200]),
-            new MockResponse($this->emptyBingHtml(), ['http_code' => 200]),
-        ]);
-
-        $this->assertTrue($result->isError);
-        $this->assertStringContainsString('DuckDuckGo=parse_error', $result->output);
+        return new WebSearchTool(EngineRegistry::createDefault());
     }
 
-    public function test_bing_captcha_page_is_parse_error(): void
+    private function context(): ToolUseContext
     {
-        $result = $this->callWithResponses([
-            new MockResponse($this->emptyDdgHtml(), ['http_code' => 200]),
-            new MockResponse('<form id="b_captcha"><div>captcha</div></form>', ['http_code' => 200]),
-        ]);
-
-        $this->assertTrue($result->isError);
-        $this->assertStringContainsString('Bing=parse_error', $result->output);
+        return new ToolUseContext(sys_get_temp_dir(), 'test');
     }
 
-    public function test_unknown_bing_layout_is_parse_error(): void
+    private function engineForUrl(string $url): string
     {
-        $result = $this->callWithResponses([
-            new MockResponse($this->emptyDdgHtml(), ['http_code' => 200]),
-            new MockResponse('<main>Unexpected search markup</main>', ['http_code' => 200]),
-        ]);
+        $host = parse_url($url, PHP_URL_HOST);
 
-        $this->assertTrue($result->isError);
-        $this->assertStringContainsString('Bing=parse_error', $result->output);
+        return match ($host) {
+            'www.bing.com' => 'bing',
+            'duckduckgo.com', 'html.duckduckgo.com' => 'duckduckgo',
+            'www.sogou.com' => 'sogou',
+            'www.so.com' => '360',
+            'search.yahoo.com' => 'yahoo',
+            default => throw new \RuntimeException("Unexpected URL: {$url}"),
+        };
     }
 
-    public function test_unknown_ddg_layout_is_parse_error(): void
+    private function isWarmup(string $url): bool
     {
-        $result = $this->callWithResponses([
-            new MockResponse('<main>Unexpected search markup</main>', ['http_code' => 200]),
-            new MockResponse($this->emptyBingHtml(), ['http_code' => 200]),
-        ]);
+        return (parse_url($url, PHP_URL_PATH) ?: '/') === '/'
+            && parse_url($url, PHP_URL_QUERY) === null;
+    }
 
-        $this->assertTrue($result->isError);
-        $this->assertStringContainsString('DuckDuckGo=parse_error', $result->output);
+    private function emptyHtml(string $engine): string
+    {
+        return match ($engine) {
+            'bing' => '<ol id="b_results"><li class="b_no">There are no results found.</li></ol>',
+            'duckduckgo' => '<div class="no-results">No results.</div>',
+            'sogou' => '<main>抱歉，没有找到相关结果</main>',
+            '360' => '<main>未找到相关结果</main>',
+            'yahoo' => '<main>We did not find results for this query.</main>',
+        };
+    }
+
+    private function ddg(string $title, string $url, string $snippet): string
+    {
+        $redirect = '//duckduckgo.com/l/?uddg='.rawurlencode($url);
+
+        return '<div class="result web-result"><h2 class="result__title">'
+            .'<a class="result__a" href="'.$redirect.'">'.$title.'</a></h2>'
+            .'<a class="result__snippet">'.$snippet.'</a></div>';
+    }
+
+    private function bing(string $title, string $url, string $snippet): string
+    {
+        return '<ol id="b_results"><li class="b_algo"><h2><a href="'.$url.'">'
+            .$title.'</a></h2><p>'.$snippet.'</p></li></ol>';
+    }
+
+    /** @param list<string> $urls */
+    private function queryForHost(array $urls, string $host): array
+    {
+        foreach ($urls as $url) {
+            if (parse_url($url, PHP_URL_HOST) === $host) {
+                parse_str((string) parse_url($url, PHP_URL_QUERY), $query);
+
+                return $query;
+            }
+        }
+
+        return [];
     }
 }
