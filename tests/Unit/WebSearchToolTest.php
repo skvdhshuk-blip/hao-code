@@ -25,7 +25,6 @@ class WebSearchToolTest extends TestCase
     private function invoke(string $method, mixed ...$args): mixed
     {
         $m = $this->ref->getMethod($method);
-        $m->setAccessible(true);
         return $m->invoke($this->tool, ...$args);
     }
 
@@ -45,9 +44,9 @@ class WebSearchToolTest extends TestCase
         return '<div class="no-results">No results.</div>';
     }
 
-    private function emptyGoogleHtml(): string
+    private function emptyBingHtml(): string
     {
-        return '<div>Your search did not match any documents.</div>';
+        return '<ol id="b_results"><li class="b_no">There are no results for this query.</li></ol>';
     }
 
     // ─── name / description / isReadOnly ─────────────────────────────────
@@ -307,7 +306,7 @@ class WebSearchToolTest extends TestCase
                 return new MockResponse($ddgHtml, ['http_code' => 200]);
             }
 
-            return new MockResponse($this->emptyGoogleHtml(), ['http_code' => 200]);
+            return new MockResponse($this->emptyBingHtml(), ['http_code' => 200]);
         }));
 
         $result = $tool->call([
@@ -333,32 +332,38 @@ class WebSearchToolTest extends TestCase
         $this->assertStringContainsString('[DDG title](https://example.com/ddg)', $result->output);
     }
 
-    public function test_google_title_and_url_are_results_without_a_snippet(): void
+    public function test_bing_title_and_url_are_results_without_a_snippet(): void
     {
         $result = $this->callWithResponses([
             new MockResponse($this->emptyDdgHtml(), ['http_code' => 200]),
             new MockResponse(
-                '<a href="/url?q=https%3A%2F%2Fexample.com%2Fgoogle&amp;sa=U">Google title</a>',
+                '<ol id="b_results"><li class="b_algo"><h2>'
+                .'<a href="https://example.com/bing">Bing title</a>'
+                .'</h2></li></ol>',
                 ['http_code' => 200],
             ),
         ]);
 
         $this->assertFalse($result->isError);
-        $this->assertStringContainsString('[Google title](https://example.com/google)', $result->output);
+        $this->assertStringContainsString('[Bing title](https://example.com/bing)', $result->output);
     }
 
-    public function test_fallback_returns_google_results_when_ddg_has_http_error(): void
+    public function test_fallback_returns_decoded_bing_results_when_ddg_has_http_error(): void
     {
+        $encoded = rtrim(strtr(base64_encode('https://example.com/fallback'), '+/', '-_'), '=');
         $result = $this->callWithResponses([
             new MockResponse('SECRET_DDG_BODY', ['http_code' => 503]),
             new MockResponse(
-                '<a href="/url?q=https%3A%2F%2Fexample.com%2Ffallback">Fallback title</a>',
+                '<ol id="b_results"><li class="b_algo"><h2>'
+                .'<a href="https://www.bing.com/ck/a?x=1&amp;u=a1'.$encoded.'">Fallback title</a>'
+                .'</h2><p>Fallback snippet</p></li></ol>',
                 ['http_code' => 200],
             ),
         ]);
 
         $this->assertFalse($result->isError);
-        $this->assertStringContainsString('Fallback title', $result->output);
+        $this->assertStringContainsString('[Fallback title](https://example.com/fallback)', $result->output);
+        $this->assertStringContainsString('Fallback snippet', $result->output);
         $this->assertStringNotContainsString('SECRET_DDG_BODY', $result->output);
     }
 
@@ -366,7 +371,7 @@ class WebSearchToolTest extends TestCase
     {
         $result = $this->callWithResponses([
             new MockResponse($this->emptyDdgHtml(), ['http_code' => 200]),
-            new MockResponse($this->emptyGoogleHtml(), ['http_code' => 200]),
+            new MockResponse($this->emptyBingHtml(), ['http_code' => 200]),
         ]);
 
         $this->assertFalse($result->isError);
@@ -382,14 +387,14 @@ class WebSearchToolTest extends TestCase
 
         $this->assertTrue($result->isError);
         $this->assertStringContainsString('DuckDuckGo=parse_error', $result->output);
-        $this->assertStringContainsString('Google=parse_error', $result->output);
+        $this->assertStringContainsString('Bing=parse_error', $result->output);
     }
 
     public function test_http_error_without_usable_results_is_reported_without_body(): void
     {
         $result = $this->callWithResponses([
             new MockResponse('SECRET_HTTP_BODY', ['http_code' => 503]),
-            new MockResponse($this->emptyGoogleHtml(), ['http_code' => 200]),
+            new MockResponse($this->emptyBingHtml(), ['http_code' => 200]),
         ]);
 
         $this->assertTrue($result->isError);
@@ -406,7 +411,7 @@ class WebSearchToolTest extends TestCase
 
         $result = $this->callWithResponses([
             $transportResponse,
-            new MockResponse($this->emptyGoogleHtml(), ['http_code' => 200]),
+            new MockResponse($this->emptyBingHtml(), ['http_code' => 200]),
         ]);
 
         $this->assertTrue($result->isError);
@@ -418,7 +423,7 @@ class WebSearchToolTest extends TestCase
     {
         $result = $this->callWithResponses([
             new MockResponse(str_repeat('x', 2_097_153), ['http_code' => 200]),
-            new MockResponse($this->emptyGoogleHtml(), ['http_code' => 200]),
+            new MockResponse($this->emptyBingHtml(), ['http_code' => 200]),
         ]);
 
         $this->assertTrue($result->isError);
@@ -429,25 +434,25 @@ class WebSearchToolTest extends TestCase
     {
         $result = $this->callWithResponses([
             new MockResponse('<div class="g-recaptcha">challenge</div>', ['http_code' => 200]),
-            new MockResponse($this->emptyGoogleHtml(), ['http_code' => 200]),
+            new MockResponse($this->emptyBingHtml(), ['http_code' => 200]),
         ]);
 
         $this->assertTrue($result->isError);
         $this->assertStringContainsString('DuckDuckGo=parse_error', $result->output);
     }
 
-    public function test_google_captcha_page_is_parse_error(): void
+    public function test_bing_captcha_page_is_parse_error(): void
     {
         $result = $this->callWithResponses([
             new MockResponse($this->emptyDdgHtml(), ['http_code' => 200]),
-            new MockResponse('<form action="/sorry/index"><div>captcha</div></form>', ['http_code' => 200]),
+            new MockResponse('<form id="b_captcha"><div>captcha</div></form>', ['http_code' => 200]),
         ]);
 
         $this->assertTrue($result->isError);
-        $this->assertStringContainsString('Google=parse_error', $result->output);
+        $this->assertStringContainsString('Bing=parse_error', $result->output);
     }
 
-    public function test_unknown_google_layout_is_parse_error(): void
+    public function test_unknown_bing_layout_is_parse_error(): void
     {
         $result = $this->callWithResponses([
             new MockResponse($this->emptyDdgHtml(), ['http_code' => 200]),
@@ -455,14 +460,14 @@ class WebSearchToolTest extends TestCase
         ]);
 
         $this->assertTrue($result->isError);
-        $this->assertStringContainsString('Google=parse_error', $result->output);
+        $this->assertStringContainsString('Bing=parse_error', $result->output);
     }
 
     public function test_unknown_ddg_layout_is_parse_error(): void
     {
         $result = $this->callWithResponses([
             new MockResponse('<main>Unexpected search markup</main>', ['http_code' => 200]),
-            new MockResponse($this->emptyGoogleHtml(), ['http_code' => 200]),
+            new MockResponse($this->emptyBingHtml(), ['http_code' => 200]),
         ]);
 
         $this->assertTrue($result->isError);
