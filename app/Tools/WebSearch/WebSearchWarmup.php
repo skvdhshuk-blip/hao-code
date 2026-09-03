@@ -66,6 +66,14 @@ final class WebSearchWarmup
                 $responses = array_map(static fn (array $item): ResponseInterface => $item[0], $pending);
                 $timeout = max(0.001, min(0.05, $deadline - self::now()));
                 foreach ($this->client->stream($responses, $timeout) as $response => $chunk) {
+                    $id = spl_object_id($response);
+                    $failed = false;
+                    try {
+                        $isTimeout = $chunk->isTimeout();
+                    } catch (\Throwable) {
+                        $failed = true;
+                        $isTimeout = false;
+                    }
                     if ($context->isAborted()) {
                         $this->cancel($pending);
 
@@ -74,8 +82,13 @@ final class WebSearchWarmup
                     if (self::now() >= $deadline) {
                         break 2;
                     }
-                    $id = spl_object_id($response);
-                    if (! isset($pending[$id]) || $chunk->isTimeout()) {
+                    if ($failed) {
+                        $response->cancel();
+                        unset($pending[$id]);
+
+                        continue;
+                    }
+                    if (! isset($pending[$id]) || $isTimeout) {
                         continue;
                     }
                     if ($chunk->isFirst()) {
