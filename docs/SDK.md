@@ -849,7 +849,7 @@ Sandbox modes:
 | `full` | `Read`, `Write`, `Glob`, `Grep`, `Bash` | Shell commands run inside the sandbox backend |
 
 The replacement boundary is otherwise fixed: `Edit`, `apply_patch`,
-`NotebookEdit`, `Lsp`, worktree tools, `Agent`, and `SendMessage` are disabled
+`NotebookEdit`, `LSP`, worktree tools, `Agent`, and `SendMessage` are disabled
 while a sandbox is active. Task/team, custom, and MCP tools remain host-side and
 are never implicitly moved into the sandbox; list them explicitly only when the
 host intends to keep that capability. Explicitly requesting a disabled tool

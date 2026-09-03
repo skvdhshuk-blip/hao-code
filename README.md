@@ -287,7 +287,7 @@ Use a sandbox when the agent needs file or shell tools but must not mutate the
 PHP host project directory. Sandbox mode replaces `Read`, `Write`, `Glob`, and
 `Grep` with sandbox-scoped tools. Set `mode: 'full'` to also replace `Bash` with
 a sandbox-scoped shell. Sandbox configuration disables `Edit`, `apply_patch`,
-`NotebookEdit`, `Lsp`, worktree tools, `Agent`, and `SendMessage`. Other host-only
+`NotebookEdit`, `LSP`, worktree tools, `Agent`, and `SendMessage`. Other host-only
 tools, including task/team tools, are not sandbox replacements; use an
 explicit `allowedTools` list as shown below and omit them unless needed. Legacy
 cron tool classes are not registered by the default runtime because no prompt
@@ -299,7 +299,7 @@ The replacement boundary is fixed by mode:
 | --- | --- | --- | --- |
 | `Read`, `Write`, `Glob`, `Grep` | Sandbox | Sandbox | All file reads/searches use the sandbox backend |
 | `Bash` | Disabled | Sandbox | Only `full` runs shell commands inside the sandbox |
-| `Edit`, `apply_patch`, `NotebookEdit`, `Lsp`, worktree, `Agent`, `SendMessage` | Disabled | Disabled | Not sandbox replacements and unavailable while sandboxed |
+| `Edit`, `apply_patch`, `NotebookEdit`, `LSP`, worktree, `Agent`, `SendMessage` | Disabled | Disabled | Not sandbox replacements and unavailable while sandboxed |
 | task/team, custom, and MCP tools | Host-side only | Host-side only | Never implicitly moved into the sandbox; allow explicitly only when the host wants them |
 
 An explicit request for a disabled sandbox tool fails before the sandbox is
