@@ -12,7 +12,7 @@ final class SandboxToolPolicy
         'Edit',
         'apply_patch',
         'NotebookEdit',
-        'Lsp',
+        'LSP',
         'EnterWorktree',
         'ExitWorktree',
         'Agent',

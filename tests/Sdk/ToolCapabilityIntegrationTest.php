@@ -127,6 +127,7 @@ class ToolCapabilityIntegrationTest extends TestCase
             $this->assertSame($custom, $registry->getTool('CustomProbe'));
             $this->assertNull($registry->getTool('Bash'));
             $this->assertNull($registry->getTool('Edit'));
+            $this->assertNull($registry->getTool('LSP'));
         } finally {
             $run->close();
         }
