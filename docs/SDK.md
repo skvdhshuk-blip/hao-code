@@ -648,11 +648,49 @@ shell with no static text; no headless browser is bundled to fetch such pages,
 so the note tells the model to find another source. A 4xx/5xx response is
 reported with the first part of its body alongside the status code.
 
+### Built-in Web Search
+
 The built-in `WebSearch` tool asks the model to append today's date to
 time-sensitive queries when the user named no date or period, so "latest
 release notes" does not return last year's page. The date itself is not baked
 into the tool definition — that would change the cached prompt prefix daily —
 it comes from the runtime context injected on the first user turn.
+
+By default, one call concurrently searches `bing`, `duckduckgo`, `sogou`,
+`360`, and `yahoo`. A tool call may pass an optional non-empty `engines` array
+containing a unique subset of those exact IDs. Omitting it selects all five;
+unknown IDs, duplicates, and an empty list fail before network I/O. Existing
+`allowed_domains` and `blocked_domains` inputs still apply, with blocked
+domains taking precedence. Engine failures are isolated: usable peer results
+keep the tool successful, while `ToolResult::$data['partial']` reports the
+degraded batch.
+
+The result text shown to the model retains the existing Markdown shape. For a
+host UI or telemetry pipeline, inspect `ToolResult::$data` in
+`onToolComplete`. Non-aborted results carry schema version 1:
+
+```php
+use HaoCode\Sdk\HaoCodeConfig;
+use HaoCode\Tools\ToolResult;
+
+$config = new HaoCodeConfig(
+    onToolComplete: function (string $toolName, ToolResult $result): void {
+        if ($toolName !== 'WebSearch' || ($result->data['schema_version'] ?? null) !== 1) {
+            return;
+        }
+
+        // Render $result->data['results'] or record $result->data['stats'].
+    },
+);
+```
+
+The data object contains `type` (`web_search`), `schema_version`, `query`,
+`selected_engines`, `partial`, `results`, and `stats`. Each ranked result has
+`rank`, `title`, `url`, `snippet`, `engines`, per-engine `positions`, and
+`score`. Each stat has `engine`, `status`, `count`, `elapsed_ms`,
+`http_status`, and a stable safe `error` code. Consumers should branch on
+`schema_version` and ignore unknown additive fields instead of parsing the
+Markdown result text.
 
 The read-before-write guard records only complete, successful reads. Failed or
 partial reads do not authorize `Write` or `Edit`, and if the file's external

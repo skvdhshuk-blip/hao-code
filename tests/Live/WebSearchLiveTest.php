@@ -4,6 +4,8 @@ declare(strict_types=1);
 
 namespace Tests\Live;
 
+use HaoCode\Tools\ToolUseContext;
+use HaoCode\Tools\WebSearch\Engine\EngineRegistry;
 use HaoCode\Tools\WebSearch\WebSearchTool;
 use PHPUnit\Framework\TestCase;
 
@@ -19,25 +21,34 @@ class WebSearchLiveTest extends TestCase
         }
     }
 
-    public function test_duckduckgo_returns_live_results(): void
+    public function test_all_default_engines_return_live_results(): void
     {
-        $this->assertEngineReturnsResults('searchDuckDuckGo');
-    }
+        $result = (new WebSearchTool(EngineRegistry::createDefault()))->call(
+            ['query' => 'PHP programming language official documentation'],
+            new ToolUseContext(sys_get_temp_dir(), 'web-search-live'),
+        );
 
-    public function test_bing_returns_live_results(): void
-    {
-        $this->assertEngineReturnsResults('searchBing');
-    }
-
-    private function assertEngineReturnsResults(string $method): void
-    {
-        $tool = new WebSearchTool;
-        $reflection = new \ReflectionMethod($tool, $method);
-        $response = $reflection->invoke($tool, 'PHP programming language official documentation');
-
-        $this->assertSame('success_with_results', $response['status']);
-        $this->assertNotEmpty($response['results']);
-        $this->assertNotSame('', $response['results'][0]['title']);
-        $this->assertMatchesRegularExpression('~^https?://~', $response['results'][0]['url']);
+        $this->assertFalse($result->isError, $result->output);
+        $this->assertSame(
+            ['bing', 'duckduckgo', 'sogou', '360', 'yahoo'],
+            $result->data['selected_engines'],
+        );
+        $this->assertNotEmpty($result->data['results']);
+        $this->assertSame(
+            array_fill(0, 5, 'success_with_results'),
+            array_column($result->data['stats'], 'status'),
+            json_encode($result->data['stats'], JSON_PRETTY_PRINT | JSON_UNESCAPED_SLASHES),
+        );
+        fwrite(STDOUT, "\nWebSearch live stats: ".json_encode(
+            array_map(
+                static fn (array $stat): array => [
+                    'engine' => $stat['engine'],
+                    'count' => $stat['count'],
+                    'elapsed_ms' => $stat['elapsed_ms'],
+                ],
+                $result->data['stats'],
+            ),
+            JSON_UNESCAPED_SLASHES,
+        )."\n");
     }
 }

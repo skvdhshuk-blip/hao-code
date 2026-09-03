@@ -64,6 +64,7 @@ use HaoCode\Tools\Team\TeamListTool;
 use HaoCode\Tools\TodoWrite\TodoWriteTool;
 use HaoCode\Tools\ToolRegistry;
 use HaoCode\Tools\WebFetch\WebFetchTool;
+use HaoCode\Tools\WebSearch\Engine\EngineRegistry;
 use HaoCode\Tools\WebSearch\WebSearchTool;
 use HaoCode\Tools\Worktree\EnterWorktreeTool;
 use HaoCode\Tools\Worktree\ExitWorktreeTool;
@@ -254,6 +255,7 @@ final class SdkRuntime
             $app->make(SettingsManager::class)->getMemoryStoragePath(),
         ));
         $app->singleton(SkillLoader::class);
+        $app->singleton(EngineRegistry::class, static fn (): EngineRegistry => EngineRegistry::createDefault());
         $app->singleton(CostTracker::class);
         $app->singleton(
             \HaoCode\Services\FileHistory\FileHistoryManager::class,
