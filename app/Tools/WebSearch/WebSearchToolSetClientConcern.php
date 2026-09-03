@@ -6,6 +6,7 @@ use HaoCode\Tools\BaseTool;
 use HaoCode\Tools\ToolInputSchema;
 use HaoCode\Tools\ToolResult;
 use HaoCode\Tools\ToolUseContext;
+use Symfony\Component\HttpClient\CurlHttpClient;
 use Symfony\Component\HttpClient\HttpClient;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
@@ -79,7 +80,7 @@ DESC;
         $blockedDomains = $this->normalizeDomains($input['blocked_domains'] ?? []);
 
         // DuckDuckGo first; apply domain filtering before deciding to fall
-        // back, so a DDG page full of blocked domains still triggers Google.
+        // back, so a DDG page full of blocked domains still triggers Bing.
         $duckDuckGo = $this->searchDuckDuckGo($query);
         $results = $this->filterResults(
             $duckDuckGo['results'],
@@ -88,23 +89,23 @@ DESC;
         );
 
         if ($results === []) {
-            $google = $this->searchGoogle($query);
+            $bing = $this->searchBing($query);
             $results = $this->filterResults(
-                $google['results'],
+                $bing['results'],
                 $allowedDomains,
                 $blockedDomains,
             );
         }
 
         if ($results === []) {
-            if ($this->isSuccessfulStatus($duckDuckGo['status']) && $this->isSuccessfulStatus($google['status'])) {
+            if ($this->isSuccessfulStatus($duckDuckGo['status']) && $this->isSuccessfulStatus($bing['status'])) {
                 return ToolResult::success("No search results found for: {$query}");
             }
 
             return ToolResult::error(sprintf(
-                'Web search failed with no usable results. Backend statuses: DuckDuckGo=%s, Google=%s.',
+                'Web search failed with no usable results. Backend statuses: DuckDuckGo=%s, Bing=%s.',
                 $duckDuckGo['status'],
-                $google['status'],
+                $bing['status'],
             ));
         }
 
@@ -129,7 +130,7 @@ DESC;
     private function searchDuckDuckGo(string $query): array
     {
         $url = 'https://html.duckduckgo.com/html/?q='.urlencode($query);
-        $fetch = $this->fetchHtml($url, 'Mozilla/5.0 (compatible; HaoCode/1.0)');
+        $fetch = $this->fetchHtml($url);
         if ($fetch['status'] !== null) {
             return ['status' => $fetch['status'], 'results' => []];
         }
@@ -207,14 +208,17 @@ DESC;
     }
 
     /**
-     * Fallback search using Google's HTML endpoint.
+     * Fallback search using Bing's HTML endpoint.
      *
      * @return array{status: string, results: list<array{title: string, url: string, snippet: string}>}
      */
-    private function searchGoogle(string $query): array
+    private function searchBing(string $query): array
     {
-        $url = 'https://www.google.com/search?q='.urlencode($query).'&num=8';
-        $fetch = $this->fetchHtml($url, 'Mozilla/5.0 (Macintosh; Intel Mac OS X 10_15_7) AppleWebKit/537.36');
+        $url = 'https://www.bing.com/search?'.http_build_query([
+            'q' => $query,
+            'mkt' => 'en-US',
+        ], '', '&', PHP_QUERY_RFC3986);
+        $fetch = $this->fetchHtml($url);
         if ($fetch['status'] !== null) {
             return ['status' => $fetch['status'], 'results' => []];
         }
@@ -227,51 +231,13 @@ DESC;
             return ['status' => self::STATUS_PARSE_ERROR, 'results' => []];
         }
 
-        $anchors = [];
-        foreach ($this->extractAnchors($html) as $anchor) {
-            $href = $this->htmlAttribute($anchor['attributes'], 'href') ?? '';
-            $decodedUrl = $this->decodeGoogleUrl($href);
-            $normalizedHref = html_entity_decode($href, ENT_QUOTES | ENT_HTML5, 'UTF-8');
-            $isRedirect = str_starts_with($normalizedHref, '/url?') || parse_url($normalizedHref, PHP_URL_PATH) === '/url';
-            if ($decodedUrl !== '' && ($isRedirect || stripos($anchor['content'], '<h3') !== false)) {
-                $anchor['url'] = $decodedUrl;
-                $anchors[] = $anchor;
-            }
-        }
-
-        $results = [];
-        foreach ($anchors as $index => $anchor) {
-            $title = $this->cleanHtmlText($anchor['content']);
-            $segmentEnd = $anchors[$index + 1]['offset'] ?? strlen($html);
-            $snippet = $this->extractGoogleSnippet(substr(
-                $html,
-                $anchor['offset'] + $anchor['length'],
-                $segmentEnd - $anchor['offset'] - $anchor['length'],
-            ));
-
-            $host = parse_url($anchor['url'], PHP_URL_HOST);
-            if (is_string($host) && ($host === 'google.com' || str_ends_with($host, '.google.com'))) {
-                continue;
-            }
-
-            if ($title !== '') {
-                $results[] = [
-                    'title' => $title,
-                    'url' => $anchor['url'],
-                    'snippet' => $snippet,
-                ];
-            }
-
-            if (count($results) >= 8) {
-                break;
-            }
-        }
+        $results = BingSearchResultParser::parse($html, 8);
 
         if ($results !== []) {
             return ['status' => self::STATUS_SUCCESS_WITH_RESULTS, 'results' => $results];
         }
 
-        if ($anchors === [] && $this->isExplicitEmptyPage($html, 'google')) {
+        if ($this->isExplicitEmptyPage($html, 'bing')) {
             return ['status' => self::STATUS_SUCCESS_EMPTY, 'results' => []];
         }
 
@@ -284,16 +250,39 @@ DESC;
      *
      * @return array{status: null|string, body: string}
      */
-    private function fetchHtml(string $url, string $userAgent): array
+    private function fetchHtml(string $url): array
     {
         try {
-            $response = $this->client()->request('GET', $url, [
-                'headers' => [
-                    'User-Agent' => $userAgent,
-                    'Accept' => 'text/html,application/xhtml+xml',
-                ],
+            $client = $this->client();
+            $headers = [
+                'User-Agent' => 'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/147.0.0.0 Safari/537.36',
+                'Accept' => 'text/html,application/xhtml+xml,application/xml;q=0.9,image/avif,image/webp,image/apng,*/*;q=0.8,application/signed-exchange;v=b3;q=0.7',
+                'Accept-Language' => 'en-US,en;q=0.9,zh-CN;q=0.8,zh;q=0.7',
+                'sec-ch-ua' => '"Google Chrome";v="147", "Not.A/Brand";v="8", "Chromium";v="147"',
+                'sec-ch-ua-mobile' => '?0',
+                'sec-ch-ua-platform' => '"Windows"',
+                'sec-fetch-dest' => 'document',
+                'sec-fetch-mode' => 'navigate',
+                'sec-fetch-site' => 'none',
+                'sec-fetch-user' => '?1',
+                'Upgrade-Insecure-Requests' => '1',
+            ];
+            $options = [
+                'headers' => $headers,
                 'max_redirects' => 3,
-            ]);
+            ];
+            $curlDecodesContent = false;
+
+            if ($client instanceof CurlHttpClient && defined('CURLOPT_ENCODING')) {
+                $encoding = $this->curlSupportsBrotli() ? 'gzip, br' : 'gzip';
+                $options['headers']['Accept-Encoding'] = $encoding;
+                $options['extra']['curl'][(int) constant('CURLOPT_ENCODING')] = $encoding;
+                $curlDecodesContent = true;
+            } elseif (function_exists('gzdecode')) {
+                $options['headers']['Accept-Encoding'] = 'gzip';
+            }
+
+            $response = $client->request('GET', $url, $options);
 
             $status = $response->getStatusCode();
             if ($status < 200 || $status >= 300) {
@@ -304,7 +293,7 @@ DESC;
 
             $chunks = [];
             $total = 0;
-            foreach ($this->client()->stream($response) as $chunk) {
+            foreach ($client->stream($response) as $chunk) {
                 if ($chunk->isTimeout()) {
                     $response->cancel();
 
@@ -324,10 +313,40 @@ DESC;
                 $chunks[] = $data;
             }
 
-            return ['status' => null, 'body' => implode('', $chunks)];
+            $body = implode('', $chunks);
+            if (! $curlDecodesContent) {
+                $encoding = strtolower($response->getHeaders(false)['content-encoding'][0] ?? '');
+                if (str_contains($encoding, 'gzip')) {
+                    if (! function_exists('gzdecode')) {
+                        return ['status' => self::STATUS_TRANSPORT_ERROR, 'body' => ''];
+                    }
+                    $body = @gzdecode($body);
+                    if (! is_string($body)) {
+                        return ['status' => self::STATUS_TRANSPORT_ERROR, 'body' => ''];
+                    }
+                }
+            }
+
+            if (strlen($body) > self::MAX_RESPONSE_BYTES) {
+                return ['status' => self::STATUS_TRANSPORT_ERROR, 'body' => ''];
+            }
+
+            return ['status' => null, 'body' => $body];
         } catch (\Throwable) {
             return ['status' => self::STATUS_TRANSPORT_ERROR, 'body' => ''];
         }
+    }
+
+    private function curlSupportsBrotli(): bool
+    {
+        if (! function_exists('curl_version') || ! defined('CURL_VERSION_BROTLI')) {
+            return false;
+        }
+
+        $version = curl_version();
+
+        return isset($version['features'])
+            && (($version['features'] & (int) constant('CURL_VERSION_BROTLI')) !== 0);
     }
 
     /**
@@ -387,42 +406,6 @@ DESC;
         return '';
     }
 
-    private function extractGoogleSnippet(string $html): string
-    {
-        if (preg_match('/<span\b[^>]*>(.*?)<\/span>/si', $html, $match)) {
-            return $this->cleanHtmlText($match[1]);
-        }
-
-        return '';
-    }
-
-    private function decodeGoogleUrl(string $url): string
-    {
-        $url = html_entity_decode(trim($url), ENT_QUOTES | ENT_HTML5, 'UTF-8');
-        $path = parse_url($url, PHP_URL_PATH);
-        if (str_starts_with($url, '/url?') || $path === '/url') {
-            $queryString = parse_url($url, PHP_URL_QUERY);
-            if (! is_string($queryString)) {
-                return '';
-            }
-
-            parse_str($queryString, $params);
-            foreach (['q', 'url'] as $key) {
-                if (isset($params[$key]) && is_string($params[$key]) && $params[$key] !== '') {
-                    return $params[$key];
-                }
-            }
-
-            return '';
-        }
-
-        if (str_starts_with($url, '//')) {
-            return 'https:'.$url;
-        }
-
-        return preg_match('~^https?://~i', $url) ? $url : '';
-    }
-
     private function isChallengePage(string $html): bool
     {
         if (preg_match('/(?:class|id|name|action|src)\s*=\s*["\'][^"\']*(?:captcha|recaptcha|challenge|anomaly-modal|\/sorry\/)[^"\']*["\']/i', $html) === 1) {
@@ -441,9 +424,8 @@ DESC;
                 || preg_match('/\bno (?:more )?results(?: found)?\b/i', $text) === 1;
         }
 
-        return preg_match('/class\s*=\s*["\'][^"\']*no-results[^"\']*["\']/i', $html) === 1
-            || stripos($text, 'did not match any documents') !== false
-            || preg_match('/\bno results(?: found)?\b/i', $text) === 1
+        return preg_match('/class\s*=\s*["\'][^"\']*(?:no-results|b_no)[^"\']*["\']/i', $html) === 1
+            || preg_match('/\b(?:there are )?no results(?: found)?\b/i', $text) === 1
             || preg_match('/\b0 results\b/i', $text) === 1;
     }
 
