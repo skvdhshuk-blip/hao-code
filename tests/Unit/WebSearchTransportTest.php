@@ -82,7 +82,9 @@ final class WebSearchTransportTest extends TestCase
     {
         $engine = new FakeWebSearchEngine(
             'broken-parser',
-            parser: static fn (): never => throw new \RuntimeException('secret parser detail'),
+            parser: static function (): never {
+                throw new \RuntimeException('secret parser detail');
+            },
         );
 
         $batch = (new WebSearchTransport(new MockHttpClient(
