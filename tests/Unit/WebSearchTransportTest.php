@@ -225,6 +225,39 @@ final class WebSearchTransportTest extends TestCase
         );
     }
 
+    public function test_overall_deadline_wins_after_consuming_a_transport_error_chunk(): void
+    {
+        $client = new class(new MockResponse('', ['http_code' => 200])) extends MockHttpClient {
+            public int $streamCalls = 0;
+
+            public function stream(
+                ResponseInterface|iterable $responses,
+                ?float $timeout = null,
+            ): ResponseStreamInterface {
+                $this->streamCalls++;
+                $responses = $responses instanceof ResponseInterface ? [$responses] : $responses;
+                $generator = (static function () use ($responses): \Generator {
+                    usleep(2_000);
+                    foreach ($responses as $response) {
+                        yield $response => new ErrorChunk(
+                            0,
+                            new TransportException('late transport failure'),
+                        );
+                    }
+                })();
+
+                return new ResponseStream($generator);
+            }
+        };
+
+        $batch = (new WebSearchTransport($client, overallTimeoutMs: 1))->search([
+            $this->resultEngine('late-error', timeoutMs: 100),
+        ], 'test', $this->context());
+
+        $this->assertSame(1, $client->streamCalls);
+        $this->assertSame('overall_timeout', $batch->outcomes[0]->stat->error);
+    }
+
     public function test_host_abort_cancels_the_batch_instead_of_becoming_engine_failure(): void
     {
         $checks = 0;
@@ -281,6 +314,63 @@ final class WebSearchTransportTest extends TestCase
         $this->assertStringContainsString('session=abc', implode(' ', $requests[2][1]['cookie']));
     }
 
+    public function test_warmup_transport_timeout_never_suppresses_the_search(): void
+    {
+        $client = new class([
+            new MockResponse('', ['http_code' => 204]),
+            new MockResponse('search body', ['http_code' => 200]),
+        ]) extends MockHttpClient {
+            private int $streamCalls = 0;
+
+            public function stream(
+                ResponseInterface|iterable $responses,
+                ?float $timeout = null,
+            ): ResponseStreamInterface {
+                $this->streamCalls++;
+                if ($this->streamCalls > 1) {
+                    return parent::stream($responses, $timeout);
+                }
+
+                $responses = $responses instanceof ResponseInterface ? [$responses] : $responses;
+                $generator = (static function () use ($responses): \Generator {
+                    usleep(2_000);
+                    foreach ($responses as $response) {
+                        yield $response => new ErrorChunk(
+                            0,
+                            new TransportException('warmup timeout'),
+                        );
+                    }
+                })();
+
+                return new ResponseStream($generator);
+            }
+        };
+        $engine = new FakeWebSearchEngine(
+            'warmup-timeout',
+            warmup: 'https://warmup.example/',
+            requestUrl: 'https://warmup.example/search?q=test',
+            parser: static function (EngineHttpResponse $response): EngineParseResult {
+                $result = RawSearchResult::from(
+                    'Result',
+                    'https://result.example/',
+                    $response->body,
+                );
+
+                return EngineParseResult::success([$result]);
+            },
+        );
+
+        $batch = (new WebSearchTransport(
+            $client,
+            overallTimeoutMs: 100,
+            warmupTimeoutMs: 1,
+        ))->search([$engine], 'test', $this->context());
+
+        $this->assertFalse($batch->aborted);
+        $this->assertSame('success_with_results', $batch->outcomes[0]->stat->status);
+        $this->assertSame('search body', $batch->outcomes[0]->results[0]->snippet);
+    }
+
     public function test_search_requests_use_owned_deadlines_redirect_limit_and_browser_headers(): void
     {
         $optionsSeen = [];
@@ -295,6 +385,8 @@ final class WebSearchTransportTest extends TestCase
         ], 'test', $this->context());
 
         $this->assertSame(3, $optionsSeen['max_redirects']);
+        $this->assertTrue($optionsSeen['verify_peer']);
+        $this->assertTrue($optionsSeen['verify_host']);
         $this->assertLessThanOrEqual(4.321, $optionsSeen['timeout']);
         $this->assertGreaterThan(4.0, $optionsSeen['timeout']);
         $this->assertSame($optionsSeen['timeout'], $optionsSeen['max_duration']);

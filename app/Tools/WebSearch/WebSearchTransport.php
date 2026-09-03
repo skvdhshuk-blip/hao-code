@@ -12,6 +12,7 @@ use HaoCode\Tools\WebSearch\Engine\EngineRequest;
 use HaoCode\Tools\WebSearch\Engine\RawSearchResult;
 use Symfony\Component\HttpClient\CurlHttpClient;
 use Symfony\Contracts\HttpClient\ChunkInterface;
+use Symfony\Contracts\HttpClient\Exception\TimeoutExceptionInterface;
 use Symfony\Contracts\HttpClient\HttpClientInterface;
 
 /** @internal */
@@ -145,6 +146,15 @@ final class WebSearchTransport
             try {
                 $responses = array_map(static fn (EngineResponseState $state) => $state->response, $pending);
                 foreach ($this->client->stream($responses, $this->pollTimeout($pending, $overallDeadline)) as $response => $chunk) {
+                    $id = spl_object_id($response);
+                    $state = $states[$id] ?? null;
+                    $chunkError = null;
+                    try {
+                        $isTimeout = $chunk->isTimeout();
+                    } catch (\Throwable $exception) {
+                        $chunkError = $exception;
+                        $isTimeout = false;
+                    }
                     if ($context->isAborted()) {
                         $this->cancelStates($states);
 
@@ -152,12 +162,19 @@ final class WebSearchTransport
                     }
 
                     $this->expireStates($states, $outcomes, $overallDeadline);
-                    $id = spl_object_id($response);
-                    if (! isset($states[$id]) || $states[$id]->settled) {
+                    if ($state === null || $state->settled || $isTimeout) {
+                        continue;
+                    }
+                    if ($chunkError !== null) {
+                        $this->settleTransport(
+                            $state,
+                            $outcomes,
+                            $chunkError instanceof TimeoutExceptionInterface ? 'timeout' : 'network_error',
+                        );
+
                         continue;
                     }
 
-                    $state = $states[$id];
                     try {
                         $this->consumeChunk($state, $chunk, $outcomes);
                     } catch (\Throwable) {
@@ -203,9 +220,6 @@ final class WebSearchTransport
         ChunkInterface $chunk,
         array &$outcomes,
     ): void {
-        if ($chunk->isTimeout()) {
-            return;
-        }
         if ($chunk->isFirst()) {
             $state->httpStatus = $state->response->getStatusCode();
             $state->headers = $state->response->getHeaders(false);
@@ -379,6 +393,8 @@ final class WebSearchTransport
             'max_redirects' => 3,
             'timeout' => $timeout,
             'max_duration' => $timeout,
+            'verify_peer' => true,
+            'verify_host' => true,
         ];
         if ($this->transportDecodesContent() && defined('CURLOPT_ENCODING')) {
             $encoding = $this->curlSupportsBrotli() ? 'gzip, br' : 'gzip';
