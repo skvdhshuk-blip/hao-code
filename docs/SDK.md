@@ -536,6 +536,17 @@ Input budgeting uses the active provider's `context_window` setting. It falls
 back to `HAOCODE_CONTEXT_WINDOW` (200000 by default) and reserves both the
 configured output tokens and a safety margin before sending a request.
 
+### Context compaction
+
+When the history no longer fits, the run summarizes the older messages into one
+structured note and keeps the recent turns. The model that writes the summary
+also names the messages that cannot survive as prose — the source under edit,
+the failing stack trace, the original requirements — sorted into three priority
+bands. At apply time the run keeps as many whole bands as the remaining budget
+allows, so the same summary compresses harder on a full window than on an empty
+one. Without a keep-list (an older model, a degraded response) the run falls
+back to re-injecting the most recently read files, as before.
+
 ### Agent Behavior
 
 | Parameter | Type | Default | Description |

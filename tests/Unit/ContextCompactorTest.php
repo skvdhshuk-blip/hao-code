@@ -14,6 +14,7 @@ class ContextCompactorTest extends TestCase
 {
     use ContextCompactorTestMakeCompactorConcern;
     use ContextCompactorTestTestCompactPreservesRecentMixedContentBlocksExactlyConcern;
+    use ContextCompactorTestPreservedBandsConcern;
 
 
     // ─── compact — few messages ────────────────────────────────────────────

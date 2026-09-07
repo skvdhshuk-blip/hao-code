@@ -10,6 +10,7 @@ class ContextCompactor
 {
     use ContextCompactorConstructConcern;
     use ContextCompactorGenerateBasicSummaryConcern;
+    use ContextCompactorPreservedBandsConcern;
 
     /**
      * Default context window (200k tokens) and baseline for scaling.
@@ -45,6 +46,28 @@ class ContextCompactor
     private const POST_COMPACT_FILE_BUDGET_CHARS = 200_000;
     /** Post-compact: per-file cap (~5K tokens ≈ 20KB) */
     private const POST_COMPACT_PER_FILE_CAP_CHARS = 20_000;
+
+    /**
+     * Budgeting for verbatim originals the model asked to preserve.
+     *
+     * The compactor cannot see the system prompt or the tool schemas that will
+     * sit alongside the rebuilt history, so it reserves a flat allowance for
+     * them; TIER_MAX_PRESERVED_TOKENS then caps preserved text even when the
+     * window is nearly empty, so a compaction can never hand back most of the
+     * space it just reclaimed.
+     */
+    private const TIER_OVERHEAD_RESERVE_TOKENS = 25_000;
+    private const TIER_MAX_PRESERVED_TOKENS = 40_000;
+
+    /** Per-message cap when rendering one preserved original. */
+    private const TIER_PER_ITEM_CAP_CHARS = 20_000;
+
+    /**
+     * Transcript budget for the summary request, and how much of it the head
+     * gets when the transcript does not fit.
+     */
+    private const SUMMARY_INPUT_MAX_CHARS = 50_000;
+    private const SUMMARY_INPUT_HEAD_CHARS = 30_000;
 
     private int $compactFailures = 0;
     private const MAX_COMPACT_FAILURES = 3;

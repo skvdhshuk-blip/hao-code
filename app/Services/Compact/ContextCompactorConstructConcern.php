@@ -76,11 +76,10 @@ trait ContextCompactorConstructConcern
     }
 
     /**
-     * Compact message history using LLM-generated 9-section structured summary.
+     * Compact message history into an LLM-generated structured summary.
      */
     public function compact(MessageHistory $history, int $keepLast = 6, ?string $customInstructions = null): string
     {
-
         $messages = $history->getMessages();
         $count = count($messages);
 
@@ -99,14 +98,18 @@ trait ContextCompactorConstructConcern
             ]);
         }
 
-        $summary = $this->generateLlmSummary($oldMessages, $customInstructions ?? null);
+        $response = $this->generateLlmSummary($oldMessages, $customInstructions ?? null);
 
-        if ($summary === null) {
+        if ($response === null) {
             $summary = $this->generateBasicSummary($oldMessages);
+            $bands = [];
             $this->compactFailures++;
         } else {
             $this->compactFailures = 0;
-            $summary = $this->stripAnalysisBlock($summary);
+            // parseBands reads the raw response: stripAnalysisBlock keeps only
+            // what is inside <summary>, which is where the keep blocks are not.
+            $bands = GradedCompactionPrompt::parseBands($response, count($oldMessages));
+            $summary = GradedCompactionPrompt::stripKeepBlocks($this->stripAnalysisBlock($response));
         }
 
         // PostCompact hook
@@ -117,8 +120,15 @@ trait ContextCompactorConstructConcern
             ]);
         }
 
-        $transcriptNote = "[Context Compaction Summary — {$removed} messages compacted]\n\n{$summary}\n\n[End of Summary. Continue the conversation from where it left off without asking further questions.]";
         $remaining = array_slice($messages, $removed);
+        [$preserved, $bandsKept] = $this->renderPreservedBands($bands, $oldMessages, $remaining);
+
+        $transcriptNote = "[Context Compaction Summary — {$removed} messages compacted]\n\n{$summary}\n\n";
+        if ($preserved !== '') {
+            $transcriptNote .= $preserved."\n\n";
+        }
+        $transcriptNote .= '[End of Summary. Continue the conversation from where it left off without asking further questions.]';
+
         $rebuilt = [[
             'role' => 'user',
             'content' => $transcriptNote,
@@ -137,11 +147,17 @@ trait ContextCompactorConstructConcern
 
         $history->replaceMessages(array_merge($rebuilt, $remaining));
 
-        // Post-compact: re-inject recently-read files so model has context
-        $recentFiles = $this->extractRecentFiles($oldMessages);
-        $restoredFiles = $this->injectFileContext($history, $recentFiles);
-
-        $suffix = $restoredFiles > 0 ? " Re-injected {$restoredFiles} recently-read files." : '';
+        // Post-compact context restoration. When the model picked the originals
+        // worth keeping, those are already in the transcript note and are a
+        // better signal than "whatever the last few Read calls touched", so the
+        // path-based re-injection only runs as the fallback.
+        if ($preserved !== '') {
+            $suffix = " Preserved {$bandsKept} priority band(s) of original messages verbatim.";
+        } else {
+            $recentFiles = $this->extractRecentFiles(array_slice($messages, 0, $removed));
+            $restoredFiles = $this->injectFileContext($history, $recentFiles);
+            $suffix = $restoredFiles > 0 ? " Re-injected {$restoredFiles} recently-read files." : '';
+        }
 
         return "Compacted {$removed} messages into structured summary. Kept last {$keepLast}.{$suffix}";
     }
@@ -319,66 +335,21 @@ trait ContextCompactorConstructConcern
         return is_string($content) && mb_strlen($content) >= 1000;
     }
 
-    /**
-     * Get the structured 9-section compact system prompt.
-     */
-    private function getCompactSystemPrompt(): array
-    {
-        return [[
-            'type' => 'text',
-            'text' => <<<'PROMPT'
-<important>No tools may be used during this compact operation. Do not call any tools.</important>
-
-You are a conversation compaction assistant. You MUST produce your response in exactly two blocks:
-
-1. An `<analysis>` block where you draft your understanding
-2. A `<summary>` block with the final structured output
-
-Your <summary> MUST contain these 9 sections in this exact format:
-
-<summary>
-# Conversation Summary
-
-## 1. Primary Request and Intent
-[What the user asked for — their exact words if possible, plus inferred intent]
-
-## 2. Key Technical Concepts
-[Important technical concepts, frameworks, patterns, algorithms discussed]
-
-## 3. Files and Code Sections
-[All files read, edited, or created. For each file, note what was done and any important code patterns. Use file:line format.]
-
-## 4. Errors and Fixes
-[Any errors encountered and how they were fixed]
-
-## 5. Problem Solving
-[Key decisions made, approaches tried, and why they were chosen]
-
-## 6. All User Messages
-[Bulleted list of every user message in order]
-
-## 7. Pending Tasks
-[Tasks mentioned but not yet completed]
-
-## 8. Current Work
-[What was being actively worked on when compaction was triggered]
-
-## 9. Optional Next Step
-[What the next logical step would be based on the current state]
-</summary>
-
-Be specific. Include file paths, function names, exact error messages. Preserve all context needed to continue the work seamlessly.
-PROMPT,
-        ]];
-    }
-
     private function generateLlmSummary(array $oldMessages, ?string $customInstructions = null): ?string
     {
         try {
-            $conversationText = $this->messagesToText($oldMessages);
+            $conversationText = $this->messagesToText($oldMessages, withIndices: true);
 
-            if (mb_strlen($conversationText) > 50000) {
-                $conversationText = mb_substr($conversationText, 0, 50000) . "\n[...truncated for compaction...]";
+            if (mb_strlen($conversationText) > self::SUMMARY_INPUT_MAX_CHARS) {
+                // Drop the middle, not the tail. The head carries the original
+                // request; the tail carries the work in flight. The keep-list
+                // can only name messages the model actually saw, so truncating
+                // from the end would make the most recent — and usually most
+                // load-bearing — originals impossible to preserve.
+                $tailChars = self::SUMMARY_INPUT_MAX_CHARS - self::SUMMARY_INPUT_HEAD_CHARS;
+                $conversationText = mb_substr($conversationText, 0, self::SUMMARY_INPUT_HEAD_CHARS)
+                    ."\n[...middle of transcript truncated for compaction...]\n"
+                    .mb_substr($conversationText, -$tailChars);
             }
 
             $prompt = "Please summarize the following conversation using the structured 9-section format:\n\n{$conversationText}";
@@ -394,9 +365,16 @@ PROMPT,
             $processor = $this->queryEngine->query(
                 systemPrompt: $this->getCompactSystemPrompt(),
                 messages: $summaryMessages,
+                // The compact prompt forbids tool use, so advertising the
+                // registry only burns input tokens on schemas the model is
+                // told not to touch — for a tool-heavy agent, on every
+                // compaction. QueryEngine falls back to the full registry
+                // unless the override is passed explicitly.
+                toolsOverride: [],
             );
 
             $text = $processor->getAccumulatedText();
+
             return !empty($text) ? $text : null;
         } catch (\Throwable) {
             return null;
@@ -419,15 +397,24 @@ PROMPT,
         return trim($text);
     }
 
-    private function messagesToText(array $messages): string
+    /**
+     * Render messages for the summary request.
+     *
+     * With $withIndices the transcript is labelled `[#n]` by position in
+     * $messages, which is how the model addresses a message in its keep-list.
+     * The labels must stay in step with the array indices that
+     * GradedCompactionPrompt::renderBand() later looks up.
+     */
+    private function messagesToText(array $messages, bool $withIndices = false): string
     {
         $parts = [];
-        foreach ($messages as $msg) {
+        foreach ($messages as $index => $msg) {
             $role = $msg['role'] ?? 'unknown';
+            $label = $withIndices ? "[#{$index}] {$role}" : (string) $role;
             $content = $msg['content'] ?? '';
 
             if (is_string($content)) {
-                $parts[] = "{$role}: {$content}";
+                $parts[] = "{$label}: {$content}";
             } elseif (is_array($content)) {
                 $text = '';
                 foreach ($content as $block) {
@@ -450,7 +437,7 @@ PROMPT,
                     }
                 }
                 if (!empty($text)) {
-                    $parts[] = "{$role}: {$text}";
+                    $parts[] = "{$label}: {$text}";
                 }
             }
         }
